@@ -118,8 +118,8 @@ async function simulateJourney(
 
   try {
     // Navigate to starting URL
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
-    await page.waitForTimeout(1000);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    await page.waitForTimeout(2000);
 
     // Take start screenshot
     const startBuffer = await page.screenshot();

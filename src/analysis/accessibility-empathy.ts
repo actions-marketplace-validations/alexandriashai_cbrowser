@@ -1048,8 +1048,9 @@ async function simulateAccessibilityJourney(
 
   try {
     // Navigate to URL
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+    // Wait for rendering to settle — shorter than networkidle but sufficient for analysis
+    await page.waitForTimeout(3000);
 
     // Run barrier detection
     // v10.10.0: All general detectors run unconditionally regardless of persona
