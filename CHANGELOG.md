@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.25.0](https://github.com/alexandriashai/cbrowser/compare/v18.24.0...v18.25.0) (2026-04-10)
+
+### Added
+
+* **visual:** wasserstein optimal transport for visual comparison ([#158](https://github.com/alexandriashai/cbrowser/issues/158)) ([3105e81](https://github.com/alexandriashai/cbrowser/commit/3105e81bc92b7496c19de11699705f13c8321352))
+
 ## [18.24.0](https://github.com/alexandriashai/cbrowser/compare/v18.23.0...v18.24.0) (2026-04-02)
 
 ### Added
