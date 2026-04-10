@@ -53,6 +53,10 @@ import {
   isApiKeyConfigured,
 } from "../cognitive/index.js";
 import {
+  calculatePerceptualScore,
+  getPerceptualProfile,
+} from "../visual/perceptual-transport.js";
+import {
   getEmotionVisualizationStyles,
   generateEmotionVisualizationSection,
 } from "../utils.js";
@@ -1203,12 +1207,29 @@ async function simulateAccessibilityJourney(
     });
   }
 
-  // Calculate empathy score with context (v18.22.0)
-  const { score: empathyScore, context: scoreContext } = calculateEmpathyScoreWithContext(
+  // v18.26.0: Persona-weighted scoring via perceptual transport profiles
+  // Each persona has different barrier weights — motor users are 3x penalized
+  // by touch targets, ADHD by cognitive load, low-vision by contrast, etc.
+  const perceptualResult = calculatePerceptualScore(
     ctx.barriers,
     ctx.frictionPoints,
-    goalAchieved
+    goalAchieved,
+    persona.name
   );
+  const empathyScore = perceptualResult.score;
+  const totalDeduction = Object.values(perceptualResult.deductions).reduce((a, b) => a + Math.abs(b), 0);
+  const scoreContext = {
+    baseScore: 100,
+    deductionsByType: perceptualResult.deductions,
+    totalBarrierDeduction: totalDeduction,
+    frictionDeduction: 0,
+    goalDeduction: goalAchieved ? 0 : 15,
+    finalScore: empathyScore,
+    explanation: perceptualResult.explanation
+      + (perceptualResult.informationLoss > 0.05 ? ` | Info loss: ${(perceptualResult.informationLoss * 100).toFixed(0)}%` : '')
+      + (perceptualResult.motorCost > 0.1 ? ` | Motor cost: ${(perceptualResult.motorCost * 100).toFixed(0)}%` : '')
+      + (perceptualResult.cognitiveLoad > 0.3 ? ` | Cog load: ${(perceptualResult.cognitiveLoad * 100).toFixed(0)}%` : ''),
+  };
 
   // Generate remediation priorities
   const remediationPriority = generateRemediationPriority(ctx.barriers);
