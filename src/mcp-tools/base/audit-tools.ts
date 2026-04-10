@@ -53,8 +53,8 @@ export function registerAuditTools(server: McpServer): void {
       sites: z.array(z.string().url()).describe("Array of URLs to compare"),
       goal: z.string().describe("Task goal (e.g., 'sign up for free trial')"),
       persona: z.string().optional().default("first-timer").describe("Persona to use"),
-      maxSteps: z.number().optional().default(30).describe("Max steps per site"),
-      maxTime: z.number().optional().default(180).describe("Max time per site in seconds"),
+      maxSteps: z.number().optional().default(8).describe("Max steps per site (keep low to avoid timeout)"),
+      maxTime: z.number().optional().default(20).describe("Max time per site in seconds"),
     },
     async ({ sites, goal, persona, maxSteps, maxTime }) => {
       const result = await runCompetitiveBenchmark({

@@ -118,8 +118,8 @@ async function simulateJourney(
 
   try {
     // Navigate to starting URL
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
-    await page.waitForTimeout(2000);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10000 });
+    await page.waitForTimeout(1000);
 
     // Take start screenshot
     const startBuffer = await page.screenshot();
@@ -170,14 +170,14 @@ async function simulateJourney(
 
           // Try scrolling to find more options
           await page.evaluate(() => window.scrollBy(0, 300));
-          await page.waitForTimeout(500);
+          await page.waitForTimeout(200);
           continue;
         }
 
         // Execute the action
         try {
           await executeAction(page, action);
-          await page.waitForTimeout(1000);
+          await page.waitForTimeout(300);
 
           // Patience recovery on success
           state.patience = Math.min(100, state.patience + 2);
