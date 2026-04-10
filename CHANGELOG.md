@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.25.4](https://github.com/alexandriashai/cbrowser/compare/v18.25.3...v18.25.4) (2026-04-10)
+
+### Fixed
+
+* **empathy:** reduce empathy audit to <2s by cutting cognitive journey steps ([9590d22](https://github.com/alexandriashai/cbrowser/commit/9590d22e2cae349587bc5008821f22652d496178))
+
 ## [18.25.3](https://github.com/alexandriashai/cbrowser/compare/v18.25.2...v18.25.3) (2026-04-10)
 
 ### Fixed
