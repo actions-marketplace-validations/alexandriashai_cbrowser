@@ -273,10 +273,29 @@ export async function captureSmartBaseline(
   const numCaptures = options.numCaptures || 5;
   const captureDelay = options.captureDelay || 1500;
 
+  // Map generic device names to viewports if not a recognized DEVICE_PRESETS key
+  const GENERIC_VIEWPORTS: Record<string, { width: number; height: number }> = {
+    'mobile': { width: 375, height: 667 },
+    'tablet': { width: 768, height: 1024 },
+    'desktop': { width: 1920, height: 1080 },
+    'mobile-sm': { width: 320, height: 568 },
+    'mobile-lg': { width: 414, height: 896 },
+    'tablet-lg': { width: 1024, height: 1366 },
+    'desktop-sm': { width: 1280, height: 800 },
+    'desktop-lg': { width: 2560, height: 1440 },
+  };
+
+  let resolvedViewport = options.viewport;
+  let resolvedDevice = options.device;
+  if (options.device && GENERIC_VIEWPORTS[options.device]) {
+    resolvedViewport = GENERIC_VIEWPORTS[options.device];
+    resolvedDevice = undefined; // don't pass generic name as device preset
+  }
+
   const browser = new CBrowser({
-    device: options.device,
-    viewportWidth: options.viewport?.width || 1920,
-    viewportHeight: options.viewport?.height || 1080,
+    device: resolvedDevice,
+    viewportWidth: resolvedViewport?.width || 1920,
+    viewportHeight: resolvedViewport?.height || 1080,
   });
 
   const screenshotsPath = join(getSmartBaselinesPath(), "screenshots");

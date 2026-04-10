@@ -913,85 +913,92 @@ export async function computeTransportMap(
     heatmap[i] = (dR + dG + dB) / 3;
   }
 
-  // Compute transport flows between cells
-  // For each cell with significant change, find where the visual mass went
+  // Compute transport flows between cells using COLOR DISPLACEMENT
+  // For each cell whose color changed significantly, find the nearest cell
+  // in image B that has a similar color to what image A had at this position.
+  // This shows "where did the visual content move to?"
   const flows: TransportFlow[] = [];
-  const totalMassA = new Float64Array(numCells);
-  const totalMassB = new Float64Array(numCells);
+  let totalCost = 0;
+
+  // Identify cells with significant change (heatmap > threshold)
+  const changeThreshold = 0.005;
+  const changedCells: Array<{ idx: number; row: number; col: number; magnitude: number }> = [];
 
   for (let i = 0; i < numCells; i++) {
-    totalMassA[i] = cellHistA[i].totalMass;
-    totalMassB[i] = cellHistB[i].totalMass;
-  }
-
-  // Normalize masses
-  const sumA = totalMassA.reduce((a, b) => a + b, 0) || 1;
-  const sumB = totalMassB.reduce((a, b) => a + b, 0) || 1;
-  for (let i = 0; i < numCells; i++) {
-    totalMassA[i] /= sumA;
-    totalMassB[i] /= sumB;
-  }
-
-  // Greedy transport: for cells that lost mass, find nearest cells that gained mass
-  const massDiff = new Float64Array(numCells);
-  for (let i = 0; i < numCells; i++) {
-    massDiff[i] = totalMassB[i] - totalMassA[i];
-  }
-
-  // Sources (lost mass) and sinks (gained mass)
-  const sources: Array<{ idx: number; mass: number; row: number; col: number }> = [];
-  const sinks: Array<{ idx: number; mass: number; row: number; col: number }> = [];
-
-  for (let i = 0; i < numCells; i++) {
-    const row = Math.floor(i / cols);
-    const col = i % cols;
-    if (massDiff[i] < -minFlowMass * 0.1) {
-      sources.push({ idx: i, mass: -massDiff[i], row, col });
-    } else if (massDiff[i] > minFlowMass * 0.1) {
-      sinks.push({ idx: i, mass: massDiff[i], row, col });
+    if (heatmap[i] > changeThreshold) {
+      changedCells.push({ idx: i, row: Math.floor(i / cols), col: i % cols, magnitude: heatmap[i] });
     }
   }
 
-  // Match sources to nearest sinks (greedy nearest-neighbor transport)
-  let totalCost = 0;
-  for (const src of sources) {
-    if (src.mass < minFlowMass * 0.1) continue;
+  // For each changed cell, find where its original color went in image B
+  // by looking for the nearest cell in B whose color matches A's original color
+  const colorDistance = (a: string, b: string): number => {
+    const parseHex = (h: string) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    const [ra, ga, ba] = parseHex(a);
+    const [rb, gb, bb] = parseHex(b);
+    return Math.sqrt((ra - rb) ** 2 + (ga - gb) ** 2 + (ba - bb) ** 2) / 441.67; // normalized 0-1
+  };
 
-    // Find nearest sink with available capacity
-    let bestSink: typeof sinks[0] | null = null;
-    let bestDist = Infinity;
+  const usedSinks = new Set<number>();
 
-    for (const sink of sinks) {
-      if (sink.mass < minFlowMass * 0.1) continue;
-      const dist = Math.sqrt((src.row - sink.row) ** 2 + (src.col - sink.col) ** 2);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestSink = sink;
+  for (const src of changedCells) {
+    const srcColorA = cellHistA[src.idx].dominantColor; // what was here in A
+    const srcColorB = cellHistB[src.idx].dominantColor; // what is here now in B
+
+    // Skip if color barely changed
+    if (colorDistance(srcColorA, srcColorB) < 0.05) continue;
+
+    // Find the nearest cell in B that has a similar color to what A had here
+    // (i.e., where did this content move to?)
+    let bestMatch = -1;
+    let bestScore = Infinity;
+    const searchRadius = Math.max(rows, cols); // search whole image
+
+    for (let j = 0; j < numCells; j++) {
+      if (j === src.idx || usedSinks.has(j)) continue;
+      const dstRow = Math.floor(j / cols);
+      const dstCol = j % cols;
+      const spatialDist = Math.sqrt((src.row - dstRow) ** 2 + (src.col - dstCol) ** 2);
+      if (spatialDist > searchRadius) continue;
+      if (spatialDist < 1) continue; // skip self-neighbors
+
+      // How similar is B[j]'s color to A[src]'s original color?
+      const colorMatch = colorDistance(srcColorA, cellHistB[j].dominantColor);
+      // Prefer closer matches spatially (penalize long-distance)
+      const score = colorMatch + spatialDist * 0.002;
+
+      if (score < bestScore && colorMatch < 0.15) {
+        bestScore = score;
+        bestMatch = j;
       }
     }
 
-    if (!bestSink) continue;
+    if (bestMatch < 0) continue;
 
-    const transportedMass = Math.min(src.mass, bestSink.mass);
-    if (transportedMass < minFlowMass) continue;
+    const dstRow = Math.floor(bestMatch / cols);
+    const dstCol = bestMatch % cols;
+    const spatialDist = Math.sqrt((src.row - dstRow) ** 2 + (src.col - dstCol) ** 2);
+
+    // Skip trivially short flows (same neighborhood, probably just noise)
+    if (spatialDist < 2) continue;
 
     const srcX = (src.col + 0.5) * scaledCellSize / downscale;
     const srcY = (src.row + 0.5) * scaledCellSize / downscale;
-    const dstX = (bestSink.col + 0.5) * scaledCellSize / downscale;
-    const dstY = (bestSink.row + 0.5) * scaledCellSize / downscale;
+    const dstX = (dstCol + 0.5) * scaledCellSize / downscale;
+    const dstY = (dstRow + 0.5) * scaledCellSize / downscale;
+    const pixelDist = spatialDist * scaledCellSize / downscale;
 
     flows.push({
       from: { x: srcX, y: srcY, row: src.row, col: src.col },
-      to: { x: dstX, y: dstY, row: bestSink.row, col: bestSink.col },
-      mass: transportedMass,
-      distance: bestDist * scaledCellSize / downscale,
-      colorFrom: cellHistA[src.idx].dominantColor,
-      colorTo: cellHistB[bestSink.idx].dominantColor,
+      to: { x: dstX, y: dstY, row: dstRow, col: dstCol },
+      mass: src.magnitude, // use heatmap magnitude as flow weight
+      distance: pixelDist,
+      colorFrom: srcColorA,
+      colorTo: cellHistB[bestMatch].dominantColor,
     });
 
-    totalCost += transportedMass * bestDist;
-    src.mass -= transportedMass;
-    bestSink.mass -= transportedMass;
+    totalCost += src.magnitude * spatialDist;
+    usedSinks.add(bestMatch);
   }
 
   // Sort flows by mass and limit
