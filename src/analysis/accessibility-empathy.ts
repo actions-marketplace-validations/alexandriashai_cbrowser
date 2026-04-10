@@ -55,6 +55,8 @@ import {
 import {
   calculatePerceptualScore,
   getPerceptualProfile,
+  analyzePerceptualTransport,
+  type PerceptualAnalysis,
 } from "../visual/perceptual-transport.js";
 import {
   getEmotionVisualizationStyles,
@@ -1998,6 +2000,42 @@ export async function runEmpathyAudit(
         maxSteps,
         maxTime
       );
+
+      // v18.26.0: Screenshot-based perceptual transport analysis
+      // Captures a screenshot and applies the persona's visual filter,
+      // then computes Wasserstein distance to quantify information loss
+      try {
+        const { join } = await import("path");
+        const { tmpdir } = await import("os");
+        const { unlinkSync } = await import("fs");
+        const screenshotPath = join(tmpdir(), `empathy-screenshot-${Date.now()}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: false });
+
+        const perceptualAnalysis = await analyzePerceptualTransport(screenshotPath, personaName);
+
+        // Attach perceptual metrics to the result
+        (result as any).perceptualTransport = {
+          informationLoss: perceptualAnalysis.informationLoss,
+          attentionMismatch: perceptualAnalysis.attentionMismatch,
+          motorCost: perceptualAnalysis.motorCost,
+          cognitiveLoad: perceptualAnalysis.cognitiveLoad,
+          perceptualScore: perceptualAnalysis.perceptualScore,
+          transportDistance: perceptualAnalysis.transportDistance,
+          computeTimeMs: perceptualAnalysis.computeTimeMs,
+        };
+
+        // Blend perceptual score into empathy score (30% perceptual, 70% barrier-based)
+        const blendedScore = Math.round(
+          result.empathyScore * 0.7 + perceptualAnalysis.perceptualScore * 0.3
+        );
+        (result as any).empathyScoreBarrierOnly = result.empathyScore;
+        result.empathyScore = blendedScore;
+
+        try { unlinkSync(screenshotPath); } catch {}
+      } catch (e) {
+        // Perceptual analysis is optional — don't fail the audit if it errors
+        console.debug(`[empathy_audit] Perceptual transport analysis failed: ${(e as Error).message}`);
+      }
 
       results.push(result);
 

@@ -137,6 +137,9 @@ export function registerAuditTools(server: McpServer): void {
               barrierTypes: Array.from(uniqueTypes),
               affectedElements: r.barriers.length,
               wcagViolationCount: r.wcagViolations.length,
+              // v18.26.0: Perceptual transport metrics (Wasserstein-based)
+              perceptualTransport: (r as any).perceptualTransport || undefined,
+              empathyScoreBarrierOnly: (r as any).empathyScoreBarrierOnly || undefined,
             };
           }),
           allWcagViolations: result.allWcagViolations,
