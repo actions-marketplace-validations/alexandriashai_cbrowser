@@ -91,8 +91,8 @@ export function registerAuditTools(server: McpServer): void {
       goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
       disabilities: z.array(z.string()).optional().describe("Disability persona to test. Pass ONE for reliable results. If multiple passed, only first is used."),
       wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
-      maxSteps: z.number().optional().default(20).describe("Max steps per persona"),
-      maxTime: z.number().optional().default(120).describe("Max time per persona in seconds"),
+      maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
+      maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
     },
     async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime }) => {
       try {
