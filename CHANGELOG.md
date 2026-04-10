@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.25.2](https://github.com/alexandriashai/cbrowser/compare/v18.25.1...v18.25.2) (2026-04-10)
+
+### Fixed
+
+* **analysis:** reduce empathy audit and competitive benchmark timeouts ([90b22d4](https://github.com/alexandriashai/cbrowser/commit/90b22d4c014d2c5226f20d2347d696b4ce35ef15))
+
 ## [18.25.1](https://github.com/alexandriashai/cbrowser/compare/v18.25.0...v18.25.1) (2026-04-10)
 
 ### Fixed
