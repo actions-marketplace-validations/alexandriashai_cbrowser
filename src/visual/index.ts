@@ -15,3 +15,4 @@ export * from "./regression.js";
 export * from "./cross-browser.js";
 export * from "./responsive.js";
 export * from "./ab-comparison.js";
+export * from "./distance-metrics.js";

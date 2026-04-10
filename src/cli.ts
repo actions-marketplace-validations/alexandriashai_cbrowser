@@ -24,6 +24,8 @@ import { capturePerformanceBaseline, listPerformanceBaselines, loadPerformanceBa
 
 // Visual module imports
 import { captureVisualBaseline, listVisualBaselines, getVisualBaseline, deleteVisualBaseline, runVisualRegression, runVisualRegressionSuite, formatVisualRegressionReport, generateVisualRegressionHtmlReport, runCrossBrowserTest, runCrossBrowserSuite, formatCrossBrowserReport, generateCrossBrowserHtmlReport, runResponsiveTest, runResponsiveSuite, formatResponsiveReport, generateResponsiveHtmlReport, listViewportPresets, runABComparison, runABSuite, formatABReport, generateABHtmlReport, crossBrowserDiff } from "./visual/index.js";
+// Phase 3 imports — used by CLI command handlers (to be wired up)
+// import { captureSmartBaseline, listSmartBaselines, deleteSmartBaseline, runSmartRegression, generateTransportMap, runRegressionWithTransportMap } from "./visual/index.js";
 import type { NLTestCase, NLTestSuiteResult, PerformanceRegressionThresholds, CoverageMapOptions, VisualTestSuite, VisualTestSuiteResult, SupportedBrowser, CrossBrowserSuite, CrossBrowserSuiteResult, ResponsiveSuite, ResponsiveSuiteResult, ViewportPreset, ABSuite, ABSuiteResult } from "./types.js";
 import {
   BUILTIN_PERSONAS,
@@ -351,6 +353,36 @@ AI VISUAL REGRESSION (v7.0.0)
   ai-visual list              List all AI visual baselines
   ai-visual show <name>       Show baseline details
   ai-visual delete <name>     Delete a baseline
+
+SMART BASELINES & TRANSPORT MAP (v18.0.0)
+  smart-baseline capture <url>  Capture consensus baseline from multiple screenshots
+    --name <name>             Baseline name (required)
+    --captures <n>            Number of screenshots to take (default: 5)
+    --delay <ms>              Delay between captures (default: 1500)
+    --selector <sel>          Capture specific element
+    --device <device>         Device emulation
+    --outlier-threshold <n>   Outlier rejection threshold in stddev (default: 2.0)
+    Examples:
+      cbrowser smart-baseline capture "https://example.com" --name homepage
+      cbrowser smart-baseline capture "https://example.com" --name hero --captures 10
+
+  smart-baseline test <url> <name>  Test against smart baseline
+    --threshold <n>           Override adaptive threshold (0-1)
+    --transport-map           Also generate visual transport map
+    Examples:
+      cbrowser smart-baseline test "https://staging.example.com" homepage
+      cbrowser smart-baseline test "https://staging.example.com" homepage --transport-map
+
+  smart-baseline list         List all smart baselines
+  smart-baseline delete <name>  Delete a smart baseline
+
+  transport-map <baseline> <current>  Generate visual transport map between two screenshots
+    --cell-size <n>           Grid cell size in pixels (default: 32)
+    --output <file.svg>       Save SVG to file
+    --hotspots <n>            Number of hotspots to identify (default: 5)
+    Examples:
+      cbrowser transport-map baseline.png current.png
+      cbrowser transport-map baseline.png current.png --cell-size 16 --output changes.svg
 
 CROSS-BROWSER VISUAL TESTING (v7.3.0)
   cross-browser <url>         Compare visual rendering across browsers

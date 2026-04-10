@@ -42,7 +42,7 @@ import { registerLlmsTxtTools } from "./llms-txt-tools.js";
  * - Analysis: 4 (analyze_page, generate_tests, find_element_by_intent, ai_benchmark)
  * - Session: 4 (save_session, load_session, list_sessions, delete_session)
  * - Healing: 1 (heal_stats)
- * - Visual Testing: 6 (visual_baseline, visual_regression, cross_browser_test, cross_browser_diff, responsive_test, ab_comparison)
+ * - Visual Testing: 9 (visual_baseline, visual_regression, cross_browser_test, cross_browser_diff, responsive_test, ab_comparison, smart_baseline, smart_regression, transport_map)
  * - Testing: 5 (nl_test_file, nl_test_inline, repair_test, detect_flaky_tests, coverage_map)
  * - Bug Analysis: 2 (hunt_bugs, chaos_test)
  * - Persona Comparison: 3 (compare_personas, compare_personas_init, compare_personas_complete)

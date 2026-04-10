@@ -25,6 +25,16 @@ import type {
   VisualTestSuite,
   VisualTestSuiteResult,
 } from "../types.js";
+import {
+  computeCombinedDistance,
+  computeSmartBaseline,
+  compareAgainstSmartBaseline,
+  computeTransportMap,
+  type WassersteinConfig,
+  type SmartBaseline,
+  type TransportMapResult,
+  type TransportMapConfig,
+} from "./distance-metrics.js";
 
 /**
  * Get the path to visual baselines storage
@@ -193,6 +203,424 @@ export function deleteVisualBaseline(name: string): boolean {
   return true;
 }
 
+// ── Smart Baseline Storage ──
+
+function getSmartBaselinesPath(): string {
+  const baseDir = process.env.CBROWSER_DATA_DIR || join(homedir(), ".cbrowser");
+  const dir = join(baseDir, "smart-baselines");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function loadSmartBaselines(): SmartBaseline[] {
+  const indexPath = join(getSmartBaselinesPath(), "smart-baselines.json");
+  if (!existsSync(indexPath)) return [];
+  try {
+    const data = JSON.parse(readFileSync(indexPath, "utf-8"));
+    // Restore Float64Arrays from JSON
+    return (data.baselines || []).map((b: any) => ({
+      ...b,
+      barycenter: {
+        r: new Float64Array(b.barycenter.r),
+        g: new Float64Array(b.barycenter.g),
+        b: new Float64Array(b.barycenter.b),
+      },
+    }));
+  } catch { return []; }
+}
+
+function saveSmartBaselines(baselines: SmartBaseline[]): void {
+  const indexPath = join(getSmartBaselinesPath(), "smart-baselines.json");
+  // Convert Float64Arrays to regular arrays for JSON
+  const serializable = baselines.map(b => ({
+    ...b,
+    barycenter: {
+      r: Array.from(b.barycenter.r),
+      g: Array.from(b.barycenter.g),
+      b: Array.from(b.barycenter.b),
+    },
+  }));
+  writeFileSync(indexPath, JSON.stringify({ baselines: serializable, updated: new Date().toISOString() }, null, 2));
+}
+
+/**
+ * Capture a Smart Barycenter Baseline.
+ *
+ * Takes N screenshots of a URL with delays between captures,
+ * computes the Wasserstein barycenter (optimal consensus),
+ * rejects outlier captures, and selects the median reference image.
+ *
+ * The result is a baseline that represents the "typical" rendering —
+ * robust to timing variations, dynamic content, animation states,
+ * and other sources of non-deterministic rendering.
+ *
+ * @since v18.0.0
+ * @see https://github.com/alexandriashai/cbrowser/issues/158
+ */
+export async function captureSmartBaseline(
+  url: string,
+  name: string,
+  options: {
+    selector?: string;
+    device?: string;
+    viewport?: { width: number; height: number };
+    waitFor?: string | number;
+    numCaptures?: number;
+    captureDelay?: number;
+    outlierThreshold?: number;
+  } = {},
+): Promise<SmartBaseline> {
+  const numCaptures = options.numCaptures || 5;
+  const captureDelay = options.captureDelay || 1500;
+
+  const browser = new CBrowser({
+    device: options.device,
+    viewportWidth: options.viewport?.width || 1920,
+    viewportHeight: options.viewport?.height || 1080,
+  });
+
+  const screenshotsPath = join(getSmartBaselinesPath(), "screenshots");
+  if (!existsSync(screenshotsPath)) mkdirSync(screenshotsPath, { recursive: true });
+
+  const capturePaths: string[] = [];
+
+  try {
+    await browser.launch();
+    await browser.navigate(url);
+
+    // Wait if specified
+    if (options.waitFor) {
+      if (typeof options.waitFor === "number") {
+        await new Promise(resolve => setTimeout(resolve, options.waitFor as number));
+      } else {
+        const page = await browser.getPage();
+        await page.waitForSelector(options.waitFor, { timeout: 10000 }).catch(() => {});
+      }
+    }
+
+    const page = await browser.getPage();
+
+    // Capture N screenshots
+    for (let i = 0; i < numCaptures; i++) {
+      const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}-${i}`;
+      const capturePath = join(screenshotsPath, `${id}.png`);
+
+      if (options.selector) {
+        const element = page.locator(options.selector).first();
+        await element.screenshot({ path: capturePath });
+      } else {
+        await page.screenshot({ path: capturePath, fullPage: false });
+      }
+
+      capturePaths.push(capturePath);
+
+      // Delay between captures (except last)
+      if (i < numCaptures - 1) {
+        await new Promise(resolve => setTimeout(resolve, captureDelay));
+      }
+    }
+  } finally {
+    await browser.close();
+  }
+
+  // Compute smart baseline
+  const baseline = await computeSmartBaseline(
+    capturePaths,
+    name,
+    url,
+    {
+      downscale: 0.5,
+      outlierThreshold: options.outlierThreshold || 2.0,
+    },
+  );
+
+  // Save to index
+  const baselines = loadSmartBaselines();
+  const filtered = baselines.filter(b => b.name !== name);
+  filtered.push(baseline);
+  saveSmartBaselines(filtered);
+
+  return baseline;
+}
+
+/**
+ * List all smart baselines
+ */
+export function listSmartBaselines(): SmartBaseline[] {
+  return loadSmartBaselines();
+}
+
+/**
+ * Get a smart baseline by name
+ */
+export function getSmartBaseline(name: string): SmartBaseline | undefined {
+  return loadSmartBaselines().find(b => b.name === name);
+}
+
+/**
+ * Delete a smart baseline and its screenshots
+ */
+export function deleteSmartBaseline(name: string): boolean {
+  const baselines = loadSmartBaselines();
+  const baseline = baselines.find(b => b.name === name);
+  if (!baseline) return false;
+
+  // Delete capture files
+  for (const path of baseline.capturePaths) {
+    if (existsSync(path)) unlinkSync(path);
+  }
+
+  const filtered = baselines.filter(b => b.name !== name);
+  saveSmartBaselines(filtered);
+  return true;
+}
+
+/**
+ * Run visual regression against a smart baseline.
+ *
+ * Compares a new screenshot against the barycenter consensus —
+ * uses the adaptive threshold computed from observed render variance,
+ * so the comparison automatically adjusts to the page's stability.
+ *
+ * @since v18.0.0
+ */
+export interface SmartRegressionResult {
+  baselineName: string;
+  url: string;
+  passed: boolean;
+  analysis: AIVisualAnalysis;
+  baselineScreenshot: string;
+  currentScreenshot: string;
+  timestamp: string;
+}
+
+export async function runSmartRegression(
+  url: string,
+  baselineName: string,
+  options: VisualRegressionOptions & { wassersteinConfig?: WassersteinConfig } = {},
+): Promise<SmartRegressionResult> {
+  const baseline = getSmartBaseline(baselineName);
+  if (!baseline) {
+    return {
+      baselineName,
+      url,
+      passed: false,
+      analysis: {
+        overallStatus: "fail",
+        summary: `Smart baseline "${baselineName}" not found. Capture one first with captureSmartBaseline().`,
+        changes: [],
+        similarityScore: 0,
+        productionReady: false,
+        confidence: 1,
+      },
+      baselineScreenshot: "",
+      currentScreenshot: "",
+      timestamp: new Date().toISOString(),
+    } satisfies SmartRegressionResult;
+  }
+
+  // Capture current screenshot
+  const browser = new CBrowser({
+    viewportWidth: baseline.url ? 1920 : 1920,
+    viewportHeight: 1080,
+  });
+
+  const screenshotsPath = getVisualScreenshotsPath();
+  const currentPath = join(screenshotsPath, `current-${Date.now()}.png`);
+
+  try {
+    await browser.launch();
+    await browser.navigate(url);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const page = await browser.getPage();
+    await page.screenshot({ path: currentPath, fullPage: false });
+  } finally {
+    await browser.close();
+  }
+
+  // Compare against smart baseline
+  const result = await compareAgainstSmartBaseline(
+    currentPath,
+    baseline,
+    options.wassersteinConfig,
+  );
+
+  // Use adaptive threshold from baseline (or override)
+  const threshold = options.threshold || baseline.adaptiveThreshold;
+  const passed = result.normalizedScore >= threshold;
+
+  const changes: VisualChange[] = [];
+  let overallStatus: "pass" | "warning" | "fail" = "pass";
+
+  if (!passed) {
+    if (result.normalizedScore < threshold - 0.15) {
+      overallStatus = "fail";
+      changes.push({
+        type: "layout",
+        severity: "breaking",
+        region: { x: 0, y: 0, width: 1920, height: 1080 },
+        description: `Visual change exceeds smart baseline variance (score: ${result.normalizedScore.toFixed(3)}, threshold: ${threshold.toFixed(3)}, variance ratio: ${result.varianceRatio.toFixed(1)}σ)`,
+        reasoning: result.withinVariance
+          ? "Change is within observed render variance but below threshold"
+          : "Change exceeds the natural variance observed during baseline creation",
+        confidence: 0.92,
+        suggestion: "This appears to be a real visual change, not rendering noise",
+      });
+    } else {
+      overallStatus = "warning";
+      changes.push({
+        type: "content",
+        severity: "warning",
+        region: { x: 0, y: 0, width: 1920, height: 1080 },
+        description: `Marginal visual change near smart baseline threshold (score: ${result.normalizedScore.toFixed(3)}, threshold: ${threshold.toFixed(3)})`,
+        reasoning: "Change is close to the boundary of expected variance",
+        confidence: 0.8,
+        suggestion: "May be a real change or an unusually noisy render — consider re-running",
+      });
+    }
+  }
+
+  const channelInfo = result.details.channelDistances
+    ? ` | R: ${result.details.channelDistances.r.toFixed(4)}, G: ${result.details.channelDistances.g.toFixed(4)}, B: ${result.details.channelDistances.b.toFixed(4)}`
+    : '';
+
+  return {
+    baselineName,
+    url,
+    passed,
+    analysis: {
+      overallStatus,
+      summary: passed
+        ? `Visual regression passed (score: ${result.normalizedScore.toFixed(3)} ≥ adaptive threshold: ${threshold.toFixed(3)}, within ${result.varianceRatio.toFixed(1)}σ of baseline variance)`
+        : `Visual regression ${overallStatus}: score ${result.normalizedScore.toFixed(3)} < threshold ${threshold.toFixed(3)}`,
+      changes,
+      similarityScore: result.normalizedScore,
+      productionReady: passed,
+      confidence: 0.92,
+      rawAnalysis: `Smart baseline comparison (${baseline.numCaptures} captures, ${baseline.numOutliers} outliers rejected, adaptive threshold ${threshold.toFixed(3)})${channelInfo} | ${result.details.computeTimeMs?.toFixed(0)}ms`,
+    },
+    baselineScreenshot: baseline.referencePath,
+    currentScreenshot: currentPath,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Generate a Visual Transport Map between two screenshots.
+ *
+ * Shows WHERE visual mass moved, not just THAT it changed.
+ * Produces:
+ * - A heatmap of change magnitude per grid cell
+ * - Flow arrows showing how content shifted
+ * - Hotspot regions with the most significant changes
+ * - An SVG overlay visualization
+ *
+ * Can be used standalone or after a regression test to visualize what changed.
+ *
+ * @since v18.0.0 (Phase 3)
+ * @see https://github.com/alexandriashai/cbrowser/issues/158
+ */
+export async function generateTransportMap(
+  baselinePath: string,
+  currentPath: string,
+  config?: TransportMapConfig,
+): Promise<TransportMapResult> {
+  return computeTransportMap(baselinePath, currentPath, config);
+}
+
+/**
+ * Run visual regression with transport map visualization.
+ *
+ * Combines Phase 1 (Wasserstein distance) with Phase 3 (transport map)
+ * for a complete "what changed and where" analysis.
+ */
+export async function runRegressionWithTransportMap(
+  url: string,
+  baselineName: string,
+  options: VisualRegressionOptions & {
+    wassersteinConfig?: WassersteinConfig;
+    transportMapConfig?: TransportMapConfig;
+  } = {},
+): Promise<SmartRegressionResult & { transportMap?: TransportMapResult; transportMapSvgPath?: string }> {
+  // Check for smart baseline first, fall back to regular
+  const smartBaseline = getSmartBaseline(baselineName);
+  const regularBaseline = getVisualBaseline(baselineName);
+
+  if (!smartBaseline && !regularBaseline) {
+    return {
+      baselineName,
+      url,
+      passed: false,
+      analysis: {
+        overallStatus: "fail",
+        summary: `Baseline "${baselineName}" not found.`,
+        changes: [],
+        similarityScore: 0,
+        productionReady: false,
+        confidence: 1,
+      },
+      baselineScreenshot: "",
+      currentScreenshot: "",
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  const baselineScreenshot = smartBaseline?.referencePath || regularBaseline!.screenshotPath;
+
+  // Capture current screenshot
+  const browser = new CBrowser({ viewportWidth: 1920, viewportHeight: 1080 });
+  const screenshotsPath = getVisualScreenshotsPath();
+  const currentPath = join(screenshotsPath, `current-${Date.now()}.png`);
+
+  try {
+    await browser.launch();
+    await browser.navigate(url);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const page = await browser.getPage();
+    await page.screenshot({ path: currentPath, fullPage: false });
+  } finally {
+    await browser.close();
+  }
+
+  // Run Wasserstein analysis
+  const analysis = await performWassersteinAnalysis(baselineScreenshot, currentPath, options);
+
+  // Generate transport map
+  const transportMap = await computeTransportMap(baselineScreenshot, currentPath, options.transportMapConfig);
+
+  // Save SVG to disk
+  let transportMapSvgPath: string | undefined; // eslint-disable-line prefer-const
+  const baseDir = process.env.CBROWSER_DATA_DIR || join(homedir(), ".cbrowser");
+  const mapsDir = join(baseDir, "transport-maps");
+  if (!existsSync(mapsDir)) mkdirSync(mapsDir, { recursive: true });
+  transportMapSvgPath = join(mapsDir, `transport-map-${Date.now()}.svg`);
+  writeFileSync(transportMapSvgPath, transportMap.svg);
+
+  // Enhance analysis summary with transport map data
+  const hotspotSummary = transportMap.hotspots.length > 0
+    ? ` | Hotspots: ${transportMap.hotspots.map(h => h.description).join('; ')}`
+    : '';
+
+  const threshold = options.threshold || 0.85;
+  const passed = analysis.similarityScore >= threshold;
+
+  return {
+    baselineName,
+    url,
+    passed,
+    analysis: {
+      ...analysis,
+      summary: analysis.summary + hotspotSummary,
+      rawAnalysis: (analysis.rawAnalysis || '') + ` | Transport map: ${transportMap.flows.length} flows, ${transportMap.hotspots.length} hotspots, cost ${transportMap.totalCost.toFixed(4)}, ${transportMap.computeTimeMs.toFixed(0)}ms`,
+    },
+    baselineScreenshot,
+    currentScreenshot: currentPath,
+    timestamp: new Date().toISOString(),
+    transportMap,
+    transportMapSvgPath,
+  };
+}
+
 /**
  * Analyze visual differences using AI
  */
@@ -279,9 +707,11 @@ Respond ONLY with the JSON, no other text.`;
         ],
       }));
 
-      // For now, perform a heuristic comparison since we can't easily call Claude with images
-      // This can be enhanced when proper API integration is available
-      const analysis = performHeuristicAnalysis(baselinePath, currentPath, options);
+      // Use Wasserstein-enhanced analysis (v18.0.0) with byte-diff fallback
+      const distanceMetric = (options as any).distanceMetric || 'wasserstein';
+      const analysis = distanceMetric === 'wasserstein' || distanceMetric === 'combined'
+        ? await performWassersteinAnalysis(baselinePath, currentPath, options).catch(() => performHeuristicAnalysis(baselinePath, currentPath, options))
+        : performHeuristicAnalysis(baselinePath, currentPath, options);
 
       // Clean up
       if (existsSync(requestPath)) {
@@ -294,8 +724,12 @@ Respond ONLY with the JSON, no other text.`;
     console.debug(`[CBrowser] AI visual analysis failed, using heuristics: ${(e as Error).message}`);
   }
 
-  // Fallback: Heuristic analysis based on file comparison
-  return performHeuristicAnalysis(baselinePath, currentPath, options);
+  // Fallback: Use Wasserstein if available, byte-diff otherwise
+  try {
+    return await performWassersteinAnalysis(baselinePath, currentPath, options);
+  } catch {
+    return performHeuristicAnalysis(baselinePath, currentPath, options);
+  }
 }
 
 /**
@@ -432,6 +866,119 @@ function performHeuristicAnalysis(
     productionReady: overallStatus !== "fail",
     confidence: 0.75, // Higher confidence than old file-size heuristic
     rawAnalysis: "Byte-level PNG comparison (AI analysis not available)",
+  };
+}
+
+/**
+ * Perform Wasserstein-enhanced visual analysis.
+ * Uses Sliced Wasserstein Distance for robust comparison that handles
+ * sub-pixel shifts, anti-aliasing, and font rendering differences.
+ *
+ * @since v18.0.0
+ * @see https://github.com/alexandriashai/cbrowser/issues/158
+ */
+async function performWassersteinAnalysis(
+  baselinePath: string,
+  currentPath: string,
+  options: VisualRegressionOptions & { wassersteinConfig?: WassersteinConfig } = {}
+): Promise<AIVisualAnalysis> {
+  const result = await computeCombinedDistance(
+    baselinePath,
+    currentPath,
+    { byteDiff: 0.2, wasserstein: 0.8 },
+    {
+      numProjections: 64,
+      compareMode: 'combined',
+      downscale: 0.5,
+      ignoreRegions: options.ignoreRegions,
+      ...options.wassersteinConfig,
+    }
+  );
+
+  const similarityScore = Math.round(result.normalizedScore * 100) / 100;
+  const changes: VisualChange[] = [];
+  let overallStatus: "pass" | "warning" | "fail" = "pass";
+
+  if (similarityScore < 0.7) {
+    changes.push({
+      type: "layout",
+      severity: "breaking",
+      region: { x: 0, y: 0, width: 1920, height: 1080 },
+      description: `Significant visual differences detected (Wasserstein distance: ${result.distance.toFixed(4)})`,
+      reasoning: "Optimal transport analysis shows substantial redistribution of visual content",
+      confidence: 0.9,
+      suggestion: "Review the visual changes manually — layout or content has materially changed",
+    });
+    overallStatus = "fail";
+  } else if (similarityScore < 0.85) {
+    changes.push({
+      type: "content",
+      severity: "warning",
+      region: { x: 0, y: 0, width: 1920, height: 1080 },
+      description: `Moderate visual differences detected (Wasserstein distance: ${result.distance.toFixed(4)})`,
+      reasoning: "Optimal transport analysis shows meaningful visual distribution change",
+      confidence: 0.85,
+      suggestion: "Review to confirm changes are expected",
+    });
+    overallStatus = "warning";
+  } else if (similarityScore < 0.98) {
+    changes.push({
+      type: "style",
+      severity: "info",
+      region: { x: 0, y: 0, width: 1920, height: 1080 },
+      description: `Minor visual differences detected (Wasserstein distance: ${result.distance.toFixed(4)})`,
+      reasoning: "Sub-pixel or rendering engine differences — within normal variation",
+      confidence: 0.8,
+    });
+  }
+
+  // Sensitivity adjustments
+  if (options.sensitivity === "low" && overallStatus === "warning") {
+    overallStatus = "pass";
+  } else if (options.sensitivity === "high" && changes.length === 0 && result.distance > 0.001) {
+    changes.push({
+      type: "style",
+      severity: "info",
+      region: { x: 0, y: 0, width: 1920, height: 1080 },
+      description: "Very minor visual change detected by Wasserstein analysis",
+      reasoning: "Slight distribution shift detected at high sensitivity",
+      confidence: 0.5,
+    });
+    overallStatus = "warning";
+  }
+
+  // Cross-browser: Wasserstein naturally handles font rendering differences
+  // much better than byte-diff, so thresholds are less aggressive
+  if ((options as any).crossBrowser) {
+    if (overallStatus === "fail" && similarityScore >= 0.55) {
+      overallStatus = "warning";
+      if (changes.length > 0) {
+        changes[0].severity = "warning";
+        changes[0].reasoning = "Cross-browser rendering differences (Wasserstein is robust to font/anti-aliasing variation)";
+      }
+    }
+    if (overallStatus === "warning" && similarityScore >= 0.70) {
+      overallStatus = "pass";
+      if (changes.length > 0) {
+        changes[0].severity = "acceptable";
+      }
+    }
+  }
+
+  const channelInfo = result.details.channelDistances
+    ? ` | R: ${result.details.channelDistances.r.toFixed(4)}, G: ${result.details.channelDistances.g.toFixed(4)}, B: ${result.details.channelDistances.b.toFixed(4)}, Spatial: ${result.details.channelDistances.spatial.toFixed(4)}`
+    : '';
+
+  return {
+    overallStatus,
+    summary: changes.length === 0
+      ? `No significant visual changes detected (Wasserstein similarity: ${similarityScore})`
+      : `Found ${changes.length} visual change(s) with ${overallStatus} status`,
+    changes,
+    similarityScore,
+    productionReady: overallStatus !== "fail",
+    confidence: 0.9, // Higher than byte-diff (0.75) — Wasserstein is more robust
+    rawAnalysis: `Sliced Wasserstein Distance analysis (${result.details.numProjections} projections, ${result.details.computeTimeMs?.toFixed(0)}ms)${channelInfo}`,
   };
 }
 
