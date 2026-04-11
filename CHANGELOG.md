@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.32.2](https://github.com/alexandriashai/cbrowser/compare/v18.32.1...v18.32.2) (2026-04-11)
+
+### Fixed
+
+* **browser:** retry with persistent state preservation on crash recovery ([5f12cd6](https://github.com/alexandriashai/cbrowser/commit/5f12cd658ae1407a42d63658d3b8abd9836aed4a))
+
 ## [18.32.1](https://github.com/alexandriashai/cbrowser/compare/v18.32.0...v18.32.1) (2026-04-11)
 
 ### Fixed
