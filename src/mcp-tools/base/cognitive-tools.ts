@@ -66,7 +66,8 @@ export function registerCognitiveTools(
         fearOfMissingOut: z.number().min(0).max(1).optional(),
         socialProofSensitivity: z.number().min(0).max(1).optional(),
         mentalModelRigidity: z.number().min(0).max(1).optional(),
-      }).optional().describe("Override specific cognitive traits (25 available)"),
+        siteFamiliarity: z.number().min(0).max(1).optional(),
+      }).optional().describe("Override specific cognitive traits (26 available, including siteFamiliarity: 0=brand new visitor, 1=daily user)"),
       location: z.object({
         timezone: z.string().optional().describe("IANA timezone (e.g., 'America/New_York', 'Europe/London')"),
         locale: z.string().optional().describe("BCP 47 locale (e.g., 'en-US', 'de-DE')"),
@@ -124,6 +125,7 @@ export function registerCognitiveTools(
           fearOfMissingOut: 0.5,
           socialProofSensitivity: 0.5,
           mentalModelRigidity: 0.5,
+          siteFamiliarity: 0.5,
         };
         personaObj = {
           ...existingPersona,
@@ -219,20 +221,51 @@ export function registerCognitiveTools(
       }
 
       // v18.35.0: Check site model for prior knowledge about this site
-      let siteModelContext: { hasModel: boolean; knownPaths?: number; suggestion?: string } = { hasModel: false };
+      // v18.35.0: Gate site model data by persona's siteFamiliarity trait
+      const siteFamiliarity = profile.traits.siteFamiliarity ?? 0.5;
+      let siteModelContext: { hasModel: boolean; knownPaths?: number; suggestion?: string; familiarityLevel?: string } = { hasModel: false };
       try {
-        const { SiteModelManager } = await import("../../site-model/manager.js");
-        const siteModel = SiteModelManager.getInstance();
-        const domain = new URL(startUrl).hostname;
-        const stats = await siteModel.getModelStats(domain);
-        if (stats.navigationNodes > 0) {
-          siteModelContext = {
-            hasModel: true,
-            knownPaths: stats.goalPaths,
-            suggestion: stats.goalPaths > 0
-              ? `Site model has ${stats.goalPaths} known goal paths and ${stats.navigationNodes} mapped pages. Query site_model_query for best path.`
-              : `Site has ${stats.navigationNodes} mapped pages but no goal paths yet.`,
-          };
+        if (siteFamiliarity > 0.05) { // Skip entirely for brand-new personas (0.0)
+          const { SiteModelManager } = await import("../../site-model/manager.js");
+          const siteModel = SiteModelManager.getInstance();
+          const domain = new URL(startUrl).hostname;
+          const stats = await siteModel.getModelStats(domain);
+          if (stats.navigationNodes > 0) {
+            const familiarityLevel =
+              siteFamiliarity >= 0.8 ? "expert" :
+              siteFamiliarity >= 0.5 ? "familiar" :
+              siteFamiliarity >= 0.1 ? "vague" : "none";
+
+            if (siteFamiliarity >= 0.8) {
+              // Full access — navigation paths, goal sequences, element reliability
+              siteModelContext = {
+                hasModel: true,
+                knownPaths: stats.goalPaths,
+                familiarityLevel,
+                suggestion: stats.goalPaths > 0
+                  ? `This persona knows this site well. ${stats.goalPaths} known goal paths, ${stats.navigationNodes} mapped pages. Use site_model_query for best path.`
+                  : `This persona knows the site layout (${stats.navigationNodes} pages) but hasn't completed goals here.`,
+              };
+            } else if (siteFamiliarity >= 0.5) {
+              // Moderate — failure patterns + page structure, no goal paths
+              siteModelContext = {
+                hasModel: true,
+                familiarityLevel,
+                suggestion: `This persona has some familiarity with this site (${stats.navigationNodes} pages known). They remember the general layout but not specific paths.`,
+              };
+            } else {
+              // Low (0.1-0.4) — only failure patterns (knows what to avoid)
+              siteModelContext = {
+                hasModel: stats.failurePatterns > 0,
+                familiarityLevel,
+                suggestion: stats.failurePatterns > 0
+                  ? `This persona vaguely recalls issues on this site (${stats.failurePatterns} known problems). They don't remember the layout.`
+                  : undefined,
+              };
+            }
+          }
+        } else {
+          siteModelContext.familiarityLevel = "none";
         }
       } catch {}
 
@@ -583,7 +616,23 @@ Begin the simulation now. Narrate your thoughts as this persona.
         };
       }).filter(Boolean);
 
-      const allPersonas = [...builtinPersonas, ...accessibilityPersonas];
+      // v18.35.0: Include custom personas with "custom" category
+      const { loadCustomPersonas } = await import("../../personas.js");
+      const customPersonaMap = loadCustomPersonas();
+      const customPersonas = Object.values(customPersonaMap).map(p => {
+        const profile = getCognitiveProfile(p);
+        return {
+          name: p.name,
+          description: p.description,
+          category: "custom" as const,
+          demographics: p.demographics,
+          cognitiveTraits: profile.traits,
+          attentionPattern: profile.attentionPattern,
+          decisionStyle: profile.decisionStyle,
+        };
+      });
+
+      const allPersonas = [...builtinPersonas, ...accessibilityPersonas, ...customPersonas];
 
       return {
         content: [
@@ -595,6 +644,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
               categories: {
                 builtin: builtinPersonas.length,
                 accessibility: accessibilityPersonas.length,
+                custom: customPersonas.length,
               },
             }, null, 2),
           },

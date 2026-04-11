@@ -442,6 +442,25 @@ export interface CognitiveTraits {
    * @see Gentner & Stevens (1983) - "Mental Models"
    */
   mentalModelRigidity?: number;
+
+  /**
+   * How much the persona "knows" about a site from prior visits (0 = brand new, 1 = daily user)
+   *
+   * Controls how much site model data is exposed during cognitive journeys:
+   * - 0.0: No site model — truly blind first visit
+   * - 0.1–0.4: Failure patterns only — knows what to avoid, not where to go
+   * - 0.5–0.7: Failure patterns + page structure — vague familiarity
+   * - 0.8–1.0: Full site model — navigation paths, goal sequences, element reliability
+   *
+   * Research basis: Cockburn et al. (2007) - "Familiar Interfaces"
+   * Revisitation accounts for 58% of web pages viewed. Familiar users navigate
+   * 2-4x faster via spatial memory and landmark recognition.
+   *
+   * @see Tauscher & Greenberg (1997) - "How people revisit web pages"
+   * @see Weinreich et al. (2008) - "Off the beaten tracks: exploring three aspects of web navigation"
+   * @since v18.35.0
+   */
+  siteFamiliarity?: number;
 }
 
 // ============================================================================

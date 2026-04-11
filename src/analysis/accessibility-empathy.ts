@@ -2006,6 +2006,19 @@ export async function runEmpathyAudit(
     "color-blind": "color-blind-deuteranopia",
     "colorblind": "color-blind-deuteranopia",
     "deuteranopia": "color-blind-deuteranopia",
+    // v18.35.0: New research-backed cognitive disability personas
+    "autism": "autism-spectrum",
+    "autistic": "autism-spectrum",
+    "asd": "autism-spectrum",
+    "autism-spectrum": "autism-spectrum",
+    "intellectual-disability": "intellectual-disability",
+    "intellectual": "intellectual-disability",
+    "learning-disability": "intellectual-disability",
+    "aphasia": "aphasia-receptive",
+    "aphasia-receptive": "aphasia-receptive",
+    "wernicke": "aphasia-receptive",
+    "dyscalculia": "dyscalculia",
+    "numeracy": "dyscalculia",
   };
 
   // Run audit for each disability type
