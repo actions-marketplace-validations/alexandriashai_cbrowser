@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.32.0](https://github.com/alexandriashai/cbrowser/compare/v18.31.0...v18.32.0) (2026-04-11)
+
+### Added
+
+* **journey:** goal evidence validation and step-by-step journey log ([6919e1f](https://github.com/alexandriashai/cbrowser/commit/6919e1f220055fa6a928d2e2e55c0e43a96ce4f7))
+
 ## [18.31.0](https://github.com/alexandriashai/cbrowser/compare/v18.30.0...v18.31.0) (2026-04-11)
 
 ### Added
