@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.30.0](https://github.com/alexandriashai/cbrowser/compare/v18.29.0...v18.30.0) (2026-04-11)
+
+### Added
+
+* **cognitive:** page-level cognitive load estimation in empathy audit ([#159](https://github.com/alexandriashai/cbrowser/issues/159)) ([64ebd13](https://github.com/alexandriashai/cbrowser/commit/64ebd13d3139b77b249942fc7b7884180468989b))
+
 ## [18.29.0](https://github.com/alexandriashai/cbrowser/compare/v18.28.0...v18.29.0) (2026-04-11)
 
 ### Added
