@@ -22,22 +22,58 @@ import {
 export function registerVisualTestingTools(server: McpServer): void {
   server.tool(
     "visual_baseline",
-    "Capture a visual baseline for a URL",
+    "Capture a visual baseline for a URL. By default captures a single screenshot. Set captures > 1 for a smart Wasserstein barycenter baseline that handles dynamic content and non-deterministic rendering.",
     {
       url: z.string().url().describe("URL to capture baseline for"),
       name: z.string().describe("Name for the baseline"),
+      captures: z.number().optional().default(1).describe("Number of screenshots. 1 = fast single capture. 3-10 = smart barycenter baseline (robust to dynamic content, animations, timing variations)"),
+      delay: z.number().optional().default(1500).describe("Delay between captures in ms (only used when captures > 1)"),
+      selector: z.string().optional().describe("CSS selector to capture specific element"),
+      device: z.string().optional().describe("Device emulation (e.g. mobile, tablet, iphone-15)"),
     },
-    async ({ url, name }) => {
-      const result = await captureVisualBaseline(url, name, {});
+    async ({ url, name, captures, delay, selector, device }) => {
+      if (captures && captures > 1) {
+        // Smart baseline — Wasserstein barycenter
+        const { captureSmartBaseline } = await import("../../visual/index.js");
+        const result = await captureSmartBaseline(url, name, {
+          numCaptures: captures,
+          captureDelay: delay,
+          selector,
+          device,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                success: true,
+                mode: "smart",
+                name: result.name,
+                captures: result.numCaptures,
+                outliers: result.numOutliers,
+                meanDistance: result.meanDistance,
+                adaptiveThreshold: result.adaptiveThreshold,
+                reference: result.referencePath,
+                computeTime: `${result.computeTimeMs.toFixed(0)}ms`,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      // Single capture — traditional baseline
+      const result = await captureVisualBaseline(url, name, { selector, device });
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: JSON.stringify({
               success: true,
+              mode: "single",
               name: result.name,
               url: result.url,
               timestamp: result.timestamp,
+              tip: "Use captures=5 for a smart barycenter baseline that handles dynamic content",
             }, null, 2),
           },
         ],
@@ -47,22 +83,73 @@ export function registerVisualTestingTools(server: McpServer): void {
 
   server.tool(
     "visual_regression",
-    "Run AI visual regression test against a baseline",
+    "Run visual regression test against a baseline. Automatically uses smart regression (Wasserstein) if a smart baseline exists for this name, otherwise falls back to traditional comparison.",
     {
       url: z.string().url().describe("URL to test"),
       baselineName: z.string().describe("Name of baseline to compare against"),
+      transportMap: z.boolean().optional().describe("Also generate a visual transport map showing where content moved"),
+      threshold: z.number().optional().describe("Override similarity threshold (0-1). Smart baselines use adaptive thresholds by default."),
     },
-    async ({ url, baselineName }) => {
+    async ({ url, baselineName, transportMap: wantMap, threshold }) => {
+      // Check if a smart baseline exists — if so, use smart regression
+      const { getSmartBaseline, runSmartRegression, runRegressionWithTransportMap } = await import("../../visual/index.js");
+      const smartBaseline = getSmartBaseline(baselineName);
+
+      if (smartBaseline) {
+        if (wantMap) {
+          const result = await runRegressionWithTransportMap(url, baselineName, { threshold });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  mode: "smart+transport",
+                  passed: result.passed,
+                  similarity: result.analysis.similarityScore,
+                  status: result.analysis.overallStatus,
+                  summary: result.analysis.summary,
+                  adaptiveThreshold: smartBaseline.adaptiveThreshold,
+                  hotspots: result.transportMap?.hotspots,
+                  flows: result.transportMap?.flows.length,
+                  svgPath: result.transportMapSvgPath,
+                }, null, 2),
+              },
+            ],
+          };
+        }
+
+        const result = await runSmartRegression(url, baselineName, { threshold });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                mode: "smart",
+                passed: result.passed,
+                similarity: result.analysis.similarityScore,
+                status: result.analysis.overallStatus,
+                summary: result.analysis.summary,
+                adaptiveThreshold: smartBaseline.adaptiveThreshold,
+                rawAnalysis: result.analysis.rawAnalysis,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      // Traditional regression
       const result = await runVisualRegression(url, baselineName);
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: JSON.stringify({
+              mode: "traditional",
               passed: result.passed,
               similarityScore: result.analysis?.similarityScore,
               summary: result.analysis?.summary,
               changes: result.analysis?.changes?.length || 0,
+              tip: "Capture with visual_baseline captures=5 for smart Wasserstein regression",
             }, null, 2),
           },
         ],
@@ -201,96 +288,7 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  // ── Smart Baseline (v18.0.0) ──
-
-  server.tool(
-    "smart_baseline",
-    "Capture a smart consensus baseline using Wasserstein barycenter. Takes N screenshots, rejects outliers, computes optimal reference. Robust to dynamic content and timing variations.",
-    {
-      url: z.string().describe("URL to capture"),
-      name: z.string().describe("Baseline name"),
-      captures: z.number().optional().describe("Number of screenshots (default: 5)"),
-      delay: z.number().optional().describe("Delay between captures in ms (default: 1500)"),
-      selector: z.string().optional().describe("CSS selector to capture"),
-      device: z.string().optional().describe("Device emulation"),
-    },
-    async ({ url, name, captures, delay, selector, device }) => {
-      const { captureSmartBaseline } = await import("../../visual/index.js");
-      const result = await captureSmartBaseline(url, name, {
-        numCaptures: captures,
-        captureDelay: delay,
-        selector,
-        device,
-      });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              name: result.name,
-              captures: result.numCaptures,
-              outliers: result.numOutliers,
-              meanDistance: result.meanDistance,
-              stdDev: result.stdDevDistance,
-              adaptiveThreshold: result.adaptiveThreshold,
-              reference: result.referencePath,
-              computeTime: `${result.computeTimeMs.toFixed(0)}ms`,
-            }, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  server.tool(
-    "smart_regression",
-    "Run visual regression against a smart baseline. Uses Wasserstein distance with adaptive threshold based on observed render variance.",
-    {
-      url: z.string().describe("URL to test"),
-      baseline: z.string().describe("Smart baseline name"),
-      threshold: z.number().optional().describe("Override adaptive threshold (0-1)"),
-      transportMap: z.boolean().optional().describe("Also generate visual transport map"),
-    },
-    async ({ url, baseline, threshold, transportMap: wantMap }) => {
-      if (wantMap) {
-        const { runRegressionWithTransportMap } = await import("../../visual/index.js");
-        const result = await runRegressionWithTransportMap(url, baseline, { threshold });
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                passed: result.passed,
-                similarity: result.analysis.similarityScore,
-                status: result.analysis.overallStatus,
-                summary: result.analysis.summary,
-                hotspots: result.transportMap?.hotspots,
-                flows: result.transportMap?.flows.length,
-                svgPath: result.transportMapSvgPath,
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      const { runSmartRegression } = await import("../../visual/index.js");
-      const result = await runSmartRegression(url, baseline, { threshold });
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              passed: result.passed,
-              similarity: result.analysis.similarityScore,
-              status: result.analysis.overallStatus,
-              summary: result.analysis.summary,
-              rawAnalysis: result.analysis.rawAnalysis,
-            }, null, 2),
-          },
-        ],
-      };
-    }
-  );
+  // smart_baseline and smart_regression merged into visual_baseline and visual_regression (v18.34.0)
 
   server.tool(
     "transport_map",
