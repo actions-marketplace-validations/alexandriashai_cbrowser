@@ -48,6 +48,19 @@ export function registerNavigationTools(
         }
       }
 
+      // v18.35.0: Update site model with navigation edge
+      try {
+        const { SiteModelManager } = await import("../../site-model/manager.js");
+        const siteModel = SiteModelManager.getInstance();
+        const fromUrl = _browserToken ? "previous-page" : "direct";
+        const toUrl = result.url || url;
+        const toDomain = new URL(toUrl).hostname;
+        siteModel.recordNavigation(toDomain, fromUrl, toUrl, "navigate", result.title || "");
+        console.log(`[site-model] Recorded navigation to ${toDomain}: ${toUrl}`);
+      } catch (e) {
+        console.warn(`[site-model] Navigation hook error: ${(e as Error).message}`);
+      }
+
       return {
         content: buildContentWithScreenshots(
           {

@@ -6,18 +6,18 @@
  * Tool counts by deployment:
  *
  * LOCAL MCP (npx cbrowser mcp-server):
- * - Base tools: 65 (4 marketing as stubs, 3 remediation, 1 ai_benchmark, 2 llms.txt, 1 webmcp_ready)
+ * - Base tools: 78 (4 marketing as stubs, 3 remediation, 1 ai_benchmark, 2 llms.txt, 1 webmcp_ready)
  * - Persona creation: 7
  * - Ask user: 1
  * - Enterprise stubs: 18
- * - Total: 91 (68 real + 23 stubs)
+ * - Total: 104 (68 real + 23 stubs)
  *
  * DEMO SERVER (MCP_MODE=demo):
- * - Base tools: 65 (4 marketing real, 3 remediation, 1 ai_benchmark, 2 llms.txt, 1 webmcp_ready)
+ * - Base tools: 78 (4 marketing real, 3 remediation, 1 ai_benchmark, 2 llms.txt, 1 webmcp_ready)
  * - Persona creation: 7
  * - Ask user: 1
  * - Enterprise stubs: 18
- * - Total: 91 (72 real + 19 stubs)
+ * - Total: 104 (72 real + 19 stubs)
  *
  * ENTERPRISE (MCP_MODE=enterprise):
  * - All 91 tools fully functional
@@ -62,6 +62,7 @@ export {
   registerMarketingTools,
   registerRemediationTools,
   registerLlmsTxtTools,
+  registerSiteKnowledgeTools,
 } from "./base/index.js";
 
 // Re-export persona creation tools
@@ -82,7 +83,7 @@ import { registerEnterpriseStubs } from "./enterprise-stubs.js";
 /**
  * Register all public npm tools on an MCP server
  *
- * Tool count: 91 tools across all deployments
+ * Tool count: 104 tools across all deployments
  * - LOCAL: 91 tools (68 real + 23 stubs including 4 marketing stubs)
  * - DEMO: 91 tools (72 real + 19 stubs)
  * - ENTERPRISE: 91 tools all functional
@@ -91,7 +92,7 @@ export function registerAllPublicTools(
   server: McpServer,
   context: ToolRegistrationContext
 ): void {
-  // Base tools (65)
+  // Base tools (78)
   registerBaseTools(server, context);
 
   // Persona creation tools (7)

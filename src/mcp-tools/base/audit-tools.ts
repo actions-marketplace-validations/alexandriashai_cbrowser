@@ -85,11 +85,11 @@ export function registerAuditTools(server: McpServer): void {
 
   server.tool(
     "empathy_audit",
-    "Simulate how people with disabilities experience a site. Tests ONE persona per call to avoid timeout. Call multiple times with different disabilities for full coverage. Available: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia.",
+    "Simulate how real users experience a site. Accepts ANY persona — disability personas get specialized barrier detection, non-disability personas get general UX analysis with a flag. Tests ONE persona per call. Disability: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia. General: first-timer, power-user, mobile-user, elderly-user, impatient-user, or any custom persona.",
     {
       url: z.string().url().describe("URL to audit"),
       goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
-      disabilities: z.array(z.string()).optional().describe("Disability persona to test. Pass ONE for reliable results. If multiple passed, only first is used."),
+      disabilities: z.array(z.string()).optional().describe("Persona to test. Accepts disability names OR any cognitive persona (first-timer, power-user, etc). Non-disability personas are flagged. Pass ONE for reliable results."),
       wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
       maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
       maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
@@ -146,6 +146,9 @@ export function registerAuditTools(server: McpServer): void {
               attentionAnalysis: (r as any).attentionAnalysis || undefined,
               // v18.29.0: Journey validation — evidence, path, forensics
               journeyValidation: (r as any).journeyValidation || undefined,
+              // v18.35.0: Non-disability persona flag
+              isDisabilityPersona: (r as any).isDisabilityPersona !== false,
+              personaNote: (r as any).personaNote || undefined,
             };
           }),
           allWcagViolations: result.allWcagViolations,

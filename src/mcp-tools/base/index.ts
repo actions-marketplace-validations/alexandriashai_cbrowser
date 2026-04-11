@@ -1,6 +1,6 @@
 /**
  * CBrowser MCP Tools - Base Tools Index
- * Registers 65 base tools across 20 categories
+ * Registers 78 base tools across 21 categories
  * (Marketing tools register everywhere but as stubs on local MCP)
  *
  * @copyright 2026 Alexandria Eden alexandria.shai.eden@gmail.com https://cbrowser.ai
@@ -30,6 +30,7 @@ import { registerSecurityTools } from "./security-tools.js";
 import { registerMarketingTools } from "./marketing-tools.js";
 import { registerRemediationTools } from "./remediation-tools.js";
 import { registerLlmsTxtTools } from "./llms-txt-tools.js";
+import { registerSiteKnowledgeTools } from "./site-knowledge-tools.js";
 
 /**
  * Register all 65 base tools on an MCP server
@@ -56,8 +57,9 @@ import { registerLlmsTxtTools } from "./llms-txt-tools.js";
  *   NOTE: Marketing tools register as stubs on local MCP, real implementations on demo/enterprise
  * - Remediation: 3 (remediation_patches, llms_txt_generate, structured_data_suggest)
  * - llms.txt: 2 (llms_txt_validate, llms_txt_diff)
+ * - Site Knowledge: 6 (page_understand, site_model_status, site_model_query, site_profile_list, site_profile_delete, site_profile_status)
  *
- * Total: 65 tools (always registered; marketing tools are stubs on local MCP)
+ * Total: 78 tools (always registered; marketing tools are stubs on local MCP)
  */
 export function registerBaseTools(
   server: McpServer,
@@ -122,6 +124,9 @@ export function registerBaseTools(
 
   // llms.txt (2) - no browser context needed
   registerLlmsTxtTools(server, context);
+
+  // Site Knowledge (6) - page understanding, site model, site profiles
+  registerSiteKnowledgeTools(server, context);
 }
 
 // Re-export individual registration functions for granular use
@@ -145,3 +150,4 @@ export { registerSecurityTools } from "./security-tools.js";
 export { registerMarketingTools } from "./marketing-tools.js";
 export { registerRemediationTools } from "./remediation-tools.js";
 export { registerLlmsTxtTools } from "./llms-txt-tools.js";
+export { registerSiteKnowledgeTools } from "./site-knowledge-tools.js";

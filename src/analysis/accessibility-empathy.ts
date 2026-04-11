@@ -1099,18 +1099,24 @@ async function simulateAccessibilityJourney(
     }
 
     // Use cognitive journey for realistic step tracking if API key available
+    // v18.35.0: Add hard timeout to prevent MCP proxy disconnection (~60s limit on claude.ai)
+    const journeyTimeoutMs = Math.min(maxTime * 1000, 45000); // Hard cap at 45s to leave margin
     if (isApiKeyConfigured()) {
       try {
-        const journey = await runCognitiveJourney({
+        const journeyPromise = runCognitiveJourney({
           persona: persona.name,
           startUrl: url,
           goal,
-          maxSteps,
-          maxTime,
+          maxSteps: Math.min(maxSteps, 5), // Cap steps to keep within timeout
+          maxTime: Math.min(maxTime, 30),   // Cap journey time
           headless: true,
           vision: false,
           verbose: false,
         });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Journey timeout")), journeyTimeoutMs)
+        );
+        const journey = await Promise.race([journeyPromise, timeoutPromise]);
         ctx.stepCount = journey.stepCount;
 
         // Capture emotional state (v13.1.0)
@@ -2003,14 +2009,41 @@ export async function runEmpathyAudit(
   };
 
   // Run audit for each disability type
+  // v18.35.0: Accept any persona — wrap non-disability personas with default accessibility traits
   for (const disability of disabilities) {
     const personaName = personaMap[disability.toLowerCase()] || disability;
-    const persona = getAccessibilityPersona(personaName);
+    let persona = getAccessibilityPersona(personaName);
+    let isDisabilityPersona = !!persona;
 
     if (!persona) {
-      console.warn(`Unknown disability/persona: ${disability}, skipping`);
-      continue;
+      // Try to find as a regular cognitive persona and wrap it
+      const { getAnyPersona } = await import("../personas.js");
+      const cognitivePersona = getAnyPersona(personaName);
+      if (cognitivePersona) {
+        // Wrap cognitive persona as accessibility persona with neutral traits
+        persona = {
+          ...cognitivePersona,
+          accessibilityTraits: {
+            motorControl: 1.0,
+            tremor: false,
+            reachability: 1.0,
+            visionLevel: 1.0,
+            contrastSensitivity: 1.0,
+            processingSpeed: (cognitivePersona as any).cognitiveTraits?.comprehension ?? 0.8,
+            attentionSpan: (cognitivePersona as any).cognitiveTraits?.patience ?? 0.7,
+            fatigueSusceptibility: 0.3,
+          },
+        } as any;
+        isDisabilityPersona = false;
+        console.log(`[empathy_audit] "${disability}" is not a disability persona — running with general accessibility traits`);
+      } else {
+        console.warn(`Unknown persona: ${disability}, skipping`);
+        continue;
+      }
     }
+
+    // TypeScript guard — persona is guaranteed non-null after continue above
+    const resolvedPersona = persona!;
 
     let browser: Browser | null = null;
     try {
@@ -2024,7 +2057,7 @@ export async function runEmpathyAudit(
         page,
         url,
         goal,
-        persona,
+        resolvedPersona,
         maxSteps,
         maxTime
       );
@@ -2068,7 +2101,7 @@ export async function runEmpathyAudit(
       // v18.27.0: Cognitive load estimation via optimal transport
       try {
         const pageMetrics = await extractPageMetrics(page);
-        const otProfile = buildOTCognitiveProfile(personaName, persona.cognitiveTraits as unknown as Record<string, number> || {});
+        const otProfile = buildOTCognitiveProfile(personaName, resolvedPersona.cognitiveTraits as unknown as Record<string, number> || {});
         const cogLoad = estimateCognitiveLoad(otProfile, pageMetrics);
         (result as any).cognitiveLoad = {
           totalLoad: Math.round(cogLoad.totalLoad * 100) / 100,
@@ -2110,6 +2143,12 @@ export async function runEmpathyAudit(
         try { ul(attnScreenshot); } catch {}
       } catch (e) {
         console.debug(`[empathy_audit] Attention analysis failed: ${(e as Error).message}`);
+      }
+
+      // v18.35.0: Flag non-disability personas
+      if (!isDisabilityPersona) {
+        (result as any).isDisabilityPersona = false;
+        (result as any).personaNote = `"${disability}" is not a disability persona. Barriers shown are general UX issues, not disability-specific. For disability testing, use: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia.`;
       }
 
       results.push(result);

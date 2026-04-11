@@ -47,6 +47,20 @@ export function registerInteractionTools(
         if (result.debugScreenshot) response.debugScreenshot = result.debugScreenshot;
       }
       if (token) response._browserToken = token;
+
+      // v18.35.0: Update site model with element interaction result
+      try {
+        const page = await b.getPage();
+        const pageUrl = page.url();
+        const domain = new URL(pageUrl).hostname;
+        const { SiteModelManager } = await import("../../site-model/manager.js");
+        const siteModel = SiteModelManager.getInstance();
+        siteModel.recordElementResult(domain, pageUrl, selector, result.success);
+        if (!result.success) {
+          siteModel.recordFailure(domain, pageUrl, selector, "element_not_found", [result.message || ""]);
+        }
+      } catch {}
+
       return {
         content: buildContentWithScreenshots(response, result.screenshot, result.debugScreenshot),
       };
@@ -141,6 +155,17 @@ export function registerInteractionTools(
         if (result.aiSuggestion) response.aiSuggestion = result.aiSuggestion;
         if (result.debugScreenshot) response.debugScreenshot = result.debugScreenshot;
       }
+
+      // v18.35.0: Update site model with fill interaction result
+      try {
+        const page = await b.getPage();
+        const pageUrl = page.url();
+        const domain = new URL(pageUrl).hostname;
+        const { SiteModelManager } = await import("../../site-model/manager.js");
+        const siteModel = SiteModelManager.getInstance();
+        siteModel.recordElementResult(domain, pageUrl, selector, result.success);
+      } catch {}
+
       return {
         content: buildContentWithScreenshots(response, result.debugScreenshot),
       };

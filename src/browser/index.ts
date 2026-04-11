@@ -19,3 +19,11 @@ export type { SelectorCacheConfig } from "./selector-cache.js";
 
 export { OverlayHandler, OVERLAY_PATTERNS } from "./overlay-handler.js";
 export type { OverlayHandlerConfig } from "./overlay-handler.js";
+
+export { SiteProfileManager } from "./site-profile-manager.js";
+export type {
+  SiteProfile,
+  ProfileLoadResult,
+  SessionValidity,
+  SiteProfileSummary,
+} from "./site-profile-manager.js";

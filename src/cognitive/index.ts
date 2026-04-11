@@ -1384,3 +1384,18 @@ export {
   describeEmotionalState,
   shouldConsiderAbandonment,
 } from "./emotions.js";
+
+// ============================================================================
+// Re-export Goal Decomposition (v18.35.0)
+// ============================================================================
+
+export { GoalDecomposer } from "./goal-decomposer.js";
+export type {
+  ParsedGoal,
+  GoalPlan,
+  SubGoal,
+  Strategy,
+  PlannedAction,
+  GoalResult,
+  ExecutionOptions,
+} from "./goal-types.js";

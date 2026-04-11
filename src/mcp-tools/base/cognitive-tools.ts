@@ -218,6 +218,24 @@ export function registerCognitiveTools(
         }
       }
 
+      // v18.35.0: Check site model for prior knowledge about this site
+      let siteModelContext: { hasModel: boolean; knownPaths?: number; suggestion?: string } = { hasModel: false };
+      try {
+        const { SiteModelManager } = await import("../../site-model/manager.js");
+        const siteModel = SiteModelManager.getInstance();
+        const domain = new URL(startUrl).hostname;
+        const stats = await siteModel.getModelStats(domain);
+        if (stats.navigationNodes > 0) {
+          siteModelContext = {
+            hasModel: true,
+            knownPaths: stats.goalPaths,
+            suggestion: stats.goalPaths > 0
+              ? `Site model has ${stats.goalPaths} known goal paths and ${stats.navigationNodes} mapped pages. Query site_model_query for best path.`
+              : `Site has ${stats.navigationNodes} mapped pages but no goal paths yet.`,
+          };
+        }
+      } catch {}
+
       const personaValues = getPersonaValues(personaObj.name);
       const influencePatterns = personaValues
         ? rankInfluencePatternsForProfile(personaValues).slice(0, 5)
@@ -274,6 +292,8 @@ export function registerCognitiveTools(
               abandonmentThresholds: thresholds,
               goal,
               startUrl,
+              // v18.35.0: Site model context for informed exploration
+              siteModel: siteModelContext,
               // v18.33.0: Browser session token for continuity across tool calls
               _browserToken: browserToken || null,
               instructions: `
