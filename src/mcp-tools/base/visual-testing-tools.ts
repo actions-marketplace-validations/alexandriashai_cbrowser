@@ -22,58 +22,36 @@ import {
 export function registerVisualTestingTools(server: McpServer): void {
   server.tool(
     "visual_baseline",
-    "Capture a visual baseline for a URL. By default captures a single screenshot. Set captures > 1 for a smart Wasserstein barycenter baseline that handles dynamic content and non-deterministic rendering.",
+    "Capture a visual baseline using Wasserstein barycenter. Takes multiple screenshots, rejects outliers, computes optimal consensus reference with adaptive threshold. Robust to dynamic content, animations, and timing variations.",
     {
       url: z.string().url().describe("URL to capture baseline for"),
       name: z.string().describe("Name for the baseline"),
-      captures: z.number().optional().default(1).describe("Number of screenshots. 1 = fast single capture. 3-10 = smart barycenter baseline (robust to dynamic content, animations, timing variations)"),
-      delay: z.number().optional().default(1500).describe("Delay between captures in ms (only used when captures > 1)"),
+      captures: z.number().optional().default(3).describe("Number of screenshots (default 3). More = more robust but slower."),
+      delay: z.number().optional().default(1500).describe("Delay between captures in ms"),
       selector: z.string().optional().describe("CSS selector to capture specific element"),
       device: z.string().optional().describe("Device emulation (e.g. mobile, tablet, iphone-15)"),
     },
     async ({ url, name, captures, delay, selector, device }) => {
-      if (captures && captures > 1) {
-        // Smart baseline — Wasserstein barycenter
-        const { captureSmartBaseline } = await import("../../visual/index.js");
-        const result = await captureSmartBaseline(url, name, {
-          numCaptures: captures,
-          captureDelay: delay,
-          selector,
-          device,
-        });
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify({
-                success: true,
-                mode: "smart",
-                name: result.name,
-                captures: result.numCaptures,
-                outliers: result.numOutliers,
-                meanDistance: result.meanDistance,
-                adaptiveThreshold: result.adaptiveThreshold,
-                reference: result.referencePath,
-                computeTime: `${result.computeTimeMs.toFixed(0)}ms`,
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      // Single capture — traditional baseline
-      const result = await captureVisualBaseline(url, name, { selector, device });
+      const { captureSmartBaseline } = await import("../../visual/index.js");
+      const result = await captureSmartBaseline(url, name, {
+        numCaptures: captures || 3,
+        captureDelay: delay,
+        selector,
+        device,
+      });
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify({
               success: true,
-              mode: "single",
               name: result.name,
-              url: result.url,
-              timestamp: result.timestamp,
-              tip: "Use captures=5 for a smart barycenter baseline that handles dynamic content",
+              captures: result.numCaptures,
+              outliers: result.numOutliers,
+              meanDistance: result.meanDistance,
+              adaptiveThreshold: result.adaptiveThreshold,
+              reference: result.referencePath,
+              computeTime: `${result.computeTimeMs.toFixed(0)}ms`,
             }, null, 2),
           },
         ],
