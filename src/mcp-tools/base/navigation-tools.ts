@@ -26,14 +26,17 @@ export function registerNavigationTools(
       const b = await getBrowser();
       let result = await b.navigate(url);
 
-      // v18.30.0: Auto-recover from corrupted browser state
+      // v18.30.0: Auto-recover from corrupted browser state with retry
       if (!result.title && !result.screenshot) {
-        try {
-          console.warn(`[navigate] Blank page after navigation to ${url}. Resetting browser.`);
-          await b.close();
-          await b.launch();
-          result = await b.navigate(url);
-        } catch {}
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            console.warn(`[navigate] Blank page on attempt ${attempt + 1} for ${url}. Resetting browser (persistent state preserved).`);
+            await b.close();
+            await b.launch();
+            result = await b.navigate(url);
+            if (result.title || result.screenshot) break;
+          } catch {}
+        }
       }
 
       return {

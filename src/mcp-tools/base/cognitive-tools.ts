@@ -189,25 +189,24 @@ export function registerCognitiveTools(
 
       // v18.30.0: Verify browser is healthy after navigation
       // JS-heavy sites can crash the persistent browser context
-      try {
-        const page = await b.getPage();
-        const title = await page.title().catch(() => '');
-        const bodyLen = await page.evaluate(() => document.body?.innerText?.length || 0).catch(() => 0);
-        if (bodyLen === 0 && !title) {
-          // Page is blank — browser context is corrupted. Reset.
-          console.warn(`[cognitive_journey_init] Blank page detected after navigating to ${startUrl}. Resetting browser.`);
-          await b.close();
-          await b.launch();
-          await b.navigate(startUrl);
-        }
-      } catch (e) {
-        // If we can't even check, try resetting
-        console.warn(`[cognitive_journey_init] Browser health check failed: ${(e as Error).message}. Resetting.`);
+      const MAX_RETRIES = 2;
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
+          const page = await b.getPage();
+          const title = await page.title().catch(() => '');
+          const bodyLen = await page.evaluate(() => document.body?.innerText?.length || 0).catch(() => 0);
+          if (bodyLen > 0 || title) break; // Page is healthy
+
+          // Page is blank — persistent context is corrupted
+          console.warn(`[cognitive_journey_init] Blank page on attempt ${attempt + 1}. Resetting browser (persistent state preserved).`);
+          // close() + launch() with persistent=true restores cookies/localStorage from userDataDir
           await b.close();
           await b.launch();
           await b.navigate(startUrl);
-        } catch {}
+        } catch (e) {
+          console.warn(`[cognitive_journey_init] Recovery attempt ${attempt + 1} failed: ${(e as Error).message}`);
+          try { await b.close(); await b.launch(); await b.navigate(startUrl); } catch {}
+        }
       }
 
       const personaValues = getPersonaValues(personaObj.name);
