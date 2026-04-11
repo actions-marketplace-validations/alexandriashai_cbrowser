@@ -614,6 +614,76 @@ export function selectMaxCoveragePersonas(
 }
 
 /**
+ * Extract page metrics from a Playwright page for cognitive load estimation.
+ * Runs a single page.evaluate() to gather all needed dimensions.
+ */
+export async function extractPageMetrics(page: any): Promise<{
+  informationDensity: number;
+  visualComplexity: number;
+  interactiveElementCount: number;
+  textDensity: number;
+  animationLevel: number;
+  choiceCount: number;
+  navigationDepth: number;
+}> {
+  return page.evaluate(() => {
+    const all = document.querySelectorAll('*');
+    const body = document.body;
+    const textLength = (body.innerText || '').length;
+    const viewportArea = window.innerWidth * window.innerHeight;
+
+    // Interactive elements
+    const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex]');
+    const interactiveCount = interactive.length;
+
+    // Links and choices
+    const links = document.querySelectorAll('a[href]');
+    const selects = document.querySelectorAll('select');
+    let choiceCount = links.length;
+    selects.forEach(s => { choiceCount += s.querySelectorAll('option').length; });
+
+    // Animations
+    const animations = document.querySelectorAll('[class*="anim"], [class*="transition"], [class*="slide"], [class*="fade"], video, [autoplay]');
+    const hasCarousel = !!document.querySelector('[class*="carousel"], [class*="slider"], [class*="swiper"]');
+
+    // Navigation depth (breadcrumbs or nested menus)
+    const breadcrumbs = document.querySelectorAll('[class*="breadcrumb"] a, nav[aria-label*="breadcrumb"] a');
+    const navDepth = Math.max(1, breadcrumbs.length);
+
+    // Visual complexity heuristics
+    const uniqueColors = new Set<string>();
+    const computed = getComputedStyle(body);
+    uniqueColors.add(computed.backgroundColor);
+    uniqueColors.add(computed.color);
+    // Sample a few elements
+    for (let i = 0; i < Math.min(50, all.length); i += Math.max(1, Math.floor(all.length / 50))) {
+      const cs = getComputedStyle(all[i]);
+      uniqueColors.add(cs.backgroundColor);
+      uniqueColors.add(cs.color);
+    }
+
+    // Images
+    const images = document.querySelectorAll('img, svg, [role="img"]');
+
+    // Normalize to 0-1
+    const informationDensity = Math.min(1, textLength / 5000);
+    const visualComplexity = Math.min(1, (uniqueColors.size / 30 + images.length / 20 + all.length / 500) / 3);
+    const textDensity = Math.min(1, textLength / (viewportArea * 0.003));
+    const animationLevel = Math.min(1, (animations.length + (hasCarousel ? 3 : 0)) / 10);
+
+    return {
+      informationDensity,
+      visualComplexity,
+      interactiveElementCount: interactiveCount,
+      textDensity,
+      animationLevel,
+      choiceCount: Math.min(choiceCount, 100),
+      navigationDepth: navDepth,
+    };
+  });
+}
+
+/**
  * Compute the full pairwise distance matrix between personas.
  * Returns a symmetric matrix where entry [i][j] = W₁(persona_i, persona_j).
  */

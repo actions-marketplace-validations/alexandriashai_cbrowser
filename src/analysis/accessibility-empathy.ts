@@ -59,6 +59,11 @@ import {
   type PerceptualAnalysis,
 } from "../visual/perceptual-transport.js";
 import {
+  buildOTCognitiveProfile,
+  estimateCognitiveLoad,
+  extractPageMetrics,
+} from "../visual/cognitive-transport.js";
+import {
   getEmotionVisualizationStyles,
   generateEmotionVisualizationSection,
 } from "../utils.js";
@@ -2035,6 +2040,30 @@ export async function runEmpathyAudit(
       } catch (e) {
         // Perceptual analysis is optional — don't fail the audit if it errors
         console.debug(`[empathy_audit] Perceptual transport analysis failed: ${(e as Error).message}`);
+      }
+
+      // v18.27.0: Cognitive load estimation via optimal transport
+      try {
+        const pageMetrics = await extractPageMetrics(page);
+        const otProfile = buildOTCognitiveProfile(personaName, persona.cognitiveTraits as unknown as Record<string, number> || {});
+        const cogLoad = estimateCognitiveLoad(otProfile, pageMetrics);
+        (result as any).cognitiveLoad = {
+          totalLoad: Math.round(cogLoad.totalLoad * 100) / 100,
+          overloaded: cogLoad.overloaded,
+          bottleneck: cogLoad.bottleneck,
+          breakdown: Object.fromEntries(
+            Object.entries(cogLoad.breakdown).map(([k, v]) => [k, Math.round(v * 100) / 100])
+          ),
+          pageMetrics: {
+            informationDensity: Math.round(pageMetrics.informationDensity * 100) / 100,
+            visualComplexity: Math.round(pageMetrics.visualComplexity * 100) / 100,
+            interactiveElements: pageMetrics.interactiveElementCount,
+            animationLevel: Math.round(pageMetrics.animationLevel * 100) / 100,
+            choiceCount: pageMetrics.choiceCount,
+          },
+        };
+      } catch (e) {
+        console.debug(`[empathy_audit] Cognitive load estimation failed: ${(e as Error).message}`);
       }
 
       results.push(result);

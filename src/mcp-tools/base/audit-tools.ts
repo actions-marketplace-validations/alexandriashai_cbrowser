@@ -140,6 +140,8 @@ export function registerAuditTools(server: McpServer): void {
               // v18.26.0: Perceptual transport metrics (Wasserstein-based)
               perceptualTransport: (r as any).perceptualTransport || undefined,
               empathyScoreBarrierOnly: (r as any).empathyScoreBarrierOnly || undefined,
+              // v18.27.0: Cognitive load estimation (optimal transport)
+              cognitiveLoad: (r as any).cognitiveLoad || undefined,
             };
           }),
           allWcagViolations: result.allWcagViolations,
