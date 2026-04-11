@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.29.0](https://github.com/alexandriashai/cbrowser/compare/v18.28.0...v18.29.0) (2026-04-11)
+
+### Added
+
+* **cognitive:** wire cognitive transport into MCP tools ([#159](https://github.com/alexandriashai/cbrowser/issues/159)) ([e0a79e4](https://github.com/alexandriashai/cbrowser/commit/e0a79e4bc5e9f2a030199f1021ec7505c145ce1e))
+
 ## [18.28.0](https://github.com/alexandriashai/cbrowser/compare/v18.27.0...v18.28.0) (2026-04-11)
 
 ### Added
