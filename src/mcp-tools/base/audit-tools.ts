@@ -142,6 +142,8 @@ export function registerAuditTools(server: McpServer): void {
               empathyScoreBarrierOnly: (r as any).empathyScoreBarrierOnly || undefined,
               // v18.27.0: Cognitive load estimation (optimal transport)
               cognitiveLoad: (r as any).cognitiveLoad || undefined,
+              // v18.28.0: Attention transport analysis (W₂ saliency)
+              attentionAnalysis: (r as any).attentionAnalysis || undefined,
             };
           }),
           allWcagViolations: result.allWcagViolations,

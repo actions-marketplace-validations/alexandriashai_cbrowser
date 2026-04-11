@@ -64,6 +64,9 @@ import {
   extractPageMetrics,
 } from "../visual/cognitive-transport.js";
 import {
+  analyzeAttention,
+} from "../visual/attention-transport.js";
+import {
   getEmotionVisualizationStyles,
   generateEmotionVisualizationSection,
 } from "../utils.js";
@@ -2064,6 +2067,29 @@ export async function runEmpathyAudit(
         };
       } catch (e) {
         console.debug(`[empathy_audit] Cognitive load estimation failed: ${(e as Error).message}`);
+      }
+
+      // v18.28.0: Attention transport analysis — W₂ saliency with persona filter
+      try {
+        const { join: joinPath } = await import("path");
+        const { tmpdir: getTmpDir } = await import("os");
+        const { unlinkSync: ul } = await import("fs");
+        const attnScreenshot = joinPath(getTmpDir(), `empathy-attn-${Date.now()}.png`);
+        await page.screenshot({ path: attnScreenshot, fullPage: false });
+
+        const attnAnalysis = await analyzeAttention(attnScreenshot, personaName, 16);
+        (result as any).attentionAnalysis = {
+          alignmentScore: attnAnalysis.alignmentScore,
+          entropy: attnAnalysis.entropy,
+          concentration: attnAnalysis.concentration,
+          transportCost: attnAnalysis.transportCost,
+          topAttentionAreas: attnAnalysis.attentionCompetitors,
+          computeTimeMs: Math.round(attnAnalysis.computeTimeMs),
+        };
+
+        try { ul(attnScreenshot); } catch {}
+      } catch (e) {
+        console.debug(`[empathy_audit] Attention analysis failed: ${(e as Error).message}`);
       }
 
       results.push(result);

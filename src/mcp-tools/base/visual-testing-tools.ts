@@ -333,4 +333,121 @@ export function registerVisualTestingTools(server: McpServer): void {
       };
     }
   );
+
+  // ── Attention Transport (v18.28.0) ──
+
+  server.tool(
+    "attention_analysis",
+    "Analyze where a persona's visual attention goes on a page using Wasserstein saliency. Produces attention alignment, entropy, concentration, and top attention areas. Based on Klein & Frintrop W₂ on CIE-Lab distributions.",
+    {
+      url: z.string().describe("URL to analyze"),
+      persona: z.string().optional().default("first-timer").describe("Persona name"),
+      cellSize: z.number().optional().default(16).describe("Saliency grid cell size"),
+    },
+    async ({ url, persona, cellSize }) => {
+      const { CBrowser } = await import("../../browser.js");
+      const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
+      const { join } = await import("path");
+      const { tmpdir } = await import("os");
+      const { unlinkSync } = await import("fs");
+
+      try {
+        await browser.launch();
+        await browser.navigate(url);
+        await new Promise(r => setTimeout(r, 2000));
+
+        const page = await browser.getPage();
+        const screenshotPath = join(tmpdir(), `attn-${Date.now()}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: false });
+
+        const { analyzeAttention } = await import("../../visual/attention-transport.js");
+        const result = await analyzeAttention(screenshotPath, persona, cellSize);
+
+        try { unlinkSync(screenshotPath); } catch {}
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              persona: result.persona,
+              alignmentScore: result.alignmentScore,
+              entropy: result.entropy,
+              concentration: result.concentration,
+              transportCost: result.transportCost,
+              topAttentionAreas: result.attentionCompetitors,
+              interpretation: {
+                alignment: result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design",
+                entropy: result.entropy > 0.8 ? "Scattered attention (overwhelmed)" : result.entropy > 0.5 ? "Moderate attention spread" : "Focused attention",
+                concentration: result.concentration > 0.6 ? "Attention concentrated on few areas" : "Attention distributed across page",
+              },
+              computeTimeMs: Math.round(result.computeTimeMs),
+            }, null, 2),
+          }],
+        };
+      } finally {
+        await browser.close();
+      }
+    }
+  );
+
+  server.tool(
+    "attention_compare",
+    "Compare attention patterns between two personas on the same page. Shows where they look differently and the Wasserstein divergence between their saliency maps.",
+    {
+      url: z.string().describe("URL to analyze"),
+      personaA: z.string().describe("First persona"),
+      personaB: z.string().describe("Second persona"),
+    },
+    async ({ url, personaA, personaB }) => {
+      const { CBrowser } = await import("../../browser.js");
+      const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
+      const { join } = await import("path");
+      const { tmpdir } = await import("os");
+      const { unlinkSync } = await import("fs");
+
+      try {
+        await browser.launch();
+        await browser.navigate(url);
+        await new Promise(r => setTimeout(r, 2000));
+
+        const page = await browser.getPage();
+        const screenshotPath = join(tmpdir(), `attn-cmp-${Date.now()}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: false });
+
+        const { compareAttention } = await import("../../visual/attention-transport.js");
+        const result = await compareAttention(screenshotPath, personaA, personaB, 16);
+
+        try { unlinkSync(screenshotPath); } catch {}
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              personaA: {
+                name: personaA,
+                alignment: result.personaA.alignmentScore,
+                entropy: result.personaA.entropy,
+                concentration: result.personaA.concentration,
+              },
+              personaB: {
+                name: personaB,
+                alignment: result.personaB.alignmentScore,
+                entropy: result.personaB.entropy,
+                concentration: result.personaB.concentration,
+              },
+              attentionDivergence: result.attentionDivergence,
+              interpretation: result.attentionDivergence < 0.05
+                ? "Nearly identical attention patterns"
+                : result.attentionDivergence < 0.15
+                ? "Moderate attention differences"
+                : "Substantially different attention patterns",
+              divergentRegions: result.divergentRegions.slice(0, 5),
+            }, null, 2),
+          }],
+        };
+      } finally {
+        await browser.close();
+      }
+    }
+  );
 }
