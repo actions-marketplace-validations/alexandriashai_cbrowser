@@ -129,7 +129,48 @@ export function registerSecurityTools(server: McpServer): void {
         }
       }
 
-      // Original behavior: config_path or self-scan
+      // If config_path provided, use original file-based behavior
+      if (baseParams.config_path) {
+        return await securityAuditHandler(baseParams as SecurityAuditHandlerOptions);
+      }
+
+      // v18.35.0: Self-scan — connect to our own server to get tool manifest
+      // This works in all environments: Claude Desktop, Claude.ai, Claude Code
+      const selfPort = process.env.PORT || "3000";
+      const selfUrl = `http://localhost:${selfPort}/mcp`;
+      try {
+        const toolsResponse = await fetch(selfUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/list",
+            params: {},
+          }),
+        });
+        const toolsText = await toolsResponse.text();
+        const toolsData = toolsText.split("\n").find(l => l.startsWith("data: "));
+        if (toolsData) {
+          const parsed = JSON.parse(toolsData.replace("data: ", ""));
+          const tools = parsed.result?.tools || [];
+          if (tools.length > 0) {
+            const toolDefs = tools.map((t: { name: string; description?: string; inputSchema?: unknown }) => ({
+              name: t.name,
+              description: t.description || "",
+              inputSchema: t.inputSchema || {},
+            }));
+            return await securityAuditHandler({
+              format: baseParams.format,
+              tools: toolDefs,
+              serverName: "cbrowser (self-scan)",
+            });
+          }
+        }
+      } catch {
+        // Self-scan via localhost failed — fall through to original handler
+      }
+
       return await securityAuditHandler(baseParams as SecurityAuditHandlerOptions);
     }
   );
