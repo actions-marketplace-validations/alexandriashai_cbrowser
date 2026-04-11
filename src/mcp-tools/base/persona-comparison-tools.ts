@@ -16,6 +16,17 @@ import {
   isAgentPersonaObject,
 } from "../../personas.js";
 import type { Persona, AccessibilityPersona, CognitiveState } from "../../types.js";
+import {
+  buildOTCognitiveProfile as buildOTProfile,
+  cognitiveDistance,
+  cognitiveBarycenter,
+  cognitiveGeodesic,
+  cognitiveDistanceMatrix,
+  selectMaxCoveragePersonas,
+  generateAdversarialPersonas,
+  estimateCognitiveLoad,
+  type OTCognitiveProfile,
+} from "../../visual/cognitive-transport.js";
 
 /**
  * Register persona comparison tools (3 tools: compare_personas, compare_personas_init, compare_personas_complete)
@@ -127,6 +138,13 @@ Example:
         };
       });
 
+      // v18.27.0: Compute cognitive distance matrix via optimal transport
+      const otProfiles = personaProfiles.map(p =>
+        buildOTProfile(p.name, p.cognitiveTraits as unknown as Record<string, number> || {})
+      );
+      const { matrix: distMatrix } = cognitiveDistanceMatrix(otProfiles);
+      const bary = cognitiveBarycenter(otProfiles);
+
       return {
         content: [
           {
@@ -136,6 +154,18 @@ Example:
               url,
               goal,
               personaCount: personas.length,
+              // v18.27.0: Wasserstein cognitive distance analysis
+              cognitiveAnalysis: {
+                distanceMatrix: distMatrix.map((row, i) => ({
+                  persona: filteredPersonas[i],
+                  distances: Object.fromEntries(filteredPersonas.map((name, j) => [name, Math.round(row[j] * 10000) / 10000])),
+                })),
+                consensusMind: {
+                  meanDistance: Math.round(bary.meanDistance * 10000) / 10000,
+                  outlierPersona: bary.outlierPersona,
+                  outlierReason: "Farthest from consensus cognitive profile (worst-served by generic design)",
+                },
+              },
               personas: personaProfiles,
               instructions: `
 PERSONA COMPARISON BRIDGE WORKFLOW:
@@ -307,6 +337,177 @@ Begin with the first persona: ${personas[0]}
             text: JSON.stringify(comparison, null, 2),
           },
         ],
+      };
+    }
+  );
+
+  // ── Cognitive Transport Tools (v18.27.0) ──
+
+  server.tool(
+    "cognitive_distance",
+    "Compute the Wasserstein cognitive distance between two personas. Returns W₁ distance (true cognitive distance), per-trait contributions, and Bures-Wasserstein W₂ distance. Based on optimal transport theory — transport cost = cognitive processing cost.",
+    {
+      personaA: z.string().describe("First persona name"),
+      personaB: z.string().describe("Second persona name"),
+    },
+    async ({ personaA, personaB }) => {
+      const pA = getAnyPersona(personaA);
+      const pB = getAnyPersona(personaB);
+      if (!pA || !pB) {
+        return { content: [{ type: "text" as const, text: `Persona not found: ${!pA ? personaA : personaB}` }] };
+      }
+      const profileA = getCognitiveProfile(pA as Persona | AccessibilityPersona);
+      const profileB = getCognitiveProfile(pB as Persona | AccessibilityPersona);
+      const otA = buildOTProfile(personaA, profileA.traits as unknown as Record<string, number> || {});
+      const otB = buildOTProfile(personaB, profileB.traits as unknown as Record<string, number> || {});
+      const dist = cognitiveDistance(otA, otB);
+
+      // Top 5 trait contributions
+      const topTraits = Object.entries(dist.traitContributions)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([trait, contrib]) => ({ trait, contribution: Math.round(contrib * 10000) / 10000 }));
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            personaA, personaB,
+            w1Distance: Math.round(dist.w1 * 10000) / 10000,
+            w2Distance: Math.round(dist.w2 * 10000) / 10000,
+            slicedWasserstein: Math.round(dist.sliced * 10000) / 10000,
+            interpretation: dist.w1 < 0.01 ? "Nearly identical cognitive profiles"
+              : dist.w1 < 0.03 ? "Similar cognitive profiles with minor differences"
+              : dist.w1 < 0.06 ? "Moderately different cognitive profiles"
+              : "Substantially different cognitive profiles",
+            topDifferentiatingTraits: topTraits,
+          }, null, 2),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "cognitive_coverage",
+    "Select the N most cognitively different personas from a list for maximum test coverage. Uses greedy farthest-point sampling in Wasserstein space.",
+    {
+      personas: z.array(z.string()).describe("List of persona names to select from"),
+      count: z.number().describe("Number of personas to select"),
+    },
+    async ({ personas, count }) => {
+      const profiles: OTCognitiveProfile[] = [];
+      for (const name of personas) {
+        const p = getAnyPersona(name);
+        if (!p) continue;
+        const profile = getCognitiveProfile(p as Persona | AccessibilityPersona);
+        profiles.push(buildOTProfile(name, profile.traits as unknown as Record<string, number> || {}));
+      }
+      const selected = selectMaxCoveragePersonas(profiles, count);
+      const { matrix } = cognitiveDistanceMatrix(selected);
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            selectedPersonas: selected.map(p => p.name),
+            coverage: "Maximum cognitive diversity — these personas are the most different from each other",
+            distanceMatrix: matrix.map((row, i) => ({
+              persona: selected[i].name,
+              distances: Object.fromEntries(selected.map((s, j) => [s.name, Math.round(row[j] * 10000) / 10000])),
+            })),
+          }, null, 2),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "cognitive_interpolate",
+    "Generate an interpolated persona between two known personas using Wasserstein geodesic. Preserves trait coupling structure — the midpoint between ADHD and power-user has intermediate trait correlations, not just averaged values.",
+    {
+      personaA: z.string().describe("Starting persona"),
+      personaB: z.string().describe("Ending persona"),
+      position: z.number().min(0).max(1).optional().default(0.5).describe("Position on geodesic (0=A, 0.5=midpoint, 1=B)"),
+    },
+    async ({ personaA, personaB, position }) => {
+      const pA = getAnyPersona(personaA);
+      const pB = getAnyPersona(personaB);
+      if (!pA || !pB) {
+        return { content: [{ type: "text" as const, text: `Persona not found: ${!pA ? personaA : personaB}` }] };
+      }
+      const profileA = getCognitiveProfile(pA as Persona | AccessibilityPersona);
+      const profileB = getCognitiveProfile(pB as Persona | AccessibilityPersona);
+      const otA = buildOTProfile(personaA, profileA.traits as unknown as Record<string, number> || {});
+      const otB = buildOTProfile(personaB, profileB.traits as unknown as Record<string, number> || {});
+
+      const geodesic = cognitiveGeodesic(otA, otB, 10);
+      const closestIdx = geodesic.reduce((best, p, i) =>
+        Math.abs(p.t - position) < Math.abs(geodesic[best].t - position) ? i : best, 0);
+      const point = geodesic[closestIdx];
+
+      // Identify which traits changed most from A
+      const traitDiffs = Object.entries(point.traits)
+        .map(([trait, val]) => ({ trait, value: Math.round(val * 100) / 100, fromA: Math.round(((otA.traits[trait] ?? 0.5) - val) * 100) / 100 }))
+        .sort((a, b) => Math.abs(b.fromA) - Math.abs(a.fromA))
+        .slice(0, 8);
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            interpolatedPersona: {
+              name: `${personaA}-${personaB}-${Math.round(position * 100)}pct`,
+              position: point.t,
+              traits: point.traits,
+            },
+            description: `Persona at ${Math.round(point.t * 100)}% along the Wasserstein geodesic from ${personaA} to ${personaB}`,
+            topChangedTraits: traitDiffs,
+          }, null, 2),
+        }],
+      };
+    }
+  );
+
+  server.tool(
+    "cognitive_load_estimate",
+    "Estimate cognitive load for a specific persona on page metrics. Returns per-dimension breakdown (information, visual, attention, decision, motor, text, memory, patience) and identifies the bottleneck dimension.",
+    {
+      persona: z.string().describe("Persona name"),
+      informationDensity: z.number().min(0).max(1).describe("Content density (0=sparse, 1=dense)"),
+      visualComplexity: z.number().min(0).max(1).describe("Visual complexity (0=simple, 1=complex)"),
+      interactiveElements: z.number().describe("Number of interactive elements"),
+      textDensity: z.number().min(0).max(1).describe("Text heaviness (0=minimal, 1=wall of text)"),
+      animationLevel: z.number().min(0).max(1).describe("Animation/motion amount"),
+      choiceCount: z.number().describe("Number of decision points/options"),
+      navigationDepth: z.number().describe("Clicks needed to reach content"),
+    },
+    async ({ persona, informationDensity, visualComplexity, interactiveElements, textDensity, animationLevel, choiceCount, navigationDepth }) => {
+      const p = getAnyPersona(persona);
+      if (!p) return { content: [{ type: "text" as const, text: `Persona not found: ${persona}` }] };
+      const profile = getCognitiveProfile(p as Persona | AccessibilityPersona);
+      const otProfile = buildOTProfile(persona, profile.traits as unknown as Record<string, number> || {});
+
+      const load = estimateCognitiveLoad(otProfile, {
+        informationDensity, visualComplexity, interactiveElementCount: interactiveElements,
+        textDensity, animationLevel, choiceCount, navigationDepth,
+      });
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            persona,
+            totalLoad: Math.round(load.totalLoad * 100) / 100,
+            overloaded: load.overloaded,
+            bottleneck: load.bottleneck,
+            breakdown: Object.fromEntries(
+              Object.entries(load.breakdown).map(([k, v]) => [k, Math.round(v * 100) / 100])
+            ),
+            recommendation: load.overloaded
+              ? `${persona} is cognitively overloaded. Primary bottleneck: ${load.bottleneck}. Reduce ${load.bottleneck} complexity to improve experience.`
+              : `${persona} can handle this page. Closest to overload on: ${load.bottleneck}.`,
+          }, null, 2),
+        }],
       };
     }
   );

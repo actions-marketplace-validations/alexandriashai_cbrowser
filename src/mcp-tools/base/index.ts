@@ -45,7 +45,7 @@ import { registerLlmsTxtTools } from "./llms-txt-tools.js";
  * - Visual Testing: 9 (visual_baseline, visual_regression, cross_browser_test, cross_browser_diff, responsive_test, ab_comparison, smart_baseline, smart_regression, transport_map)
  * - Testing: 5 (nl_test_file, nl_test_inline, repair_test, detect_flaky_tests, coverage_map)
  * - Bug Analysis: 2 (hunt_bugs, chaos_test)
- * - Persona Comparison: 3 (compare_personas, compare_personas_init, compare_personas_complete)
+ * - Persona Comparison: 7 (compare_personas, compare_personas_init, compare_personas_complete, cognitive_distance, cognitive_coverage, cognitive_interpolate, cognitive_load_estimate)
  * - Cognitive: 3 (cognitive_journey_init, cognitive_journey_update_state, list_cognitive_personas)
  * - Values: 7 (persona_values_list, persona_values_lookup, list_influence_patterns, persona_questionnaire_get, persona_questionnaire_build, persona_trait_lookup, persona_category_guidance)
  * - Performance: 3 (perf_baseline, perf_regression, list_baselines)
