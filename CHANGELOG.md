@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.28.0](https://github.com/alexandriashai/cbrowser/compare/v18.27.0...v18.28.0) (2026-04-11)
+
+### Added
+
+* **cognitive:** optimal transport framework for persona trait modeling ([#159](https://github.com/alexandriashai/cbrowser/issues/159)) ([d23ad2a](https://github.com/alexandriashai/cbrowser/commit/d23ad2af9783475866b4862190d19c9848360313))
+
 ## [18.27.0](https://github.com/alexandriashai/cbrowser/compare/v18.26.0...v18.27.0) (2026-04-10)
 
 ### Added
