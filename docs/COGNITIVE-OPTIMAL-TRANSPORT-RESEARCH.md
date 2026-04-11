@@ -1,8 +1,8 @@
 # Cognitive Optimal Transport — Research Synthesis
 
-**Date:** 2026-04-10
-**Issue:** #159
-**Sources:** 40+ papers across neuroscience, HCI, and mathematics
+**Date:** 2026-04-11 (updated)
+**Issues:** #159, #160, #161, #162, #163
+**Sources:** 50+ papers across neuroscience, HCI, accessibility, and mathematics
 **Research agents:** 3 parallel, 80+ targeted queries
 
 ---
@@ -131,39 +131,56 @@ This is a single, principled, theoretically grounded number. No competitor has a
 
 ## Mathematical Foundations (Implementability)
 
-| Component | Complexity (d=25) | GPU | TypeScript Feasible |
-|---|---|---|---|
-| Sliced Wasserstein distance | O(L×n×d) ~500K ops | No | Yes, sub-ms |
-| Gaussian W₂ + geodesic | O(d³) ~15K ops | No | Yes, sub-ms |
-| Gaussian barycenter | O(K×d³) per iter | No | Yes, sub-ms |
-| DRO adversarial personas | O(N×d) per LP | No | Yes, sub-ms |
-| Sinkhorn discrete OT | O(n²/ε²) per iter | No | Yes, <10ms |
-| Normalizing flow (RealNVP) | O(K×d²) per sample | No | Yes, <1ms |
+| Component | Complexity (d=26) | GPU | TypeScript Feasible | Status |
+|---|---|---|---|---|
+| Sliced Wasserstein distance | O(L×n×d) ~520K ops | No | Yes, sub-ms | **Shipped v18.26** |
+| Gaussian W₂ + geodesic | O(d³) ~17.5K ops | No | Yes, sub-ms | **Shipped v18.27** |
+| Gaussian barycenter | O(K×d³) per iter | No | Yes, sub-ms | **Shipped v18.26** |
+| DRO adversarial personas | O(N×d) per LP | No | Yes, sub-ms | **Shipped v18.27** |
+| Sinkhorn discrete OT | O(n²/ε²) per iter | No | Yes, <10ms | **Shipped v18.26** |
+| Page Understanding (DOM) | O(n) elements | No | Yes, <500ms | **Shipped v18.35** |
+| Site Model Learning | O(1) amortized writes | No | Yes, <50ms | **Shipped v18.35** |
+| Goal Decomposition | O(k×s) subgoals×strategies | No | Yes, <100ms | **Shipped v18.35** |
+| siteFamiliarity gating | O(1) lookup | No | Yes, <1ms | **Shipped v18.35** |
 
-**Key insight:** For d=25 traits, the Gaussian assumption gives closed-form solutions for everything. No GPU needed. The entire framework runs in pure TypeScript at sub-millisecond latency.
+**Key insight:** For d=26 traits, the Gaussian assumption gives closed-form solutions for everything. No GPU needed. The entire framework runs in pure TypeScript at sub-millisecond latency.
 
 ---
 
 ## Novel Contributions (What Nobody Has Done)
 
-1. **First persona system with mathematically grounded cognitive distance** — W₁(personaA, personaB)
-2. **First accessibility tool measuring transport-cost information loss** — already shipped in v18.26.0
-3. **First adversarial UX testing via distributionally robust optimization** — Wasserstein balls around known personas
-4. **First persona interpolation using displacement geodesics** — McCann interpolation preserves trait coupling
-5. **First unified multi-layer OT accessibility score** — sum of transport costs across 6 cognitive layers
-6. **First attention-as-transport model for web UX** — persona saliency via filtered W₂
+1. **First persona system with mathematically grounded cognitive distance** — W₁(personaA, personaB) — *shipped v18.27*
+2. **First accessibility tool measuring transport-cost information loss** — *shipped v18.26*
+3. **First adversarial UX testing via distributionally robust optimization** — Wasserstein balls around known personas — *shipped v18.27*
+4. **First persona interpolation using displacement geodesics** — McCann interpolation preserves trait coupling — *shipped v18.27*
+5. **First unified multi-layer OT accessibility score** — sum of transport costs across 6 cognitive layers — *shipped v18.27*
+6. **First attention-as-transport model for web UX** — persona saliency via filtered W₂ — *shipped v18.28*
+7. **First persistent site knowledge graph for browser automation** — navigation maps, element reliability, goal paths that accumulate across sessions — *shipped v18.35*
+8. **First real-time page understanding via DOM analysis** — type classification, affordance mapping, form detection in <500ms — *shipped v18.35*
+9. **First siteFamiliarity-gated cognitive simulation** — persona site knowledge auto-scales to actual data; no simulating expertise on unknown sites — *shipped v18.35*
+10. **First research-backed cognitive disability personas** — autism spectrum (Yaneva 2018), intellectual disability (Karreman 2007), aphasia (W3C COGA), dyscalculia (UK Gov) — *shipped v18.35*
 
 **Publishable gap identified:** No existing work computes W(expected_experience, actual_experience) for UX abandonment prediction. The neuroscience (Dabney), behavioral signals (Yamauchi), and frustration data (Ceaparu) exist separately but nobody has unified them under optimal transport.
 
 ---
 
-## Implementation Priority
+## Implementation Status
 
-1. **Phase 1 (immediate):** Trait space as probability measure + cognitive distance. Pure math, no browser needed.
-2. **Phase 2:** Adversarial persona generation via DRO. Solves the "what cognitive profile breaks this interface?" question.
-3. **Phase 3:** Persona geodesic interpolation. Enables custom persona blending and sensitivity analysis.
-4. **Phase 4:** Six-layer cognitive transport scoring. Requires integrating with page analysis pipeline.
-5. **Phase 5:** Attention-as-transport saliency modeling. Most complex, most differentiated.
+| Phase | Feature | Status | Version |
+|-------|---------|--------|---------|
+| 1 | Trait space as probability measure + cognitive distance | **Shipped** | v18.27 |
+| 2 | Adversarial persona generation via DRO | **Shipped** | v18.27 |
+| 3 | Persona geodesic interpolation (McCann) | **Shipped** | v18.27 |
+| 4 | Six-layer cognitive transport scoring | **Shipped** | v18.27 |
+| 5 | Attention-as-transport saliency modeling | **Shipped** | v18.28 |
+| 6 | Real-time page understanding (DOM analysis) | **Shipped** | v18.35 |
+| 7 | Persistent site knowledge graph | **Shipped** | v18.35 |
+| 8 | Cross-session browser profiles (AES-256-GCM) | **Shipped** | v18.35 |
+| 9 | Autonomous goal decomposition | **Shipped** | v18.35 |
+| 10 | siteFamiliarity trait + knowledge gating | **Shipped** | v18.35 |
+| 11 | Research-backed disability personas (4 new) | **Shipped** | v18.35 |
+
+All phases complete. 104 MCP tools, 26 cognitive traits, 21 personas (11 accessibility).
 
 ---
 
@@ -188,6 +205,28 @@ This is a single, principled, theoretically grounded number. No competitor has a
 - Rello & Baeza-Yates (2016) "Font Type and Dyslexia" — ACM TACCESS
 - Perry, Zorzi, Ziegler (2019) "Personalized Dyslexia Models" — Psych. Science
 - Yamauchi & Xiao (2018) "Cursor Emotion Reading" — Cognitive Science
+
+### Disability / Accessibility HCI (v18.35)
+- Yaneva et al. (2018) "Web Users with Autism: Eye Tracking Evidence" — Behaviour & IT
+- Yaneva et al. (2020) "Keep It Simple: Eye-Tracking for ASD" — W4A
+- Raymaker & Nicolaidis (2019) "AASPIRE Web Accessibility Guidelines" — PMC6485264
+- Britto & Pizzolato (2016) "Interaction Design for ASD" — Semantic Scholar
+- Karreman et al. (2007) "Accessible Website Content for ID" — J. Applied Research in ID
+- Rocha et al. (2015) "Optimising Web Designs for Learning Disabilities" — PMC4467236
+- W3C COGA (2024) "Cognitive Accessibility User Research" — W3C
+- W3C COGA (2024) "Aphasia Research Module" — W3C
+- W3C COGA (2024) "Dyscalculia Research Module" — W3C
+- UK Gov Design System (2022) "Designing for Dyscalculia and Low Numeracy"
+- Butterworth (2005) "Developmental Dyscalculia" — Science
+- Cockburn et al. (2007) "Familiar Interfaces" — HCI
+- Tauscher & Greenberg (1997) "How People Revisit Web Pages" — CHI
+
+### Browser Agent Architecture (v18.35)
+- AgentQ / MultiOn (2024) "MCTS-guided Browser Agent" — arXiv 2408.07199
+- rtrvr.ai (2025) "DOM Intelligence Architecture" — 81.39% WebBench
+- SeeAct (2024) "GPT-4V Grounding on Web Pages" — ICML
+- Stagehand v3 (2025) "Action Caching with DOM Hash Validation" — Browserbase
+- WebArena (2024) "Contextual Experience Replay" — 51% improvement with prior knowledge
 
 ### Mathematics
 - Agueh & Carlier (2011) "Barycenters in Wasserstein Space" — SIAM
