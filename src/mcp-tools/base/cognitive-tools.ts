@@ -220,54 +220,100 @@ export function registerCognitiveTools(
         }
       }
 
-      // v18.35.0: Check site model for prior knowledge about this site
       // v18.35.0: Gate site model data by persona's siteFamiliarity trait
-      const siteFamiliarity = profile.traits.siteFamiliarity ?? 0.5;
-      let siteModelContext: { hasModel: boolean; knownPaths?: number; suggestion?: string; familiarityLevel?: string } = { hasModel: false };
-      try {
-        if (siteFamiliarity > 0.05) { // Skip entirely for brand-new personas (0.0)
-          const { SiteModelManager } = await import("../../site-model/manager.js");
-          const siteModel = SiteModelManager.getInstance();
-          const domain = new URL(startUrl).hostname;
-          const stats = await siteModel.getModelStats(domain);
-          if (stats.navigationNodes > 0) {
-            const familiarityLevel =
-              siteFamiliarity >= 0.8 ? "expert" :
-              siteFamiliarity >= 0.5 ? "familiar" :
-              siteFamiliarity >= 0.1 ? "vague" : "none";
+      // If persona claims high familiarity but no site model data exists,
+      // downgrade to 0.0 and warn — can't simulate "knowing" a site we've never seen
+      const requestedFamiliarity = profile.traits.siteFamiliarity ?? 0.5;
+      let effectiveFamiliarity = requestedFamiliarity;
+      let familiarityWarning: string | undefined;
+      let siteModelContext: {
+        hasModel: boolean;
+        knownPaths?: number;
+        suggestion?: string;
+        familiarityLevel?: string;
+        familiarityDowngraded?: boolean;
+        originalFamiliarity?: number;
+      } = { hasModel: false };
 
-            if (siteFamiliarity >= 0.8) {
-              // Full access — navigation paths, goal sequences, element reliability
-              siteModelContext = {
-                hasModel: true,
-                knownPaths: stats.goalPaths,
-                familiarityLevel,
-                suggestion: stats.goalPaths > 0
-                  ? `This persona knows this site well. ${stats.goalPaths} known goal paths, ${stats.navigationNodes} mapped pages. Use site_model_query for best path.`
-                  : `This persona knows the site layout (${stats.navigationNodes} pages) but hasn't completed goals here.`,
-              };
-            } else if (siteFamiliarity >= 0.5) {
-              // Moderate — failure patterns + page structure, no goal paths
-              siteModelContext = {
-                hasModel: true,
-                familiarityLevel,
-                suggestion: `This persona has some familiarity with this site (${stats.navigationNodes} pages known). They remember the general layout but not specific paths.`,
-              };
-            } else {
-              // Low (0.1-0.4) — only failure patterns (knows what to avoid)
-              siteModelContext = {
-                hasModel: stats.failurePatterns > 0,
-                familiarityLevel,
-                suggestion: stats.failurePatterns > 0
-                  ? `This persona vaguely recalls issues on this site (${stats.failurePatterns} known problems). They don't remember the layout.`
-                  : undefined,
-              };
-            }
+      try {
+        const { SiteModelManager } = await import("../../site-model/manager.js");
+        const siteModel = SiteModelManager.getInstance();
+        const domain = new URL(startUrl).hostname;
+        const stats = await siteModel.getModelStats(domain);
+        const hasData = stats.navigationNodes > 0;
+
+        // Downgrade familiarity if persona claims knowledge we don't have
+        if (!hasData && requestedFamiliarity > 0.1) {
+          effectiveFamiliarity = 0.0;
+          familiarityWarning = `"${personaObj.name}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} but CBrowser has NO prior knowledge of ${domain}. Downgraded to 0.0 (first visit). To build site knowledge, navigate the site first — data accumulates automatically on every navigate/click/fill.`;
+          siteModelContext = {
+            hasModel: false,
+            familiarityLevel: "none",
+            familiarityDowngraded: true,
+            originalFamiliarity: requestedFamiliarity,
+            suggestion: familiarityWarning,
+          };
+        } else if (hasData && requestedFamiliarity > 0.05) {
+          // Scale familiarity by data coverage — partial knowledge = partial familiarity
+          // A site with 3 pages mapped shouldn't give "expert" level access
+          const coverageScore = Math.min(1.0, stats.navigationNodes / 20); // 20+ pages = full coverage
+          effectiveFamiliarity = Math.min(requestedFamiliarity, coverageScore);
+
+          if (effectiveFamiliarity < requestedFamiliarity - 0.1) {
+            familiarityWarning = `"${personaObj.name}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} but site model only has ${stats.navigationNodes} pages mapped. Adjusted to ${effectiveFamiliarity.toFixed(1)}. More navigation will build fuller site knowledge.`;
+          }
+
+          const familiarityLevel =
+            effectiveFamiliarity >= 0.8 ? "expert" :
+            effectiveFamiliarity >= 0.5 ? "familiar" :
+            effectiveFamiliarity >= 0.1 ? "vague" : "none";
+
+          if (effectiveFamiliarity >= 0.8) {
+            siteModelContext = {
+              hasModel: true,
+              knownPaths: stats.goalPaths,
+              familiarityLevel,
+              familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
+              originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,
+              suggestion: stats.goalPaths > 0
+                ? `This persona knows this site well. ${stats.goalPaths} known goal paths, ${stats.navigationNodes} mapped pages. Use site_model_query for best path.`
+                : `This persona knows the site layout (${stats.navigationNodes} pages) but hasn't completed goals here.`,
+            };
+          } else if (effectiveFamiliarity >= 0.5) {
+            siteModelContext = {
+              hasModel: true,
+              familiarityLevel,
+              familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
+              originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,
+              suggestion: familiarityWarning || `This persona has some familiarity with this site (${stats.navigationNodes} pages known).`,
+            };
+          } else {
+            siteModelContext = {
+              hasModel: stats.failurePatterns > 0,
+              familiarityLevel,
+              familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
+              originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,
+              suggestion: stats.failurePatterns > 0
+                ? `This persona vaguely recalls issues on this site (${stats.failurePatterns} known problems).`
+                : familiarityWarning,
+            };
           }
         } else {
           siteModelContext.familiarityLevel = "none";
         }
-      } catch {}
+      } catch {
+        // If site model fails, treat as no data — downgrade high familiarity
+        if (requestedFamiliarity > 0.1) {
+          effectiveFamiliarity = 0.0;
+          siteModelContext = {
+            hasModel: false,
+            familiarityLevel: "none",
+            familiarityDowngraded: true,
+            originalFamiliarity: requestedFamiliarity,
+            suggestion: `Site model unavailable. "${personaObj.name}" siteFamiliarity downgraded from ${requestedFamiliarity.toFixed(1)} to 0.0.`,
+          };
+        }
+      }
 
       const personaValues = getPersonaValues(personaObj.name);
       const influencePatterns = personaValues

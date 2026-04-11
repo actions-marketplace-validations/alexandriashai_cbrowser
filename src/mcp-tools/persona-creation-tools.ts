@@ -220,6 +220,7 @@ function getTraitHeader(trait: string): string {
     fearOfMissingOut: "FOMO",
     socialProofSensitivity: "Social Proof",
     mentalModelRigidity: "Flexibility",
+    siteFamiliarity: "Site Memory",
   };
   return headers[trait] || trait;
 }

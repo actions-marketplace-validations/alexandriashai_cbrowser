@@ -1458,6 +1458,63 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
       },
     ],
   },
+  {
+    name: "siteFamiliarity",
+    description: "How much the persona knows about a site from prior visits",
+    researchBasis: "Cockburn et al. (2007) - Familiar Interfaces; Tauscher & Greenberg (1997) - How people revisit web pages; Weinreich et al. (2008) - Off the beaten tracks",
+    levels: [
+      {
+        value: 0.0,
+        label: "Brand New Visitor",
+        behaviors: [
+          "Has never visited this site before",
+          "No memory of navigation or layout",
+          "Explores blindly, no shortcuts",
+          "Every page is a discovery",
+        ],
+      },
+      {
+        value: 0.25,
+        label: "Vague Memory",
+        behaviors: [
+          "Has visited once or twice before",
+          "Remembers what went wrong, not where things are",
+          "May avoid known problem areas",
+          "Doesn't remember navigation structure",
+        ],
+      },
+      {
+        value: 0.5,
+        label: "Occasional Visitor",
+        behaviors: [
+          "Knows the general site structure",
+          "Remembers main navigation but not details",
+          "Has partial memory of common paths",
+          "Needs some re-orientation each visit",
+        ],
+      },
+      {
+        value: 0.75,
+        label: "Regular User",
+        behaviors: [
+          "Knows the site well",
+          "Navigates efficiently to common areas",
+          "Remembers specific paths and shortcuts",
+          "Only confused by new or changed sections",
+        ],
+      },
+      {
+        value: 1.0,
+        label: "Daily User / Expert",
+        behaviors: [
+          "Uses the site daily or near-daily",
+          "Knows exactly where everything is",
+          "Uses keyboard shortcuts and direct URLs",
+          "Navigates entirely from memory",
+        ],
+      },
+    ],
+  },
 ];
 
 // ============================================================================
@@ -1553,6 +1610,7 @@ function generateQuestionText(trait: TraitReference): string {
     fearOfMissingOut: "How do 'limited time' offers and countdown timers affect your decisions?",
     socialProofSensitivity: "How much do reviews, ratings, and testimonials influence your decisions?",
     mentalModelRigidity: "When a website you use regularly changes its layout, how do you respond?",
+    siteFamiliarity: "How well do you typically know the websites you visit — are you usually a first-time visitor or a returning regular?",
   };
 
   return questionMap[trait.name] || `How would you describe your ${trait.name}?`;
@@ -1607,6 +1665,7 @@ export function buildTraitsFromAnswers(
     fearOfMissingOut: 0.50,     // Neutral - highly age-dependent
     socialProofSensitivity: 0.60, // Research: social proof is powerful (Cialdini)
     mentalModelRigidity: 0.55,  // Research: confirmation bias is common
+    siteFamiliarity: 0.5,       // Research: 58% of pages are revisits (Tauscher & Greenberg)
   };
 
   // Apply answers
@@ -1658,6 +1717,7 @@ const BASELINE_TRAITS: Record<string, number> = {
   fearOfMissingOut: 0.50,
   socialProofSensitivity: 0.60,
   mentalModelRigidity: 0.55,
+  siteFamiliarity: 0.5,
 };
 
 /** Check if a trait is at its baseline (wasn't explicitly set) */
@@ -1788,6 +1848,7 @@ const TRAIT_SHORT_HEADERS: Record<string, string> = {
   fearOfMissingOut: "FOMO",
   socialProofSensitivity: "SocialProof",
   mentalModelRigidity: "Rigidity",
+  siteFamiliarity: "SiteMem",
 };
 
 /**

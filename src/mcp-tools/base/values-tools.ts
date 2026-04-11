@@ -337,7 +337,7 @@ export function registerValuesTools(server: McpServer): void {
                   "trustCalibration", "interruptRecovery", "informationForaging", "changeBlindness",
                   "anchoringBias", "timeHorizon", "attributionStyle", "metacognitivePlanning",
                   "proceduralFluency", "transferLearning", "authoritySensitivity", "emotionalContagion",
-                  "fearOfMissingOut", "socialProofSensitivity", "mentalModelRigidity"
+                  "fearOfMissingOut", "socialProofSensitivity", "mentalModelRigidity", "siteFamiliarity"
                 ],
               }, null, 2),
             },
