@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.32.3](https://github.com/alexandriashai/cbrowser/compare/v18.32.2...v18.32.3) (2026-04-11)
+
+### Fixed
+
+* **session:** enable stateful MCP sessions for browser continuity ([76323f2](https://github.com/alexandriashai/cbrowser/commit/76323f263236311f0117f5a5c8eede2b3871d14d))
+
 ## [18.32.2](https://github.com/alexandriashai/cbrowser/compare/v18.32.1...v18.32.2) (2026-04-11)
 
 ### Fixed
