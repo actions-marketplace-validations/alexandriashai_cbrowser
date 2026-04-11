@@ -12,6 +12,15 @@ import {
   type SecurityAuditHandlerOptions,
 } from "mcp-guardian";
 
+// v18.35.0: Shared tool registry for self-scan
+// Populated via setSecurityAuditToolList after all other tools are registered
+let _registeredTools: Array<{ name: string; description: string; schema: unknown }> = [];
+
+/** Set the tool list for self-scan (call after all tools are registered) */
+export function setSecurityAuditToolList(tools: Array<{ name: string; description: string; inputSchema?: unknown }>): void {
+  _registeredTools = tools.map(t => ({ name: t.name, description: t.description, schema: t.inputSchema || {} }));
+}
+
 /**
  * Register security tools (1 tool: security_audit)
  */
@@ -104,7 +113,7 @@ export function registerSecurityTools(server: McpServer): void {
           const toolDefs = tools.map((t: { name: string; description?: string; inputSchema?: unknown }) => ({
             name: t.name,
             description: t.description || "",
-            inputSchema: t.inputSchema || {},
+            schema: t.inputSchema || {},
           }));
 
           // Pass tools directly to handler
@@ -134,8 +143,17 @@ export function registerSecurityTools(server: McpServer): void {
         return await securityAuditHandler(baseParams as SecurityAuditHandlerOptions);
       }
 
-      // v18.35.0: Self-scan — connect to our own server to get tool manifest
-      // This works in all environments: Claude Desktop, Claude.ai, Claude Code
+      // v18.35.0: Self-scan — use in-memory tool registry (works in all environments)
+      // Bypasses auth issues on enterprise servers and config file requirements
+      if (_registeredTools.length > 0) {
+        return await securityAuditHandler({
+          format: baseParams.format,
+          tools: _registeredTools,
+          serverName: "cbrowser (self-scan)",
+        });
+      }
+
+      // Fallback: try localhost HTTP (works on demo/unauthenticated servers)
       const selfPort = process.env.PORT || "3000";
       const selfUrl = `http://localhost:${selfPort}/mcp`;
       try {

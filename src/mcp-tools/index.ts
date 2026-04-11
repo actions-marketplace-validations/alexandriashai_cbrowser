@@ -63,6 +63,7 @@ export {
   registerRemediationTools,
   registerLlmsTxtTools,
   registerSiteKnowledgeTools,
+  setSecurityAuditToolList,
 } from "./base/index.js";
 
 // Re-export persona creation tools

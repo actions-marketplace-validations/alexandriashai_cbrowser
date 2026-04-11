@@ -146,7 +146,7 @@ export { registerValuesTools } from "./values-tools.js";
 export { registerPerformanceTools } from "./performance-tools.js";
 export { registerAuditTools } from "./audit-tools.js";
 export { registerBrowserManagementTools } from "./browser-management-tools.js";
-export { registerSecurityTools } from "./security-tools.js";
+export { registerSecurityTools, setSecurityAuditToolList } from "./security-tools.js";
 export { registerMarketingTools } from "./marketing-tools.js";
 export { registerRemediationTools } from "./remediation-tools.js";
 export { registerLlmsTxtTools } from "./llms-txt-tools.js";

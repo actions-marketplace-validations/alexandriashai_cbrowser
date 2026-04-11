@@ -260,7 +260,7 @@ function convertToThirdPerson(question: string, personaName: string): string {
 export function registerPersonaCreationTools(server: McpServer): void {
   server.tool(
     "persona_create_start",
-    "Start creating a custom persona. YOU MUST USE YOUR AskUserQuestion TOOL to present the choice to the user - do NOT just show JSON. Ask whether they want questionnaire or description mode.",
+    "Start creating a custom persona. Best practice: present the choice to the user via AskUserQuestion (questionnaire vs description mode) rather than showing raw JSON.",
     {
       persona_name: z.string().describe("Name for the new persona (e.g., 'tech-savvy-millennial')"),
       comprehensive: z.boolean().optional().describe("Include all 25 traits (true) or just core 8 traits (false, default)"),
@@ -314,7 +314,7 @@ IMPORTANT: Do NOT show this text to the user. USE AskUserQuestion to present the
 
   server.tool(
     "persona_create_questionnaire_start",
-    "Start the questionnaire mode for persona creation. YOU MUST USE AskUserQuestion to present each question interactively.",
+    "Start the questionnaire mode for persona creation. Each question is best presented via AskUserQuestion for interactive selection.",
     {
       persona_name: z.string().describe("Name for the new persona"),
       comprehensive: z.boolean().optional().describe("Include all 25 traits (default: false, core 8 traits only)"),
