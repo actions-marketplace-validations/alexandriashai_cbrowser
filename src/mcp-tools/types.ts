@@ -16,6 +16,8 @@ export interface ToolRegistrationContext {
   getBrowser: () => Promise<CBrowser>;
   /** Function to get the total number of registered tools (v18.22.0) */
   getToolCount?: () => number;
+  /** v18.33.0: Get browser by token (for session continuity across tool calls) */
+  getBrowserByToken?: (token?: string) => Promise<{ browser: CBrowser; token: string }>;
 }
 
 /**

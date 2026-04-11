@@ -31,7 +31,7 @@ import type {
  */
 export function registerCognitiveTools(
   server: McpServer,
-  { getBrowser }: ToolRegistrationContext
+  { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
   server.tool(
     "cognitive_journey_init",
@@ -166,7 +166,16 @@ export function registerCognitiveTools(
         timeLimit: traits.patience > 0.7 ? 180 : (traits.patience < 0.3 ? 60 : 120),
       };
 
-      const b = await getBrowser();
+      // v18.33.0: Use token-based browser for session continuity
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      let browserToken: string | undefined;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(undefined); // New session for init
+        b = result.browser;
+        browserToken = result.token;
+      } else {
+        b = await getBrowser();
+      }
 
       // Apply location settings: explicit override > persona default
       const effectiveLocation: PersonaLocation = {
@@ -265,6 +274,8 @@ export function registerCognitiveTools(
               abandonmentThresholds: thresholds,
               goal,
               startUrl,
+              // v18.33.0: Browser session token for continuity across tool calls
+              _browserToken: browserToken || null,
               instructions: `
 COGNITIVE JOURNEY SIMULATION INSTRUCTIONS:
 
@@ -279,11 +290,13 @@ Decision Style: ${profile.decisionStyle}
 
 GOAL: "${goal}"
 
+IMPORTANT: Pass _browserToken="${browserToken || ''}" to ALL subsequent tool calls (navigate, screenshot, click, fill, scroll, extract) to maintain browser state across calls.
+
 SIMULATION LOOP:
-1. PERCEIVE - Use screenshot/snapshot to see the page. Filter by attention pattern.
+1. PERCEIVE - Use screenshot (with _browserToken) to see the page. Filter by attention pattern.
 2. COMPREHEND - Interpret elements as this persona would (lower comprehension = more confusion)
 3. DECIDE - Choose action based on traits. Generate inner monologue.
-4. EXECUTE - Use click/fill/navigate tools.
+4. EXECUTE - Use click/fill/navigate tools (always pass _browserToken).
 5. EVALUATE - Update cognitive state after each action:
    - patienceRemaining -= 0.02 + (frustrationLevel × 0.05)
    - confusionLevel changes based on UI clarity

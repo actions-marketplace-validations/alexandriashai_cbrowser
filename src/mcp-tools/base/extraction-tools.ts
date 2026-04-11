@@ -14,32 +14,47 @@ import { buildContentWithScreenshots } from "../screenshot-utils.js";
  */
 export function registerExtractionTools(
   server: McpServer,
-  { getBrowser }: ToolRegistrationContext
+  { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
   server.tool(
     "screenshot",
-    "Take a screenshot of the current page. In remote mode, screenshots are automatically compressed to JPEG to stay under Claude.ai's 200KB limit.",
+    "Take a screenshot of the current page. Pass _browserToken from a previous tool call to use the same browser session.",
     {
       path: z.string().optional().describe("Optional path to save the screenshot"),
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
-    async ({ path }) => {
-      const b = await getBrowser();
-      // Compression is automatic in remote mode (handled by browser.screenshot())
+    async ({ path, _browserToken }) => {
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(_browserToken);
+        b = result.browser;
+        token = result.token;
+      } else {
+        b = await getBrowser();
+      }
       const file = await b.screenshot(path);
       return {
-        content: buildContentWithScreenshots({ screenshot: file }, file),
+        content: buildContentWithScreenshots({ screenshot: file, ...(token ? { _browserToken: token } : {}) }, file),
       };
     }
   );
 
   server.tool(
     "extract",
-    "Extract data from the page",
+    "Extract data from the page. Pass _browserToken to use the same browser session.",
     {
       what: z.enum(["links", "headings", "forms", "images", "text"]).describe("What to extract"),
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
-    async ({ what }) => {
-      const b = await getBrowser();
+    async ({ what, _browserToken }) => {
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(_browserToken);
+        b = result.browser;
+      } else {
+        b = await getBrowser();
+      }
       const result = await b.extract(what);
       return {
         content: [

@@ -63,6 +63,70 @@ let browser: CBrowser | null = null;
 const stealthConfig: Partial<StealthConfig> | null = null;
 
 // ============================================================================
+// Tool-Level Session Tokens (v18.33.0)
+// Provides browser continuity across tool calls without relying on MCP session
+// headers. Works with any MCP client including Claude.ai's proxy.
+// ============================================================================
+
+const browserTokens = new Map<string, { sessionId: string; createdAt: number }>();
+const TOKEN_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Generate a short browser token that maps to a session's browser.
+ */
+export function generateBrowserToken(sessionId: string): string {
+  // Short readable token
+  const token = `cb_${Math.random().toString(36).substring(2, 10)}`;
+  browserTokens.set(token, { sessionId, createdAt: Date.now() });
+  return token;
+}
+
+/**
+ * Resolve a browser token to a session's browser.
+ * Falls back to creating a new session if token is invalid/expired.
+ */
+export async function getBrowserByToken(token?: string): Promise<{ browser: CBrowser; token: string }> {
+  // Clean expired tokens
+  const now = Date.now();
+  for (const [t, info] of browserTokens) {
+    if (now - info.createdAt > TOKEN_EXPIRY_MS) browserTokens.delete(t);
+  }
+
+  // Try to resolve existing token
+  if (token) {
+    const info = browserTokens.get(token);
+    if (info) {
+      const session = activeSessions.get(info.sessionId);
+      if (session) {
+        session.lastActivity = now;
+        return { browser: session.browser, token };
+      }
+      // Session expired but token exists — create new session with same ID
+      browserTokens.delete(token);
+    }
+  }
+
+  // No valid token — create new session
+  const sessionId = randomUUID();
+  const proxyConfig = stealthConfig?.proxy;
+  const sessionBrowser = new CBrowser({
+    headless: true,
+    persistent: false,
+    proxy: proxyConfig,
+  });
+
+  activeSessions.set(sessionId, {
+    browser: sessionBrowser,
+    createdAt: now,
+    lastActivity: now,
+  });
+
+  const newToken = generateBrowserToken(sessionId);
+  console.log(`[Token] New browser session ${sessionId.substring(0, 8)}... → token ${newToken}`);
+  return { browser: sessionBrowser, token: newToken };
+}
+
+// ============================================================================
 // Session Isolation (v18.4.0)
 // ============================================================================
 
@@ -612,7 +676,7 @@ function configureMcpTools(
     ? () => getSessionBrowser(sessionId)
     : getBrowser;
 
-  const context: ToolRegistrationContext = { getBrowser: sessionGetBrowser };
+  const context: ToolRegistrationContext = { getBrowser: sessionGetBrowser, getBrowserByToken };
 
   if (customRegisterTools) {
     // Use custom tool registration (for Enterprise servers)
@@ -714,6 +778,12 @@ async function handleMcpRequest(
         console.warn(`[Connection Closed] Client disconnected before response completed: ${logLine}`);
       }
     });
+
+    // Debug: log session ID from client
+    const clientSessionId = req.headers["mcp-session-id"] as string | undefined;
+    if (method !== "initialize" && method !== "notifications/initialized") {
+      console.log(`[Session Debug] ${method}: client sent session=${clientSessionId?.substring(0, 8) || "NONE"}, mode=${process.env.MCP_SESSION_MODE || "stateless"}`);
+    }
 
     await transport.handleRequest(req, res, parsedBody);
 

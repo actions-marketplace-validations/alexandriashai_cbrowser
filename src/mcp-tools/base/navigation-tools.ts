@@ -14,16 +14,25 @@ import { buildContentWithScreenshots } from "../screenshot-utils.js";
  */
 export function registerNavigationTools(
   server: McpServer,
-  { getBrowser }: ToolRegistrationContext
+  { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
   server.tool(
     "navigate",
-    "Navigate to a URL and take a screenshot",
+    "Navigate to a URL and take a screenshot. Pass _browserToken from a previous tool call to reuse the same browser session.",
     {
       url: z.string().url().describe("The URL to navigate to"),
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call. Pass this to maintain browser state (cookies, page) across calls."),
     },
-    async ({ url }) => {
-      const b = await getBrowser();
+    async ({ url, _browserToken }) => {
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(_browserToken);
+        b = result.browser;
+        token = result.token;
+      } else {
+        b = await getBrowser();
+      }
       let result = await b.navigate(url);
 
       // v18.30.0: Auto-recover from corrupted browser state with retry
@@ -47,6 +56,7 @@ export function registerNavigationTools(
             title: result.title,
             loadTime: result.loadTime,
             screenshot: result.screenshot,
+            ...(token ? { _browserToken: token } : {}),
           },
           result.screenshot
         ),

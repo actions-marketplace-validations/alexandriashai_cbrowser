@@ -14,18 +14,27 @@ import { buildContentWithScreenshots } from "../screenshot-utils.js";
  */
 export function registerInteractionTools(
   server: McpServer,
-  { getBrowser }: ToolRegistrationContext
+  { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
   server.tool(
     "click",
-    "Click an element on the page using text, selector, or description. Use verbose=true for detailed debug info on failure.",
+    "Click an element on the page. Pass _browserToken to maintain session continuity.",
     {
       selector: z.string().describe("Element to click (text content, CSS selector, or description)"),
-      force: z.boolean().optional().describe("Allow clicking red-zone elements (delete, submit) that normally require confirmation"),
-      verbose: z.boolean().optional().describe("Return available elements and AI suggestions on failure"),
+      force: z.boolean().optional().describe("Allow clicking red-zone elements"),
+      verbose: z.boolean().optional().describe("Return available elements on failure"),
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
-    async ({ selector, force, verbose }) => {
-      const b = await getBrowser();
+    async ({ selector, force, verbose, _browserToken }) => {
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(_browserToken);
+        b = result.browser;
+        token = result.token;
+      } else {
+        b = await getBrowser();
+      }
       const result = await b.click(selector, { force, verbose });
       const response: Record<string, unknown> = {
         success: result.success,
@@ -37,6 +46,7 @@ export function registerInteractionTools(
         if (result.aiSuggestion) response.aiSuggestion = result.aiSuggestion;
         if (result.debugScreenshot) response.debugScreenshot = result.debugScreenshot;
       }
+      if (token) response._browserToken = token;
       return {
         content: buildContentWithScreenshots(response, result.screenshot, result.debugScreenshot),
       };
@@ -103,19 +113,29 @@ export function registerInteractionTools(
 
   server.tool(
     "fill",
-    "Fill a form field with text. Use verbose=true for detailed debug info on failure.",
+    "Fill a form field with text. Pass _browserToken for session continuity.",
     {
       selector: z.string().describe("Input field to fill (name, placeholder, label, or selector)"),
       value: z.string().describe("Value to enter"),
-      verbose: z.boolean().optional().describe("Return available inputs and AI suggestions on failure"),
+      verbose: z.boolean().optional().describe("Return available inputs on failure"),
+      _browserToken: z.string().optional().describe("Browser session token"),
     },
-    async ({ selector, value, verbose }) => {
-      const b = await getBrowser();
+    async ({ selector, value, verbose, _browserToken }) => {
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(_browserToken);
+        b = result.browser;
+        token = result.token;
+      } else {
+        b = await getBrowser();
+      }
       const result = await b.fill(selector, value, { verbose });
       const response: Record<string, unknown> = {
         success: result.success,
         message: result.message,
       };
+      if (token) response._browserToken = token;
       if (verbose && !result.success) {
         if (result.availableInputs) response.availableInputs = result.availableInputs;
         if (result.aiSuggestion) response.aiSuggestion = result.aiSuggestion;
@@ -129,13 +149,20 @@ export function registerInteractionTools(
 
   server.tool(
     "scroll",
-    "Scroll the page in a direction. Use when content might be below the fold or to navigate long pages.",
+    "Scroll the page. Pass _browserToken for session continuity.",
     {
-      direction: z.enum(["down", "up", "top", "bottom"]).default("down").describe("Scroll direction: down (400px), up (400px), top (page start), bottom (page end)"),
-      amount: z.number().optional().describe("Custom scroll amount in pixels (overrides direction default)"),
+      direction: z.enum(["down", "up", "top", "bottom"]).default("down").describe("Scroll direction"),
+      amount: z.number().optional().describe("Custom scroll amount in pixels"),
+      _browserToken: z.string().optional().describe("Browser session token"),
     },
-    async ({ direction, amount }) => {
-      const b = await getBrowser();
+    async ({ direction, amount, _browserToken }) => {
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(_browserToken);
+        b = result.browser;
+      } else {
+        b = await getBrowser();
+      }
       const page = await b.getPage();
 
       const scrollAmount = amount || 400;
