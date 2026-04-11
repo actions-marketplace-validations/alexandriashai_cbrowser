@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.34.0](https://github.com/alexandriashai/cbrowser/compare/v18.33.1...v18.34.0) (2026-04-11)
+
+### Added
+
+* **visual:** merge smart_baseline/smart_regression into visual_baseline/visual_regression ([cf2c31c](https://github.com/alexandriashai/cbrowser/commit/cf2c31c033da96e62ca6706312f76233658e6b19))
+
 ## [18.33.1](https://github.com/alexandriashai/cbrowser/compare/v18.33.0...v18.33.1) (2026-04-11)
 
 ### Fixed
