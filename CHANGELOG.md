@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.35.0](https://github.com/alexandriashai/cbrowser/compare/v18.34.2...v18.35.0) (2026-04-11)
+
+### Added
+
+* site knowledge system (4 upgrades, 6 new tools) ([8959533](https://github.com/alexandriashai/cbrowser/commit/8959533443ef620ecbc646ae9eaeedf6f45fc999)), closes [#160](https://github.com/alexandriashai/cbrowser/issues/160) [#161](https://github.com/alexandriashai/cbrowser/issues/161) [#162](https://github.com/alexandriashai/cbrowser/issues/162) [#163](https://github.com/alexandriashai/cbrowser/issues/163)
+
 ## [18.34.2](https://github.com/alexandriashai/cbrowser/compare/v18.34.1...v18.34.2) (2026-04-11)
 
 ## [18.34.1](https://github.com/alexandriashai/cbrowser/compare/v18.34.0...v18.34.1) (2026-04-11)
