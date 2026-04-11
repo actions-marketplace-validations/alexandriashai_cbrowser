@@ -1116,8 +1116,11 @@ ${VERSION}
       } else {
 
         // Create new transport
+        // v18.32.0: Always return session ID so clients can maintain browser continuity
+        // In stateless mode, each request creates a new transport but reuses the browser
+        // if the client sends back the same Mcp-Session-Id
         transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: sessionMode === "stateful" ? () => browserSessionId : undefined,
+          sessionIdGenerator: () => browserSessionId,
         });
 
         // Create and connect server with session isolation
