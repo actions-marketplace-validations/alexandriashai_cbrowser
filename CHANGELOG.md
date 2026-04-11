@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.38.2](https://github.com/alexandriashai/cbrowser/compare/v18.38.1...v18.38.2) (2026-04-11)
+
+### Fixed
+
+* security_audit self-scan via in-memory tool registry ([cf5369f](https://github.com/alexandriashai/cbrowser/commit/cf5369fda8b89141ec9bd0d72e41eb9db48aa70f))
+
 ## [18.38.1](https://github.com/alexandriashai/cbrowser/compare/v18.38.0...v18.38.1) (2026-04-11)
 
 ### Fixed
