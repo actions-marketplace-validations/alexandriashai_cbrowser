@@ -1055,6 +1055,7 @@ async function simulateAccessibilityJourney(
   };
 
   let goalAchieved = false;
+  let journeyValidation: Record<string, unknown> | undefined;
 
   // Emotional state captured from cognitive journey (v13.1.0)
   let finalEmotionalState: import("../types.js").EmotionalState | undefined;
@@ -1135,6 +1136,24 @@ async function simulateAccessibilityJourney(
         }
 
         goalAchieved = journey.goalAchieved;
+
+        // v18.29.0: Store journey validation data for attachment to result
+        journeyValidation = {
+          goalAchieved: journey.goalAchieved,
+          goalEvidence: journey.goalEvidence || null,
+          failureReason: journey.failureReason || null,
+          navigationPath: journey.navigationPath || [],
+          lastPage: journey.lastPage || null,
+          stepCount: journey.stepCount,
+          journeyLog: (journey.journeyLog || []).map((s) => ({
+            step: s.step,
+            url: s.url,
+            action: s.action,
+            focusedElement: s.focusedElement,
+            mood: s.mood,
+            goalProgress: s.goalProgress,
+          })),
+        };
       } catch {
         // Fall back to barrier-based estimation
         ctx.stepCount = Math.max(3, ctx.barriers.length + 2);
@@ -1258,7 +1277,8 @@ async function simulateAccessibilityJourney(
     duration: Date.now() - startTime,
     finalEmotionalState,
     emotionalEvents,
-  };
+    journeyValidation, // v18.29.0
+  } as any;
 }
 
 function getDisabilityType(persona: AccessibilityPersona): string {

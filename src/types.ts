@@ -2197,6 +2197,31 @@ export interface CognitiveJourneyResult {
   emotionalJourney?: EmotionalEvent[];
   /** Final emotional state (v13.1.0) */
   finalEmotionalState?: EmotionalState;
+  /** v18.29.0: Step-by-step journey log with URLs, actions, elements, moods */
+  journeyLog?: Array<{
+    step: number;
+    url: string;
+    pageTitle: string;
+    phase: string;
+    action: string | null;
+    actionTarget: string | null;
+    focusedElement: string | null;
+    monologue: string;
+    mood: string;
+    goalProgress: number;
+    patience: number;
+    confusion: number;
+    frustration: number;
+    timestamp: number;
+  }>;
+  /** v18.29.0: Evidence for goal completion — exact text from page, with verification status */
+  goalEvidence?: string;
+  /** v18.29.0: Reason for failure — what was sought but not found */
+  failureReason?: string;
+  /** v18.29.0: Sequence of unique URLs visited */
+  navigationPath?: string[];
+  /** v18.29.0: Final page the persona was on */
+  lastPage?: { url: string; title: string };
 }
 
 // ============================================================================

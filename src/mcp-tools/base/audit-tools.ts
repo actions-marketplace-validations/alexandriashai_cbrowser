@@ -144,6 +144,8 @@ export function registerAuditTools(server: McpServer): void {
               cognitiveLoad: (r as any).cognitiveLoad || undefined,
               // v18.28.0: Attention transport analysis (W₂ saliency)
               attentionAnalysis: (r as any).attentionAnalysis || undefined,
+              // v18.29.0: Journey validation — evidence, path, forensics
+              journeyValidation: (r as any).journeyValidation || undefined,
             };
           }),
           allWcagViolations: result.allWcagViolations,

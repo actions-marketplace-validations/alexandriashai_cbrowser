@@ -455,6 +455,26 @@ export async function runCognitiveJourney(
   let abandonmentReason: CognitiveJourneyResult["abandonmentReason"];
   let abandonmentMessage: string | undefined;
   let currentUrl = options.startUrl;
+  let goalEvidence: string | undefined;
+  let failureReason: string | undefined;
+
+  // v18.29.0: Step-by-step journey log with path, elements, evidence
+  const journeyLog: Array<{
+    step: number;
+    url: string;
+    pageTitle: string;
+    phase: string;
+    action: string | null;
+    actionTarget: string | null;
+    focusedElement: string | null;
+    monologue: string;
+    mood: string;
+    goalProgress: number;
+    patience: number;
+    confusion: number;
+    frustration: number;
+    timestamp: number;
+  }> = [];
 
   // Main cognitive loop
   for (let step = 1; step <= maxSteps; step++) {
@@ -704,6 +724,24 @@ export async function runCognitiveJourney(
       fullMonologue.push(parsed.monologue);
     }
 
+    // v18.29.0: Record step in journey log
+    journeyLog.push({
+      step,
+      url: currentUrl,
+      pageTitle: pageTitle,
+      phase: parsed.phase || "evaluate",
+      action: parsed.action || null,
+      actionTarget: parsed.actionTarget || null,
+      focusedElement: parsed.focusedElement || null,
+      monologue: parsed.monologue || "",
+      mood: parsed.mood || state.currentMood || "neutral",
+      goalProgress: parsed.goalProgress || 0,
+      patience: state.patienceRemaining,
+      confusion: state.confusionLevel,
+      frustration: state.frustrationLevel,
+      timestamp: Date.now(),
+    });
+
     // Record friction point if confusion/frustration spiked
     if (parsed.frictionDescription && (state.confusionLevel > 0.4 || state.frustrationLevel > 0.4)) {
       frictionPoints.push({
@@ -741,6 +779,23 @@ export async function runCognitiveJourney(
     // Check for goal completion
     if (parsed.goalAchieved) {
       goalAchieved = true;
+      goalEvidence = parsed.goalEvidence || parsed.monologue || undefined;
+
+      // v18.29.0: Validate goal evidence against actual page content
+      if (goalEvidence) {
+        try {
+          const pageText = await page.evaluate(() => document.body.innerText?.substring(0, 5000) || '');
+          const evidenceWords = goalEvidence.toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
+          const matchCount = evidenceWords.filter((w: string) => pageText.toLowerCase().includes(w)).length;
+          const matchRatio = evidenceWords.length > 0 ? matchCount / evidenceWords.length : 0;
+          if (matchRatio < 0.3) {
+            // Evidence doesn't match page content — flag as unverified
+            goalEvidence = `[UNVERIFIED - ${Math.round(matchRatio * 100)}% match] ${goalEvidence}`;
+          } else {
+            goalEvidence = `[VERIFIED - ${Math.round(matchRatio * 100)}% match] ${goalEvidence}`;
+          }
+        } catch {}
+      }
       break;
     }
 
@@ -750,6 +805,14 @@ export async function runCognitiveJourney(
       abandonmentReason = abandonment.reason;
       abandonmentMessage = abandonment.message;
       fullMonologue.push(abandonment.message);
+
+      // v18.29.0: Capture failure context
+      try {
+        const pageText = await page.evaluate(() => document.body.innerText?.substring(0, 1000) || '');
+        failureReason = parsed.failureReason || `Abandoned on "${pageTitle}" (${currentUrl}). Last visible: ${pageText.substring(0, 200)}...`;
+      } catch {
+        failureReason = parsed.failureReason || `Abandoned on "${pageTitle}" (${currentUrl})`;
+      }
       break;
     }
 
@@ -861,6 +924,15 @@ export async function runCognitiveJourney(
     // Emotional journey data (v13.1.0)
     emotionalJourney: state.emotionalJourney,
     finalEmotionalState: state.emotionalState,
+    // v18.29.0: Journey validation — evidence, path, failure forensics
+    journeyLog,
+    goalEvidence,
+    failureReason,
+    navigationPath: journeyLog.map(s => s.url).filter((url, i, arr) => i === 0 || url !== arr[i - 1]),
+    lastPage: {
+      url: currentUrl,
+      title: journeyLog.length > 0 ? journeyLog[journeyLog.length - 1].pageTitle : '',
+    },
   };
 }
 
@@ -899,14 +971,23 @@ RESPONSE FORMAT (JSON):
   "monologue": "Internal thought as this persona (first person)",
   "action": "click:selector|hover:selector|fill:selector:value|navigate:url|scroll:direction|null",
   "actionTarget": "description of what you're clicking/filling",
+  "focusedElement": "the element text/label you are currently looking at or reading",
   "goalAchieved": boolean,
   "goalProgress": 0.0-1.0,
+  "goalEvidence": "REQUIRED when goalAchieved=true: exact text/content on the page that satisfies the goal. Quote the specific words you found. If goalAchieved=false, null.",
+  "failureReason": "When giving up: what you were looking for but could not find, and what you see instead",
   "newConfusion": 0.0-1.0,
   "newFrustration": 0.0-1.0,
   "mood": "neutral|hopeful|confused|frustrated|defeated|relieved",
   "frictionDescription": "what caused confusion/frustration (if any)" | null,
   "frictionElement": "element that caused friction" | null
 }
+
+GOAL EVIDENCE RULES:
+- When setting goalAchieved=true, you MUST provide goalEvidence with the EXACT text you found on the page
+- goalEvidence should be a direct quote from the page content, not a summary
+- If you cannot quote specific text proving the goal is met, set goalAchieved=false
+- Example: goal "find application deadline" → goalEvidence: "Application deadline: March 1, 2026 for fall semester"
 
 ACTIONS:
 - click:selector - Click an element (auto-hovers parent menus for dropdowns)
@@ -1038,6 +1119,12 @@ interface ParsedCognitiveResponse {
   actionSuccess?: boolean;
   /** Error message if action failed (v13.1.0) */
   errorMessage?: string;
+  /** v18.29.0: Element the persona is currently focused on */
+  focusedElement?: string;
+  /** v18.29.0: Evidence for goal completion — exact text from page */
+  goalEvidence?: string;
+  /** v18.29.0: Reason for failure — what was sought but not found */
+  failureReason?: string;
 }
 
 function parseCognitiveResponse(response: string): ParsedCognitiveResponse {
