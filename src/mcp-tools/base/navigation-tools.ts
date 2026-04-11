@@ -24,7 +24,17 @@ export function registerNavigationTools(
     },
     async ({ url }) => {
       const b = await getBrowser();
-      const result = await b.navigate(url);
+      let result = await b.navigate(url);
+
+      // v18.30.0: Auto-recover from corrupted browser state
+      if (!result.title && !result.screenshot) {
+        try {
+          console.warn(`[navigate] Blank page after navigation to ${url}. Resetting browser.`);
+          await b.close();
+          await b.launch();
+          result = await b.navigate(url);
+        } catch {}
+      }
 
       return {
         content: buildContentWithScreenshots(

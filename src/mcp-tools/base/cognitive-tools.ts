@@ -187,6 +187,29 @@ export function registerCognitiveTools(
 
       await b.navigate(startUrl);
 
+      // v18.30.0: Verify browser is healthy after navigation
+      // JS-heavy sites can crash the persistent browser context
+      try {
+        const page = await b.getPage();
+        const title = await page.title().catch(() => '');
+        const bodyLen = await page.evaluate(() => document.body?.innerText?.length || 0).catch(() => 0);
+        if (bodyLen === 0 && !title) {
+          // Page is blank — browser context is corrupted. Reset.
+          console.warn(`[cognitive_journey_init] Blank page detected after navigating to ${startUrl}. Resetting browser.`);
+          await b.close();
+          await b.launch();
+          await b.navigate(startUrl);
+        }
+      } catch (e) {
+        // If we can't even check, try resetting
+        console.warn(`[cognitive_journey_init] Browser health check failed: ${(e as Error).message}. Resetting.`);
+        try {
+          await b.close();
+          await b.launch();
+          await b.navigate(startUrl);
+        } catch {}
+      }
+
       const personaValues = getPersonaValues(personaObj.name);
       const influencePatterns = personaValues
         ? rankInfluencePatternsForProfile(personaValues).slice(0, 5)
