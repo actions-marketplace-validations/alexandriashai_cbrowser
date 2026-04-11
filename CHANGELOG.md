@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.33.0](https://github.com/alexandriashai/cbrowser/compare/v18.32.4...v18.33.0) (2026-04-11)
+
+### Added
+
+* **session:** tool-level browser tokens for session continuity ([#159](https://github.com/alexandriashai/cbrowser/issues/159)) ([ee9937e](https://github.com/alexandriashai/cbrowser/commit/ee9937ee25a03c386568512693457a15a26732f8))
+
 ## [18.32.4](https://github.com/alexandriashai/cbrowser/compare/v18.32.3...v18.32.4) (2026-04-11)
 
 ### Fixed
