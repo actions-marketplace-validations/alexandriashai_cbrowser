@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.34.1](https://github.com/alexandriashai/cbrowser/compare/v18.34.0...v18.34.1) (2026-04-11)
+
+### Fixed
+
+* **visual:** remove single-capture mode, always use smart barycenter ([37ca020](https://github.com/alexandriashai/cbrowser/commit/37ca020056d9e6c004b6c52ae6b5388420623427))
+
 ## [18.34.0](https://github.com/alexandriashai/cbrowser/compare/v18.33.1...v18.34.0) (2026-04-11)
 
 ### Added
