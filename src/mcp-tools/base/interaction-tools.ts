@@ -18,7 +18,7 @@ export function registerInteractionTools(
 ): void {
   server.tool(
     "click",
-    "Click an element on the page. Pass _browserToken to maintain session continuity.",
+    "Click an element on the page. MUST pass _browserToken from previous tool call to click on the same page. Without it, clicks go to a blank new browser.",
     {
       selector: z.string().describe("Element to click (text content, CSS selector, or description)"),
       force: z.boolean().optional().describe("Allow clicking red-zone elements"),
@@ -113,7 +113,7 @@ export function registerInteractionTools(
 
   server.tool(
     "fill",
-    "Fill a form field with text. Pass _browserToken for session continuity.",
+    "Fill a form field with text. MUST pass _browserToken from previous tool call to interact with the same page.",
     {
       selector: z.string().describe("Input field to fill (name, placeholder, label, or selector)"),
       value: z.string().describe("Value to enter"),
@@ -149,7 +149,7 @@ export function registerInteractionTools(
 
   server.tool(
     "scroll",
-    "Scroll the page. Pass _browserToken for session continuity.",
+    "Scroll the page. MUST pass _browserToken from previous tool call to scroll the same page.",
     {
       direction: z.enum(["down", "up", "top", "bottom"]).default("down").describe("Scroll direction"),
       amount: z.number().optional().describe("Custom scroll amount in pixels"),

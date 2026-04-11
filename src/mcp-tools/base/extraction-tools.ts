@@ -18,7 +18,7 @@ export function registerExtractionTools(
 ): void {
   server.tool(
     "screenshot",
-    "Take a screenshot of the current page. Pass _browserToken from a previous tool call to use the same browser session.",
+    "Take a screenshot of the current page. IMPORTANT: If you received a _browserToken from a previous tool call (navigate, cognitive_journey_init), you MUST pass it here to see the same page. Without it, you get a blank new browser.",
     {
       path: z.string().optional().describe("Optional path to save the screenshot"),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
