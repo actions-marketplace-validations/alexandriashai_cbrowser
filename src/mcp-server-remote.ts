@@ -697,10 +697,95 @@ function createMcpServer(
   customRegisterTools?: (server: McpServer, context: ToolRegistrationContext) => void | Promise<void>,
   sessionId?: string
 ): McpServer {
-  const server = new McpServer({
-    name: "cbrowser",
-    version: VERSION,
-  });
+  const server = new McpServer(
+    {
+      name: "cbrowser",
+      title: "CBrowser — Cognitive Browser Automation",
+      version: VERSION,
+      description: "AI-powered browser automation with cognitive user simulation. 105 MCP tools for navigation, visual testing, accessibility auditing, persona-based testing, site knowledge learning, and security scanning. Simulates how real humans think, struggle, and give up on your site.",
+      websiteUrl: "https://cbrowser.ai",
+      icons: [{ src: "https://cbrowser.ai/favicon.ico", sizes: ["32x32"] }],
+    },
+    {
+      capabilities: {
+        tools: { listChanged: true },
+        prompts: {},
+        resources: {},
+      },
+      instructions: "CBrowser simulates real user cognition on websites. Use cognitive_journey_init to start a persona simulation, empathy_audit to test accessibility, agent_ready_audit to check AI-friendliness, or navigate/click/fill for direct browser control. All tools support _browserToken for session continuity.",
+    }
+  );
+
+  // Register prompts for common workflows
+  server.prompt(
+    "audit-site",
+    "Run a comprehensive site audit with empathy, agent-readiness, and visual baseline",
+    async () => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: "Please run a comprehensive audit on this site:\n1. Run agent_ready_audit to check AI-friendliness\n2. Run empathy_audit with persona \"cognitive-adhd\" to test accessibility\n3. Run page_understand to analyze the page structure\n4. Summarize the findings with recommendations",
+        },
+      }],
+    })
+  );
+
+  server.prompt(
+    "cognitive-journey",
+    "Simulate a user journey with a specific persona and goal",
+    async () => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: "Start a cognitive journey simulation. Ask me for:\n1. The URL to test\n2. Which persona to use (first-timer, elderly-user, power-user, etc.)\n3. The goal to accomplish\n\nThen use cognitive_journey_init and simulate step by step.",
+        },
+      }],
+    })
+  );
+
+  server.prompt(
+    "security-scan",
+    "Run a security scan on an authorized domain",
+    async () => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: "Run a security scan. Ask me for the URL to scan, then use web_security_scan with confirm_authorized=true. Also run security_audit to check MCP tool definitions. Summarize all findings.",
+        },
+      }],
+    })
+  );
+
+  // Register resources
+  server.resource(
+    "docs://tools-overview",
+    "docs://tools-overview",
+    { description: "Overview of all 105 CBrowser MCP tools organized by category", mimeType: "text/plain" },
+    async () => ({
+      contents: [{
+        uri: "docs://tools-overview",
+        text: "CBrowser provides 105 MCP tools across 11 categories: Browser Automation, Visual Testing, Cognitive Journeys, Site Knowledge, Accessibility, Persona System, Testing, Performance, Security, Session Management, and Marketing. Visit https://cbrowser.ai/docs/Tools-Overview for the complete reference.",
+        mimeType: "text/plain",
+      }],
+    })
+  );
+
+  server.resource(
+    "docs://personas",
+    "docs://personas",
+    { description: "List of 21 built-in personas with cognitive traits", mimeType: "text/plain" },
+    async () => ({
+      contents: [{
+        uri: "docs://personas",
+        text: "CBrowser includes 21 personas: Cognitive (7): power-user, first-timer, mobile-user, elderly-user, impatient-user, impatient-explorer, screen-reader-user. Accessibility (11): motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia, autism-spectrum, intellectual-disability, aphasia-receptive, dyscalculia. Each persona has 26 cognitive traits. Visit https://cbrowser.ai/docs/Persona-Index for details.",
+        mimeType: "text/plain",
+      }],
+    })
+  );
+
   configureMcpTools(server, customRegisterTools, sessionId);
   return server;
 }
