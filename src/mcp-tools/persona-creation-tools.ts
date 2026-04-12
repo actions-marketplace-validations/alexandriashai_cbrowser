@@ -258,14 +258,21 @@ function convertToThirdPerson(question: string, personaName: string): string {
  * Register persona creation tools (7 tools)
  */
 export function registerPersonaCreationTools(server: McpServer): void {
-  server.tool(
-    "persona_create_start",
-    "Start creating a custom persona. Best practice: present the choice to the user via AskUserQuestion (questionnaire vs description mode) rather than showing raw JSON.",
-    {
+  server.registerTool("persona_create_start", {
+    title: "Start Persona Creation",
+    description: "Start creating a custom persona. Best practice: present the choice to the user via AskUserQuestion (questionnaire vs description mode) rather than showing raw JSON.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the new persona (e.g., 'tech-savvy-millennial')"),
       comprehensive: z.boolean().optional().describe("Include all 25 traits (true) or just core 8 traits (false, default)"),
     },
-    async ({ persona_name, comprehensive = false }) => {
+    annotations: {
+      title: "Start Persona Creation",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, comprehensive = false }) => {
       const sessionId = getSessionId();
 
       const existingSession = getQuestionnaireSession(sessionId);
@@ -312,14 +319,21 @@ IMPORTANT: Do NOT show this text to the user. USE AskUserQuestion to present the
     }
   );
 
-  server.tool(
-    "persona_create_questionnaire_start",
-    "Start the questionnaire mode for persona creation. Each question is best presented via AskUserQuestion for interactive selection.",
-    {
+  server.registerTool("persona_create_questionnaire_start", {
+    title: "Start Persona Questionnaire",
+    description: "Start the questionnaire mode for persona creation. Each question is best presented via AskUserQuestion for interactive selection.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the new persona"),
       comprehensive: z.boolean().optional().describe("Include all 25 traits (default: false, core 8 traits only)"),
     },
-    async ({ persona_name, comprehensive = false }) => {
+    annotations: {
+      title: "Start Persona Questionnaire",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, comprehensive = false }) => {
       const sessionId = getSessionId();
       const rawQuestions = generatePersonaQuestionnaire({ comprehensive });
 
@@ -363,13 +377,20 @@ IMPORTANT: Use AskUserQuestion - do NOT just display this text.`,
     }
   );
 
-  server.tool(
-    "persona_create_questionnaire_answer",
-    "Submit an answer for the current questionnaire question. Returns instructions for the next question, or completed persona when done.",
-    {
+  server.registerTool("persona_create_questionnaire_answer", {
+    title: "Answer Questionnaire Question",
+    description: "Submit an answer for the current questionnaire question. Returns instructions for the next question, or completed persona when done.",
+    inputSchema: {
       answer_value: z.number().min(0).max(1).describe("The value selected (0.0, 0.25, 0.33, 0.67, 0.75, or 1.0)"),
     },
-    async ({ answer_value }) => {
+    annotations: {
+      title: "Answer Questionnaire Question",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ answer_value }) => {
       const sessionId = getSessionId();
       const session = getQuestionnaireSession(sessionId);
 
@@ -505,14 +526,21 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_create_from_description",
-    "Create a persona from a text description. Returns trait reference matrix for Claude to infer appropriate values.",
-    {
+  server.registerTool("persona_create_from_description", {
+    title: "Create Persona from Description",
+    description: "Create a persona from a text description. Returns trait reference matrix for Claude to infer appropriate values.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the new persona"),
       description: z.string().describe("Text description of the persona (e.g., 'An impatient power user who skims content')"),
     },
-    async ({ persona_name, description }) => {
+    annotations: {
+      title: "Create Persona from Description",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, description }) => {
       const traitInfo = TRAIT_REFERENCE_MATRIX.map(trait => ({
         name: trait.name,
         description: trait.description,
@@ -548,15 +576,22 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_create_submit_traits",
-    "Submit inferred traits for a persona created from description. Use after persona_create_from_description.",
-    {
+  server.registerTool("persona_create_submit_traits", {
+    title: "Submit Persona Traits",
+    description: "Submit inferred traits for a persona created from description. Use after persona_create_from_description.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the persona"),
       traits: z.record(z.string(), z.number()).describe("Map of trait names to values (0-1)"),
       description: z.string().optional().describe("Original description for reference"),
     },
-    async ({ persona_name, traits, description }) => {
+    annotations: {
+      title: "Submit Persona Traits",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, traits, description }) => {
       const builtTraits = buildTraitsFromAnswers(traits);
       const derivedResult = deriveValuesFromTraits(builtTraits);
 
@@ -584,11 +619,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_create_cancel",
-    "Cancel the current persona creation questionnaire session.",
-    {},
-    async () => {
+  server.registerTool("persona_create_cancel", {
+    title: "Cancel Persona Creation",
+    description: "Cancel the current persona creation questionnaire session.",
+    inputSchema: {},
+    annotations: {
+      title: "Cancel Persona Creation",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const sessionId = getSessionId();
       const session = getQuestionnaireSession(sessionId);
 
@@ -621,11 +663,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_traits_list",
-    "List all available cognitive traits with descriptions. Useful for understanding what traits can be customized.",
-    {},
-    async () => {
+  server.registerTool("persona_traits_list", {
+    title: "List Persona Traits",
+    description: "List all available cognitive traits with descriptions. Useful for understanding what traits can be customized.",
+    inputSchema: {},
+    annotations: {
+      title: "List Persona Traits",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const traits = TRAIT_REFERENCE_MATRIX.map(trait => ({
         name: trait.name,
         description: trait.description,

@@ -14,11 +14,18 @@ export function registerHealingTools(
   server: McpServer,
   { getBrowser }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "heal_stats",
-    "Get self-healing selector cache statistics",
-    {},
-    async () => {
+  server.registerTool("heal_stats", {
+    title: "Selector Healing Statistics",
+    description: "Get self-healing selector cache statistics",
+    inputSchema: {},
+    annotations: {
+      title: "Selector Healing Statistics",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const b = await getBrowser();
       const stats = b.getSelectorCacheStats();
       return {

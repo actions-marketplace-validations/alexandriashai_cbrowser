@@ -19,13 +19,20 @@ import { listAccessibilityPersonas } from "../../personas.js";
  * Register audit tools (4 tools: agent_ready_audit, competitive_benchmark, empathy_audit, webmcp_ready_audit)
  */
 export function registerAuditTools(server: McpServer): void {
-  server.tool(
-    "agent_ready_audit",
-    "Audit a website for AI-agent friendliness. Analyzes findability, stability, accessibility, and semantics. Returns score (0-100), grade (A-F), issues, and remediation recommendations.",
-    {
+  server.registerTool("agent_ready_audit", {
+    title: "Agent-Ready Audit",
+    description: "Audit a website for AI-agent friendliness. Analyzes findability, stability, accessibility, and semantics. Returns score (0-100), grade (A-F), issues, and remediation recommendations.",
+    inputSchema: {
       url: z.string().url().describe("URL to audit"),
     },
-    async ({ url }) => {
+    annotations: {
+      title: "Agent-Ready Audit",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url }) => {
       const result = await runAgentReadyAudit(url, { headless: true });
       return {
         content: [
@@ -46,17 +53,24 @@ export function registerAuditTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "competitive_benchmark",
-    "Compare UX across competitor sites. Runs identical cognitive journeys on multiple sites and generates head-to-head comparison with rankings, friction analysis, and recommendations.",
-    {
+  server.registerTool("competitive_benchmark", {
+    title: "Competitive Benchmark",
+    description: "Compare UX across competitor sites. Runs identical cognitive journeys on multiple sites and generates head-to-head comparison with rankings, friction analysis, and recommendations.",
+    inputSchema: {
       sites: z.array(z.string().url()).describe("Array of URLs to compare"),
       goal: z.string().describe("Task goal (e.g., 'sign up for free trial')"),
       persona: z.string().optional().default("first-timer").describe("Persona to use"),
       maxSteps: z.number().optional().default(8).describe("Max steps per site (keep low to avoid timeout)"),
       maxTime: z.number().optional().default(20).describe("Max time per site in seconds"),
     },
-    async ({ sites, goal, persona, maxSteps, maxTime }) => {
+    annotations: {
+      title: "Competitive Benchmark",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ sites, goal, persona, maxSteps, maxTime }) => {
       const result = await runCompetitiveBenchmark({
         sites: sites.map((url) => ({ url })),
         goal,
@@ -83,10 +97,10 @@ export function registerAuditTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "empathy_audit",
-    "Simulate how real users experience a site. Accepts ANY persona — disability personas get specialized barrier detection, non-disability personas get general UX analysis with a flag. Tests ONE persona per call. Disability: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia. General: first-timer, power-user, mobile-user, elderly-user, impatient-user, or any custom persona.",
-    {
+  server.registerTool("empathy_audit", {
+    title: "Empathy Accessibility Audit",
+    description: "Simulate how real users experience a site. Accepts ANY persona — disability personas get specialized barrier detection, non-disability personas get general UX analysis with a flag. Tests ONE persona per call. Disability: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia. General: first-timer, power-user, mobile-user, elderly-user, impatient-user, or any custom persona.",
+    inputSchema: {
       url: z.string().url().describe("URL to audit"),
       goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
       disabilities: z.array(z.string()).optional().describe("Persona to test. Accepts disability names OR any cognitive persona (first-timer, power-user, etc). Non-disability personas are flagged. Pass ONE for reliable results."),
@@ -94,7 +108,14 @@ export function registerAuditTools(server: McpServer): void {
       maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
       maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
     },
-    async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime }) => {
+    annotations: {
+      title: "Empathy Accessibility Audit",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime }) => {
       try {
         // Auto-limit to 1 persona to avoid MCP client timeout on Claude.ai (~60s limit)
         const allPersonas = listAccessibilityPersonas();
@@ -222,16 +243,23 @@ export function registerAuditTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "webmcp_ready_audit",
-    "Audit an MCP server for Claude in Chrome / WebMCP compatibility. Uses 6-tier evaluation: Server Implementation (25%), Tool Discoverability (20%), Instrumentation (15%), Consistency (15%), Agent Optimizations (15%), Documentation (10%). Returns score (0-100), grade (A-F), tier breakdown, issues, and recommendations.",
-    {
+  server.registerTool("webmcp_ready_audit", {
+    title: "WebMCP Readiness Audit",
+    description: "Audit an MCP server for Claude in Chrome / WebMCP compatibility. Uses 6-tier evaluation: Server Implementation (25%), Tool Discoverability (20%), Instrumentation (15%), Consistency (15%), Agent Optimizations (15%), Documentation (10%). Returns score (0-100), grade (A-F), tier breakdown, issues, and recommendations.",
+    inputSchema: {
       url: z.string().url().describe("MCP server URL to audit (e.g., https://demo.cbrowser.ai/mcp)"),
       apiKey: z.string().optional().describe("API key if server requires authentication"),
       oauthToken: z.string().optional().describe("OAuth token if server uses OAuth"),
       timeout: z.number().optional().default(30000).describe("Timeout in ms (default: 30000)"),
     },
-    async ({ url, apiKey, oauthToken, timeout }) => {
+    annotations: {
+      title: "WebMCP Readiness Audit",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, apiKey, oauthToken, timeout }) => {
       const result = await runWebMCPReadyAudit(url, {
         apiKey,
         oauthToken,

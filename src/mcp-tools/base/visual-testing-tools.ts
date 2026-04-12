@@ -20,10 +20,10 @@ import {
  * Register visual testing tools (6 tools: visual_baseline, visual_regression, cross_browser_test, cross_browser_diff, responsive_test, ab_comparison)
  */
 export function registerVisualTestingTools(server: McpServer): void {
-  server.tool(
-    "visual_baseline",
-    "Capture a visual baseline using Wasserstein barycenter. Takes multiple screenshots, rejects outliers, computes optimal consensus reference with adaptive threshold. Robust to dynamic content, animations, and timing variations.",
-    {
+  server.registerTool("visual_baseline", {
+    title: "Capture Visual Baseline",
+    description: "Capture a visual baseline using Wasserstein barycenter. Takes multiple screenshots, rejects outliers, computes optimal consensus reference with adaptive threshold. Robust to dynamic content, animations, and timing variations.",
+    inputSchema: {
       url: z.string().url().describe("URL to capture baseline for"),
       name: z.string().describe("Name for the baseline"),
       captures: z.number().optional().default(3).describe("Number of screenshots (default 3). More = more robust but slower."),
@@ -31,7 +31,14 @@ export function registerVisualTestingTools(server: McpServer): void {
       selector: z.string().optional().describe("CSS selector to capture specific element"),
       device: z.string().optional().describe("Device emulation (e.g. mobile, tablet, iphone-15)"),
     },
-    async ({ url, name, captures, delay, selector, device }) => {
+    annotations: {
+      title: "Capture Visual Baseline",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, name, captures, delay, selector, device }) => {
       const { captureSmartBaseline } = await import("../../visual/index.js");
       const result = await captureSmartBaseline(url, name, {
         numCaptures: captures || 3,
@@ -59,16 +66,23 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "visual_regression",
-    "Run visual regression test against a baseline. Automatically uses smart regression (Wasserstein) if a smart baseline exists for this name, otherwise falls back to traditional comparison.",
-    {
+  server.registerTool("visual_regression", {
+    title: "Visual Regression Test",
+    description: "Run visual regression test against a baseline. Automatically uses smart regression (Wasserstein) if a smart baseline exists for this name, otherwise falls back to traditional comparison.",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       baselineName: z.string().describe("Name of baseline to compare against"),
       transportMap: z.boolean().optional().describe("Also generate a visual transport map showing where content moved"),
       threshold: z.number().optional().describe("Override similarity threshold (0-1). Smart baselines use adaptive thresholds by default."),
     },
-    async ({ url, baselineName, transportMap: wantMap, threshold }) => {
+    annotations: {
+      title: "Visual Regression Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, baselineName, transportMap: wantMap, threshold }) => {
       // Check if a smart baseline exists — if so, use smart regression
       const { getSmartBaseline, runSmartRegression, runRegressionWithTransportMap } = await import("../../visual/index.js");
       const smartBaseline = getSmartBaseline(baselineName);
@@ -135,14 +149,21 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "cross_browser_test",
-    "Test page rendering across multiple browsers",
-    {
+  server.registerTool("cross_browser_test", {
+    title: "Cross-Browser Test",
+    description: "Test page rendering across multiple browsers",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       browsers: z.array(z.enum(["chromium", "firefox", "webkit"])).optional().describe("Browsers to test"),
     },
-    async ({ url, browsers }) => {
+    annotations: {
+      title: "Cross-Browser Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, browsers }) => {
       const result = await runCrossBrowserTest(url, { browsers });
       return {
         content: [
@@ -164,14 +185,21 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "cross_browser_diff",
-    "Quick diff of page metrics across browsers",
-    {
+  server.registerTool("cross_browser_diff", {
+    title: "Cross-Browser Diff",
+    description: "Quick diff of page metrics across browsers",
+    inputSchema: {
       url: z.string().url().describe("URL to compare"),
       browsers: z.array(z.enum(["chromium", "firefox", "webkit"])).optional().describe("Browsers to compare"),
     },
-    async ({ url, browsers }) => {
+    annotations: {
+      title: "Cross-Browser Diff",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, browsers }) => {
       const result = await crossBrowserDiff(url, browsers);
       return {
         content: [
@@ -192,14 +220,21 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "responsive_test",
-    "Test page across different viewport sizes",
-    {
+  server.registerTool("responsive_test", {
+    title: "Responsive Test",
+    description: "Test page across different viewport sizes",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       viewports: z.array(z.string()).optional().describe("Viewport presets (mobile, tablet, desktop, etc.)"),
     },
-    async ({ url, viewports }) => {
+    annotations: {
+      title: "Responsive Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, viewports }) => {
       const result = await runResponsiveTest(url, { viewports });
       return {
         content: [
@@ -217,16 +252,23 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "ab_comparison",
-    "Compare two URLs visually (staging vs production)",
-    {
+  server.registerTool("ab_comparison", {
+    title: "A/B Visual Comparison",
+    description: "Compare two URLs visually (staging vs production)",
+    inputSchema: {
       urlA: z.string().url().describe("First URL (e.g., staging)"),
       urlB: z.string().url().describe("Second URL (e.g., production)"),
       labelA: z.string().optional().describe("Label for first URL"),
       labelB: z.string().optional().describe("Label for second URL"),
     },
-    async ({ urlA, urlB, labelA, labelB }) => {
+    annotations: {
+      title: "A/B Visual Comparison",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ urlA, urlB, labelA, labelB }) => {
       const labels = labelA && labelB ? { a: labelA, b: labelB } : undefined;
       const result = await runABComparison(urlA, urlB, { labels });
       return {
@@ -268,16 +310,23 @@ export function registerVisualTestingTools(server: McpServer): void {
 
   // smart_baseline and smart_regression merged into visual_baseline and visual_regression (v18.34.0)
 
-  server.tool(
-    "transport_map",
-    "Generate a Visual Transport Map showing WHERE visual content moved between two screenshots. Produces heatmap, flow arrows, hotspots, and SVG visualization.",
-    {
+  server.registerTool("transport_map", {
+    title: "Visual Transport Map",
+    description: "Generate a Visual Transport Map showing WHERE visual content moved between two screenshots. Produces heatmap, flow arrows, hotspots, and SVG visualization.",
+    inputSchema: {
       baselinePath: z.string().describe("Path to baseline screenshot"),
       currentPath: z.string().describe("Path to current screenshot"),
       cellSize: z.number().optional().describe("Grid cell size in pixels (default: 32)"),
       hotspots: z.number().optional().describe("Number of hotspots to identify (default: 5)"),
     },
-    async ({ baselinePath, currentPath, cellSize, hotspots: numHotspots }) => {
+    annotations: {
+      title: "Visual Transport Map",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ baselinePath, currentPath, cellSize, hotspots: numHotspots }) => {
       const { computeTransportMap } = await import("../../visual/distance-metrics.js");
       const result = await computeTransportMap(baselinePath, currentPath, { cellSize, numHotspots });
 
@@ -312,15 +361,22 @@ export function registerVisualTestingTools(server: McpServer): void {
 
   // ── Attention Transport (v18.28.0) ──
 
-  server.tool(
-    "attention_analysis",
-    "Analyze where a persona's visual attention goes on a page using Wasserstein saliency. Produces attention alignment, entropy, concentration, and top attention areas. Based on Klein & Frintrop W₂ on CIE-Lab distributions.",
-    {
+  server.registerTool("attention_analysis", {
+    title: "Attention Saliency Analysis",
+    description: "Analyze where a persona's visual attention goes on a page using Wasserstein saliency. Produces attention alignment, entropy, concentration, and top attention areas. Based on Klein & Frintrop W₂ on CIE-Lab distributions.",
+    inputSchema: {
       url: z.string().describe("URL to analyze"),
       persona: z.string().optional().default("first-timer").describe("Persona name"),
       cellSize: z.number().optional().default(16).describe("Saliency grid cell size"),
     },
-    async ({ url, persona, cellSize }) => {
+    annotations: {
+      title: "Attention Saliency Analysis",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, persona, cellSize }) => {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
       const { join } = await import("path");
@@ -366,15 +422,22 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "attention_compare",
-    "Compare attention patterns between two personas on the same page. Shows where they look differently and the Wasserstein divergence between their saliency maps.",
-    {
+  server.registerTool("attention_compare", {
+    title: "Compare Persona Attention",
+    description: "Compare attention patterns between two personas on the same page. Shows where they look differently and the Wasserstein divergence between their saliency maps.",
+    inputSchema: {
       url: z.string().describe("URL to analyze"),
       personaA: z.string().describe("First persona"),
       personaB: z.string().describe("Second persona"),
     },
-    async ({ url, personaA, personaB }) => {
+    annotations: {
+      title: "Compare Persona Attention",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, personaA, personaB }) => {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
       const { join } = await import("path");

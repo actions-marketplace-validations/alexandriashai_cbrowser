@@ -15,13 +15,20 @@ export function registerSessionTools(
   server: McpServer,
   { getBrowser }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "save_session",
-    "Save browser session (cookies, storage) for later use",
-    {
+  server.registerTool("save_session", {
+    title: "Save Browser Session",
+    description: "Save browser session (cookies, storage) for later use",
+    inputSchema: {
       name: z.string().describe("Name for the saved session"),
     },
-    async ({ name }) => {
+    annotations: {
+      title: "Save Browser Session",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ name }) => {
       const b = await getBrowser();
       await b.saveSession(name);
       return {
@@ -35,13 +42,20 @@ export function registerSessionTools(
     }
   );
 
-  server.tool(
-    "load_session",
-    "Load a previously saved session",
-    {
+  server.registerTool("load_session", {
+    title: "Load Browser Session",
+    description: "Load a previously saved session",
+    inputSchema: {
       name: z.string().describe("Name of the session to load"),
     },
-    async ({ name }) => {
+    annotations: {
+      title: "Load Browser Session",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ name }) => {
       const b = await getBrowser();
       const result = await b.loadSession(name);
       return {
@@ -55,11 +69,18 @@ export function registerSessionTools(
     }
   );
 
-  server.tool(
-    "list_sessions",
-    "List all saved sessions with metadata (name, domain, cookies count, localStorage keys, created date, size)",
-    {},
-    async () => {
+  server.registerTool("list_sessions", {
+    title: "List Saved Sessions",
+    description: "List all saved sessions with metadata (name, domain, cookies count, localStorage keys, created date, size)",
+    inputSchema: {},
+    annotations: {
+      title: "List Saved Sessions",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const b = await getBrowser();
       const sessions = b.listSessionsDetailed();
       return {
@@ -73,13 +94,20 @@ export function registerSessionTools(
     }
   );
 
-  server.tool(
-    "delete_session",
-    "Delete a saved session by name",
-    {
+  server.registerTool("delete_session", {
+    title: "Delete Saved Session",
+    description: "Delete a saved session by name",
+    inputSchema: {
       name: z.string().describe("Name of the session to delete"),
     },
-    async ({ name }) => {
+    annotations: {
+      title: "Delete Saved Session",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ name }) => {
       const b = await getBrowser();
       const deleted = b.deleteSession(name);
       return {

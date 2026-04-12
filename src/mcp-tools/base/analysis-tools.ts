@@ -16,11 +16,18 @@ export function registerAnalysisTools(
   server: McpServer,
   { getBrowser }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "analyze_page",
-    "Analyze page structure for forms, buttons, links",
-    {},
-    async () => {
+  server.registerTool("analyze_page", {
+    title: "Analyze Page Structure",
+    description: "Analyze page structure for forms, buttons, links",
+    inputSchema: {},
+    annotations: {
+      title: "Analyze Page Structure",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const b = await getBrowser();
       const analysis = await b.analyzePage();
       return {
@@ -42,13 +49,20 @@ export function registerAnalysisTools(
     }
   );
 
-  server.tool(
-    "generate_tests",
-    "Generate test scenarios for a page",
-    {
+  server.registerTool("generate_tests", {
+    title: "Generate Test Cases",
+    description: "Generate test scenarios for a page",
+    inputSchema: {
       url: z.string().url().optional().describe("URL to analyze (uses current page if not provided)"),
     },
-    async ({ url }) => {
+    annotations: {
+      title: "Generate Test Cases",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ url }) => {
       const b = await getBrowser();
       const result = await b.generateTests(url);
       return {
@@ -69,14 +83,21 @@ export function registerAnalysisTools(
     }
   );
 
-  server.tool(
-    "find_element_by_intent",
-    "AI-powered semantic element finding with ARIA-first selector strategy. Prioritizes aria-label > role > semantic HTML > ID > name > class. Returns selectorType, accessibilityScore (0-1), and alternatives. Use verbose=true for enriched failure responses.",
-    {
+  server.registerTool("find_element_by_intent", {
+    title: "Find Element by Intent",
+    description: "AI-powered semantic element finding with ARIA-first selector strategy. Prioritizes aria-label > role > semantic HTML > ID > name > class. Returns selectorType, accessibilityScore (0-1), and alternatives. Use verbose=true for enriched failure responses.",
+    inputSchema: {
       intent: z.string().describe("Natural language description like 'the cheapest product' or 'login form'"),
       verbose: z.boolean().optional().describe("Include alternative matches with confidence scores and AI suggestions"),
     },
-    async ({ intent, verbose }) => {
+    annotations: {
+      title: "Find Element by Intent",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ intent, verbose }) => {
       const b = await getBrowser();
       const result = await findElementByIntent(b, intent, { verbose });
       if (result && result.confidence > 0) {
@@ -90,14 +111,21 @@ export function registerAnalysisTools(
     }
   );
 
-  server.tool(
-    "ai_benchmark",
-    "Compare AI-friendliness across competitor sites. Runs agent-ready audits on each URL, ranks by AI readiness grade, and identifies what each competitor does better for AI agents. Use for competitive intelligence on AI-readiness.",
-    {
+  server.registerTool("ai_benchmark", {
+    title: "AI Friendliness Benchmark",
+    description: "Compare AI-friendliness across competitor sites. Runs agent-ready audits on each URL, ranks by AI readiness grade, and identifies what each competitor does better for AI agents. Use for competitive intelligence on AI-readiness.",
+    inputSchema: {
       urls: z.array(z.string().url()).describe("Array of competitor URLs to benchmark"),
       goal: z.string().optional().describe("Optional goal for context (e.g., 'complete checkout')"),
     },
-    async ({ urls, goal }) => {
+    annotations: {
+      title: "AI Friendliness Benchmark",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ urls, goal }) => {
       const result = await runAIReadinessBenchmark({
         urls,
         goal,

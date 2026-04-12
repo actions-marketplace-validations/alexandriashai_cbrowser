@@ -16,14 +16,21 @@ export function registerNavigationTools(
   server: McpServer,
   { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "navigate",
-    "Navigate to a URL and take a screenshot. Pass _browserToken from a previous tool call to reuse the same browser session.",
-    {
+  server.registerTool("navigate", {
+    title: "Navigate to URL",
+    description: "Navigate to a URL and take a screenshot. Pass _browserToken from a previous tool call to reuse the same browser session.",
+    inputSchema: {
       url: z.string().url().describe("The URL to navigate to"),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call. Pass this to maintain browser state (cookies, page) across calls."),
     },
-    async ({ url, _browserToken }) => {
+    annotations: {
+      title: "Navigate to URL",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
       let token: string | undefined;
       if (getBrowserByToken) {

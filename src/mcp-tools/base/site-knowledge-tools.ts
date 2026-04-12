@@ -22,13 +22,20 @@ export function registerSiteKnowledgeTools(
   // Tool 1: page_understand
   // ---------------------------------------------------------------------------
 
-  server.tool(
-    "page_understand",
-    "Analyze the current page to understand its type, available actions, form structure, and navigation. Returns a rich page model with affordances, structure, and element relationships. Useful before interacting with a page to know what's possible.",
-    {
+  server.registerTool("page_understand", {
+    title: "Page Understanding Analysis",
+    description: "Analyze the current page to understand its type, available actions, form structure, and navigation. Returns a rich page model with affordances, structure, and element relationships. Useful before interacting with a page to know what's possible.",
+    inputSchema: {
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call. Pass this to analyze the same page you navigated to."),
     },
-    async ({ _browserToken }) => {
+    annotations: {
+      title: "Page Understanding Analysis",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ _browserToken }) => {
       try {
         let b: Awaited<ReturnType<typeof getBrowser>>;
         let token: string | undefined;
@@ -113,13 +120,20 @@ export function registerSiteKnowledgeTools(
   // Tool 2: site_model_status
   // ---------------------------------------------------------------------------
 
-  server.tool(
-    "site_model_status",
-    "Show what CBrowser knows about a site from previous interactions. Returns navigation graph stats, element reliability scores, known goal paths, and failure patterns.",
-    {
+  server.registerTool("site_model_status", {
+    title: "Site Model Status",
+    description: "Show what CBrowser knows about a site from previous interactions. Returns navigation graph stats, element reliability scores, known goal paths, and failure patterns.",
+    inputSchema: {
       domain: z.string().describe("Domain to check (e.g., 'example.com')"),
     },
-    async ({ domain }) => {
+    annotations: {
+      title: "Site Model Status",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ domain }) => {
       try {
         const { SiteModelManager } = await import("../../site-model/manager.js");
         const manager = SiteModelManager.getInstance();
@@ -158,10 +172,10 @@ export function registerSiteKnowledgeTools(
   // Tool 3: site_model_query
   // ---------------------------------------------------------------------------
 
-  server.tool(
-    "site_model_query",
-    "Query the site model for the best known path to achieve a goal type on a domain. Returns the most successful action sequence if one exists.",
-    {
+  server.registerTool("site_model_query", {
+    title: "Query Site Model",
+    description: "Query the site model for the best known path to achieve a goal type on a domain. Returns the most successful action sequence if one exists.",
+    inputSchema: {
       domain: z.string().describe("Domain to query (e.g., 'example.com')"),
       goalType: z.enum([
         "find_information",
@@ -173,7 +187,14 @@ export function registerSiteKnowledgeTools(
         "extract_data",
       ]).describe("Type of goal to find the best path for"),
     },
-    async ({ domain, goalType }) => {
+    annotations: {
+      title: "Query Site Model",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ domain, goalType }) => {
       try {
         const { SiteModelManager } = await import("../../site-model/manager.js");
         const manager = SiteModelManager.getInstance();
@@ -251,11 +272,18 @@ export function registerSiteKnowledgeTools(
   // Tool 4: site_profile_list
   // ---------------------------------------------------------------------------
 
-  server.tool(
-    "site_profile_list",
-    "List all persistent site profiles (saved browser state per domain). Shows which sites have saved cookies, localStorage, and auth state.",
-    {},
-    async () => {
+  server.registerTool("site_profile_list", {
+    title: "List Site Profiles",
+    description: "List all persistent site profiles (saved browser state per domain). Shows which sites have saved cookies, localStorage, and auth state.",
+    inputSchema: {},
+    annotations: {
+      title: "List Site Profiles",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       try {
         const { SiteProfileManager } = await import("../../browser/site-profile-manager.js");
         const manager = new SiteProfileManager();
@@ -307,13 +335,20 @@ export function registerSiteKnowledgeTools(
   // Tool 5: site_profile_delete
   // ---------------------------------------------------------------------------
 
-  server.tool(
-    "site_profile_delete",
-    "Delete a persistent site profile for a domain. Removes saved cookies, localStorage, and auth state.",
-    {
+  server.registerTool("site_profile_delete", {
+    title: "Delete Site Profile",
+    description: "Delete a persistent site profile for a domain. Removes saved cookies, localStorage, and auth state.",
+    inputSchema: {
       domain: z.string().describe("Domain whose profile to delete (e.g., 'example.com')"),
     },
-    async ({ domain }) => {
+    annotations: {
+      title: "Delete Site Profile",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ domain }) => {
       try {
         const { SiteProfileManager } = await import("../../browser/site-profile-manager.js");
         const manager = new SiteProfileManager();
@@ -362,13 +397,20 @@ export function registerSiteKnowledgeTools(
   // Tool 6: site_profile_status
   // ---------------------------------------------------------------------------
 
-  server.tool(
-    "site_profile_status",
-    "Check the health of a site profile. Shows cookie count, expiry status, auth state, and whether the profile is still usable.",
-    {
+  server.registerTool("site_profile_status", {
+    title: "Site Profile Health",
+    description: "Check the health of a site profile. Shows cookie count, expiry status, auth state, and whether the profile is still usable.",
+    inputSchema: {
       domain: z.string().describe("Domain to check (e.g., 'example.com')"),
     },
-    async ({ domain }) => {
+    annotations: {
+      title: "Site Profile Health",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ domain }) => {
       try {
         const { SiteProfileManager } = await import("../../browser/site-profile-manager.js");
         const manager = new SiteProfileManager();

@@ -23,14 +23,21 @@ export function registerRemediationTools(
   server: McpServer,
   _context: ToolRegistrationContext
 ): void {
-  server.tool(
-    "remediation_patches",
-    "Generate code patches to fix agent-ready audit issues. Returns before/after code snippets with explanations, sorted by impact. Run agent_ready_audit first to get issues.",
-    {
+  server.registerTool("remediation_patches", {
+    title: "Generate Remediation Patches",
+    description: "Generate code patches to fix agent-ready audit issues. Returns before/after code snippets with explanations, sorted by impact. Run agent_ready_audit first to get issues.",
+    inputSchema: {
       url: z.string().url().describe("URL to audit and generate patches for"),
       maxPatches: z.number().optional().default(10).describe("Maximum number of patches to return"),
     },
-    async ({ url, maxPatches }) => {
+    annotations: {
+      title: "Generate Remediation Patches",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ url, maxPatches }) => {
       // Run audit first
       const auditResult = await runAgentReadyAudit(url, { headless: true });
 
@@ -75,15 +82,22 @@ export function registerRemediationTools(
     }
   );
 
-  server.tool(
-    "llms_txt_generate",
-    "Generate an llms.txt file from a website. Extracts title, description, and navigation structure in the llms.txt format for AI-readable site descriptions.",
-    {
+  server.registerTool("llms_txt_generate", {
+    title: "Generate llms.txt",
+    description: "Generate an llms.txt file from a website. Extracts title, description, and navigation structure in the llms.txt format for AI-readable site descriptions.",
+    inputSchema: {
       url: z.string().url().describe("URL to analyze"),
       crawl: z.boolean().optional().default(false).describe("Whether to crawl linked pages for more content"),
       maxPages: z.number().optional().default(10).describe("Maximum pages to crawl if crawl is true"),
     },
-    async ({ url, crawl, maxPages }) => {
+    annotations: {
+      title: "Generate llms.txt",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, crawl, maxPages }) => {
       const result = crawl
         ? await crawlSiteForLlmsTxt(url, { maxPages, headless: true })
         : await generateLlmsTxt({ url, headless: true });
@@ -113,13 +127,20 @@ export function registerRemediationTools(
     }
   );
 
-  server.tool(
-    "structured_data_suggest",
-    "Suggest Schema.org JSON-LD structured data for a page. Detects page type (article, product, organization, etc.) and generates appropriate schema markup.",
-    {
+  server.registerTool("structured_data_suggest", {
+    title: "Suggest Structured Data",
+    description: "Suggest Schema.org JSON-LD structured data for a page. Detects page type (article, product, organization, etc.) and generates appropriate schema markup.",
+    inputSchema: {
       url: z.string().url().describe("URL to analyze"),
     },
-    async ({ url }) => {
+    annotations: {
+      title: "Suggest Structured Data",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url }) => {
       const suggestion = await suggestStructuredData({ url, headless: true });
 
       return {

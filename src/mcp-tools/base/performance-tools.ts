@@ -18,15 +18,22 @@ import { listVisualBaselines } from "../../visual/index.js";
  * Register performance tools (3 tools: perf_baseline, perf_regression, list_baselines)
  */
 export function registerPerformanceTools(server: McpServer): void {
-  server.tool(
-    "perf_baseline",
-    "Capture performance baseline for a URL",
-    {
+  server.registerTool("perf_baseline", {
+    title: "Capture Performance Baseline",
+    description: "Capture performance baseline for a URL",
+    inputSchema: {
       url: z.string().url().describe("URL to capture baseline for"),
       name: z.string().describe("Name for the baseline"),
       runs: z.number().optional().default(3).describe("Number of runs to average"),
     },
-    async ({ url, name, runs }) => {
+    annotations: {
+      title: "Capture Performance Baseline",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, name, runs }) => {
       const result = await capturePerformanceBaseline(url, { name, runs });
       const m = result.metrics;
       return {
@@ -71,16 +78,23 @@ export function registerPerformanceTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "perf_regression",
-    "Detect performance regression against baseline with configurable sensitivity. Uses dual thresholds: both percentage AND absolute change must be exceeded. Profiles: strict (perf envs, FCP 10%/50ms), normal (default, FCP 20%/100ms), ci (automated pipelines, FCP 25%/150ms), lenient (dev, FCP 30%/200ms).",
-    {
+  server.registerTool("perf_regression", {
+    title: "Performance Regression Test",
+    description: "Detect performance regression against baseline with configurable sensitivity. Uses dual thresholds: both percentage AND absolute change must be exceeded. Profiles: strict (perf envs, FCP 10%/50ms), normal (default, FCP 20%/100ms), ci (automated pipelines, FCP 25%/150ms), lenient (dev, FCP 30%/200ms).",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       baselineName: z.string().describe("Name of baseline to compare against"),
       sensitivity: z.enum(["strict", "normal", "ci", "lenient"]).optional().default("normal").describe("Sensitivity profile: strict (perf testing), normal (local dev), ci (automated pipelines), lenient (development)"),
       thresholdLcp: z.number().optional().describe("Override LCP threshold percentage"),
     },
-    async ({ url, baselineName, sensitivity, thresholdLcp }) => {
+    annotations: {
+      title: "Performance Regression Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, baselineName, sensitivity, thresholdLcp }) => {
       const result = await detectPerformanceRegression(url, baselineName, {
         sensitivity,
         thresholds: thresholdLcp ? { lcp: thresholdLcp } : undefined,
@@ -103,11 +117,18 @@ export function registerPerformanceTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "list_baselines",
-    "List all saved baselines (visual and performance)",
-    {},
-    async () => {
+  server.registerTool("list_baselines", {
+    title: "List Performance Baselines",
+    description: "List all saved baselines (visual and performance)",
+    inputSchema: {},
+    annotations: {
+      title: "List Performance Baselines",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const visualBaselines = await listVisualBaselines();
       const perfBaselines = await listPerformanceBaselines();
       return {

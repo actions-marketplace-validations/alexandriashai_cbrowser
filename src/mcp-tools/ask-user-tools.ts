@@ -64,10 +64,10 @@ function createUserPrompt(options: {
  * Register ask_user tool (1 tool)
  */
 export function registerAskUserTool(server: McpServer): void {
-  server.tool(
-    "ask_user",
-    "Create a structured prompt to ask the user a question. Returns AskUserQuestion-compatible format. Use this when you need user input before proceeding. Claude should present this to the user and return their selection.",
-    {
+  server.registerTool("ask_user", {
+    title: "Ask User Question",
+    description: "Create a structured prompt to ask the user a question. Returns AskUserQuestion-compatible format. Use this when you need user input before proceeding. Claude should present this to the user and return their selection.",
+    inputSchema: {
       question: z.string().describe("The complete question to ask the user"),
       header: z.string().max(12).describe("Short label displayed as chip/tag (max 12 chars)"),
       context: z.array(z.string()).optional().describe("Contextual information to help the user decide"),
@@ -78,7 +78,14 @@ export function registerAskUserTool(server: McpServer): void {
       multiSelect: z.boolean().optional().describe("Whether multiple options can be selected"),
       securityNote: z.string().optional().describe("Optional security/privacy note"),
     },
-    async ({ question, header, context, options, multiSelect, securityNote }) => {
+    annotations: {
+      title: "Ask User Question",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ question, header, context, options, multiSelect, securityNote }) => {
       const prompt = createUserPrompt({
         question,
         header,

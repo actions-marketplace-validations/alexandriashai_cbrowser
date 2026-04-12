@@ -16,16 +16,23 @@ export function registerInteractionTools(
   server: McpServer,
   { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "click",
-    "Click an element on the page. MUST pass _browserToken from previous tool call to click on the same page. Without it, clicks go to a blank new browser.",
-    {
+  server.registerTool("click", {
+    title: "Click Element",
+    description: "Click an element on the page. MUST pass _browserToken from previous tool call to click on the same page. Without it, clicks go to a blank new browser.",
+    inputSchema: {
       selector: z.string().describe("Element to click (text content, CSS selector, or description)"),
       force: z.boolean().optional().describe("Allow clicking red-zone elements"),
       verbose: z.boolean().optional().describe("Return available elements on failure"),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
-    async ({ selector, force, verbose, _browserToken }) => {
+    annotations: {
+      title: "Click Element",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ selector, force, verbose, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
       let token: string | undefined;
       if (getBrowserByToken) {
@@ -67,15 +74,22 @@ export function registerInteractionTools(
     }
   );
 
-  server.tool(
-    "smart_click",
-    "Click with auto-retry and self-healing selectors. v11.8.0: Added confidence gating - only reports success if healed selector has >= 60% confidence.",
-    {
+  server.registerTool("smart_click", {
+    title: "Smart Click with Self-Healing",
+    description: "Click with auto-retry and self-healing selectors. v11.8.0: Added confidence gating - only reports success if healed selector has >= 60% confidence.",
+    inputSchema: {
       selector: z.string().describe("Element to click"),
       maxRetries: z.number().optional().default(3).describe("Maximum retry attempts"),
       dismissOverlays: z.boolean().optional().default(false).describe("Dismiss overlays before clicking"),
     },
-    async ({ selector, maxRetries, dismissOverlays }) => {
+    annotations: {
+      title: "Smart Click with Self-Healing",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ selector, maxRetries, dismissOverlays }) => {
       const b = await getBrowser();
       const result = await b.smartClick(selector, { maxRetries, dismissOverlays });
       return {
@@ -98,14 +112,21 @@ export function registerInteractionTools(
     }
   );
 
-  server.tool(
-    "dismiss_overlay",
-    "Detect and dismiss modal overlays (cookie consent, age verification, newsletter popups). Constitutional Yellow zone.",
-    {
+  server.registerTool("dismiss_overlay", {
+    title: "Dismiss Overlay",
+    description: "Detect and dismiss modal overlays (cookie consent, age verification, newsletter popups). Constitutional Yellow zone.",
+    inputSchema: {
       type: z.enum(["auto", "cookie", "age-verify", "newsletter", "custom"]).optional().default("auto").describe("Overlay type to detect"),
       customSelector: z.string().optional().describe("Custom CSS selector for overlay close button"),
     },
-    async ({ type, customSelector }) => {
+    annotations: {
+      title: "Dismiss Overlay",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ type, customSelector }) => {
       const b = await getBrowser();
       const result = await b.dismissOverlay({ type, customSelector });
       return {
@@ -125,16 +146,23 @@ export function registerInteractionTools(
     }
   );
 
-  server.tool(
-    "fill",
-    "Fill a form field with text. MUST pass _browserToken from previous tool call to interact with the same page.",
-    {
+  server.registerTool("fill", {
+    title: "Fill Form Field",
+    description: "Fill a form field with text. MUST pass _browserToken from previous tool call to interact with the same page.",
+    inputSchema: {
       selector: z.string().describe("Input field to fill (name, placeholder, label, or selector)"),
       value: z.string().describe("Value to enter"),
       verbose: z.boolean().optional().describe("Return available inputs on failure"),
       _browserToken: z.string().optional().describe("Browser session token"),
     },
-    async ({ selector, value, verbose, _browserToken }) => {
+    annotations: {
+      title: "Fill Form Field",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ selector, value, verbose, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
       let token: string | undefined;
       if (getBrowserByToken) {
@@ -172,15 +200,22 @@ export function registerInteractionTools(
     }
   );
 
-  server.tool(
-    "scroll",
-    "Scroll the page. MUST pass _browserToken from previous tool call to scroll the same page.",
-    {
+  server.registerTool("scroll", {
+    title: "Scroll Page",
+    description: "Scroll the page. MUST pass _browserToken from previous tool call to scroll the same page.",
+    inputSchema: {
       direction: z.enum(["down", "up", "top", "bottom"]).default("down").describe("Scroll direction"),
       amount: z.number().optional().describe("Custom scroll amount in pixels"),
       _browserToken: z.string().optional().describe("Browser session token"),
     },
-    async ({ direction, amount, _browserToken }) => {
+    annotations: {
+      title: "Scroll Page",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ direction, amount, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
       if (getBrowserByToken) {
         const result = await getBrowserByToken(_browserToken);

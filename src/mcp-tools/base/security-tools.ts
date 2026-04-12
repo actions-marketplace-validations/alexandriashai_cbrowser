@@ -25,10 +25,10 @@ export function setSecurityAuditToolList(tools: Array<{ name: string; descriptio
  * Register security tools (1 tool: security_audit)
  */
 export function registerSecurityTools(server: McpServer): void {
-  server.tool(
-    "security_audit",
-    "Audit MCP tool definitions for potential prompt injection attacks. Scans tool descriptions for cross-tool instructions, privilege escalation attempts, and data exfiltration patterns. Works with: local config file (Claude Desktop), remote MCP URL (Claude.ai connectors), or self-scan of current server.",
-    {
+  server.registerTool("security_audit", {
+    title: "MCP Security Audit",
+    description: "Audit MCP tool definitions for potential prompt injection attacks. Scans tool descriptions for cross-tool instructions, privilege escalation attempts, and data exfiltration patterns. Works with: local config file (Claude Desktop), remote MCP URL (Claude.ai connectors), or self-scan of current server.",
+    inputSchema: {
       config_path: z
         .string()
         .optional()
@@ -52,7 +52,14 @@ export function registerSecurityTools(server: McpServer): void {
         .default(false)
         .describe("If true, connects to MCP servers to scan their tools (slower but more accurate)."),
     },
-    async (params) => {
+    annotations: {
+      title: "MCP Security Audit",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async (params) => {
       const { mcp_url, ...baseParams } = params;
 
       // v18.35.0: Support scanning remote MCP servers by URL

@@ -33,10 +33,10 @@ export function registerCognitiveTools(
   server: McpServer,
   { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "cognitive_journey_init",
-    "Initialize a cognitive user journey simulation. Returns the persona's cognitive profile, initial state, and abandonment thresholds. The actual simulation is driven by the LLM using browser tools (navigate, click, fill, screenshot) while tracking cognitive state.",
-    {
+  server.registerTool("cognitive_journey_init", {
+    title: "Initialize Cognitive Journey",
+    description: "Initialize a cognitive user journey simulation. Returns the persona's cognitive profile, initial state, and abandonment thresholds. The actual simulation is driven by the LLM using browser tools (navigate, click, fill, screenshot) while tracking cognitive state.",
+    inputSchema: {
       persona: z.string().describe("Persona name (e.g., 'first-timer', 'elderly-user', 'power-user') or custom description"),
       goal: z.string().describe("What the simulated user is trying to accomplish"),
       startUrl: z.string().url().describe("Starting URL for the journey"),
@@ -78,7 +78,14 @@ export function registerCognitiveTools(
         }).optional().describe("Geographic coordinates for geolocation-dependent features"),
       }).optional().describe("Override persona's location settings (timezone, locale, geolocation)"),
     },
-    async ({ persona: personaName, goal, startUrl, customTraits, location }) => {
+    annotations: {
+      title: "Initialize Cognitive Journey",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ persona: personaName, goal, startUrl, customTraits, location }) => {
       const existingPersona = getAnyPersona(personaName);
       let personaObj: Persona | AccessibilityPersona;
 
@@ -420,10 +427,10 @@ Begin the simulation now. Narrate your thoughts as this persona.
     }
   );
 
-  server.tool(
-    "cognitive_journey_update_state",
-    "Update the cognitive state during a journey simulation. Call this after each action to track mental state.",
-    {
+  server.registerTool("cognitive_journey_update_state", {
+    title: "Update Cognitive State",
+    description: "Update the cognitive state during a journey simulation. Call this after each action to track mental state.",
+    inputSchema: {
       currentState: z.object({
         patienceRemaining: z.number(),
         confusionLevel: z.number(),
@@ -447,7 +454,14 @@ Begin the simulation now. Narrate your thoughts as this persona.
         persistence: z.number(),
       }).describe("Persona traits affecting state changes"),
     },
-    async ({ currentState, actionResult, personaTraits }) => {
+    annotations: {
+      title: "Update Cognitive State",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ currentState, actionResult, personaTraits }) => {
       let newPatienceRemaining = currentState.patienceRemaining - 0.02;
       let newConfusionLevel = currentState.confusionLevel;
       let newFrustrationLevel = currentState.frustrationLevel;
@@ -538,11 +552,18 @@ Begin the simulation now. Narrate your thoughts as this persona.
     }
   );
 
-  server.tool(
-    "list_cognitive_personas",
-    "List all available personas with their cognitive traits (includes accessibility and emotional personas)",
-    {},
-    async () => {
+  server.registerTool("list_cognitive_personas", {
+    title: "List Cognitive Personas",
+    description: "List all available personas with their cognitive traits (includes accessibility and emotional personas)",
+    inputSchema: {},
+    annotations: {
+      title: "List Cognitive Personas",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const builtinNames = listPersonas();
       const accessibilityNames = listAccessibilityPersonas();
 

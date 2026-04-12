@@ -16,14 +16,21 @@ export function registerExtractionTools(
   server: McpServer,
   { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "screenshot",
-    "Take a screenshot of the current page. IMPORTANT: If you received a _browserToken from a previous tool call (navigate, cognitive_journey_init), you MUST pass it here to see the same page. Without it, you get a blank new browser.",
-    {
+  server.registerTool("screenshot", {
+    title: "Take Screenshot",
+    description: "Take a screenshot of the current page. IMPORTANT: If you received a _browserToken from a previous tool call (navigate, cognitive_journey_init), you MUST pass it here to see the same page. Without it, you get a blank new browser.",
+    inputSchema: {
       path: z.string().optional().describe("Optional path to save the screenshot"),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
-    async ({ path, _browserToken }) => {
+    annotations: {
+      title: "Take Screenshot",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ path, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
       let token: string | undefined;
       if (getBrowserByToken) {
@@ -40,14 +47,21 @@ export function registerExtractionTools(
     }
   );
 
-  server.tool(
-    "extract",
-    "Extract data from the page. Pass _browserToken to use the same browser session.",
-    {
+  server.registerTool("extract", {
+    title: "Extract Page Data",
+    description: "Extract data from the page. Pass _browserToken to use the same browser session.",
+    inputSchema: {
       what: z.enum(["links", "headings", "forms", "images", "text"]).describe("What to extract"),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
-    async ({ what, _browserToken }) => {
+    annotations: {
+      title: "Extract Page Data",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ what, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
       if (getBrowserByToken) {
         const result = await getBrowserByToken(_browserToken);

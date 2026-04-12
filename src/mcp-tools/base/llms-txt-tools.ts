@@ -21,16 +21,23 @@ export function registerLlmsTxtTools(
   server: McpServer,
   _context: ToolRegistrationContext
 ): void {
-  server.tool(
-    "llms_txt_validate",
-    "Validate an llms.txt file for format compliance and link validity. Checks for proper markdown structure, valid URLs, and optionally verifies links are reachable. Use to ensure llms.txt files follow the specification.",
-    {
+  server.registerTool("llms_txt_validate", {
+    title: "Validate llms.txt",
+    description: "Validate an llms.txt file for format compliance and link validity. Checks for proper markdown structure, valid URLs, and optionally verifies links are reachable. Use to ensure llms.txt files follow the specification.",
+    inputSchema: {
       content: z.string().optional().describe("llms.txt content to validate (provide either content or url)"),
       url: z.string().url().optional().describe("URL to fetch llms.txt from (appends /llms.txt if needed)"),
       validateLinks: z.boolean().optional().default(true).describe("Whether to check if links are reachable"),
       maxLinksToValidate: z.number().optional().default(20).describe("Max links to validate (for performance)"),
     },
-    async ({ content, url, validateLinks, maxLinksToValidate }) => {
+    annotations: {
+      title: "Validate llms.txt",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ content, url, validateLinks, maxLinksToValidate }) => {
       if (!content && !url) {
         return {
           content: [
@@ -81,16 +88,23 @@ export function registerLlmsTxtTools(
     }
   );
 
-  server.tool(
-    "llms_txt_diff",
-    "Compare a site's current structure against its existing llms.txt file. Detects pages that have been added, removed, or changed. Use to keep llms.txt up to date as your site evolves.",
-    {
+  server.registerTool("llms_txt_diff", {
+    title: "Diff llms.txt",
+    description: "Compare a site's current structure against its existing llms.txt file. Detects pages that have been added, removed, or changed. Use to keep llms.txt up to date as your site evolves.",
+    inputSchema: {
       url: z.string().url().describe("Site URL to analyze"),
       existingContent: z.string().optional().describe("Existing llms.txt content (if not provided, fetches from site/llms.txt)"),
       crawl: z.boolean().optional().default(false).describe("Whether to crawl linked pages for comprehensive diff"),
       maxPages: z.number().optional().default(10).describe("Max pages to crawl if crawl is true"),
     },
-    async ({ url, existingContent, crawl, maxPages }) => {
+    annotations: {
+      title: "Diff llms.txt",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, existingContent, crawl, maxPages }) => {
       const result = existingContent
         ? await diffLlmsTxt(url, {
             existingContent,

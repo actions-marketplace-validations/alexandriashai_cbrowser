@@ -15,13 +15,20 @@ export function registerAssertionTools(
   server: McpServer,
   { getBrowser }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "assert",
-    "Assert a condition using natural language",
-    {
+  server.registerTool("assert", {
+    title: "Assert Page State",
+    description: "Assert a condition using natural language",
+    inputSchema: {
       assertion: z.string().describe("Natural language assertion like \"page contains 'Welcome'\" or \"title is 'Home'\""),
     },
-    async ({ assertion }) => {
+    annotations: {
+      title: "Assert Page State",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ assertion }) => {
       const b = await getBrowser();
       const result = await b.assert(assertion);
       return {

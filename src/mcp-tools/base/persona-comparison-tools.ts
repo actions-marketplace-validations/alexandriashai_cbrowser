@@ -35,15 +35,22 @@ export function registerPersonaComparisonTools(
   server: McpServer,
   _context: ToolRegistrationContext
 ): void {
-  server.tool(
-    "compare_personas",
-    "Compare how different user personas experience a journey. In Claude Code sessions (no API key), use compare_personas_init and compare_personas_complete instead for the bridge workflow.",
-    {
+  server.registerTool("compare_personas", {
+    title: "Compare Personas on Site",
+    description: "Compare how different user personas experience a journey. In Claude Code sessions (no API key), use compare_personas_init and compare_personas_complete instead for the bridge workflow.",
+    inputSchema: {
       url: z.string().url().describe("Starting URL"),
       goal: z.string().describe("Goal to accomplish"),
       personas: z.array(z.string()).describe("Persona names to compare"),
     },
-    async ({ url, goal, personas }) => {
+    annotations: {
+      title: "Compare Personas on Site",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, goal, personas }) => {
       const hasApiKey = isApiKeyConfigured();
 
       if (!hasApiKey) {
@@ -96,15 +103,22 @@ Example:
     }
   );
 
-  server.tool(
-    "compare_personas_init",
-    "Initialize persona comparison for Claude Code bridge workflow. Returns persona profiles and instructions for running journeys without API key.",
-    {
+  server.registerTool("compare_personas_init", {
+    title: "Initialize Persona Comparison",
+    description: "Initialize persona comparison for Claude Code bridge workflow. Returns persona profiles and instructions for running journeys without API key.",
+    inputSchema: {
       url: z.string().url().describe("Starting URL for all journeys"),
       goal: z.string().describe("Goal to accomplish"),
       personas: z.array(z.string()).describe("Persona names to compare (e.g., ['first-timer', 'power-user', 'elderly-user'])"),
     },
-    async ({ url, goal, personas }) => {
+    annotations: {
+      title: "Initialize Persona Comparison",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ url, goal, personas }) => {
       // v17.0.0: Filter out agent personas - persona comparison doesn't support them
       const filteredPersonas = personas.filter(name => {
         const persona = getAnyPersona(name);
@@ -208,10 +222,10 @@ Begin with the first persona: ${personas[0]}
     }
   );
 
-  server.tool(
-    "compare_personas_complete",
-    "Complete persona comparison by aggregating journey results. Call this after running all persona journeys via the bridge workflow.",
-    {
+  server.registerTool("compare_personas_complete", {
+    title: "Complete Persona Comparison",
+    description: "Complete persona comparison by aggregating journey results. Call this after running all persona journeys via the bridge workflow.",
+    inputSchema: {
       url: z.string().url().describe("The URL that was tested"),
       goal: z.string().describe("The goal that was attempted"),
       journeyResults: z.array(z.object({
@@ -228,7 +242,14 @@ Begin with the first persona: ${personas[0]}
         frictionPoints: z.array(z.string()).describe("List of friction point descriptions"),
       })).describe("Results from each persona journey"),
     },
-    async ({ url, goal, journeyResults }) => {
+    annotations: {
+      title: "Complete Persona Comparison",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ url, goal, journeyResults }) => {
       const startTime = Date.now();
 
       const successfulResults = journeyResults.filter((r) => r.goalAchieved);
@@ -343,14 +364,21 @@ Begin with the first persona: ${personas[0]}
 
   // ── Cognitive Transport Tools (v18.27.0) ──
 
-  server.tool(
-    "cognitive_distance",
-    "Compute the Wasserstein cognitive distance between two personas. Returns W₁ distance (true cognitive distance), per-trait contributions, and Bures-Wasserstein W₂ distance. Based on optimal transport theory — transport cost = cognitive processing cost.",
-    {
+  server.registerTool("cognitive_distance", {
+    title: "Cognitive Distance Between Personas",
+    description: "Compute the Wasserstein cognitive distance between two personas. Returns W₁ distance (true cognitive distance), per-trait contributions, and Bures-Wasserstein W₂ distance. Based on optimal transport theory — transport cost = cognitive processing cost.",
+    inputSchema: {
       personaA: z.string().describe("First persona name"),
       personaB: z.string().describe("Second persona name"),
     },
-    async ({ personaA, personaB }) => {
+    annotations: {
+      title: "Cognitive Distance Between Personas",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ personaA, personaB }) => {
       const pA = getAnyPersona(personaA);
       const pB = getAnyPersona(personaB);
       if (!pA || !pB) {
@@ -387,14 +415,21 @@ Begin with the first persona: ${personas[0]}
     }
   );
 
-  server.tool(
-    "cognitive_coverage",
-    "Select the N most cognitively different personas from a list for maximum test coverage. Uses greedy farthest-point sampling in Wasserstein space.",
-    {
+  server.registerTool("cognitive_coverage", {
+    title: "Maximum Coverage Persona Selection",
+    description: "Select the N most cognitively different personas from a list for maximum test coverage. Uses greedy farthest-point sampling in Wasserstein space.",
+    inputSchema: {
       personas: z.array(z.string()).describe("List of persona names to select from"),
       count: z.number().describe("Number of personas to select"),
     },
-    async ({ personas, count }) => {
+    annotations: {
+      title: "Maximum Coverage Persona Selection",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ personas, count }) => {
       const profiles: OTCognitiveProfile[] = [];
       for (const name of personas) {
         const p = getAnyPersona(name);
@@ -421,15 +456,22 @@ Begin with the first persona: ${personas[0]}
     }
   );
 
-  server.tool(
-    "cognitive_interpolate",
-    "Generate an interpolated persona between two known personas using Wasserstein geodesic. Preserves trait coupling structure — the midpoint between ADHD and power-user has intermediate trait correlations, not just averaged values.",
-    {
+  server.registerTool("cognitive_interpolate", {
+    title: "Persona Geodesic Interpolation",
+    description: "Generate an interpolated persona between two known personas using Wasserstein geodesic. Preserves trait coupling structure — the midpoint between ADHD and power-user has intermediate trait correlations, not just averaged values.",
+    inputSchema: {
       personaA: z.string().describe("Starting persona"),
       personaB: z.string().describe("Ending persona"),
       position: z.number().min(0).max(1).optional().default(0.5).describe("Position on geodesic (0=A, 0.5=midpoint, 1=B)"),
     },
-    async ({ personaA, personaB, position }) => {
+    annotations: {
+      title: "Persona Geodesic Interpolation",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ personaA, personaB, position }) => {
       const pA = getAnyPersona(personaA);
       const pB = getAnyPersona(personaB);
       if (!pA || !pB) {
@@ -468,10 +510,10 @@ Begin with the first persona: ${personas[0]}
     }
   );
 
-  server.tool(
-    "cognitive_load_estimate",
-    "Estimate cognitive load for a specific persona on page metrics. Returns per-dimension breakdown (information, visual, attention, decision, motor, text, memory, patience) and identifies the bottleneck dimension.",
-    {
+  server.registerTool("cognitive_load_estimate", {
+    title: "Cognitive Load Estimate",
+    description: "Estimate cognitive load for a specific persona on page metrics. Returns per-dimension breakdown (information, visual, attention, decision, motor, text, memory, patience) and identifies the bottleneck dimension.",
+    inputSchema: {
       persona: z.string().describe("Persona name"),
       informationDensity: z.number().min(0).max(1).describe("Content density (0=sparse, 1=dense)"),
       visualComplexity: z.number().min(0).max(1).describe("Visual complexity (0=simple, 1=complex)"),
@@ -481,7 +523,14 @@ Begin with the first persona: ${personas[0]}
       choiceCount: z.number().describe("Number of decision points/options"),
       navigationDepth: z.number().describe("Clicks needed to reach content"),
     },
-    async ({ persona, informationDensity, visualComplexity, interactiveElements, textDensity, animationLevel, choiceCount, navigationDepth }) => {
+    annotations: {
+      title: "Cognitive Load Estimate",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ persona, informationDensity, visualComplexity, interactiveElements, textDensity, animationLevel, choiceCount, navigationDepth }) => {
       const p = getAnyPersona(persona);
       if (!p) return { content: [{ type: "text" as const, text: `Persona not found: ${persona}` }] };
       const profile = getCognitiveProfile(p as Persona | AccessibilityPersona);

@@ -21,15 +21,22 @@ import type { NLTestCase, NLTestStep } from "../../types.js";
  * Register testing tools (5 tools: nl_test_file, nl_test_inline, repair_test, detect_flaky_tests, coverage_map)
  */
 export function registerTestingTools(server: McpServer): void {
-  server.tool(
-    "nl_test_file",
-    "Run natural language test suite from a file. Returns step-level results with enriched error info, partial matches, and suggestions.",
-    {
+  server.registerTool("nl_test_file", {
+    title: "Run Test File",
+    description: "Run natural language test suite from a file. Returns step-level results with enriched error info, partial matches, and suggestions.",
+    inputSchema: {
       filepath: z.string().describe("Path to the test file"),
       dryRun: z.boolean().optional().describe("Parse and display steps without executing"),
       fuzzyMatch: z.boolean().optional().describe("Use case-insensitive fuzzy matching for assertions"),
     },
-    async ({ filepath, dryRun, fuzzyMatch }) => {
+    annotations: {
+      title: "Run Test File",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ filepath, dryRun, fuzzyMatch }) => {
       const fs = await import("fs");
       if (!fs.existsSync(filepath)) {
         return { content: [{ type: "text", text: JSON.stringify({ error: `Test file not found: ${filepath}` }) }] };
@@ -81,16 +88,23 @@ export function registerTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "nl_test_inline",
-    "Run natural language tests from inline content. Returns step-level results with enriched error info, partial matches, and suggestions.",
-    {
+  server.registerTool("nl_test_inline", {
+    title: "Run Inline Test",
+    description: "Run natural language tests from inline content. Returns step-level results with enriched error info, partial matches, and suggestions.",
+    inputSchema: {
       content: z.string().describe("Test content with instructions like 'go to https://...' and 'click login'"),
       name: z.string().optional().describe("Name for the test suite"),
       dryRun: z.boolean().optional().describe("Parse and display steps without executing"),
       fuzzyMatch: z.boolean().optional().describe("Use case-insensitive fuzzy matching for assertions"),
     },
-    async ({ content, name, dryRun, fuzzyMatch }) => {
+    annotations: {
+      title: "Run Inline Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ content, name, dryRun, fuzzyMatch }) => {
       const suite = parseNLTestSuite(content, name || "Inline Test");
 
       if (dryRun) {
@@ -136,15 +150,22 @@ export function registerTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "repair_test",
-    "AI-powered test repair for broken tests",
-    {
+  server.registerTool("repair_test", {
+    title: "Repair Broken Test",
+    description: "AI-powered test repair for broken tests",
+    inputSchema: {
       testName: z.string().describe("Name for the test"),
       steps: z.array(z.string()).describe("Test step instructions"),
       autoApply: z.boolean().optional().describe("Automatically apply repairs"),
     },
-    async ({ testName, steps, autoApply }) => {
+    annotations: {
+      title: "Repair Broken Test",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ testName, steps, autoApply }) => {
       const testCase: NLTestCase = {
         name: testName,
         steps: steps.map(instruction => ({
@@ -174,15 +195,22 @@ export function registerTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "detect_flaky_tests",
-    "Detect flaky/unreliable tests by running multiple times",
-    {
+  server.registerTool("detect_flaky_tests", {
+    title: "Detect Flaky Tests",
+    description: "Detect flaky/unreliable tests by running multiple times",
+    inputSchema: {
       testContent: z.string().describe("Test content to analyze"),
       runs: z.number().optional().default(5).describe("Number of times to run each test"),
       threshold: z.number().optional().default(20).describe("Flakiness threshold percentage"),
     },
-    async ({ testContent, runs, threshold }) => {
+    annotations: {
+      title: "Detect Flaky Tests",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ testContent, runs, threshold }) => {
       const suite = parseNLTestSuite(testContent, "Flaky Test Analysis");
       const result = await detectFlakyTests(suite, { runs, flakinessThreshold: threshold });
       return {
@@ -209,15 +237,22 @@ export function registerTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "coverage_map",
-    "Generate test coverage map for a site",
-    {
+  server.registerTool("coverage_map", {
+    title: "Test Coverage Map",
+    description: "Generate test coverage map for a site",
+    inputSchema: {
       baseUrl: z.string().url().describe("Base URL to analyze"),
       testFiles: z.array(z.string()).describe("Array of test file paths"),
       maxPages: z.number().optional().default(100).describe("Maximum pages to crawl"),
     },
-    async ({ baseUrl, testFiles, maxPages }) => {
+    annotations: {
+      title: "Test Coverage Map",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ baseUrl, testFiles, maxPages }) => {
       const result = await generateCoverageMap(baseUrl, testFiles, { maxPages });
       return {
         content: [
