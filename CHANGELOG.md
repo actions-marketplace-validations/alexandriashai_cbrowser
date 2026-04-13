@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.42.1](https://github.com/alexandriashai/cbrowser/compare/v18.42.0...v18.42.1) (2026-04-13)
+
+### Fixed
+
+* 6 COT calibration bugs — blocked pages, abandonment, load scaling ([74ba2d5](https://github.com/alexandriashai/cbrowser/commit/74ba2d551b211632d40297f6e5472e47699d4838))
+
 ## [18.42.0](https://github.com/alexandriashai/cbrowser/compare/v18.41.0...v18.42.0) (2026-04-13)
 
 ### Added
