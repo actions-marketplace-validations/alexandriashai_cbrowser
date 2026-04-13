@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.42.0](https://github.com/alexandriashai/cbrowser/compare/v18.41.0...v18.42.0) (2026-04-13)
+
+### Added
+
+* add cognitive_effort MCP tool (full COT analysis) ([d10b6f1](https://github.com/alexandriashai/cbrowser/commit/d10b6f148724a07f9e9af1f30ddc0d6dda9cb15b))
+
 ## [18.41.0](https://github.com/alexandriashai/cbrowser/compare/v18.40.0...v18.41.0) (2026-04-13)
 
 ### Added
