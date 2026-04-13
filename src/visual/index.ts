@@ -18,4 +18,6 @@ export * from "./ab-comparison.js";
 export * from "./distance-metrics.js";
 export * from "./perceptual-transport.js";
 export * from "./cognitive-transport.js";
+export * from "./cognitive-transport-chain.js";
+export * from "./cognitive-models.js";
 export * from "./attention-transport.js";
