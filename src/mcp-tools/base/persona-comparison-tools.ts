@@ -33,7 +33,7 @@ import {
  */
 export function registerPersonaComparisonTools(
   server: McpServer,
-  _context: ToolRegistrationContext
+  { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
   server.registerTool("compare_personas", {
     title: "Compare Personas on Site",
@@ -560,4 +560,185 @@ Begin with the first persona: ${personas[0]}
       };
     }
   );
+
+  // ── Cognitive Effort (Full COT) ──
+
+  server.registerTool("cognitive_effort", {
+    title: "Cognitive Effort Analysis",
+    description: "Compute total cognitive effort for a persona to use a page. Uses the full 6-layer Sequential Transport Chain from Cognitive Optimal Transport theory: saliency → cognitive load → decision complexity → motor accessibility → frustration → readability. Each layer depletes capacity for subsequent layers. Returns per-layer costs, interaction effects, deficit/surplus breakdown, bottleneck layer, and abandonment risk.",
+    inputSchema: {
+      url: z.string().url().describe("URL to analyze"),
+      persona: z.string().describe("Persona name (e.g., 'first-timer', 'cognitive-adhd', 'elderly-user', 'autism-spectrum')"),
+      _browserToken: z.string().optional().describe("Browser session token"),
+    },
+    annotations: {
+      title: "Cognitive Effort Analysis",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, persona: personaName, _browserToken }) => {
+    try {
+      // Get browser
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(_browserToken);
+        b = result.browser;
+        token = result.token;
+      } else {
+        b = await getBrowser();
+      }
+
+      // Navigate
+      await b.navigate(url);
+      const page = await b.getPage();
+
+      // Get persona
+      const existingPersona = getAnyPersona(personaName);
+      let personaObj: Persona;
+      if (!existingPersona || isAgentPersonaObject(existingPersona)) {
+        personaObj = createCognitivePersona(personaName, personaName, {});
+      } else {
+        personaObj = existingPersona as Persona;
+      }
+
+      // Build OT profile
+      const otProfile = buildOTProfile(
+        personaName,
+        (personaObj.cognitiveTraits || {}) as unknown as Record<string, number>
+      );
+
+      // Extract page metrics
+      const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
+      const pageMetrics = await extractPageMetrics(page);
+
+      // Compute full COT
+      const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
+      const demand = computeDemandDistribution(pageMetrics);
+      const result = computeSequentialCTC(otProfile, demand, { asymmetric: true, interactions: true });
+
+      // Also compute motor and readability from formal models
+      let motorResult = null;
+      let readabilityResult = null;
+      try {
+        const { motorAccessibility, readability, getPointingProfile, getReadingProfile } = await import("../../visual/cognitive-models.js");
+
+        // Get interactive elements for motor analysis
+        const elements = await page.evaluate(() => {
+          const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
+          return Array.from(interactive).slice(0, 30).map((el) => {
+            const rect = el.getBoundingClientRect();
+            const vw = window.innerWidth / 2;
+            const vh = window.innerHeight / 2;
+            return {
+              selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+              width: rect.width,
+              height: rect.height,
+              distance: Math.sqrt((rect.x + rect.width/2 - vw) ** 2 + (rect.y + rect.height/2 - vh) ** 2),
+            };
+          }).filter((e: { width: number; height: number }) => e.width > 0 && e.height > 0);
+        });
+
+        motorResult = motorAccessibility(elements, otProfile);
+
+        // Get text blocks for readability analysis
+        const textBlocks = await page.evaluate(() => {
+          const blocks: Array<{ text: string; fontSize: number; lineHeight: number; fontFamily: string; isSerif: boolean; contrastRatio: number }> = [];
+          const textEls = document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td, th, span, div');
+          for (const el of Array.from(textEls).slice(0, 20)) {
+            const text = (el as HTMLElement).innerText?.trim();
+            if (!text || text.length < 20) continue;
+            const style = window.getComputedStyle(el);
+            const fontSize = parseFloat(style.fontSize) || 16;
+            const lineHeight = parseFloat(style.lineHeight) / fontSize || 1.5;
+            const fontFamily = style.fontFamily || 'sans-serif';
+            const isSerif = /serif/i.test(fontFamily) && !/sans-serif/i.test(fontFamily);
+            blocks.push({ text: text.slice(0, 500), fontSize, lineHeight, fontFamily, isSerif, contrastRatio: 7 });
+          }
+          return blocks;
+        });
+
+        if (textBlocks.length > 0) {
+          readabilityResult = readability(textBlocks, otProfile);
+        }
+      } catch {}
+
+      // Format response
+      const response: Record<string, unknown> = {
+        url,
+        persona: personaName,
+        cognitiveTransportCost: {
+          total: Math.round(result.totalCTC * 1000) / 1000,
+          additive: Math.round(result.additiveCTC * 1000) / 1000,
+          sequentialAmplification: Math.round((result.totalCTC / Math.max(0.001, result.additiveCTC)) * 100) / 100,
+        },
+        layers: result.layers.map(l => ({
+          name: l.name,
+          cost: Math.round(l.transportCost * 1000) / 1000,
+          capacityConsumed: Math.round(l.capacityConsumed * 1000) / 1000,
+        })),
+        bottleneck: result.bottleneckLayer,
+        deficitVsSurplus: {
+          deficit: Math.round(result.deficitCost * 1000) / 1000,
+          surplus: Math.round(result.surplusCost * 1000) / 1000,
+        },
+        abandonmentRisk: Math.round(result.abandonmentRisk * 100) + "%",
+        interactions: Object.fromEntries(
+          Object.entries(result.interactions)
+            .filter(([, v]) => v > 0.001)
+            .map(([k, v]) => [k, Math.round(v * 1000) / 1000])
+        ),
+        ...(motorResult ? {
+          motorAccessibility: {
+            score: Math.round(motorResult.score * 100) + "%",
+            barriers: motorResult.barrierCount,
+            elements: motorResult.elements.filter((e: { isBarrier: boolean }) => e.isBarrier).slice(0, 5).map((e: { selector: string; hitProbability: number; movementTime: number }) => ({
+              element: e.selector,
+              hitProbability: Math.round(e.hitProbability * 100) + "%",
+              movementTimeMs: Math.round(e.movementTime),
+            })),
+          },
+        } : {}),
+        ...(readabilityResult ? {
+          readability: {
+            score: Math.round(readabilityResult.score * 100) + "%",
+            averageWPM: Math.round(
+              readabilityResult.blocks.reduce((s: number, b: { wordsPerMinute: number }) => s + b.wordsPerMinute, 0) / readabilityResult.blocks.length
+            ),
+            hardestBlock: readabilityResult.blocks.length > 0
+              ? (readabilityResult.blocks as Array<{ difficulty: number; penalties: string[] }>).reduce((worst, b) => b.difficulty > worst.difficulty ? b : worst).penalties
+              : [],
+          },
+        } : {}),
+        interpretation: result.totalCTC < 0.3
+          ? `${personaName} should handle this page comfortably.`
+          : result.totalCTC < 0.6
+          ? `${personaName} will experience moderate cognitive effort. Bottleneck: ${result.bottleneckLayer}.`
+          : result.totalCTC < 0.8
+          ? `${personaName} will struggle significantly. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
+          : `${personaName} is likely to abandon this page. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`,
+        ...(token ? { _browserToken: token } : {}),
+      };
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify(response, null, 2),
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            error: err instanceof Error ? err.message : String(err),
+            url,
+            persona: personaName,
+          }, null, 2),
+        }],
+      };
+    }
+  });
 }
