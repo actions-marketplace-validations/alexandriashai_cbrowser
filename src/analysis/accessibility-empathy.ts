@@ -1233,6 +1233,11 @@ async function simulateAccessibilityJourney(
     // Friction (small targets, contrast, cognitive load) reduces score but doesn't block
     goalAchieved = blockingBarriers.length === 0;
 
+    // If journey validation says goal failed, override barrier-based goalAchieved
+    if (journeyValidation && journeyValidation.goalAchieved === false) {
+      goalAchieved = false;
+    }
+
   } catch (e) {
     ctx.frictionPoints.push({
       step: 0,

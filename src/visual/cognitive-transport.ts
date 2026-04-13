@@ -528,29 +528,30 @@ export function estimateCognitiveLoad(
   const p = (t: string) => traits[t] ?? 0.5;
 
   // Per-dimension load: mismatch between persona capacity and page demand
+  // Use power 1.5 on page metrics for sharper scaling at high demand
   const breakdown: Record<string, number> = {};
 
   // Information processing load
-  breakdown.information = pageMetrics.informationDensity * (1 - p('comprehension'));
+  breakdown.information = Math.pow(pageMetrics.informationDensity, 1.5) * (1 - p('comprehension') * 0.8);
 
   // Visual processing load
-  breakdown.visual = pageMetrics.visualComplexity * (1 - p('visualProcessing'));
+  breakdown.visual = Math.pow(pageMetrics.visualComplexity, 1.5) * (1 - p('visualProcessing') * 0.8);
 
   // Attention load (animations vs attention capacity)
-  breakdown.attention = pageMetrics.animationLevel * (1 - p('attentionPattern'));
+  breakdown.attention = Math.pow(pageMetrics.animationLevel, 1.5) * (1 - p('attentionPattern') * 0.8);
 
   // Decision load (Hick-Hyman: log2(choices) scaled by decision trait)
   const hickHyman = Math.log2(Math.max(1, pageMetrics.choiceCount)) / 5; // Normalize to ~0-1
-  breakdown.decision = hickHyman * (1 - p('decisionStyle') * 0.5 - p('satisficing') * 0.5);
+  breakdown.decision = Math.pow(hickHyman, 1.5) * (1 - (p('decisionStyle') * 0.5 + p('satisficing') * 0.5) * 0.8);
 
   // Motor load (interactive elements vs precision)
-  breakdown.motor = Math.min(1, pageMetrics.interactiveElementCount / 50) * (1 - p('motorPrecision'));
+  breakdown.motor = Math.pow(Math.min(1, pageMetrics.interactiveElementCount / 50), 1.5) * (1 - p('motorPrecision') * 0.8);
 
   // Text processing load
-  breakdown.text = pageMetrics.textDensity * (1 - p('textProcessing'));
+  breakdown.text = Math.pow(pageMetrics.textDensity, 1.5) * (1 - p('textProcessing') * 0.8);
 
   // Working memory load (navigation depth)
-  breakdown.memory = Math.min(1, pageMetrics.navigationDepth / 5) * (1 - p('workingMemory'));
+  breakdown.memory = Math.pow(Math.min(1, pageMetrics.navigationDepth / 5), 1.5) * (1 - p('workingMemory') * 0.8);
 
   // Patience/frustration interaction
   breakdown.patience = (1 - p('patience')) * 0.3;
@@ -564,10 +565,13 @@ export function estimateCognitiveLoad(
     if (val > maxLoad) { maxLoad = val; bottleneck = key; }
   }
 
+  // Persona-dependent overload threshold: impatient users overload sooner
+  const overloadThreshold = 0.35 + (p('patience') * 0.15);
+
   return {
     totalLoad: Math.min(1, total),
     breakdown,
-    overloaded: total > 0.7,
+    overloaded: total > overloadThreshold,
     bottleneck,
   };
 }

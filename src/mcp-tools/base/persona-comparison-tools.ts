@@ -595,6 +595,43 @@ Begin with the first persona: ${personas[0]}
       await b.navigate(url);
       const page = await b.getPage();
 
+      // Check if page is blocked/error
+      const pageTitle = await page.title().catch(() => '');
+      const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || '').catch(() => '');
+      const httpStatus = await page.evaluate(() => {
+        const perf = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+        return perf?.responseStatus || 200;
+      }).catch(() => 200);
+
+      const BLOCK_SIGNATURES = [
+        'access denied', '403 forbidden', 'just a moment', 'press & hold',
+        'verify you are human', 'captcha', 'blocked', 'robot check',
+        'cloudflare', 'please wait', 'checking your browser',
+      ];
+      const lowerTitle = pageTitle.toLowerCase();
+      const lowerBody = bodyText.toLowerCase();
+      const isBlocked = httpStatus >= 400 ||
+        BLOCK_SIGNATURES.some(sig => lowerTitle.includes(sig) || lowerBody.includes(sig));
+
+      if (isBlocked) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "page_blocked",
+              url,
+              persona: personaName,
+              httpStatus,
+              detectedSignature: BLOCK_SIGNATURES.find(sig => lowerTitle.includes(sig) || lowerBody.includes(sig)) || `HTTP ${httpStatus}`,
+              pageTitle,
+              message: "The page returned an error or bot challenge. Cognitive effort cannot be measured on blocked pages.",
+              suggestion: "Try with stealth mode enabled, or verify the URL loads in a regular browser.",
+              ...(token ? { _browserToken: token } : {}),
+            }, null, 2),
+          }],
+        };
+      }
+
       // Get persona
       const existingPersona = getAnyPersona(personaName);
       let personaObj: Persona;

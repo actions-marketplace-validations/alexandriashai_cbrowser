@@ -470,21 +470,23 @@ export async function analyzePerceptualTransport(
   const informationLoss = Math.min(1, transportResult.distance * 3);
   const channelDistances = transportResult.details.channelDistances;
 
-  // Attention mismatch based on attention mode
+  // Attention mismatch based on attention mode, scaled by processing speed
+  // Lower processing speed = more mismatch (persona trait-driven, not hardcoded)
+  const processingFactor = 1 - filter.processingSpeed; // 0 for fast processors, 1 for slow
   let attentionMismatch = 0;
   switch (filter.attentionMode) {
-    case 'motion-attracted': attentionMismatch = 0.6; break;  // ADHD: attention goes to wrong places
-    case 'center-heavy': attentionMismatch = 0.3; break;       // Motor: narrow focus
-    case 'large-elements': attentionMismatch = 0.4; break;     // Low-vision: misses small elements
-    case 'text-focused': attentionMismatch = 0.2; break;       // Dyslexia: focused but slow
-    case 'uniform': attentionMismatch = 0.1; break;            // Default
+    case 'motion-attracted': attentionMismatch = 0.4 + processingFactor * 0.4; break;  // ADHD: 0.4-0.8
+    case 'center-heavy': attentionMismatch = 0.15 + processingFactor * 0.3; break;      // Motor: 0.15-0.45
+    case 'large-elements': attentionMismatch = 0.2 + processingFactor * 0.4; break;     // Low-vision: 0.2-0.6
+    case 'text-focused': attentionMismatch = 0.1 + processingFactor * 0.2; break;       // Dyslexia: 0.1-0.3
+    case 'uniform': attentionMismatch = 0.05 + processingFactor * 0.1; break;           // Default: 0.05-0.15
   }
 
   // Motor cost
   const motorCost = Math.min(1, (filter.motorCostMultiplier - 1) / 2);
 
-  // Cognitive load
-  const cognitiveLoad = 1 - filter.noiseTolerance;
+  // Cognitive load — derived from noise tolerance and processing speed
+  const cognitiveLoad = (1 - filter.noiseTolerance) * 0.7 + processingFactor * 0.3;
 
   // Composite perceptual score
   const perceptualScore = Math.max(0, Math.min(100, Math.round(

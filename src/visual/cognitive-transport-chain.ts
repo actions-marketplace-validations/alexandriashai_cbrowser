@@ -371,25 +371,36 @@ export function computeSequentialCTC(
       traitCosts[trait] = (traitCosts[trait] ?? 0) + cost;
     }
 
+    // Scale layer cost by demand presence — empty pages shouldn't produce high costs
+    const layerDemandMagnitude = layerDef.traits.reduce(
+      (sum, t) => sum + (demand.demands[t] ?? 0), 0
+    ) / layerDef.traits.length;
+    const contentScale = Math.min(1.0, layerDemandMagnitude * 3); // 0-1 scale, saturates at demand=0.33
+    layerCost *= contentScale;
+    layerDeficit *= contentScale;
+    layerSurplus *= contentScale;
+
     totalDeficit += layerDeficit;
     totalSurplus += layerSurplus;
     additiveCTC += layerCost;
 
-    // Deplete capacity for next layers
+    // Deplete capacity for next layers (only when page has meaningful content)
     // Each trait in this layer loses capacity proportional to the layer's total cost
     const capacityConsumed = DEPLETION_RATE * layerCost;
-    for (const trait of layerDef.traits) {
-      residualCapacity[trait] -= capacityConsumed;
-      residualCapacity[trait] = Math.max(CAPACITY_FLOOR, residualCapacity[trait]);
-    }
+    if (contentScale > 0.1) {
+      for (const trait of layerDef.traits) {
+        residualCapacity[trait] -= capacityConsumed;
+        residualCapacity[trait] = Math.max(CAPACITY_FLOOR, residualCapacity[trait]);
+      }
 
-    // Also deplete shared traits that appear in later layers
-    // (cross-layer fatigue: cognitive exhaustion bleeds across boundaries)
-    for (const dim of DEMAND_DIMENSIONS) {
-      if (!layerDef.traits.includes(dim)) {
-        // Indirect depletion at half rate
-        residualCapacity[dim] -= (DEPLETION_RATE * 0.5) * layerCost;
-        residualCapacity[dim] = Math.max(CAPACITY_FLOOR, residualCapacity[dim]);
+      // Also deplete shared traits that appear in later layers
+      // (cross-layer fatigue: cognitive exhaustion bleeds across boundaries)
+      for (const dim of DEMAND_DIMENSIONS) {
+        if (!layerDef.traits.includes(dim)) {
+          // Indirect depletion at half rate
+          residualCapacity[dim] -= (DEPLETION_RATE * 0.5) * layerCost;
+          residualCapacity[dim] = Math.max(CAPACITY_FLOOR, residualCapacity[dim]);
+        }
       }
     }
 
@@ -437,9 +448,14 @@ export function computeSequentialCTC(
   }
 
   // Compute abandonment risk
-  // Higher CTC relative to patience capacity → higher abandonment probability
+  // Base abandonment on deficit, not total cost
+  // Surplus (capacity > demand) should REDUCE risk, not increase it
   const patienceCapacity = traitValue(persona.traits, 'patience');
-  const abandonmentRisk = sigmoid(totalCTC, patienceCapacity * 2, 0.3);
+  const deficitMagnitude = totalDeficit; // raw deficit cost
+  const adjustedCost = deficitMagnitude - totalSurplus * 0.2; // surplus provides some comfort
+  const abandonmentRisk = Math.max(0, Math.min(1,
+    1 / (1 + Math.exp(-(adjustedCost - patienceCapacity) / 0.4))
+  ));
 
   return {
     totalCTC,
