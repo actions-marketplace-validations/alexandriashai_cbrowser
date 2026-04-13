@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.42.2](https://github.com/alexandriashai/cbrowser/compare/v18.42.1...v18.42.2) (2026-04-13)
+
+### Fixed
+
+* page metric ceiling + demand sigmoid saturation ([55827a9](https://github.com/alexandriashai/cbrowser/commit/55827a937c3adf896b2b23b504ae225b018ff12b))
+
 ## [18.42.1](https://github.com/alexandriashai/cbrowser/compare/v18.42.0...v18.42.1) (2026-04-13)
 
 ### Fixed
