@@ -466,35 +466,47 @@ export async function analyzePerceptualTransport(
   try { unlinkSync(filteredPath); } catch {}
   try { unlinkSync(originalPath); } catch {}
 
-  // Derive metrics
-  const informationLoss = Math.min(1, transportResult.distance * 3);
+  // Derive metrics — all MUST incorporate page-specific transport distance
+  const distance = transportResult.distance;
+  const informationLoss = Math.min(1, distance * 3);
   const channelDistances = transportResult.details.channelDistances;
 
-  // Attention mismatch based on attention mode, scaled by processing speed
-  // Lower processing speed = more mismatch (persona trait-driven, not hardcoded)
-  const processingFactor = 1 - filter.processingSpeed; // 0 for fast processors, 1 for slow
-  let attentionMismatch = 0;
+  // Spatial channel distance indicates visual layout complexity
+  const spatialComplexity = Math.min(1, (channelDistances?.spatial ?? distance) * 4);
+  // Color channel variance indicates visual differentiation difficulty
+  const colorComplexity = Math.min(1,
+    ((channelDistances?.r ?? 0) + (channelDistances?.g ?? 0) + (channelDistances?.b ?? 0)) * 2
+  );
+
+  // Attention mismatch: persona sensitivity × page visual complexity
+  // Both persona traits AND page characteristics must contribute
+  const processingFactor = 1 - filter.processingSpeed;
+  const pageVisualLoad = (spatialComplexity * 0.6 + colorComplexity * 0.4);
+  let attentionBase = 0;
   switch (filter.attentionMode) {
-    case 'motion-attracted': attentionMismatch = 0.4 + processingFactor * 0.4; break;  // ADHD: 0.4-0.8
-    case 'center-heavy': attentionMismatch = 0.15 + processingFactor * 0.3; break;      // Motor: 0.15-0.45
-    case 'large-elements': attentionMismatch = 0.2 + processingFactor * 0.4; break;     // Low-vision: 0.2-0.6
-    case 'text-focused': attentionMismatch = 0.1 + processingFactor * 0.2; break;       // Dyslexia: 0.1-0.3
-    case 'uniform': attentionMismatch = 0.05 + processingFactor * 0.1; break;           // Default: 0.05-0.15
+    case 'motion-attracted': attentionBase = 0.3; break;
+    case 'center-heavy': attentionBase = 0.1; break;
+    case 'large-elements': attentionBase = 0.15; break;
+    case 'text-focused': attentionBase = 0.08; break;
+    case 'uniform': attentionBase = 0.03; break;
   }
+  const attentionMismatch = Math.min(1, attentionBase + processingFactor * 0.3 + pageVisualLoad * 0.4);
 
-  // Motor cost
-  const motorCost = Math.min(1, (filter.motorCostMultiplier - 1) / 2);
+  // Motor cost: persona motor multiplier × page spatial complexity
+  const motorCost = Math.min(1, ((filter.motorCostMultiplier - 1) / 2) * (0.3 + spatialComplexity * 0.7));
 
-  // Cognitive load — derived from noise tolerance and processing speed
-  const cognitiveLoad = (1 - filter.noiseTolerance) * 0.7 + processingFactor * 0.3;
+  // Cognitive load: persona noise tolerance × page information density (from transport distance)
+  const cognitiveLoad = Math.min(1,
+    (1 - filter.noiseTolerance) * 0.4 + processingFactor * 0.2 + informationLoss * 0.4
+  );
 
   // Composite perceptual score
   const perceptualScore = Math.max(0, Math.min(100, Math.round(
     100
-    - informationLoss * 30         // Up to 30 points for information loss
-    - attentionMismatch * 20       // Up to 20 points for attention mismatch
-    - motorCost * 25               // Up to 25 points for motor difficulty
-    - cognitiveLoad * 25           // Up to 25 points for cognitive overload
+    - informationLoss * 30
+    - attentionMismatch * 20
+    - motorCost * 25
+    - cognitiveLoad * 25
   )));
 
   return {

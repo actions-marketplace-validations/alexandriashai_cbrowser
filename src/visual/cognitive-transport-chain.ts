@@ -449,13 +449,15 @@ export function computeSequentialCTC(
   }
 
   // Compute abandonment risk
-  // Base abandonment on deficit, not total cost
-  // Surplus (capacity > demand) should REDUCE risk, not increase it
+  // Based on deficit relative to patience capacity
+  // deficit < 0.5 → risk < 30%, deficit ≈ patience → risk ≈ 50%, deficit >> patience → risk → 100%
   const patienceCapacity = traitValue(persona.traits, 'patience');
-  const deficitMagnitude = totalDeficit; // raw deficit cost
-  const adjustedCost = deficitMagnitude - totalSurplus * 0.2; // surplus provides some comfort
+  const resilienceCapacity = traitValue(persona.traits, 'resilience');
+  const effectivePatience = patienceCapacity * 0.7 + resilienceCapacity * 0.3; // blended tolerance
+  const adjustedCost = totalDeficit - totalSurplus * 0.3; // surplus comfort (30%)
+  const riskInput = Math.max(0, adjustedCost) - effectivePatience * 1.5; // center at 1.5x patience
   const abandonmentRisk = Math.max(0, Math.min(1,
-    1 / (1 + Math.exp(-(adjustedCost - patienceCapacity) / 0.4))
+    1 / (1 + Math.exp(-riskInput / 0.6)) // wider sigmoid scale
   ));
 
   return {
