@@ -404,6 +404,7 @@ export function calculatePerceptualScore(
 export async function analyzePerceptualTransport(
   screenshotPath: string,
   personaName: string,
+  attentionData?: { entropy: number; concentration: number; transportCost: number },
 ): Promise<PerceptualAnalysis> {
   const startTime = performance.now();
   const profile = getPerceptualProfile(personaName);
@@ -478,26 +479,35 @@ export async function analyzePerceptualTransport(
     ((channelDistances?.r ?? 0) + (channelDistances?.g ?? 0) + (channelDistances?.b ?? 0)) * 2
   );
 
-  // Attention mismatch: persona sensitivity × page visual complexity
-  // Both persona traits AND page characteristics must contribute
+  // Attention mismatch: persona sensitivity × page visual complexity × attention analysis
   const processingFactor = 1 - filter.processingSpeed;
   const pageVisualLoad = (spatialComplexity * 0.6 + colorComplexity * 0.4);
+
+  // Use attention analysis data when available (page-specific entropy/concentration)
+  // High entropy = scattered attention = higher mismatch for focused personas
+  // Low concentration = distributed attention = harder for goal-directed personas
+  const attnEntropy = attentionData?.entropy ?? 0.5;
+  const attnConcentration = attentionData?.concentration ?? 0.5;
+  const attnTransportCost = attentionData?.transportCost ?? 0;
+
   let attentionBase = 0;
   switch (filter.attentionMode) {
-    case 'motion-attracted': attentionBase = 0.3; break;
-    case 'center-heavy': attentionBase = 0.1; break;
-    case 'large-elements': attentionBase = 0.15; break;
-    case 'text-focused': attentionBase = 0.08; break;
-    case 'uniform': attentionBase = 0.03; break;
+    case 'motion-attracted': attentionBase = 0.2 + attnEntropy * 0.2; break; // ADHD: high entropy = worse
+    case 'center-heavy': attentionBase = 0.05 + (1 - attnConcentration) * 0.15; break; // Motor: scattered = worse
+    case 'large-elements': attentionBase = 0.1 + attnEntropy * 0.15; break; // Low-vision
+    case 'text-focused': attentionBase = 0.05 + attnEntropy * 0.1; break; // Dyslexia
+    case 'uniform': attentionBase = 0.02 + attnEntropy * 0.05; break; // Default
   }
-  const attentionMismatch = Math.min(1, attentionBase + processingFactor * 0.3 + pageVisualLoad * 0.4);
+  const attentionMismatch = Math.min(1,
+    attentionBase + processingFactor * 0.2 + pageVisualLoad * 0.3 + attnTransportCost * 0.2
+  );
 
   // Motor cost: persona motor multiplier × page spatial complexity
   const motorCost = Math.min(1, ((filter.motorCostMultiplier - 1) / 2) * (0.3 + spatialComplexity * 0.7));
 
-  // Cognitive load: persona noise tolerance × page information density (from transport distance)
+  // Cognitive load: persona tolerance × page density × attention scatter
   const cognitiveLoad = Math.min(1,
-    (1 - filter.noiseTolerance) * 0.4 + processingFactor * 0.2 + informationLoss * 0.4
+    (1 - filter.noiseTolerance) * 0.3 + processingFactor * 0.15 + informationLoss * 0.3 + attnEntropy * 0.25
   );
 
   // Composite perceptual score

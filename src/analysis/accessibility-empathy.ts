@@ -2080,9 +2080,37 @@ export async function runEmpathyAudit(
         maxTime
       );
 
+      // v18.28.0: Run attention analysis FIRST so we can pass page-specific data to perceptual transport
+      let attentionData: { entropy: number; concentration: number; transportCost: number } | undefined;
+      try {
+        const { join: joinAttn } = await import("path");
+        const { tmpdir: tmpdirAttn } = await import("os");
+        const { unlinkSync: ulAttn } = await import("fs");
+        const attnScreenshot = joinAttn(tmpdirAttn(), `empathy-attn-${Date.now()}.png`);
+        await page.screenshot({ path: attnScreenshot, fullPage: false });
+
+        const attnAnalysis = await analyzeAttention(attnScreenshot, personaName, 16);
+        attentionData = {
+          entropy: attnAnalysis.entropy,
+          concentration: attnAnalysis.concentration,
+          transportCost: attnAnalysis.transportCost,
+        };
+        (result as any).attentionAnalysis = {
+          alignmentScore: attnAnalysis.alignmentScore,
+          entropy: attnAnalysis.entropy,
+          concentration: attnAnalysis.concentration,
+          transportCost: attnAnalysis.transportCost,
+          topAttentionAreas: attnAnalysis.attentionCompetitors,
+          computeTimeMs: Math.round(attnAnalysis.computeTimeMs),
+        };
+
+        try { ulAttn(attnScreenshot); } catch {}
+      } catch (e) {
+        console.debug(`[empathy_audit] Attention analysis failed: ${(e as Error).message}`);
+      }
+
       // v18.26.0: Screenshot-based perceptual transport analysis
-      // Captures a screenshot and applies the persona's visual filter,
-      // then computes Wasserstein distance to quantify information loss
+      // Now receives attention data for page-specific differentiation
       try {
         const { join } = await import("path");
         const { tmpdir } = await import("os");
@@ -2090,7 +2118,7 @@ export async function runEmpathyAudit(
         const screenshotPath = join(tmpdir(), `empathy-screenshot-${Date.now()}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: false });
 
-        const perceptualAnalysis = await analyzePerceptualTransport(screenshotPath, personaName);
+        const perceptualAnalysis = await analyzePerceptualTransport(screenshotPath, personaName, attentionData);
 
         // Attach perceptual metrics to the result
         (result as any).perceptualTransport = {
@@ -2140,28 +2168,7 @@ export async function runEmpathyAudit(
         console.debug(`[empathy_audit] Cognitive load estimation failed: ${(e as Error).message}`);
       }
 
-      // v18.28.0: Attention transport analysis — W₂ saliency with persona filter
-      try {
-        const { join: joinPath } = await import("path");
-        const { tmpdir: getTmpDir } = await import("os");
-        const { unlinkSync: ul } = await import("fs");
-        const attnScreenshot = joinPath(getTmpDir(), `empathy-attn-${Date.now()}.png`);
-        await page.screenshot({ path: attnScreenshot, fullPage: false });
-
-        const attnAnalysis = await analyzeAttention(attnScreenshot, personaName, 16);
-        (result as any).attentionAnalysis = {
-          alignmentScore: attnAnalysis.alignmentScore,
-          entropy: attnAnalysis.entropy,
-          concentration: attnAnalysis.concentration,
-          transportCost: attnAnalysis.transportCost,
-          topAttentionAreas: attnAnalysis.attentionCompetitors,
-          computeTimeMs: Math.round(attnAnalysis.computeTimeMs),
-        };
-
-        try { ul(attnScreenshot); } catch {}
-      } catch (e) {
-        console.debug(`[empathy_audit] Attention analysis failed: ${(e as Error).message}`);
-      }
+      // v18.28.0: Attention analysis already ran above (before perceptual transport)
 
       // v18.35.0: Flag non-disability personas
       if (!isDisabilityPersona) {
