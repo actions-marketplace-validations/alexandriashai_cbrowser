@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.42.5](https://github.com/alexandriashai/cbrowser/compare/v18.42.4...v18.42.5) (2026-04-13)
+
+### Fixed
+
+* perceptual transport concentration now 60% of signal ([e8fc2ad](https://github.com/alexandriashai/cbrowser/commit/e8fc2ad9466c5265c03d125c9097d345964f7df2))
+
 ## [18.42.4](https://github.com/alexandriashai/cbrowser/compare/v18.42.3...v18.42.4) (2026-04-13)
 
 ### Fixed
