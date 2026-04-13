@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.42.4](https://github.com/alexandriashai/cbrowser/compare/v18.42.3...v18.42.4) (2026-04-13)
+
+### Fixed
+
+* perceptual transport wired to attention analysis data ([c1e8afa](https://github.com/alexandriashai/cbrowser/commit/c1e8afab63a4e5def12ce51a990da0478e2478c9))
+
 ## [18.42.3](https://github.com/alexandriashai/cbrowser/compare/v18.42.2...v18.42.3) (2026-04-13)
 
 ### Fixed
