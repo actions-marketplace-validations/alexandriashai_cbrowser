@@ -204,11 +204,9 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   const choices = safe(pageMetrics.choiceCount);
   const navDepth = safe(pageMetrics.navigationDepth);
 
-  // Normalize interactive element count to 0-1 range for sigmoid
-  const interactiveNorm = Math.min(1, interactiveCount / 50);
-
   // ── informationDensity → comprehension, workingMemory, readingTendency, informationForaging
-  const infoDemand = sigmoid(infoDensity, 0.5, 0.15);
+  // Page metrics already use logScale (0-1) — pass through directly for differentiation
+  const infoDemand = infoDensity;
   demands.comprehension = Math.max(demands.comprehension, infoDemand);
   demands.workingMemory = Math.max(demands.workingMemory, infoDemand * 0.9);
   demands.readingTendency = Math.max(demands.readingTendency, infoDemand * 0.85);
@@ -219,7 +217,7 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.informationForaging += infoDensity * 0.06;
 
   // ── visualComplexity → changeBlindness, mentalModelRigidity, attentionPattern (inferred)
-  const visDemand = sigmoid(visCplx, 0.5, 0.15);
+  const visDemand = visCplx; // already 0-1 from logScale
   demands.changeBlindness = Math.max(demands.changeBlindness, visDemand);
   demands.mentalModelRigidity = Math.max(demands.mentalModelRigidity, visDemand * 0.7);
   demands.attentionPattern = Math.max(demands.attentionPattern, visDemand * 0.85);
@@ -228,18 +226,19 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.attentionPattern += visCplx * 0.1;
 
   // ── interactiveElementCount → riskTolerance, satisficing, proceduralFluency, motorPrecision (inferred)
-  const interDemand = sigmoid(interactiveNorm, 0.4, 0.2);
+  // Use logScale for element count — 20 elements = 0.5, 100 = 0.83, 500 = 0.96
+  const interDemand = interactiveCount / (interactiveCount + 20);
   demands.riskTolerance = Math.max(demands.riskTolerance, interDemand * 0.75);
   demands.satisficing = Math.max(demands.satisficing, interDemand * 0.8);
   demands.proceduralFluency = Math.max(demands.proceduralFluency, interDemand * 0.9);
   demands.motorPrecision = Math.max(demands.motorPrecision, interDemand);
-  variance.riskTolerance += interactiveNorm * 0.06;
-  variance.satisficing += interactiveNorm * 0.07;
-  variance.proceduralFluency += interactiveNorm * 0.08;
-  variance.motorPrecision += interactiveNorm * 0.1;
+  variance.riskTolerance += interDemand * 0.06;
+  variance.satisficing += interDemand * 0.07;
+  variance.proceduralFluency += interDemand * 0.08;
+  variance.motorPrecision += interDemand * 0.1;
 
   // ── textDensity → readingTendency, patience, comprehension
-  const textDemand = sigmoid(textDens, 0.5, 0.15);
+  const textDemand = textDens; // already 0-1 from logScale
   demands.readingTendency = Math.max(demands.readingTendency, textDemand);
   demands.patience = Math.max(demands.patience, textDemand * 0.7);
   demands.comprehension = Math.max(demands.comprehension, textDemand * 0.85);
@@ -257,7 +256,8 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.emotionalContagion += animLevel * 0.07;
 
   // ── choiceCount → satisficing, anchoringBias, fearOfMissingOut, socialProofSensitivity
-  const choiceDemand = sigmoid(choices, 8, 4);
+  // LogScale: 10 choices = 0.5, 30 = 0.75, 100 = 0.91
+  const choiceDemand = choices / (choices + 10);
   demands.satisficing = Math.max(demands.satisficing, choiceDemand);
   demands.anchoringBias = Math.max(demands.anchoringBias, choiceDemand * 0.85);
   demands.fearOfMissingOut = Math.max(demands.fearOfMissingOut, choiceDemand * 0.75);
@@ -268,7 +268,8 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.socialProofSensitivity += Math.min(1, choices / 20) * 0.06;
 
   // ── navigationDepth → workingMemory, metacognitivePlanning, persistence, transferLearning
-  const navDemand = sigmoid(Math.min(1, navDepth / 5), 0.4, 0.2);
+  // LogScale: depth 2 = 0.4, depth 5 = 0.63, depth 10 = 0.77
+  const navDemand = navDepth / (navDepth + 3);
   demands.workingMemory = Math.max(demands.workingMemory, navDemand * 0.95);
   demands.metacognitivePlanning = Math.max(demands.metacognitivePlanning, navDemand * 0.8);
   demands.persistence = Math.max(demands.persistence, navDemand * 0.7);

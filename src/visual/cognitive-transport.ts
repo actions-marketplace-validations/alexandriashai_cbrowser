@@ -669,10 +669,20 @@ export async function extractPageMetrics(page: any): Promise<{
     // Images
     const images = document.querySelectorAll('img, svg, [role="img"]');
 
-    // Normalize to 0-1
-    const informationDensity = Math.min(1, textLength / 5000);
-    const visualComplexity = Math.min(1, (uniqueColors.size / 30 + images.length / 20 + all.length / 500) / 3);
-    const textDensity = Math.min(1, textLength / (viewportArea * 0.003));
+    // Normalize to 0-1 using logarithmic scaling for wide-range metrics
+    // This prevents ceiling effects: 500 chars and 50,000 chars should NOT both be 1.0
+    const logScale = (value: number, midpoint: number) => {
+      // Produces 0.5 at midpoint, approaches 1.0 asymptotically
+      if (value <= 0) return 0;
+      return value / (value + midpoint);
+    };
+
+    const informationDensity = logScale(textLength, 15000); // 0.5 at 15K chars, 0.75 at 45K
+    const visualComplexity = logScale(
+      uniqueColors.size * 3 + images.length * 2 + all.length * 0.5,
+      200 // 0.5 at 200 "complexity points"
+    );
+    const textDensity = logScale(textLength / Math.max(1, viewportArea * 0.001), 3); // text per viewport
     const animationLevel = Math.min(1, (animations.length + (hasCarousel ? 3 : 0)) / 10);
 
     return {
