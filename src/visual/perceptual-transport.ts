@@ -489,34 +489,44 @@ export async function analyzePerceptualTransport(
   const attnEntropy = attentionData?.entropy ?? 0.5;
   const attnConcentration = attentionData?.concentration ?? 0.5;
   const attnTransportCost = attentionData?.transportCost ?? 0;
+  console.log(`[perceptual] attentionData=${attentionData ? 'YES' : 'NO'} entropy=${attnEntropy.toFixed(3)} concentration=${attnConcentration.toFixed(3)} transportCost=${attnTransportCost.toFixed(3)}`);
 
-  let attentionBase = 0;
+  // Concentration scatter: the most discriminating page metric (63% range in testing)
+  const scatterCost = (1 - attnConcentration); // 0.44 for cbrowser, 0.66 for UCDenver
+
+  // attentionMismatch: 50% page-driven (scatter + transport), 50% persona
+  let personaAttentionBase = 0;
   switch (filter.attentionMode) {
-    case 'motion-attracted': attentionBase = 0.2 + attnEntropy * 0.2; break; // ADHD: high entropy = worse
-    case 'center-heavy': attentionBase = 0.05 + (1 - attnConcentration) * 0.15; break; // Motor: scattered = worse
-    case 'large-elements': attentionBase = 0.1 + attnEntropy * 0.15; break; // Low-vision
-    case 'text-focused': attentionBase = 0.05 + attnEntropy * 0.1; break; // Dyslexia
-    case 'uniform': attentionBase = 0.02 + attnEntropy * 0.05; break; // Default
+    case 'motion-attracted': personaAttentionBase = 0.3; break;
+    case 'center-heavy': personaAttentionBase = 0.1; break;
+    case 'large-elements': personaAttentionBase = 0.2; break;
+    case 'text-focused': personaAttentionBase = 0.1; break;
+    case 'uniform': personaAttentionBase = 0.05; break;
   }
   const attentionMismatch = Math.min(1,
-    attentionBase + processingFactor * 0.2 + pageVisualLoad * 0.3 + attnTransportCost * 0.2
+    personaAttentionBase * 0.3 + processingFactor * 0.1 +  // 40% persona
+    scatterCost * 0.35 + attnTransportCost * 0.25          // 60% page
   );
 
   // Motor cost: persona motor multiplier × page spatial complexity
   const motorCost = Math.min(1, ((filter.motorCostMultiplier - 1) / 2) * (0.3 + spatialComplexity * 0.7));
 
-  // Cognitive load: persona tolerance × page density × attention scatter
+  // cognitiveLoad: 60% page-driven (scatter + information + entropy), 40% persona
   const cognitiveLoad = Math.min(1,
-    (1 - filter.noiseTolerance) * 0.3 + processingFactor * 0.15 + informationLoss * 0.3 + attnEntropy * 0.25
+    (1 - filter.noiseTolerance) * 0.15 + processingFactor * 0.05 +  // 20% persona
+    scatterCost * 0.4 + informationLoss * 0.2 + attnEntropy * 0.2  // 80% page
   );
 
   // Composite perceptual score
+  // Direct concentration term ensures the most discriminating signal drives the score
+  const concentrationBonus = (attnConcentration - 0.45) * 20; // ±11 points
   const perceptualScore = Math.max(0, Math.min(100, Math.round(
     100
-    - informationLoss * 30
+    - informationLoss * 25
     - attentionMismatch * 20
-    - motorCost * 25
-    - cognitiveLoad * 25
+    - cognitiveLoad * 20
+    - motorCost * 10
+    + concentrationBonus
   )));
 
   return {
