@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.49.0](https://github.com/alexandriashai/cbrowser/compare/v18.48.1...v18.49.0) (2026-04-14)
+
+### Added
+
+* add useValues opt-in flag to cognitive/attention tools (default off) ([be87872](https://github.com/alexandriashai/cbrowser/commit/be87872635e5ab6e0398a55aff93e99c2aff824b))
+
 ## [18.48.1](https://github.com/alexandriashai/cbrowser/compare/v18.48.0...v18.48.1) (2026-04-14)
 
 ## [18.48.0](https://github.com/alexandriashai/cbrowser/compare/v18.47.0...v18.48.0) (2026-04-14)
