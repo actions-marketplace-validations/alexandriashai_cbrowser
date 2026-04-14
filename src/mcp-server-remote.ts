@@ -674,24 +674,37 @@ async function validateAuth(
   apiKeys: Set<string> | null,
   auth0Enabled: boolean
 ): Promise<{ valid: boolean; reason?: string }> {
-  // Try API key first (faster)
+  // Try static API key first (fastest — for admin/server keys)
   if (apiKeys && validateApiKey(req, apiKeys)) {
     return { valid: true };
   }
 
-  // Try Auth0 if enabled
-  if (auth0Enabled) {
-    const authHeader = req.headers.authorization;
-    if (authHeader?.startsWith("Bearer ")) {
-      const token = authHeader.slice(7);
+  // Try cbk_ account key (validates against CMS)
+  const rawKey = extractApiKey(req);
+  if (rawKey?.startsWith("cbk_")) {
+    const tier = await resolveApiKeyTier(rawKey);
+    if (tier) return { valid: true };
+    return { valid: false, reason: "Invalid or expired API key" };
+  }
+
+  // Try Auth0 / OAuth token (includes tokens from our /authorize flow)
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) {
+    const token = authHeader.slice(7);
+    // Check if it's a cbk_ key returned by our OAuth flow
+    if (token.startsWith("cbk_")) {
+      const tier = await resolveApiKeyTier(token);
+      if (tier) return { valid: true };
+      return { valid: false, reason: "Invalid or expired API key" };
+    }
+    // Try Auth0 if enabled
+    if (auth0Enabled) {
       const payload = await validateAuth0Token(token);
-      if (payload) {
-        return { valid: true };
-      }
+      if (payload) return { valid: true };
     }
   }
 
-  return { valid: false, reason: "Invalid or missing authentication" };
+  return { valid: false, reason: "Authentication required. Register at https://cbrowser.ai/account/register to get an API key, or connect via Claude.ai to authenticate with OAuth." };
 }
 
 function sendUnauthorized(res: ServerResponse, message?: string): void {
@@ -1029,7 +1042,9 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
   const auth0 = getAuth0Config();
   const apiKeyAuthEnabled = apiKeys !== null && apiKeys.size > 0;
   const auth0Enabled = auth0 !== null;
-  const authEnabled = apiKeyAuthEnabled || auth0Enabled;
+  // REQUIRE_AUTH=true forces auth even without static API keys (uses cbk_ keys + OAuth)
+  const requireAuth = process.env.REQUIRE_AUTH === "true";
+  const authEnabled = apiKeyAuthEnabled || auth0Enabled || requireAuth;
   const rateLimitConfig = getRateLimitConfig();
 
   console.log(`Starting CBrowser Remote MCP Server v${VERSION}...`);
@@ -1089,13 +1104,17 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
 
     // In-memory auth code store (short-lived, 5 min TTL)
 
-    // GET /authorize — show login form
+    // GET /authorize — show login form (client_id can be user's email)
     if (url.pathname === "/authorize" && req.method === "GET") {
       const clientId = url.searchParams.get("client_id") || "";
       const redirectUri = url.searchParams.get("redirect_uri") || "";
       const state = url.searchParams.get("state") || "";
       const codeChallenge = url.searchParams.get("code_challenge") || "";
       const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "";
+
+      // If client_id looks like an email, pre-fill it
+      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientId);
+      const prefillEmail = isEmail ? clientId : "";
 
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!DOCTYPE html>
@@ -1126,9 +1145,9 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
     <input type="hidden" name="code_challenge_method" value="${codeChallengeMethod.replace(/"/g, '&quot;')}">
     <input type="hidden" name="client_id" value="${clientId.replace(/"/g, '&quot;')}">
     <label for="email">Email</label>
-    <input type="email" id="email" name="email" required autofocus placeholder="you@example.com">
-    <label for="password">Password</label>
-    <input type="password" id="password" name="password" required placeholder="Password">
+    <input type="email" id="email" name="email" required ${prefillEmail ? '' : 'autofocus'} placeholder="you@example.com" value="${prefillEmail.replace(/"/g, '&quot;')}">
+    <label for="password">Password or API Key</label>
+    <input type="password" id="password" name="password" required ${prefillEmail ? 'autofocus' : ''} placeholder="Password or cbk_... API key">
     <button type="submit">Sign In &amp; Authorize</button>
   </form>
   <div class="register">No account? <a href="https://cbrowser.ai/account/register" target="_blank">Create one free</a></div>
@@ -1177,36 +1196,45 @@ if (urlParams.get('error')) {
       // Validate against CMS
       const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
       try {
-        const loginRes = await fetch(`${cmsUrl}/api/accounts/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password }),
-        });
+        let apiKey: string;
 
-        if (!loginRes.ok) {
-          errorRedirect("Invalid email or password");
-          return;
-        }
+        if (password.startsWith("cbk_")) {
+          // Password is a cbk_ API key — validate it directly
+          const validateRes = await fetch(`${cmsUrl}/api/accounts/validate-key`, {
+            headers: { "X-API-Key": password },
+          });
+          if (!validateRes.ok) {
+            errorRedirect("Invalid API key");
+            return;
+          }
+          apiKey = password;
+        } else {
+          // Password is a regular password — login via CMS
+          const loginRes = await fetch(`${cmsUrl}/api/accounts/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email, password }),
+          });
 
-        const loginData = await loginRes.json() as { token: string; account: { id: number; tier: string } };
+          if (!loginRes.ok) {
+            errorRedirect("Invalid email or password");
+            return;
+          }
 
-        // Generate or get API key for this account
-        const keyRes = await fetch(`${cmsUrl}/api/accounts/keys?name=Claude+MCP`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${loginData.token}` },
-        });
-        const keyData = await keyRes.json() as { key?: string; error?: string };
-        const apiKey = keyData.key || "";
+          const loginData = await loginRes.json() as { token: string; account: { id: number; tier: string } };
 
-        if (!apiKey) {
-          // May have hit max keys — get existing
-          const meRes = await fetch(`${cmsUrl}/api/accounts/me`, {
+          // Generate or get API key for this account
+          const keyRes = await fetch(`${cmsUrl}/api/accounts/keys?name=Claude+MCP`, {
+            method: "POST",
             headers: { Authorization: `Bearer ${loginData.token}` },
           });
-          const meData = await meRes.json() as { apiKeys?: Array<{ key_prefix: string }> };
-          // Can't recover full key — user needs to use existing one
-          errorRedirect("Max API keys reached. Delete an unused key at cbrowser.ai/account");
-          return;
+          const keyData = await keyRes.json() as { key?: string; error?: string };
+          apiKey = keyData.key || "";
+
+          if (!apiKey) {
+            errorRedirect("Max API keys reached. Delete an unused key at cbrowser.ai/account");
+            return;
+          }
         }
 
         // Generate auth code
