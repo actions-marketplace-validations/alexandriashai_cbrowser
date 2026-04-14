@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.52.3](https://github.com/alexandriashai/cbrowser/compare/v18.52.2...v18.52.3) (2026-04-14)
+
+### Fixed
+
+* return 404 for oauth-authorization-server when no Auth0 ([18a8bc0](https://github.com/alexandriashai/cbrowser/commit/18a8bc052ee009e958b5908c6a28058c9bb82eb4))
+
 ## [18.52.2](https://github.com/alexandriashai/cbrowser/compare/v18.52.1...v18.52.2) (2026-04-14)
 
 ### Fixed
