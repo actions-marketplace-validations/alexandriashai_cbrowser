@@ -373,6 +373,16 @@ export function registerCognitiveTools(
                   susceptibility: ip.susceptibility,
                 })),
               },
+              motivationalValues: personaValues ? {
+                security: personaValues.security,
+                stimulation: personaValues.stimulation,
+                achievement: personaValues.achievement,
+                conformity: personaValues.conformity,
+                selfDirection: personaValues.selfDirection,
+                tradition: personaValues.tradition,
+                power: personaValues.power,
+                maslowLevel: personaValues.maslowLevel,
+              } : undefined,
               cognitiveProfile: profile,
               initialState,
               abandonmentThresholds: thresholds,
@@ -393,7 +403,14 @@ You are now simulating a "${personaObj.name}" user with these cognitive traits:
 
 Attention Pattern: ${profile.attentionPattern}
 Decision Style: ${profile.decisionStyle}
-
+${personaValues ? `
+MOTIVATIONAL VALUES (Schwartz — influence what this persona notices and clicks):
+- Security: ${personaValues.security.toFixed(2)} ${personaValues.security > 0.7 ? "(seeks trust signals, guarantees, reads policies)" : personaValues.security < 0.3 ? "(skips fine print, comfortable with risk)" : ""}
+- Stimulation: ${personaValues.stimulation.toFixed(2)} ${personaValues.stimulation > 0.7 ? "(drawn to 'New', beta features, novelty)" : personaValues.stimulation < 0.3 ? "(ignores new features, prefers familiar)" : ""}
+- Achievement: ${personaValues.achievement.toFixed(2)} ${personaValues.achievement > 0.7 ? "(seeks ROI, metrics, efficiency)" : ""}
+- Conformity: ${personaValues.conformity.toFixed(2)} ${personaValues.conformity > 0.7 ? "(influenced by reviews, 'Most popular', social proof)" : personaValues.conformity < 0.3 ? "(ignores social proof, independent)" : ""}
+- Self-Direction: ${personaValues.selfDirection.toFixed(2)} ${personaValues.selfDirection > 0.7 ? "(resists defaults, customizes, explores options)" : ""}
+` : ""}
 GOAL: "${goal}"
 
 IMPORTANT: Pass _browserToken="${browserToken || ''}" to ALL subsequent tool calls (navigate, screenshot, click, fill, scroll, extract) to maintain browser state across calls.
@@ -453,6 +470,15 @@ Begin the simulation now. Narrate your thoughts as this persona.
         comprehension: z.number(),
         persistence: z.number(),
       }).describe("Persona traits affecting state changes"),
+      personaValues: z.object({
+        security: z.number().optional(),
+        stimulation: z.number().optional(),
+        achievement: z.number().optional(),
+        conformity: z.number().optional(),
+        selfDirection: z.number().optional(),
+        tradition: z.number().optional(),
+        power: z.number().optional(),
+      }).optional().describe("Schwartz motivational values (0-1). Modulate cognitive state changes: security increases risk aversion, stimulation rewards novelty, achievement increases impatience with inefficiency."),
     },
     annotations: {
       title: "Update Cognitive State",
@@ -461,27 +487,38 @@ Begin the simulation now. Narrate your thoughts as this persona.
       idempotentHint: false,
       openWorldHint: false,
     },
-  }, async ({ currentState, actionResult, personaTraits }) => {
+  }, async ({ currentState, actionResult, personaTraits, personaValues }) => {
+      // Value modulation factors (0.8-1.2 range, default 1.0 when no values)
+      const v = personaValues || {};
+      const securityMod = 1 + ((v.security ?? 0.5) - 0.5) * 0.4;       // 0.8-1.2: high security = more reactive to failure
+      const stimulationMod = 1 + ((v.stimulation ?? 0.5) - 0.5) * 0.4;  // 0.8-1.2: high stimulation = more patience for novelty
+      const achievementMod = 1 + ((v.achievement ?? 0.5) - 0.5) * 0.4;  // 0.8-1.2: high achievement = more impatient with inefficiency
+      const conformityMod = 1 + ((v.conformity ?? 0.5) - 0.5) * 0.4;    // 0.8-1.2: high conformity = more frustrated without social proof
+
       let newPatienceRemaining = currentState.patienceRemaining - 0.02;
       let newConfusionLevel = currentState.confusionLevel;
       let newFrustrationLevel = currentState.frustrationLevel;
       let newConfidenceLevel = currentState.confidenceLevel;
       let newMood = currentState.currentMood;
 
-      newPatienceRemaining -= currentState.frustrationLevel * 0.05;
+      // Patience drain from frustration — achievement-driven personas drain faster
+      newPatienceRemaining -= currentState.frustrationLevel * 0.05 * achievementMod;
 
       if (actionResult.success) {
-        newConfusionLevel = Math.max(0, newConfusionLevel - 0.1);
+        // Success recovery — stimulation-seeking personas recover faster from novelty
+        newConfusionLevel = Math.max(0, newConfusionLevel - 0.1 * stimulationMod);
         newFrustrationLevel = Math.max(0, newFrustrationLevel - 0.05);
 
         if (actionResult.progressMade) {
-          newConfidenceLevel = Math.min(1, newConfidenceLevel + 0.1);
+          // Achievement-driven personas get bigger confidence boost from progress
+          newConfidenceLevel = Math.min(1, newConfidenceLevel + 0.1 * achievementMod);
           if (newMood === "confused" || newMood === "frustrated") {
             newMood = "hopeful";
           }
         }
       } else {
-        newFrustrationLevel = Math.min(1, newFrustrationLevel + 0.2);
+        // Failure — security-focused personas accumulate MORE frustration on failure
+        newFrustrationLevel = Math.min(1, newFrustrationLevel + 0.2 * securityMod);
 
         if (newFrustrationLevel > 0.7) {
           newMood = "frustrated";
@@ -492,7 +529,8 @@ Begin the simulation now. Narrate your thoughts as this persona.
       }
 
       if (actionResult.wasConfusing) {
-        newConfusionLevel = Math.min(1, newConfusionLevel + (1 - personaTraits.comprehension) * 0.15);
+        // Confusion — conformity-seeking personas get more confused without clear guidance
+        newConfusionLevel = Math.min(1, newConfusionLevel + (1 - personaTraits.comprehension) * 0.15 * conformityMod);
 
         if (newConfusionLevel > 0.5 && newMood !== "frustrated") {
           newMood = "confused";
@@ -500,7 +538,8 @@ Begin the simulation now. Narrate your thoughts as this persona.
       }
 
       if (actionResult.wentBack) {
-        newConfidenceLevel = Math.max(0, newConfidenceLevel - 0.15);
+        // Going back — security-focused personas lose more confidence (risk aversion)
+        newConfidenceLevel = Math.max(0, newConfidenceLevel - 0.15 * securityMod);
       }
 
       const newState: Partial<CognitiveState> = {
@@ -517,18 +556,29 @@ Begin the simulation now. Narrate your thoughts as this persona.
       let abandonmentReason: string | undefined;
       let abandonmentMessage: string | undefined;
 
-      if (newState.patienceRemaining! < 0.1) {
+      // Abandonment thresholds — values shift sensitivity
+      // Security-focused personas abandon earlier on risk/uncertainty
+      // Achievement-focused personas abandon earlier on inefficiency
+      const patienceThreshold = 0.1;
+      const frustrationThreshold = 0.85 / securityMod;  // Lower threshold for high-security personas
+      const confusionThreshold = 0.8 / conformityMod;   // Lower threshold for high-conformity personas
+
+      if (newState.patienceRemaining! < patienceThreshold) {
         shouldAbandon = true;
         abandonmentReason = "patience";
         abandonmentMessage = "This is taking too long. I give up.";
-      } else if (newState.frustrationLevel! > 0.85) {
+      } else if (newState.frustrationLevel! > frustrationThreshold) {
         shouldAbandon = true;
         abandonmentReason = "frustration";
-        abandonmentMessage = "This is so frustrating! I'm done.";
-      } else if (newState.confusionLevel! > 0.8 && currentState.confusionLevel > 0.8) {
+        abandonmentMessage = (v.security ?? 0.5) > 0.7
+          ? "This doesn't feel safe or reliable. I'm leaving."
+          : "This is so frustrating! I'm done.";
+      } else if (newState.confusionLevel! > confusionThreshold && currentState.confusionLevel > confusionThreshold) {
         shouldAbandon = true;
         abandonmentReason = "confusion";
-        abandonmentMessage = "I have no idea what I'm supposed to do here.";
+        abandonmentMessage = (v.conformity ?? 0.5) > 0.7
+          ? "I can't tell what most people would do here. I'll try something else."
+          : "I have no idea what I'm supposed to do here.";
       }
 
       return {

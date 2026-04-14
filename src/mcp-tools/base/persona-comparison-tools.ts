@@ -669,6 +669,37 @@ Begin with the first persona: ${personas[0]}
       // Compute full COT
       const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
       const demand = computeDemandDistribution(pageMetrics);
+
+      // Modulate demand by motivational values (if available)
+      // Values shift what feels demanding: high security = decisions feel riskier,
+      // high achievement = inefficiency feels more frustrating
+      try {
+        const { getPersonaValues } = await import("../../values/index.js");
+        const pValues = getPersonaValues(personaName);
+        if (pValues && demand.demands) {
+          // Conservation (security+conformity+tradition)/3 amplifies decision layer
+          const conservation = (pValues.security + pValues.conformity + pValues.tradition) / 3;
+          // Openness (selfDirection+stimulation)/2 reduces decision cost (comfortable with choices)
+          const openness = (pValues.selfDirection + pValues.stimulation) / 2;
+          // Achievement amplifies frustration layer (impatience)
+          const achMod = 1 + (pValues.achievement - 0.5) * 0.3;
+
+          // Scale decision-related demands: satisficing, anchoringBias, riskTolerance, fearOfMissingOut
+          const decisionScale = 1 + (conservation - openness) * 0.3; // -0.15 to +0.15 range
+          for (const dim of ["satisficing", "anchoringBias", "riskTolerance", "fearOfMissingOut", "socialProofSensitivity"]) {
+            if (demand.demands[dim] !== undefined) {
+              demand.demands[dim] *= decisionScale;
+            }
+          }
+          // Scale frustration-related demands
+          for (const dim of ["resilience", "selfEfficacy", "emotionalContagion"]) {
+            if (demand.demands[dim] !== undefined) {
+              demand.demands[dim] *= achMod;
+            }
+          }
+        }
+      } catch { /* values not available — proceed without */ }
+
       const result = computeSequentialCTC(otProfile, demand, { asymmetric: true, interactions: true });
 
       // Also compute motor and readability from formal models
