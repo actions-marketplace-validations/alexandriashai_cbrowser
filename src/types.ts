@@ -3092,6 +3092,31 @@ export const DEVICE_PRESETS: Record<string, DeviceDescriptor> = {
     isMobile: false,
     hasTouch: false,
   },
+  // Generic device aliases
+  "mobile": {
+    name: "Mobile (iPhone 15)",
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    viewport: { width: 393, height: 852 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  },
+  "tablet": {
+    name: "Tablet (iPad Pro 11)",
+    userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    viewport: { width: 834, height: 1194 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+  },
+  "desktop": {
+    name: "Desktop (1920x1080)",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    viewport: { width: 1920, height: 1080 },
+    deviceScaleFactor: 1,
+    isMobile: false,
+    hasTouch: false,
+  },
 };
 
 // ============================================================================
@@ -4543,6 +4568,10 @@ export interface AgentReadyAuditOptions {
    * @since v18.22.0
    */
   useRandomUserAgent?: boolean;
+  /** Proxy server for geo-accurate testing (e.g., { server: "socks5://host:port" }) @since v18.39.0 */
+  proxy?: { server: string; username?: string; password?: string };
+  /** Browser locale for language-accurate testing (e.g., "en-US") @since v18.39.0 */
+  locale?: string;
 }
 
 // ============================================================================

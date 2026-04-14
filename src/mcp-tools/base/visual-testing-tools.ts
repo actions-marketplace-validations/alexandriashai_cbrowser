@@ -363,11 +363,13 @@ export function registerVisualTestingTools(server: McpServer): void {
 
   server.registerTool("attention_analysis", {
     title: "Attention Saliency Analysis",
-    description: "Analyze where a persona's visual attention goes on a page using Wasserstein saliency. Produces attention alignment, entropy, concentration, and top attention areas. Based on Klein & Frintrop W₂ on CIE-Lab distributions.",
+    description: "Analyze where a persona's visual attention goes on a page using Wasserstein saliency. Returns attention metrics AND a visual heatmap overlay showing where this persona looks. Based on Klein & Frintrop W₂ on CIE-Lab distributions.",
     inputSchema: {
       url: z.string().describe("URL to analyze"),
       persona: z.string().optional().default("first-timer").describe("Persona name"),
-      cellSize: z.number().optional().default(16).describe("Saliency grid cell size"),
+      cellSize: z.number().optional().default(4).describe("Saliency grid cell size in pixels (smaller = finer heatmap, default: 4)"),
+      heatmap: z.boolean().optional().default(true).describe("Generate visual heatmap overlay (default: true)"),
+      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
     },
     annotations: {
       title: "Attention Saliency Analysis",
@@ -376,9 +378,12 @@ export function registerVisualTestingTools(server: McpServer): void {
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona, cellSize }) => {
+  }, async ({ url, persona, cellSize, heatmap, device }) => {
       const { CBrowser } = await import("../../browser.js");
-      const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
+      const browser = new CBrowser({
+        headless: true,
+        ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
+      });
       const { join } = await import("path");
       const { tmpdir } = await import("os");
       const { unlinkSync } = await import("fs");
@@ -395,27 +400,105 @@ export function registerVisualTestingTools(server: McpServer): void {
         const { analyzeAttention } = await import("../../visual/attention-transport.js");
         const result = await analyzeAttention(screenshotPath, persona, cellSize);
 
+        // Compute attention quality — cross-reference hotspots with page elements
+        let attentionQuality: unknown = null;
+        try {
+          const { computeAttentionQuality, extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
+          const pageElements = await extractPageElementsForAttention(page);
+          const hotspots = result.saliencyMap?.hotspots || [];
+          attentionQuality = computeAttentionQuality(hotspots, pageElements, cellSize);
+        } catch (e) {
+          console.debug(`[attention_analysis] Attention quality failed: ${(e as Error).message}`);
+        }
+
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [{
+          type: "text" as const,
+          text: JSON.stringify({
+            persona: result.persona,
+            alignmentScore: result.alignmentScore,
+            entropy: result.entropy,
+            concentration: result.concentration,
+            transportCost: result.transportCost,
+            topAttentionAreas: result.attentionCompetitors,
+            ...(attentionQuality ? { attentionQuality } : {}),
+            interpretation: {
+              alignment: result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design",
+              entropy: result.entropy > 0.8 ? "Scattered attention (overwhelmed)" : result.entropy > 0.5 ? "Moderate attention spread" : "Focused attention",
+              concentration: result.concentration > 0.6 ? "Attention concentrated on few areas" : "Attention distributed across page",
+            },
+            computeTimeMs: Math.round(result.computeTimeMs),
+            hasHeatmap: heatmap !== false,
+          }, null, 2),
+        }];
+
+        // Generate heatmap overlay and save as public URL
+        if (heatmap !== false && result.saliencyMap) {
+          try {
+            const { generateHeatmapOverlay } = await import("../../visual/heatmap-overlay.js");
+            const heatmapBase64 = await generateHeatmapOverlay(
+              screenshotPath,
+              result.saliencyMap.cells,
+              result.saliencyMap.rows,
+              result.saliencyMap.cols,
+              `${persona} Attention`,
+            );
+
+            // Save to public directory for URL access
+            const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+            const { homedir } = await import("os");
+            const heatmapId = `attn-${persona}-${Date.now()}`;
+
+            // Known paths for the public web directory
+            const webPublicPaths = [
+              "/home/wyld-web/static/cbrowser-web/out/heatmaps",
+              join(homedir(), "static", "cbrowser-web", "out", "heatmaps"),
+            ];
+            const cbrowserDir = join(homedir(), ".cbrowser", "heatmaps");
+
+            let savedPath = "";
+            let publicUrl = "";
+
+            // Try public web directory first
+            const webDir = webPublicPaths.find(p => {
+              const parent = p.replace("/heatmaps", "");
+              return existsSync(parent);
+            });
+
+            if (webDir) {
+              if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
+              savedPath = join(webDir, `${heatmapId}.png`);
+              writeFileSync(savedPath, Buffer.from(heatmapBase64, "base64"));
+              publicUrl = `https://cbrowser.ai/heatmaps/${heatmapId}.png`;
+            } else {
+              if (!existsSync(cbrowserDir)) mkdirSync(cbrowserDir, { recursive: true });
+              savedPath = join(cbrowserDir, `${heatmapId}.png`);
+              writeFileSync(savedPath, Buffer.from(heatmapBase64, "base64"));
+              publicUrl = savedPath;
+            }
+
+            // Return both image content and URL
+            content.push({
+              type: "image" as const,
+              data: heatmapBase64,
+              mimeType: "image/png",
+            });
+
+            // Add URL to the text response
+            const firstBlock = content[0];
+            if (firstBlock.type === "text") {
+              const textContent = JSON.parse(firstBlock.text);
+              textContent.heatmapUrl = publicUrl;
+              textContent.heatmapNote = "Show this heatmap image to the user. The red areas show where this persona's attention concentrates. Blue areas receive little attention.";
+              content[0] = { type: "text" as const, text: JSON.stringify(textContent, null, 2) };
+            }
+          } catch (e) {
+            console.debug(`[attention_analysis] Heatmap generation failed: ${(e as Error).message}`);
+          }
+        }
+
         try { unlinkSync(screenshotPath); } catch {}
 
-        return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({
-              persona: result.persona,
-              alignmentScore: result.alignmentScore,
-              entropy: result.entropy,
-              concentration: result.concentration,
-              transportCost: result.transportCost,
-              topAttentionAreas: result.attentionCompetitors,
-              interpretation: {
-                alignment: result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design",
-                entropy: result.entropy > 0.8 ? "Scattered attention (overwhelmed)" : result.entropy > 0.5 ? "Moderate attention spread" : "Focused attention",
-                concentration: result.concentration > 0.6 ? "Attention concentrated on few areas" : "Attention distributed across page",
-              },
-              computeTimeMs: Math.round(result.computeTimeMs),
-            }, null, 2),
-          }],
-        };
+        return { content };
       } finally {
         await browser.close();
       }
@@ -454,36 +537,67 @@ export function registerVisualTestingTools(server: McpServer): void {
         await page.screenshot({ path: screenshotPath, fullPage: false });
 
         const { compareAttention } = await import("../../visual/attention-transport.js");
-        const result = await compareAttention(screenshotPath, personaA, personaB, 16);
+        const result = await compareAttention(screenshotPath, personaA, personaB, 4);
+
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+
+        const responseData: Record<string, unknown> = {
+          personaA: {
+            name: personaA,
+            alignment: result.personaA.alignmentScore,
+            entropy: result.personaA.entropy,
+            concentration: result.personaA.concentration,
+          },
+          personaB: {
+            name: personaB,
+            alignment: result.personaB.alignmentScore,
+            entropy: result.personaB.entropy,
+            concentration: result.personaB.concentration,
+          },
+          attentionDivergence: result.attentionDivergence,
+          interpretation: result.attentionDivergence < 0.05
+            ? "Nearly identical attention patterns"
+            : result.attentionDivergence < 0.15
+            ? "Moderate attention differences"
+            : "Substantially different attention patterns",
+          divergentRegions: result.divergentRegions.slice(0, 5),
+        };
+
+        // Generate comparison heatmap overlay
+        if (result.personaA.saliencyMap && result.personaB.saliencyMap) {
+          try {
+            const { generateComparisonHeatmap } = await import("../../visual/visual-overlays.js");
+            const compBase64 = await generateComparisonHeatmap(
+              screenshotPath,
+              result.personaA.saliencyMap.cells,
+              result.personaB.saliencyMap.cells,
+              result.personaA.saliencyMap.rows,
+              result.personaA.saliencyMap.cols,
+              personaA,
+              personaB,
+            );
+
+            // Save to public URL
+            const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+            const heatmapId = `cmp-${personaA}-${personaB}-${Date.now()}`;
+            const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";
+            if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
+            const savedPath = join(webDir, `${heatmapId}.png`);
+            writeFileSync(savedPath, Buffer.from(compBase64, "base64"));
+            responseData.comparisonHeatmapUrl = `https://cbrowser.ai/heatmaps/${heatmapId}.png`;
+            responseData.heatmapNote = `Blue = ${personaA} looks here more. Red = ${personaB} looks here more. Transparent = similar attention.`;
+
+            content.push({ type: "image" as const, data: compBase64, mimeType: "image/png" });
+          } catch (e) {
+            console.debug(`[attention_compare] Comparison heatmap failed: ${(e as Error).message}`);
+          }
+        }
+
+        content.unshift({ type: "text" as const, text: JSON.stringify(responseData, null, 2) });
 
         try { unlinkSync(screenshotPath); } catch {}
 
-        return {
-          content: [{
-            type: "text" as const,
-            text: JSON.stringify({
-              personaA: {
-                name: personaA,
-                alignment: result.personaA.alignmentScore,
-                entropy: result.personaA.entropy,
-                concentration: result.personaA.concentration,
-              },
-              personaB: {
-                name: personaB,
-                alignment: result.personaB.alignmentScore,
-                entropy: result.personaB.entropy,
-                concentration: result.personaB.concentration,
-              },
-              attentionDivergence: result.attentionDivergence,
-              interpretation: result.attentionDivergence < 0.05
-                ? "Nearly identical attention patterns"
-                : result.attentionDivergence < 0.15
-                ? "Moderate attention differences"
-                : "Substantially different attention patterns",
-              divergentRegions: result.divergentRegions.slice(0, 5),
-            }, null, 2),
-          }],
-        };
+        return { content };
       } finally {
         await browser.close();
       }

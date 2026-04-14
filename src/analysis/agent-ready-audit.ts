@@ -1760,7 +1760,10 @@ export async function runAgentReadyAudit(
           console.log("🐼 Using Lightpanda for audit (11x faster)");
         }
       } else {
-        browser = await launchBrowserWithFallback(chromium, { headless: options.headless ?? true });
+        browser = await launchBrowserWithFallback(chromium, {
+          headless: options.headless ?? true,
+          ...(options.proxy ? { proxy: options.proxy } : {}),
+        });
       }
 
       // v18.22.0: User agent rotation for bot detection hardening
@@ -1782,6 +1785,8 @@ export async function runAgentReadyAudit(
       const context = await browser.newContext({
         viewport: viewportJitter,
         ...(selectedUserAgent && { userAgent: selectedUserAgent }),
+        ...(options.locale ? { locale: options.locale } : {}),
+        ...(options.proxy ? { ignoreHTTPSErrors: true } : {}),
       });
       const page = await context.newPage();
 

@@ -21,3 +21,6 @@ export * from "./cognitive-transport.js";
 export * from "./cognitive-transport-chain.js";
 export * from "./cognitive-models.js";
 export * from "./attention-transport.js";
+export * from "./heatmap-overlay.js";
+export * from "./attention-quality.js";
+export * from "./visual-overlays.js";

@@ -464,6 +464,8 @@ For more help: https://playwright.dev/docs/browsers
         width: this.config.viewportWidth,
         height: this.config.viewportHeight,
       },
+      // Accept self-signed certs when using proxies (SOCKS proxies may alter cert chain)
+      ...(this.config.proxy ? { ignoreHTTPSErrors: true } : {}),
     };
 
     // Apply device emulation if configured

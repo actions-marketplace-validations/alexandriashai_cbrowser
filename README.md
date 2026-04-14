@@ -1,12 +1,12 @@
 # CBrowser — Cognitive Browser Automation
 
-> **The browser automation that thinks.** Achieved **Grade A+** in comprehensive stress testing—100% pass rate across 91 tools, zero critical bugs, zero server crashes. [View Full Assessment →](docs/STRESS-TEST-v16.14.4.md)
+> **The browser automation that thinks.** Achieved **Grade A+** in comprehensive stress testing—100% pass rate across 108 tools, zero critical bugs, zero server crashes. [View Full Assessment →](docs/STRESS-TEST-v16.14.4.md)
 
 [![npm version](https://img.shields.io/npm/v/cbrowser.svg)](https://www.npmjs.com/package/cbrowser)
 [![Documentation](https://img.shields.io/badge/Docs-cbrowser.ai-blue.svg)](https://cbrowser.ai/docs)
 [![Grade A+](https://img.shields.io/badge/Stress%20Test-A+-brightgreen.svg)](docs/STRESS-TEST-v16.14.4.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP Ready](https://img.shields.io/badge/MCP-91%20Tools-blue)](https://modelcontextprotocol.io)
+[![MCP Ready](https://img.shields.io/badge/MCP-108%20Tools-blue)](https://modelcontextprotocol.io)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D18-green.svg)](https://nodejs.org/)
 
@@ -18,16 +18,16 @@ Sites that pass CBrowser's cognitive tests are easier for both humans **and** AI
 
 ## What Makes CBrowser Different
 
-**91 tools, 17 cognitive personas, 25 research-backed traits.** After rigorous stress testing across production sites including Airbnb and Hacker News:
+**108 MCP tools, 26 cognitive traits, 10 motivational values, 17 cognitive + 8 marketing personas.** After rigorous stress testing across production sites including Airbnb and Hacker News:
 
 | Capability | Status | Why It Matters |
 |------------|--------|----------------|
 | **Natural Language Tests** | ⭐ Best-in-class | Write tests in plain English. 10-step E2E flows run 100% stable. |
-| **Cognitive User Simulation** | 🔬 Novel | 25 research-backed traits model real human behavior—not just clicks. |
+| **Cognitive User Simulation** | 🔬 Novel | 26 research-backed traits model real human behavior—not just clicks. |
 | **Empathy Accessibility Audits** | 🔬 Novel | Simulate users with tremors, low vision, ADHD. No competitor offers this. |
 | **Self-Healing Selectors** | ✅ Production-ready | ARIA-first with 0.8+ confidence gating. Handles DOM changes automatically. |
 | **Constitutional AI Safety** | 🔬 Novel | Risk-classified actions prevent autonomous agents from doing damage. |
-| **91 MCP Tools** | ✅ Production-ready | Full Claude integration—local and remote servers. |
+| **108 MCP Tools** | ✅ Production-ready | Full Claude integration—local and remote servers. |
 
 ---
 
@@ -115,7 +115,7 @@ CBrowser models **25 research-backed cognitive traits** across 6 tiers to simula
 | **Social Proof** | Cialdini (2001) | Influence of reviews, ratings, popularity indicators |
 | **FOMO** | Przybylski et al. (2013) | Fear of missing out; urgency and scarcity responses |
 
-*See [Trait Index](https://github.com/alexandriashai/cbrowser/wiki/Trait-Index) for all 25 traits including: Persistence, Resilience, Curiosity, Change Blindness, Anchoring Bias, Time Horizon, Attribution Style, Metacognitive Planning, Procedural Fluency, Transfer Learning, Authority Sensitivity, Emotional Contagion, Mental Model Rigidity, Interrupt Recovery, and Reading Tendency.*
+*See [Trait Index](https://github.com/alexandriashai/cbrowser/wiki/Trait-Index) for all 26 traits including: Persistence, Resilience, Curiosity, Change Blindness, Anchoring Bias, Time Horizon, Attribution Style, Metacognitive Planning, Procedural Fluency, Transfer Learning, Authority Sensitivity, Emotional Contagion, Mental Model Rigidity, Interrupt Recovery, Reading Tendency, and Site Familiarity.*
 
 > **Note:** Trait correlation values are [educated estimates](https://github.com/alexandriashai/cbrowser/wiki/Research-Methodology#validation-status) derived from related research. Empirical calibration planned per [GitHub #95](https://github.com/alexandriashai/cbrowser/issues/95).
 
@@ -142,7 +142,7 @@ Create research-backed custom personas via interactive questionnaire:
 # Interactive questionnaire (8 core traits)
 npx cbrowser persona-questionnaire start
 
-# Comprehensive questionnaire (all 25 traits)
+# Comprehensive questionnaire (all 26 traits)
 npx cbrowser persona-questionnaire start --comprehensive --name "my-tester"
 
 # Look up trait behaviors
@@ -245,6 +245,101 @@ npx cbrowser ab "https://staging.your-site.com" "https://your-site.com" --html
 
 ---
 
+## Cognitive Transport Chain (v18.41.0)
+
+The 6-layer Sequential Transport Chain models how cognitive effort flows through perception, processing, and action:
+
+| Layer | What It Measures | Research Basis |
+|-------|-----------------|----------------|
+| **Saliency** | Visual attention capture | CIE-Lab W₂ perceptual model |
+| **Cognitive Load** | Information processing demand | Sweller (1988) CLT |
+| **Decision** | Choice complexity and fatigue | Hick-Hyman Law |
+| **Motor** | Physical interaction difficulty | Grossman & Balakrishnan (2005) |
+| **Frustration** | Emotional cost accumulation | Ceaparu et al. (2004) |
+| **Readability** | Text comprehension effort | Perry & Zorzi (2013) reading model |
+
+```bash
+# Compute total cognitive effort for a persona on any URL
+npx cbrowser cognitive-effort --url "https://your-site.com" --persona first-timer
+```
+
+Returns: total CTC score, per-layer breakdown, bottleneck identification, abandonment risk percentage, and motor accessibility overlay.
+
+---
+
+## Visual Overlays & Attention Analysis (v18.35.0)
+
+Generate visual cognitive narratives showing where users look, what they struggle with, and whether CTAs capture attention:
+
+```bash
+# Full visual cognitive story — generates 4 annotated images + narrative
+npx cbrowser visual-cognitive-story --url "https://your-site.com" --persona cognitive-adhd
+
+# Attention heatmap — where does this persona look?
+npx cbrowser attention-analysis --url "https://your-site.com" --persona first-timer
+```
+
+**Overlays generated:**
+- **Attention heatmap** — CIE-Lab saliency on grayscale base (red = high attention)
+- **Motor accessibility** — Green/yellow/red per element by P(hit)
+- **Attention quality** — CTAs green, distractors red, headings blue
+- **Comparison diff** — Blue = persona A attention, red = persona B
+
+**Metrics returned:** CTA capture rate, value prop salience, distractor ratio, quality score (0-100), entropy.
+
+---
+
+## Site Knowledge System (v18.30.0)
+
+CBrowser learns your site over time for smarter navigation:
+
+- **Page Understanding** — DOM analysis, page type classification, available affordances
+- **Site Model Learning** — Persistent knowledge graph across sessions
+- **Cross-Session Profiles** — AES-256-GCM encrypted cookie/state profiles
+- **Goal Decomposition** — Sub-goal trees with fallback strategies
+
+```bash
+# Check what CBrowser knows about a site
+npx cbrowser site-model-status
+```
+
+---
+
+## AI Friendliness Suite (v18.20.0)
+
+Five tools to make your site ready for the AI agent era:
+
+| Tool | What It Does |
+|------|-------------|
+| `agent_ready_audit` | Score site on findability, stability, accessibility, semantics (A-F grade) |
+| `ai_benchmark` | Compare AI-friendliness across competitor URLs |
+| `webmcp_ready_audit` | Audit MCP server for WebMCP compatibility |
+| `remediation_patches` | Generate actionable code fixes for audit findings |
+| `llms_txt_generate` | Generate AI-readable llms.txt site description |
+
+```bash
+npx cbrowser agent-ready-audit "https://your-site.com" --html
+npx cbrowser ai-benchmark "https://site-a.com,https://site-b.com"
+```
+
+---
+
+## Geo Proxy (v18.28.0)
+
+Test from 12 global regions via residential proxies for geo-accurate results:
+
+```bash
+npx cbrowser cognitive-journey \
+  --start "https://your-site.com" \
+  --persona first-timer \
+  --goal "sign up" \
+  --geo-region uk
+```
+
+**Available regions:** `us-west`, `us-east`, `us-central`, `uk`, `germany`, `france`, `japan`, `australia`, `brazil`, `india`, `canada`, `singapore`
+
+---
+
 ## UX Analysis Suite
 
 ### Agent-Ready Audit
@@ -283,7 +378,7 @@ npx cbrowser empathy-audit "https://your-site.com" \
   --html
 ```
 
-**Available personas:** `motor-tremor`, `low-vision`, `cognitive-adhd`, `dyslexic`, `deaf`, `elderly`
+**Available personas (11 accessibility):** `motor-impairment-tremor`, `low-vision-magnified`, `cognitive-adhd`, `dyslexic-user`, `deaf-user`, `elderly-low-vision`, `color-blind-deuteranopia`, `autism-spectrum`, `intellectual-disability`, `aphasia-receptive`, `dyscalculia`
 
 ---
 
@@ -315,19 +410,27 @@ Deploy your own: see [Remote MCP Server Guide](https://cbrowser.ai/docs/Remote-M
 }
 ```
 
-### 91 MCP Tools
+### 108 MCP Tools
 
-| Category | Tools |
-|----------|-------|
-| **Navigation** | `navigate`, `screenshot`, `extract`, `cloudflare_detect`, `cloudflare_wait` |
-| **Interaction** | `click`, `smart_click`, `fill`, `scroll` |
-| **Testing** | `test_suite`, `repair_tests`, `flaky_check` |
-| **Visual** | `visual_baseline`, `visual_compare`, `responsive_test`, `cross_browser_test`, `ab_compare` |
-| **Cognitive** | `cognitive_journey_init`, `cognitive_journey_update_state`, `compare_personas` |
-| **Persona** | `persona_questionnaire_get`, `persona_questionnaire_build`, `persona_trait_lookup` |
-| **Analysis** | `hunt_bugs`, `chaos_test`, `agent_ready_audit`, `competitive_benchmark`, `empathy_audit` |
-| **Security** | `security_audit` - scans MCP tools for prompt injection patterns |
-| **Stealth** | `stealth_enable`, `stealth_disable`, `stealth_status`, `stealth_check`, `stealth_diagnose` |
+| Category | Tools | Count |
+|----------|-------|-------|
+| **Navigation** | `navigate`, `screenshot`, `scroll`, `extract`, `analyze_page`, `find_element_by_intent` | 6 |
+| **Interaction** | `click`, `smart_click`, `fill`, `dismiss_overlay` | 4 |
+| **Cognitive Core** | `cognitive_journey_init`, `cognitive_journey_update_state`, `cognitive_journey_autonomous`, `cognitive_effort`, `cognitive_load_estimate`, `site_cognitive_assessment` | 6 |
+| **Cognitive Transport** | `cognitive_distance`, `cognitive_interpolate`, `cognitive_coverage`, `transport_map` | 4 |
+| **Attention & Visual Story** | `attention_analysis`, `attention_compare`, `visual_cognitive_story` | 3 |
+| **Persona** | `list_cognitive_personas`, `compare_personas`, `persona_create_*`, `persona_questionnaire_*`, `persona_trait_lookup`, `persona_values_*` | 15 |
+| **Testing** | `nl_test_inline`, `nl_test_file`, `generate_tests`, `repair_test`, `detect_flaky_tests`, `coverage_map` | 6 |
+| **Visual Testing** | `visual_baseline`, `visual_regression`, `responsive_test`, `cross_browser_test`, `cross_browser_diff`, `ab_comparison` | 6 |
+| **Site Intelligence** | `page_understand`, `site_model_query`, `site_model_status`, `site_profile_*` | 6 |
+| **AI Friendliness** | `agent_ready_audit`, `ai_benchmark`, `webmcp_ready_audit`, `remediation_patches`, `llms_txt_generate`, `llms_txt_validate`, `llms_txt_diff`, `structured_data_suggest` | 8 |
+| **Analysis** | `hunt_bugs`, `chaos_test`, `competitive_benchmark`, `empathy_audit` | 4 |
+| **Performance** | `perf_baseline`, `perf_regression` | 2 |
+| **Marketing** *(Enterprise)* | `marketing_campaign_*`, `marketing_audience_discover`, `marketing_compete`, `marketing_funnel_analyze`, `marketing_influence_matrix`, `marketing_lever_analysis`, `marketing_personas_list`, `list_influence_patterns` | 11 |
+| **Security** | `security_audit`, `web_security_scan` | 2 |
+| **Stealth** *(Enterprise)* | `stealth_enable`, `stealth_disable`, `stealth_status`, `stealth_check`, `stealth_diagnose`, `cloudflare_detect`, `cloudflare_wait` | 7 |
+| **Session & Browser** | `save_session`, `load_session`, `delete_session`, `list_sessions`, `list_baselines`, `browser_health`, `browser_recover`, `reset_browser`, `heal_stats`, `status` | 10 |
+| **Utility** | `assert`, `ask_user`, `set_api_key`, `api_key_status`, `clear_api_key`, `get_api_key_prompt` | 6 |
 
 ---
 
@@ -344,7 +447,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: alexandriashai/cbrowser@v12
+      - uses: alexandriashai/cbrowser@v18
         with:
           test-file: tests/e2e/checkout.txt
           sensitivity: strict
@@ -423,7 +526,7 @@ npx cbrowser config set-api-key
 
 ### Token Cost & Selective Loading
 
-CBrowser's 91 MCP tools consume approximately **~38,000 tokens** when loaded into an LLM context. For cost-sensitive applications, use selective tool loading:
+CBrowser's 108 MCP tools consume approximately **~45,000 tokens** when loaded into an LLM context. For cost-sensitive applications, use selective tool loading:
 
 **Tool Categories (for programmatic use):**
 
@@ -486,7 +589,7 @@ registerExtractionTools(server, context);
 | **Lever Analysis** | Which psychological persuasion patterns work for each persona |
 | **Constitutional Stealth** | Full stealth measures for authorized penetration testing |
 
-**MCP Server:** Enterprise MCP includes all 64 base tools + marketing tools (4 active + 4 planned).
+**MCP Server:** Enterprise MCP includes all 108 tools (base + marketing + stealth + web security).
 
 ```bash
 # Start Enterprise MCP server
@@ -528,7 +631,7 @@ Website: [cbrowser.ai](https://cbrowser.ai)
 
 ### Research Documentation
 
-- [Research Methodology](https://cbrowser.ai/docs/Research-Methodology) — How 25 traits were selected and validated
+- [Research Methodology](https://cbrowser.ai/docs/Research-Methodology) — How 26 traits were selected and validated
 - [Trait Index](https://cbrowser.ai/docs/Trait-Index) — All cognitive traits with citations
 - [Bibliography](https://cbrowser.ai/docs/Bibliography) — Complete academic references
-- [Persona Index](https://cbrowser.ai/docs/Persona-Index) — All 17 built-in personas
+- [Persona Index](https://cbrowser.ai/docs/Persona-Index) — All 17 cognitive + 8 marketing personas

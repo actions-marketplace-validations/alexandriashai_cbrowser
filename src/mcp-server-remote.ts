@@ -712,7 +712,35 @@ function createMcpServer(
         prompts: {},
         resources: {},
       },
-      instructions: "CBrowser simulates real user cognition on websites. Use cognitive_journey_init to start a persona simulation, empathy_audit to test accessibility, agent_ready_audit to check AI-friendliness, or navigate/click/fill for direct browser control. All tools support _browserToken for session continuity.",
+      instructions: `CBrowser — cognitive browser automation with 107 tools across 16 categories.
+
+CORE TOOLS (use these first):
+• navigate, click, fill, scroll, screenshot, extract — browser control
+• agent_ready_audit — AI-friendliness score (A-F grade)
+• empathy_audit — disability barrier detection
+• cognitive_effort — 6-layer cognitive transport cost per persona
+• site_cognitive_assessment — 3-gate pipeline (bot detection → qualification → persona analysis)
+• page_understand — page type, affordances, structure
+• cognitive_journey_init/update_state — persona journey simulation
+• security_audit — MCP tool injection scanning
+
+SPECIALIST CATEGORIES (use when the task requires them):
+• visual_testing (9 tools) — visual_baseline, visual_regression, cross_browser_test, responsive_test, ab_comparison, transport_map, attention_analysis...
+• cognitive_transport (7 tools) — cognitive_distance, cognitive_coverage, cognitive_interpolate, cognitive_load_estimate, compare_personas...
+• testing (5 tools) — nl_test_inline, nl_test_file, detect_flaky_tests, coverage_map, repair_test
+• site_knowledge (5 tools) — site_model_status, site_model_query, site_profile_list/delete/status
+• bug_hunting (3 tools) — hunt_bugs, chaos_test, competitive_benchmark
+• performance (3 tools) — perf_baseline, perf_regression, list_baselines
+• sessions (4 tools) — save_session, load_session, list_sessions, delete_session
+• marketing (4 tools) — marketing_campaign_create/run/report, marketing_personas_list
+• persona_creation (6 tools) — persona_create_start, questionnaire, from_description
+• enterprise_security (8 tools) — web_security_scan, stealth_enable/disable/check, cloudflare_detect/wait
+• enterprise_marketing (6 tools) — marketing_influence_matrix, lever_analysis, funnel_analyze, audience_discover
+
+TIPS:
+• Pass _browserToken between tool calls to maintain browser state
+• Use site_cognitive_assessment for comprehensive site analysis (runs all gates automatically)
+• For disability testing, pass one persona at a time to empathy_audit to avoid timeouts`,
     }
   );
 

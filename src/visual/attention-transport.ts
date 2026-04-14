@@ -223,11 +223,23 @@ async function computeLabSaliency(
       sVarL /= sCount; sVarA /= sCount; sVarB /= sCount;
 
       // Bures-Wasserstein distance for 3D Gaussians (diagonal covariance)
-      // BW² = ||μ_center - μ_surround||² + Σ(√σ_center_i - √σ_surround_i)²
-      const meanDist = (center.meanL - sMeanL) ** 2 + (center.meanA - sMeanA) ** 2 + (center.meanB - sMeanB) ** 2;
-      const varDist = (Math.sqrt(center.varL) - Math.sqrt(sVarL)) ** 2 +
-                      (Math.sqrt(center.varA) - Math.sqrt(sVarA)) ** 2 +
-                      (Math.sqrt(center.varB) - Math.sqrt(sVarB)) ** 2;
+      // BW² = w_L||ΔL||² + w_a||Δa||² + w_b||Δb||² + variance terms
+      //
+      // Chrominance boost: a/b channels weighted 3x relative to L.
+      // This captures the preattentive "pop-out effect" where a uniquely-colored
+      // item captures attention even when its luminance is similar to surroundings.
+      // Without this, teal text on white scores LOWER than black text on white
+      // because teal has less luminance contrast — the opposite of perceptual reality.
+      const wL = 1.0;  // luminance weight
+      const wA = 3.0;  // chrominance a* weight (red-green axis)
+      const wB = 3.0;  // chrominance b* weight (blue-yellow axis)
+
+      const meanDist = wL * (center.meanL - sMeanL) ** 2 +
+                       wA * (center.meanA - sMeanA) ** 2 +
+                       wB * (center.meanB - sMeanB) ** 2;
+      const varDist = wL * (Math.sqrt(center.varL) - Math.sqrt(sVarL)) ** 2 +
+                      wA * (Math.sqrt(center.varA) - Math.sqrt(sVarA)) ** 2 +
+                      wB * (Math.sqrt(center.varB) - Math.sqrt(sVarB)) ** 2;
 
       saliency[idx] = Math.sqrt(meanDist + varDist);
     }

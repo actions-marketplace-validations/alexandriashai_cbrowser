@@ -32,8 +32,8 @@ CBrowser fixes this with AI-powered automation that:
 
 | Tier | Tools | Access | Best For |
 |------|-------|--------|----------|
-| **Demo** | 91 tools (72 real + 19 stubs) | Free at `demo.cbrowser.ai/mcp` | Evaluation, small projects, learning |
-| **Enterprise** | 91 tools (all real) | Self-hosted or authenticated | Production use, marketing intelligence, stealth testing |
+| **Demo** | 108 tools (rate-limited) | Free at `demo.cbrowser.ai/mcp` | Evaluation, small projects, learning |
+| **Enterprise** | 108 tools (all real, unlimited) | Self-hosted or authenticated | Production use, marketing intelligence, stealth testing |
 
 The Demo tier gives you everything you need to automate browsers, run tests, and simulate users. Enterprise adds autonomous AI execution, marketing campaign analysis, and bot detection bypass for authorized testing.
 

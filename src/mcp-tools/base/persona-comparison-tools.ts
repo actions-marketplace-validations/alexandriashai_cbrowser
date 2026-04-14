@@ -570,6 +570,12 @@ Begin with the first persona: ${personas[0]}
       url: z.string().url().describe("URL to analyze"),
       persona: z.string().describe("Persona name (e.g., 'first-timer', 'cognitive-adhd', 'elderly-user', 'autism-spectrum')"),
       _browserToken: z.string().optional().describe("Browser session token"),
+      userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US')"),
+      userTimezone: z.string().optional().describe("User's timezone (e.g., 'America/Denver')"),
+      userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US')"),
+      proxy: z.string().optional().describe("Proxy server URL for geo-accurate testing"),
+      geoRegion: z.string().optional().describe("Route through a residential proxy in this region: us-west, us-east, us-central, uk, germany, japan"),
+      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -578,7 +584,7 @@ Begin with the first persona: ${personas[0]}
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona: personaName, _browserToken }) => {
+  }, async ({ url, persona: personaName, _browserToken, userLocation, userTimezone, userLanguage, proxy }) => {
     try {
       // Get browser
       let b: Awaited<ReturnType<typeof getBrowser>>;
@@ -594,6 +600,15 @@ Begin with the first persona: ${personas[0]}
       // Navigate
       await b.navigate(url);
       const page = await b.getPage();
+
+      // Detect language mismatch
+      const expectedLang = (userLanguage || "en-US").split("-")[0];
+      const pageLang = await page.evaluate(() => document.documentElement.lang || "").catch(() => "");
+      const pageLangShort = pageLang.split("-")[0].toLowerCase();
+      let languageWarning: string | undefined;
+      if (pageLangShort && pageLangShort !== expectedLang.toLowerCase() && pageLangShort !== "") {
+        languageWarning = `Page language "${pageLang}" does not match expected "${userLanguage || 'en-US'}". Site may be geo-detecting server IP, not user locale.`;
+      }
 
       // Check if page is blocked/error
       const pageTitle = await page.title().catch(() => '');
@@ -756,15 +771,63 @@ Begin with the first persona: ${personas[0]}
           : result.totalCTC < 0.8
           ? `${personaName} will struggle significantly. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
           : `${personaName} is likely to abandon this page. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`,
+        ...(languageWarning ? { languageWarning } : {}),
+        ...(userLocation ? { userContext: { location: userLocation, timezone: userTimezone, language: userLanguage } } : {}),
         ...(token ? { _browserToken: token } : {}),
       };
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify(response, null, 2),
-        }],
-      };
+      // Generate motor accessibility overlay
+      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+      try {
+        if (motorResult && motorResult.elements.length > 0) {
+          const { join: joinPath } = await import("path");
+          const { tmpdir: getTmpDir } = await import("os");
+          const { writeFileSync, mkdirSync, existsSync, unlinkSync: ul } = await import("fs");
+
+          const ssPath = joinPath(getTmpDir(), `cog-effort-${Date.now()}.png`);
+          await page.screenshot({ path: ssPath, fullPage: false });
+
+          // Get element bounding boxes for motor overlay
+          const motorElements = await page.evaluate(() => {
+            const els = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
+            return Array.from(els).slice(0, 30).map(el => {
+              const rect = (el as HTMLElement).getBoundingClientRect();
+              return {
+                selector: el.tagName.toLowerCase(),
+                x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+              };
+            }).filter((e: { width: number; height: number }) => e.width > 0 && e.height > 0);
+          });
+
+          const { generateMotorOverlay } = await import("../../visual/visual-overlays.js");
+          const motorOverlayElements = motorElements.map((el: { selector: string; x: number; y: number; width: number; height: number }, i: number) => ({
+            ...el,
+            hitProbability: motorResult.elements[i]?.hitProbability ?? 0.9,
+            isBarrier: motorResult.elements[i]?.isBarrier ?? false,
+          }));
+
+          const motorBase64 = await generateMotorOverlay(ssPath, motorOverlayElements, personaName);
+
+          const heatmapId = `motor-${personaName}-${Date.now()}`;
+          const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";
+          if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
+          writeFileSync(joinPath(webDir, `${heatmapId}.png`), Buffer.from(motorBase64, "base64"));
+          response.motorOverlayUrl = `https://cbrowser.ai/heatmaps/${heatmapId}.png`;
+          response.motorOverlayNote = "Green = easy to click. Yellow = moderate difficulty. Red = motor barrier for this persona.";
+
+          content.push({ type: "image" as const, data: motorBase64, mimeType: "image/png" });
+          try { ul(ssPath); } catch {}
+        }
+      } catch (e) {
+        console.debug(`[cognitive_effort] Motor overlay failed: ${(e as Error).message}`);
+      }
+
+      content.unshift({
+        type: "text" as const,
+        text: JSON.stringify(response, null, 2),
+      });
+
+      return { content };
     } catch (err) {
       return {
         content: [{
