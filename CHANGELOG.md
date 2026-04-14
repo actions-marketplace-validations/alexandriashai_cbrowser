@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.52.4](https://github.com/alexandriashai/cbrowser/compare/v18.52.3...v18.52.4) (2026-04-14)
+
+### Fixed
+
+* restore /authorize login form for Claude.ai OAuth popup ([13242b3](https://github.com/alexandriashai/cbrowser/commit/13242b37113e4e6596cb964ac5727ecbc65019ea))
+
 ## [18.52.3](https://github.com/alexandriashai/cbrowser/compare/v18.52.2...v18.52.3) (2026-04-14)
 
 ### Fixed
