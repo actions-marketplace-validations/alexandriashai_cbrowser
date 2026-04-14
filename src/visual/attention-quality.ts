@@ -4,15 +4,80 @@
  * Measures not just WHERE a persona looks, but whether they see
  * the things that matter: CTAs, value props, and primary actions.
  *
- * Three components:
+ * Four components:
  * 1. CTA Capture Rate — do top saliency zones overlap with CTAs?
  * 2. Value Prop Salience — is the headline/message in top attention?
  * 3. Distractor Ratio — how much attention goes to non-actionable elements?
+ * 4. Value Relevance Score — does the persona see what THEIR values care about?
  *
- * @since v18.39.0
+ * @since v18.39.0 (base), v18.46.0 (value-driven semantic classification)
  */
 
 import type { PageUnderstanding, Affordance, CTAElement } from "../analysis/page-understanding.js";
+
+// ── Semantic Element Types (value-relevant) ──
+
+export type SemanticType =
+  | "trust-signal"    // Security badges, locks, "verified", guarantees, certifications
+  | "social-proof"    // Star ratings, review counts, "trusted by X", testimonials
+  | "novelty"         // "New", "Beta", "Updated", recent dates, feature badges
+  | "metrics"         // Numbers, percentages, stats, ROI, performance data
+  | "urgency"         // "Limited time", "Only X left", countdowns, scarcity
+  | "community"       // "Join", forums, team, "community", user counts
+  | "authority"       // Expert endorsements, "Fortune 500", logos, awards
+  | "none";
+
+const TRUST_PATTERNS = /secur|trust|verif|certif|guarant|money.?back|refund|privacy|encrypt|ssl|badge|shield|lock|safe|protect|complian/i;
+const SOCIAL_PROOF_PATTERNS = /review|rating|star|trusted.?by|users|customers|clients|testimonial|recommend|\d+[kKmM]?\+?\s*(users|customers|downloads|installs|companies)|4\.\d|5\.0/i;
+const NOVELTY_PATTERNS = /\bnew\b|beta|launch|updat|just.?added|fresh|latest|coming.?soon|early.?access|preview/i;
+const METRICS_PATTERNS = /\d+%|\d+x\s|roi|\bsave\b.*\d|faster|reduc|improv|increase|decrease|performance|benchmark|\$\d/i;
+const URGENCY_PATTERNS = /limited|only\s*\d|hurry|expire|countdown|last.?chance|ending|left.?in.?stock|act.?now|don.?t.?miss/i;
+const COMMUNITY_PATTERNS = /community|join|forum|together|team|family|fellow|member|belong|contrib|open.?source/i;
+const AUTHORITY_PATTERNS = /fortune|forbes|techcrunch|award|winner|leader|expert|partner|enterprise|government|university/i;
+
+/** Classify an element's semantic type from its text content */
+export function classifySemanticType(text: string, classList?: string): SemanticType {
+  if (!text && !classList) return "none";
+  const combined = `${text || ""} ${classList || ""}`;
+  if (TRUST_PATTERNS.test(combined)) return "trust-signal";
+  if (SOCIAL_PROOF_PATTERNS.test(combined)) return "social-proof";
+  if (NOVELTY_PATTERNS.test(combined)) return "novelty";
+  if (METRICS_PATTERNS.test(combined)) return "metrics";
+  if (URGENCY_PATTERNS.test(combined)) return "urgency";
+  if (COMMUNITY_PATTERNS.test(combined)) return "community";
+  if (AUTHORITY_PATTERNS.test(combined)) return "authority";
+  return "none";
+}
+
+/** Schwartz value weights for each semantic type (which values care about which elements) */
+const VALUE_SEMANTIC_WEIGHTS: Record<SemanticType, Record<string, number>> = {
+  "trust-signal":  { security: 1.0, conformity: 0.5, tradition: 0.3 },
+  "social-proof":  { conformity: 1.0, security: 0.6, tradition: 0.3 },
+  "novelty":       { stimulation: 1.0, selfDirection: 0.5 },
+  "metrics":       { achievement: 1.0, power: 0.4 },
+  "urgency":       { stimulation: 0.5, achievement: 0.4 },
+  "community":     { benevolence: 0.8, universalism: 0.6, conformity: 0.3 },
+  "authority":     { security: 0.5, conformity: 0.6, tradition: 0.4, power: 0.3 },
+  "none":          {},
+};
+
+/** Compute how relevant an element is to a persona's values (0-1) */
+export function computeValueRelevance(
+  semanticType: SemanticType,
+  values: Partial<Record<string, number>>,
+): number {
+  const weights = VALUE_SEMANTIC_WEIGHTS[semanticType];
+  if (!weights || Object.keys(weights).length === 0) return 0;
+
+  let weightedSum = 0;
+  let totalWeight = 0;
+  for (const [valueName, weight] of Object.entries(weights)) {
+    const personaValue = values[valueName] ?? 0.5;
+    weightedSum += personaValue * weight;
+    totalWeight += weight;
+  }
+  return totalWeight > 0 ? weightedSum / totalWeight : 0;
+}
 
 export interface AttentionQualityResult {
   /** CTA capture rate: fraction of top saliency in CTA zones (0-1) */
@@ -23,11 +88,15 @@ export interface AttentionQualityResult {
   distractorRatio: number;
   /** Combined attention quality score (0-100) */
   qualityScore: number;
+  /** Value relevance score: how much attention hits elements this persona's values care about (0-1). Only present when values provided. */
+  valueRelevanceScore?: number;
   /** What the top attention zones are hitting */
   topAttentionTargets: Array<{
     type: "cta" | "heading" | "navigation" | "content" | "decorative" | "unknown";
     element: string;
     saliency: number;
+    semanticType?: SemanticType;
+    valueRelevance?: number;
   }>;
   /** Interpretation */
   interpretation: string;
@@ -71,8 +140,10 @@ export function computeAttentionQuality(
     isCTA?: boolean;
     isNav?: boolean;
     isDecorative?: boolean;
+    semanticType?: SemanticType;
   }>,
   cellSize: number = 4,
+  personaValues?: Partial<Record<string, number>>,
 ): AttentionQualityResult {
   const topN = Math.min(20, hotspots.length);
   const topHotspots = hotspots.slice(0, topN);
@@ -131,10 +202,16 @@ export function computeAttentionQuality(
           contentSaliency += hotspot.saliency;
         }
 
+        // Semantic classification + value relevance
+        const semType = el.semanticType || classifySemanticType(el.text || "", el.selector);
+        const valRel = personaValues ? computeValueRelevance(semType, personaValues) : undefined;
+
         targets.push({
           type,
           element: el.text?.slice(0, 50) || el.selector,
           saliency: Math.round(hotspot.saliency * 1000) / 1000,
+          semanticType: semType !== "none" ? semType : undefined,
+          valueRelevance: valRel !== undefined ? Math.round(valRel * 1000) / 1000 : undefined,
         });
         matched = true;
         break;
@@ -156,12 +233,30 @@ export function computeAttentionQuality(
   const valuePropSalience = (headingSaliency + ctaSaliency) / totalTopSaliency;
   const distractorRatio = (decorativeSaliency + unknownSaliency + navSaliency) / totalTopSaliency;
 
-  // Quality score: rewards CTA capture and value prop, penalizes distractors
-  // Target: 100 = all top attention on CTAs and value prop, 0 = all on distractors
+  // Value relevance score (only when persona values provided)
+  let valueRelevanceScore: number | undefined;
+  if (personaValues) {
+    let valRelSum = 0;
+    let valRelCount = 0;
+    for (const t of targets) {
+      if (t.valueRelevance !== undefined && t.valueRelevance > 0) {
+        valRelSum += t.saliency * t.valueRelevance;
+        valRelCount++;
+      }
+    }
+    valueRelevanceScore = valRelCount > 0
+      ? Math.round((valRelSum / totalTopSaliency) * 1000) / 1000
+      : 0;
+  }
+
+  // Quality score: rewards CTA capture, value prop, low distraction, and value relevance
+  const valueBonus = valueRelevanceScore !== undefined ? valueRelevanceScore * 10 : 0;
   const qualityScore = Math.max(0, Math.min(100, Math.round(
-    ctaCaptureRate * 40 +          // 40 points for CTA capture
-    valuePropSalience * 30 +       // 30 points for value prop visibility
-    (1 - distractorRatio) * 30     // 30 points for low distraction
+    ctaCaptureRate * 35 +          // 35 points for CTA capture
+    valuePropSalience * 25 +       // 25 points for value prop visibility
+    (1 - distractorRatio) * 25 +   // 25 points for low distraction
+    valueBonus +                   // up to 10 points for value-relevant attention
+    5                              // 5 base points
   )));
 
   // Interpretation
@@ -183,6 +278,7 @@ export function computeAttentionQuality(
     valuePropSalience: Math.round(valuePropSalience * 1000) / 1000,
     distractorRatio: Math.round(distractorRatio * 1000) / 1000,
     qualityScore,
+    valueRelevanceScore,
     topAttentionTargets: targets.slice(0, 10),
     interpretation,
   };
@@ -204,6 +300,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
   isCTA: boolean;
   isNav: boolean;
   isDecorative: boolean;
+  classList: string;
 }>> {
   const p = page as { evaluate: (fn: () => unknown) => Promise<unknown> };
   return p.evaluate(() => {
@@ -228,6 +325,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
       isCTA: boolean;
       isNav: boolean;
       isDecorative: boolean;
+      classList: string;
     }> = [];
 
     // CTAs: buttons with action text, prominent links
@@ -247,6 +345,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isCTA: false,
         isNav: false,
         isDecorative: false,
+        classList: (el as HTMLElement).className || "",
       });
     });
 
@@ -271,6 +370,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isCTA: !!isCTA,
         isNav,
         isDecorative: false,
+        classList: (el as HTMLElement).className || "",
       });
     });
 
@@ -290,6 +390,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isCTA: false,
         isNav: false,
         isDecorative,
+        classList: (el as HTMLElement).className || "",
       });
     });
 
@@ -298,5 +399,6 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
     selector: string; text: string; type: string;
     x: number; y: number; width: number; height: number;
     isHeading: boolean; isCTA: boolean; isNav: boolean; isDecorative: boolean;
+    classList: string;
   }>>;
 }

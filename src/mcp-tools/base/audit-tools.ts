@@ -666,7 +666,14 @@ export function registerAuditTools(server: McpServer): void {
               width: el.width * dpr,
               height: el.height * dpr,
             }));
-            const quality = computeAttentionQuality(attentionData.hotspots, pageElements, 4);
+            // Pass persona values for value-weighted quality
+            let pValues: Record<string, number> | undefined;
+            try {
+              const { getPersonaValues: getPV } = await import("../../values/index.js");
+              const v = getPV(persona);
+              if (v) pValues = v as unknown as Record<string, number>;
+            } catch {}
+            const quality = computeAttentionQuality(attentionData.hotspots, pageElements, 4, pValues);
 
             // Build overlay targets from page elements that matched hotspots
             const overlayTargets = quality.topAttentionTargets.map(t => {

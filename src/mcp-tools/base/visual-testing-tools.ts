@@ -416,7 +416,14 @@ export function registerVisualTestingTools(server: McpServer): void {
             width: el.width * dpr,
             height: el.height * dpr,
           }));
-          attentionQuality = computeAttentionQuality(hotspots, pageElements, cellSize);
+          // Pass persona values for value-weighted attention quality
+          let pValues: Record<string, number> | undefined;
+          try {
+            const { getPersonaValues } = await import("../../values/index.js");
+            const vals = getPersonaValues(persona);
+            if (vals) pValues = vals as unknown as Record<string, number>;
+          } catch {}
+          attentionQuality = computeAttentionQuality(hotspots, pageElements, cellSize, pValues);
         } catch (e) {
           console.debug(`[attention_analysis] Attention quality failed: ${(e as Error).message}`);
         }
