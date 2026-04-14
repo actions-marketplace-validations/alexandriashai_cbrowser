@@ -404,8 +404,18 @@ export function registerVisualTestingTools(server: McpServer): void {
         let attentionQuality: unknown = null;
         try {
           const { computeAttentionQuality, extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
-          const pageElements = await extractPageElementsForAttention(page);
+          const rawElements = await extractPageElementsForAttention(page);
           const hotspots = result.saliencyMap?.hotspots || [];
+
+          // Scale CSS coordinates to screenshot pixel coordinates (DPR adjustment)
+          const dpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
+          const pageElements = rawElements.map(el => ({
+            ...el,
+            x: el.x * dpr,
+            y: el.y * dpr,
+            width: el.width * dpr,
+            height: el.height * dpr,
+          }));
           attentionQuality = computeAttentionQuality(hotspots, pageElements, cellSize);
         } catch (e) {
           console.debug(`[attention_analysis] Attention quality failed: ${(e as Error).message}`);

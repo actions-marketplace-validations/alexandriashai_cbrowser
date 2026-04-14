@@ -655,7 +655,17 @@ export function registerAuditTools(server: McpServer): void {
           if (attentionData?.hotspots) {
             const { computeAttentionQuality, extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
             const { generateAttentionQualityOverlay } = await import("../../visual/visual-overlays.js");
-            const pageElements = await extractPageElementsForAttention(page);
+            const rawElements = await extractPageElementsForAttention(page);
+
+            // Scale CSS coordinates to screenshot pixel coordinates (DPR adjustment)
+            const dpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
+            const pageElements = rawElements.map(el => ({
+              ...el,
+              x: el.x * dpr,
+              y: el.y * dpr,
+              width: el.width * dpr,
+              height: el.height * dpr,
+            }));
             const quality = computeAttentionQuality(attentionData.hotspots, pageElements, 4);
 
             // Build overlay targets from page elements that matched hotspots
