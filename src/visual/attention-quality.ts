@@ -207,6 +207,15 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
 }>> {
   const p = page as { evaluate: (fn: () => unknown) => Promise<unknown> };
   return p.evaluate(() => {
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Only include elements whose bounding box intersects the viewport
+    const inViewport = (rect: DOMRect): boolean =>
+      rect.width > 0 && rect.height > 0 &&
+      rect.bottom > 0 && rect.top < vh &&
+      rect.right > 0 && rect.left < vw;
+
     const elements: Array<{
       selector: string;
       text: string;
@@ -224,10 +233,10 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
     // CTAs: buttons with action text, prominent links
     const ctaPatterns = /apply|sign.?up|register|get.?started|buy|order|subscribe|enroll|join|donate|download|try|start|begin|contact|request|book/i;
 
-    // Headings
+    // Headings — viewport only
     document.querySelectorAll("h1, h2, h3").forEach(el => {
       const rect = (el as HTMLElement).getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
+      if (!inViewport(rect)) return;
       const text = (el as HTMLElement).innerText?.trim() || "";
       elements.push({
         selector: el.tagName.toLowerCase(),
@@ -241,10 +250,10 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
       });
     });
 
-    // Buttons and links
+    // Buttons and links — viewport only
     document.querySelectorAll('a, button, [role="button"], input[type="submit"]').forEach(el => {
       const rect = (el as HTMLElement).getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
+      if (!inViewport(rect)) return;
       const text = (el as HTMLElement).innerText?.trim() || (el as HTMLInputElement).value || "";
       const isNav = !!(el.closest("nav") || el.closest('[role="navigation"]'));
       const isCTA = !isNav && (
@@ -265,9 +274,10 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
       });
     });
 
-    // Images (decorative)
+    // Images (decorative) — viewport only
     document.querySelectorAll("img, svg, video").forEach(el => {
       const rect = (el as HTMLElement).getBoundingClientRect();
+      if (!inViewport(rect)) return;
       if (rect.width < 50 || rect.height < 50) return; // skip tiny icons
       const alt = (el as HTMLImageElement).alt || "";
       const isDecorative = !alt || alt === "" || (el as HTMLElement).getAttribute("role") === "presentation";

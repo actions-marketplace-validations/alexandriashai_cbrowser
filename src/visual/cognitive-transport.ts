@@ -631,59 +631,85 @@ export async function extractPageMetrics(page: any): Promise<{
   navigationDepth: number;
 }> {
   return page.evaluate(() => {
-    const all = document.querySelectorAll('*');
-    const body = document.body;
-    const textLength = (body.innerText || '').length;
-    const viewportArea = window.innerWidth * window.innerHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
 
-    // Interactive elements
-    const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex]');
-    const interactiveCount = interactive.length;
+    // Viewport check — only count elements whose bounding box intersects the viewport
+    const inViewport = (el: Element): boolean => {
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 &&
+        rect.bottom > 0 && rect.top < vh &&
+        rect.right > 0 && rect.left < vw;
+    };
 
-    // Links and choices
-    const links = document.querySelectorAll('a[href]');
-    const selects = document.querySelectorAll('select');
-    let choiceCount = links.length;
-    selects.forEach(s => { choiceCount += s.querySelectorAll('option').length; });
+    // Gather only viewport-visible text
+    const textEls = Array.from(document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td, th, span, div, a, button, label'));
+    let viewportTextLength = 0;
+    textEls.forEach(el => {
+      if (inViewport(el)) {
+        const text = (el as HTMLElement).innerText?.trim();
+        if (text) viewportTextLength += text.length;
+      }
+    });
+    // Deduplicate: rough estimate — child text counted in parent. Use 40% factor.
+    const textLength = Math.round(viewportTextLength * 0.4);
+    const viewportArea = vw * vh;
 
-    // Animations
-    const animations = document.querySelectorAll('[class*="anim"], [class*="transition"], [class*="slide"], [class*="fade"], video, [autoplay]');
+    // Interactive elements — viewport only
+    const interactive = Array.from(document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex]'));
+    let interactiveCount = 0;
+    interactive.forEach(el => { if (inViewport(el)) interactiveCount++; });
+
+    // Links and choices — viewport only
+    const links = Array.from(document.querySelectorAll('a[href]'));
+    const selects = Array.from(document.querySelectorAll('select'));
+    let choiceCount = 0;
+    links.forEach(el => { if (inViewport(el)) choiceCount++; });
+    selects.forEach(s => { if (inViewport(s)) choiceCount += s.querySelectorAll('option').length; });
+
+    // Animations — viewport only
+    const animations = Array.from(document.querySelectorAll('[class*="anim"], [class*="transition"], [class*="slide"], [class*="fade"], video, [autoplay]'));
+    let animCount = 0;
+    animations.forEach(el => { if (inViewport(el)) animCount++; });
     const hasCarousel = !!document.querySelector('[class*="carousel"], [class*="slider"], [class*="swiper"]');
 
-    // Navigation depth (breadcrumbs or nested menus)
+    // Navigation depth (breadcrumbs — these are structural, keep full-page)
     const breadcrumbs = document.querySelectorAll('[class*="breadcrumb"] a, nav[aria-label*="breadcrumb"] a');
     const navDepth = Math.max(1, breadcrumbs.length);
 
-    // Visual complexity heuristics
+    // Visual complexity — sample viewport-visible elements only
+    const all = document.querySelectorAll('*');
     const uniqueColors = new Set<string>();
-    const computed = getComputedStyle(body);
+    const computed = getComputedStyle(document.body);
     uniqueColors.add(computed.backgroundColor);
     uniqueColors.add(computed.color);
-    // Sample a few elements
-    for (let i = 0; i < Math.min(50, all.length); i += Math.max(1, Math.floor(all.length / 50))) {
-      const cs = getComputedStyle(all[i]);
-      uniqueColors.add(cs.backgroundColor);
-      uniqueColors.add(cs.color);
+    let visibleCount = 0;
+    let imageCount = 0;
+    for (let i = 0; i < all.length; i++) {
+      if (!inViewport(all[i])) continue;
+      visibleCount++;
+      if (visibleCount <= 50) {
+        const cs = getComputedStyle(all[i]);
+        uniqueColors.add(cs.backgroundColor);
+        uniqueColors.add(cs.color);
+      }
+      const tag = all[i].tagName;
+      if (tag === 'IMG' || tag === 'SVG' || all[i].getAttribute('role') === 'img') imageCount++;
     }
 
-    // Images
-    const images = document.querySelectorAll('img, svg, [role="img"]');
-
-    // Normalize to 0-1 using logarithmic scaling for wide-range metrics
-    // This prevents ceiling effects: 500 chars and 50,000 chars should NOT both be 1.0
+    // Normalize to 0-1 using logarithmic scaling
     const logScale = (value: number, midpoint: number) => {
-      // Produces 0.5 at midpoint, approaches 1.0 asymptotically
       if (value <= 0) return 0;
       return value / (value + midpoint);
     };
 
-    const informationDensity = logScale(textLength, 15000); // 0.5 at 15K chars, 0.75 at 45K
+    const informationDensity = logScale(textLength, 5000); // Viewport text: 0.5 at 5K chars
     const visualComplexity = logScale(
-      uniqueColors.size * 3 + images.length * 2 + all.length * 0.5,
-      200 // 0.5 at 200 "complexity points"
+      uniqueColors.size * 3 + imageCount * 2 + visibleCount * 0.5,
+      200
     );
-    const textDensity = logScale(textLength / Math.max(1, viewportArea * 0.001), 3); // text per viewport
-    const animationLevel = Math.min(1, (animations.length + (hasCarousel ? 3 : 0)) / 10);
+    const textDensity = logScale(textLength / Math.max(1, viewportArea * 0.001), 3);
+    const animationLevel = Math.min(1, (animCount + (hasCarousel ? 3 : 0)) / 10);
 
     return {
       informationDensity,

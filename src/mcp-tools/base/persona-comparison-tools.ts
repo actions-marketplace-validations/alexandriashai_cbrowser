@@ -677,29 +677,41 @@ Begin with the first persona: ${personas[0]}
       try {
         const { motorAccessibility, readability, getPointingProfile, getReadingProfile } = await import("../../visual/cognitive-models.js");
 
-        // Get interactive elements for motor analysis
+        // Get interactive elements for motor analysis — viewport-visible only
         const elements = await page.evaluate(() => {
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
           const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
-          return Array.from(interactive).slice(0, 30).map((el) => {
+          return Array.from(interactive).filter((el) => {
             const rect = el.getBoundingClientRect();
-            const vw = window.innerWidth / 2;
-            const vh = window.innerHeight / 2;
+            return rect.width > 0 && rect.height > 0 &&
+              rect.bottom > 0 && rect.top < vh &&
+              rect.right > 0 && rect.left < vw;
+          }).slice(0, 30).map((el) => {
+            const rect = el.getBoundingClientRect();
+            const cx = vw / 2;
+            const cy = vh / 2;
             return {
               selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
               width: rect.width,
               height: rect.height,
-              distance: Math.sqrt((rect.x + rect.width/2 - vw) ** 2 + (rect.y + rect.height/2 - vh) ** 2),
+              distance: Math.sqrt((rect.x + rect.width/2 - cx) ** 2 + (rect.y + rect.height/2 - cy) ** 2),
             };
-          }).filter((e: { width: number; height: number }) => e.width > 0 && e.height > 0);
+          });
         });
 
         motorResult = motorAccessibility(elements, otProfile);
 
-        // Get text blocks for readability analysis
+        // Get text blocks for readability analysis — viewport-visible only
         const textBlocks = await page.evaluate(() => {
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
           const blocks: Array<{ text: string; fontSize: number; lineHeight: number; fontFamily: string; isSerif: boolean; contrastRatio: number }> = [];
-          const textEls = document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td, th, span, div');
-          for (const el of Array.from(textEls).slice(0, 20)) {
+          const textEls = Array.from(document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td, th, span, div'));
+          for (const el of textEls) {
+            const rect = (el as HTMLElement).getBoundingClientRect();
+            if (rect.bottom <= 0 || rect.top >= vh || rect.right <= 0 || rect.left >= vw) continue;
+            if (rect.width === 0 || rect.height === 0) continue;
             const text = (el as HTMLElement).innerText?.trim();
             if (!text || text.length < 20) continue;
             const style = window.getComputedStyle(el);
@@ -708,6 +720,7 @@ Begin with the first persona: ${personas[0]}
             const fontFamily = style.fontFamily || 'sans-serif';
             const isSerif = /serif/i.test(fontFamily) && !/sans-serif/i.test(fontFamily);
             blocks.push({ text: text.slice(0, 500), fontSize, lineHeight, fontFamily, isSerif, contrastRatio: 7 });
+            if (blocks.length >= 20) break;
           }
           return blocks;
         });
