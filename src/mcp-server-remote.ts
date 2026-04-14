@@ -53,7 +53,7 @@ import {
 } from "./stealth/index.js";
 
 // Modular MCP tools (v17.5.0)
-import { registerAllPublicTools, setRemoteMode } from "./mcp-tools/index.js";
+import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate } from "./mcp-tools/index.js";
 import type { PricingTier } from "./mcp-tools/tool-categories.js";
 import type { ToolRegistrationContext } from "./mcp-tools/types.js";
 
@@ -449,6 +449,59 @@ function validateApiKey(req: IncomingMessage, validKeys: Set<string>): boolean {
 }
 
 // ============================================================================
+// API Key → Tier Resolution (account-based gating)
+// ============================================================================
+
+/** Cache resolved tiers by API key hash (5-min TTL) */
+const tierCache = new Map<string, { tier: PricingTier; expiresAt: number }>();
+const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Extract the raw API key from an incoming HTTP request.
+ * Checks Authorization: Bearer and X-API-Key headers.
+ */
+function extractApiKey(req: IncomingMessage): string | null {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
+  const xApiKey = req.headers["x-api-key"];
+  if (typeof xApiKey === "string") return xApiKey;
+  return null;
+}
+
+/**
+ * Resolve the pricing tier for an API key by calling the CMS backend.
+ * Returns null for non-cbk keys (server admin keys pass through as-is).
+ * Caches results for 5 minutes.
+ */
+async function resolveApiKeyTier(apiKey: string): Promise<PricingTier | null> {
+  // Only resolve cbk_ keys (user account keys)
+  if (!apiKey.startsWith("cbk_")) return null;
+
+  // Check cache
+  const { createHash } = await import("crypto");
+  const keyHash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const cached = tierCache.get(keyHash);
+  if (cached && cached.expiresAt > Date.now()) return cached.tier;
+
+  // Call CMS to validate key and get tier
+  const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+  try {
+    const res = await fetch(`${cmsUrl}/api/accounts/validate-key`, {
+      headers: { "X-API-Key": apiKey },
+    });
+    if (!res.ok) return "free"; // Invalid key → free tier
+    const data = await res.json() as { valid: boolean; tier?: string };
+    if (!data.valid) return "free";
+    const tier = (data.tier as PricingTier) || "free";
+    tierCache.set(keyHash, { tier, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
+    return tier;
+  } catch {
+    // CMS unreachable — fall back to free
+    return "free";
+  }
+}
+
+// ============================================================================
 // Rate Limiting (with session tracking and burst allowance)
 // ============================================================================
 
@@ -670,7 +723,8 @@ function sendUnauthorized(res: ServerResponse, message?: string): void {
 function configureMcpTools(
   server: McpServer,
   customRegisterTools?: (server: McpServer, context: ToolRegistrationContext) => void | Promise<void>,
-  sessionId?: string
+  sessionId?: string,
+  resolvedTier?: PricingTier | null,
 ): void {
   // Create session-aware getBrowser function
   const sessionGetBrowser = sessionId
@@ -679,13 +733,14 @@ function configureMcpTools(
 
   const context: ToolRegistrationContext = { getBrowser: sessionGetBrowser, getBrowserByToken };
 
+  // Tier priority: resolved from API key > CBROWSER_TIER env > null (self-hosted, no gating)
+  const tier = resolvedTier ?? (process.env.CBROWSER_TIER as PricingTier | undefined) ?? null;
+
   if (customRegisterTools) {
-    // Use custom tool registration (for Enterprise servers)
+    // Set tier BEFORE custom registration so createGatedServer uses resolved tier
+    setTierGate(tier);
     customRegisterTools(server, context);
   } else {
-    // Register all public npm tools with tier gating
-    // CBROWSER_TIER env: 'free' (demo default), 'pro', 'enterprise', or unset (self-hosted = no gating)
-    const tier = (process.env.CBROWSER_TIER as PricingTier | undefined) || null;
     registerAllPublicTools(server, context, tier);
   }
 }
@@ -698,7 +753,8 @@ function configureMcpTools(
  */
 function createMcpServer(
   customRegisterTools?: (server: McpServer, context: ToolRegistrationContext) => void | Promise<void>,
-  sessionId?: string
+  sessionId?: string,
+  resolvedTier?: PricingTier | null,
 ): McpServer {
   const server = new McpServer(
     {
@@ -817,7 +873,7 @@ TIPS:
     })
   );
 
-  configureMcpTools(server, customRegisterTools, sessionId);
+  configureMcpTools(server, customRegisterTools, sessionId, resolvedTier);
   return server;
 }
 
@@ -1308,8 +1364,12 @@ ${VERSION}
           sessionIdGenerator: sessionMode === "stateful" ? () => browserSessionId : undefined,
         });
 
-        // Create and connect server with session isolation
-        const server = createMcpServer(options?.registerTools, browserSessionId);
+        // Resolve pricing tier from API key (cbk_ keys → CMS lookup)
+        const requestApiKey = extractApiKey(req);
+        const resolvedTier = requestApiKey ? await resolveApiKeyTier(requestApiKey) : null;
+
+        // Create and connect server with session isolation and tier gating
+        const server = createMcpServer(options?.registerTools, browserSessionId, resolvedTier);
 
         // Allow extension with additional tools (for Enterprise)
         if (options?.extendServer) {
