@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.44.1](https://github.com/alexandriashai/cbrowser/compare/v18.44.0...v18.44.1) (2026-04-14)
+
+### Fixed
+
+* dpr-scale CSS coordinates for mobile attention quality mapping ([fb35389](https://github.com/alexandriashai/cbrowser/commit/fb35389758a5d7e3955224d587fb548bd474fea8))
+
 ## [18.44.0](https://github.com/alexandriashai/cbrowser/compare/v18.43.0...v18.44.0) (2026-04-14)
 
 ### Added
