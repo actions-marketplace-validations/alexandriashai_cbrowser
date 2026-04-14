@@ -1134,21 +1134,12 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
   <div class="register">No account? <a href="https://cbrowser.ai/account/register" target="_blank">Create one free</a></div>
 </div>
 <script>
-document.getElementById('form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const f = new FormData(e.target);
-  const body = new URLSearchParams();
-  f.forEach((v, k) => body.append(k, v));
-  const res = await fetch('/authorize', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, redirect: 'manual' });
-  if (res.status === 302 || res.status === 303) {
-    window.location.href = res.headers.get('Location') || '/';
-  } else {
-    const data = await res.json().catch(() => ({ error: 'Login failed' }));
-    const err = document.getElementById('error');
-    err.textContent = data.error || 'Login failed';
-    err.style.display = 'block';
-  }
-});
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('error')) {
+  const err = document.getElementById('error');
+  err.textContent = decodeURIComponent(urlParams.get('error'));
+  err.style.display = 'block';
+}
 </script>
 </body></html>`);
       return;
@@ -1165,9 +1156,21 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       const state = params.get("state") || "";
       const codeChallenge = params.get("code_challenge") || "";
 
+      // Build authorize URL for error redirects
+      const errorRedirect = (msg: string) => {
+        const authUrl = new URL("/authorize", `https://${req.headers.host}`);
+        authUrl.searchParams.set("error", msg);
+        authUrl.searchParams.set("redirect_uri", redirectUri);
+        authUrl.searchParams.set("state", state);
+        authUrl.searchParams.set("code_challenge", codeChallenge);
+        authUrl.searchParams.set("code_challenge_method", params.get("code_challenge_method") || "S256");
+        authUrl.searchParams.set("client_id", params.get("client_id") || "");
+        res.writeHead(303, { Location: authUrl.toString() });
+        res.end();
+      };
+
       if (!email || !password) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Email and password required" }));
+        errorRedirect("Email and password required");
         return;
       }
 
@@ -1181,8 +1184,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
         });
 
         if (!loginRes.ok) {
-          res.writeHead(401, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Invalid email or password" }));
+          errorRedirect("Invalid email or password");
           return;
         }
 
@@ -1203,8 +1205,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
           });
           const meData = await meRes.json() as { apiKeys?: Array<{ key_prefix: string }> };
           // Can't recover full key — user needs to use existing one
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Max API keys reached. Delete an unused key at cbrowser.ai/account" }));
+          errorRedirect("Max API keys reached. Delete an unused key at cbrowser.ai/account");
           return;
         }
 
@@ -1224,9 +1225,8 @@ document.getElementById('form').addEventListener('submit', async (e) => {
 
         res.writeHead(303, { Location: callbackUrl.toString() });
         res.end();
-      } catch (e) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Authentication service unavailable" }));
+      } catch {
+        errorRedirect("Authentication service unavailable");
       }
       return;
     }
