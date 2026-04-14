@@ -54,6 +54,7 @@ import {
 
 // Modular MCP tools (v17.5.0)
 import { registerAllPublicTools, setRemoteMode } from "./mcp-tools/index.js";
+import type { PricingTier } from "./mcp-tools/tool-categories.js";
 import type { ToolRegistrationContext } from "./mcp-tools/types.js";
 
 // Shared browser instance (single Chromium process)
@@ -682,8 +683,10 @@ function configureMcpTools(
     // Use custom tool registration (for Enterprise servers)
     customRegisterTools(server, context);
   } else {
-    // Register all public npm tools (82 total: 60 real + 22 enterprise stubs)
-    registerAllPublicTools(server, context);
+    // Register all public npm tools with tier gating
+    // CBROWSER_TIER env: 'free' (demo default), 'pro', 'enterprise', or unset (self-hosted = no gating)
+    const tier = (process.env.CBROWSER_TIER as PricingTier | undefined) || null;
+    registerAllPublicTools(server, context, tier);
   }
 }
 

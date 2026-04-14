@@ -80,28 +80,44 @@ import { registerBaseTools } from "./base/index.js";
 import { registerPersonaCreationTools } from "./persona-creation-tools.js";
 import { registerAskUserTool } from "./ask-user-tools.js";
 import { registerEnterpriseStubs } from "./enterprise-stubs.js";
+import { setActiveTier, createGatedServer } from "./tier-gate.js";
+import type { PricingTier } from "./tool-categories.js";
+
+// Re-export tier gating
+export { setActiveTier, getActiveTier, isToolAccessible, upgradePrompt, createGatedServer } from "./tier-gate.js";
+export type { PricingTier } from "./tool-categories.js";
 
 /**
  * Register all public npm tools on an MCP server
  *
- * Tool count: 104 tools across all deployments
- * - LOCAL: 91 tools (68 real + 23 stubs including 4 marketing stubs)
- * - DEMO: 91 tools (72 real + 19 stubs)
- * - ENTERPRISE: 91 tools all functional
+ * Tool count: 108 tools across all deployments
+ *
+ * @param server - MCP server instance
+ * @param context - Tool registration context with browser access
+ * @param pricingTier - User's pricing tier. null = self-hosted (no gating).
+ *   'free' = core browser/testing/sessions only. 'pro' = cognitive/visual/personas.
+ *   'enterprise' = marketing/stealth/security.
  */
 export function registerAllPublicTools(
   server: McpServer,
-  context: ToolRegistrationContext
+  context: ToolRegistrationContext,
+  pricingTier?: PricingTier | null,
 ): void {
+  // Set active tier for gating (null = self-hosted, no gating)
+  setActiveTier(pricingTier ?? null);
+
+  // Wrap server with tier gate proxy (intercepts registerTool calls)
+  const gatedServer = createGatedServer(server) as McpServer;
+
   // Base tools (78)
-  registerBaseTools(server, context);
+  registerBaseTools(gatedServer, context);
 
   // Persona creation tools (7)
-  registerPersonaCreationTools(server);
+  registerPersonaCreationTools(gatedServer);
 
   // Ask user tool (1)
-  registerAskUserTool(server);
+  registerAskUserTool(gatedServer);
 
   // Enterprise stubs (18)
-  registerEnterpriseStubs(server);
+  registerEnterpriseStubs(gatedServer);
 }
