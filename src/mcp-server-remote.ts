@@ -452,6 +452,9 @@ function validateApiKey(req: IncomingMessage, validKeys: Set<string>): boolean {
 // API Key → Tier Resolution (account-based gating)
 // ============================================================================
 
+/** OAuth PKCE auth codes (short-lived, 5 min TTL) */
+const oauthCodes = new Map<string, { apiKey: string; redirectUri: string; codeChallenge: string; expiresAt: number }>();
+
 /** Cache resolved tiers by API key hash (5-min TTL) */
 const tierCache = new Map<string, { tier: PricingTier; expiresAt: number }>();
 const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -1081,6 +1084,208 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
     }
 
     // =====================================================================
+    // OAuth 2.1 PKCE Flow (for claude.ai custom MCP connectors)
+    // =====================================================================
+
+    // In-memory auth code store (short-lived, 5 min TTL)
+
+    // GET /authorize — show login form
+    if (url.pathname === "/authorize" && req.method === "GET") {
+      const clientId = url.searchParams.get("client_id") || "";
+      const redirectUri = url.searchParams.get("redirect_uri") || "";
+      const state = url.searchParams.get("state") || "";
+      const codeChallenge = url.searchParams.get("code_challenge") || "";
+      const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "";
+
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CBrowser — Sign In</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+  .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 32px; width: 100%; max-width: 400px; }
+  h1 { font-size: 24px; margin: 0 0 8px; background: linear-gradient(to right, #3b82f6, #06b6d4); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  p { color: #888; font-size: 14px; margin: 0 0 24px; }
+  label { display: block; font-size: 13px; color: #aaa; margin-bottom: 6px; }
+  input { width: 100%; padding: 10px 12px; background: #0a0a0a; border: 1px solid #333; border-radius: 8px; color: #e5e5e5; font-size: 14px; margin-bottom: 16px; box-sizing: border-box; }
+  input:focus { outline: none; border-color: #3b82f6; }
+  button { width: 100%; padding: 12px; background: linear-gradient(135deg, #3b82f6, #06b6d4); color: white; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:hover { opacity: 0.9; }
+  .error { background: #3b1111; border: 1px solid #7f1d1d; color: #fca5a5; padding: 10px; border-radius: 8px; font-size: 13px; margin-bottom: 16px; display: none; }
+  .register { text-align: center; margin-top: 16px; font-size: 13px; color: #666; }
+  .register a { color: #3b82f6; text-decoration: none; }
+</style></head><body>
+<div class="card">
+  <h1>CBrowser</h1>
+  <p>Sign in to connect your account to Claude</p>
+  <div class="error" id="error"></div>
+  <form id="form" method="POST" action="/authorize">
+    <input type="hidden" name="redirect_uri" value="${redirectUri.replace(/"/g, '&quot;')}">
+    <input type="hidden" name="state" value="${state.replace(/"/g, '&quot;')}">
+    <input type="hidden" name="code_challenge" value="${codeChallenge.replace(/"/g, '&quot;')}">
+    <input type="hidden" name="code_challenge_method" value="${codeChallengeMethod.replace(/"/g, '&quot;')}">
+    <input type="hidden" name="client_id" value="${clientId.replace(/"/g, '&quot;')}">
+    <label for="email">Email</label>
+    <input type="email" id="email" name="email" required autofocus placeholder="you@example.com">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required placeholder="Password">
+    <button type="submit">Sign In &amp; Authorize</button>
+  </form>
+  <div class="register">No account? <a href="https://cbrowser.ai/account/register" target="_blank">Create one free</a></div>
+</div>
+<script>
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const body = new URLSearchParams();
+  f.forEach((v, k) => body.append(k, v));
+  const res = await fetch('/authorize', { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, redirect: 'manual' });
+  if (res.status === 302 || res.status === 303) {
+    window.location.href = res.headers.get('Location') || '/';
+  } else {
+    const data = await res.json().catch(() => ({ error: 'Login failed' }));
+    const err = document.getElementById('error');
+    err.textContent = data.error || 'Login failed';
+    err.style.display = 'block';
+  }
+});
+</script>
+</body></html>`);
+      return;
+    }
+
+    // POST /authorize — validate credentials, issue code, redirect
+    if (url.pathname === "/authorize" && req.method === "POST") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const params = new URLSearchParams(body);
+      const email = params.get("email") || "";
+      const password = params.get("password") || "";
+      const redirectUri = params.get("redirect_uri") || "";
+      const state = params.get("state") || "";
+      const codeChallenge = params.get("code_challenge") || "";
+
+      if (!email || !password) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Email and password required" }));
+        return;
+      }
+
+      // Validate against CMS
+      const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+      try {
+        const loginRes = await fetch(`${cmsUrl}/api/accounts/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+
+        if (!loginRes.ok) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid email or password" }));
+          return;
+        }
+
+        const loginData = await loginRes.json() as { token: string; account: { id: number; tier: string } };
+
+        // Generate or get API key for this account
+        const keyRes = await fetch(`${cmsUrl}/api/accounts/keys?name=Claude+MCP`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${loginData.token}` },
+        });
+        const keyData = await keyRes.json() as { key?: string; error?: string };
+        const apiKey = keyData.key || "";
+
+        if (!apiKey) {
+          // May have hit max keys — get existing
+          const meRes = await fetch(`${cmsUrl}/api/accounts/me`, {
+            headers: { Authorization: `Bearer ${loginData.token}` },
+          });
+          const meData = await meRes.json() as { apiKeys?: Array<{ key_prefix: string }> };
+          // Can't recover full key — user needs to use existing one
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Max API keys reached. Delete an unused key at cbrowser.ai/account" }));
+          return;
+        }
+
+        // Generate auth code
+        const code = randomUUID();
+        oauthCodes.set(code, {
+          apiKey,
+          redirectUri,
+          codeChallenge,
+          expiresAt: Date.now() + 5 * 60 * 1000,
+        });
+
+        // Redirect back to Claude with auth code
+        const callbackUrl = new URL(redirectUri);
+        callbackUrl.searchParams.set("code", code);
+        callbackUrl.searchParams.set("state", state);
+
+        res.writeHead(303, { Location: callbackUrl.toString() });
+        res.end();
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Authentication service unavailable" }));
+      }
+      return;
+    }
+
+    // POST /token — exchange auth code for API key (bearer token)
+    if (url.pathname === "/token" && req.method === "POST") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+
+      let params: URLSearchParams;
+      if (body.startsWith("{")) {
+        const json = JSON.parse(body);
+        params = new URLSearchParams(json);
+      } else {
+        params = new URLSearchParams(body);
+      }
+
+      const grantType = params.get("grant_type");
+      const code = params.get("code") || "";
+      const codeVerifier = params.get("code_verifier") || "";
+
+      if (grantType !== "authorization_code") {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unsupported_grant_type" }));
+        return;
+      }
+
+      const stored = oauthCodes.get(code);
+      if (!stored || stored.expiresAt < Date.now()) {
+        oauthCodes.delete(code);
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid_grant", error_description: "Code expired or invalid" }));
+        return;
+      }
+
+      // Verify PKCE code_verifier against stored code_challenge
+      if (stored.codeChallenge && codeVerifier) {
+        const { createHash } = await import("crypto");
+        const computed = createHash("sha256").update(codeVerifier).digest("base64url");
+        if (computed !== stored.codeChallenge) {
+          oauthCodes.delete(code);
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_grant", error_description: "PKCE verification failed" }));
+          return;
+        }
+      }
+
+      // Success — return the API key as bearer token
+      oauthCodes.delete(code);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        access_token: stored.apiKey,
+        token_type: "Bearer",
+        expires_in: 2592000, // 30 days
+      }));
+      return;
+    }
+
+    // =====================================================================
     // Public Endpoints (no auth required)
     // =====================================================================
 
@@ -1237,6 +1442,24 @@ ${VERSION}
     }
 
     // Protected Resource Metadata (RFC 9728) - required for OAuth
+    // OAuth Authorization Server Metadata (RFC 8414)
+    if (url.pathname === "/.well-known/oauth-authorization-server") {
+      const serverHost = req.headers.host || `${host}:${port}`;
+      const protocol = req.headers["x-forwarded-proto"] || "http";
+      const baseUrl = `${protocol}://${serverHost}`;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        issuer: baseUrl,
+        authorization_endpoint: `${baseUrl}/authorize`,
+        token_endpoint: `${baseUrl}/token`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"],
+      }));
+      return;
+    }
+
     if (url.pathname === "/.well-known/oauth-protected-resource") {
       const metadata = getProtectedResourceMetadata();
       if (metadata) {
@@ -1244,13 +1467,14 @@ ${VERSION}
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(metadata));
       } else {
-        // No OAuth - return open-access metadata (RFC 9728 compatible)
+        // Built-in OAuth PKCE — advertise our own authorize/token endpoints
         const serverHost = req.headers.host || `${host}:${port}`;
         const protocol = req.headers["x-forwarded-proto"] || "http";
+        const baseUrl = `${protocol}://${serverHost}`;
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
-          resource: `${protocol}://${serverHost}`,
-          authorization_servers: [],
+          resource: baseUrl,
+          authorization_servers: [baseUrl],
           bearer_methods_supported: ["header"],
           scopes_supported: [],
           resource_documentation: `${protocol}://${serverHost}/docs`,
