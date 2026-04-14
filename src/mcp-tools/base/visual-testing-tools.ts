@@ -370,6 +370,7 @@ export function registerVisualTestingTools(server: McpServer): void {
       cellSize: z.number().optional().default(4).describe("Saliency grid cell size in pixels (smaller = finer heatmap, default: 4)"),
       heatmap: z.boolean().optional().default(true).describe("Generate visual heatmap overlay (default: true)"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
+      useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on attention quality scoring. Default: false."),
     },
     annotations: {
       title: "Attention Saliency Analysis",
@@ -378,7 +379,7 @@ export function registerVisualTestingTools(server: McpServer): void {
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona, cellSize, heatmap, device }) => {
+  }, async ({ url, persona, cellSize, heatmap, device, useValues }) => {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({
         headless: true,
@@ -416,13 +417,15 @@ export function registerVisualTestingTools(server: McpServer): void {
             width: el.width * dpr,
             height: el.height * dpr,
           }));
-          // Pass persona values for value-weighted attention quality
+          // Pass persona values only when useValues is enabled
           let pValues: Record<string, number> | undefined;
-          try {
-            const { getPersonaValues } = await import("../../values/index.js");
-            const vals = getPersonaValues(persona);
-            if (vals) pValues = vals as unknown as Record<string, number>;
-          } catch {}
+          if (useValues) {
+            try {
+              const { getPersonaValues } = await import("../../values/index.js");
+              const vals = getPersonaValues(persona);
+              if (vals) pValues = vals as unknown as Record<string, number>;
+            } catch {}
+          }
           attentionQuality = computeAttentionQuality(hotspots, pageElements, cellSize, pValues);
         } catch (e) {
           console.debug(`[attention_analysis] Attention quality failed: ${(e as Error).message}`);

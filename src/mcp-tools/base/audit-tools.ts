@@ -550,6 +550,7 @@ export function registerAuditTools(server: McpServer): void {
       url: z.string().url().describe("URL to analyze"),
       persona: z.string().optional().default("cognitive-adhd").describe("Persona name"),
       device: z.string().optional().describe("Device to emulate: 'mobile', 'tablet', 'desktop', or a specific device like 'iPhone 15', 'Pixel 7', 'iPad Pro'. Default: desktop (1920x1080)."),
+      useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on attention quality and narrative. Default: false."),
     },
     annotations: {
       title: "Visual Cognitive Story",
@@ -558,7 +559,7 @@ export function registerAuditTools(server: McpServer): void {
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, persona, device }) => {
+  }, async ({ url, persona, device, useValues }) => {
     const startTime = Date.now();
     const { join } = await import("path");
     const { tmpdir } = await import("os");
@@ -666,13 +667,15 @@ export function registerAuditTools(server: McpServer): void {
               width: el.width * dpr,
               height: el.height * dpr,
             }));
-            // Pass persona values for value-weighted quality
+            // Pass persona values only when useValues is enabled
             let pValues: Record<string, number> | undefined;
-            try {
-              const { getPersonaValues: getPV } = await import("../../values/index.js");
-              const v = getPV(persona);
-              if (v) pValues = v as unknown as Record<string, number>;
-            } catch {}
+            if (useValues) {
+              try {
+                const { getPersonaValues: getPV } = await import("../../values/index.js");
+                const v = getPV(persona);
+                if (v) pValues = v as unknown as Record<string, number>;
+              } catch {}
+            }
             const quality = computeAttentionQuality(attentionData.hotspots, pageElements, 4, pValues);
 
             // Build overlay targets from page elements that matched hotspots

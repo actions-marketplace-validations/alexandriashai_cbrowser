@@ -576,6 +576,7 @@ Begin with the first persona: ${personas[0]}
       proxy: z.string().optional().describe("Proxy server URL for geo-accurate testing"),
       geoRegion: z.string().optional().describe("Route through a residential proxy in this region: us-west, us-east, us-central, uk, germany, japan"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
+      useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values scale decision and frustration costs. Default: false (trait-only mode)."),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -584,7 +585,7 @@ Begin with the first persona: ${personas[0]}
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona: personaName, _browserToken, userLocation, userTimezone, userLanguage, proxy }) => {
+  }, async ({ url, persona: personaName, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues }) => {
     try {
       // Get browser
       let b: Awaited<ReturnType<typeof getBrowser>>;
@@ -670,10 +671,8 @@ Begin with the first persona: ${personas[0]}
       const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
       const demand = computeDemandDistribution(pageMetrics);
 
-      // Modulate demand by motivational values (if available)
-      // Values shift what feels demanding: high security = decisions feel riskier,
-      // high achievement = inefficiency feels more frustrating
-      try {
+      // Modulate demand by motivational values (opt-in, default off)
+      if (useValues) try {
         const { getPersonaValues } = await import("../../values/index.js");
         const pValues = getPersonaValues(personaName);
         if (pValues && demand.demands) {
