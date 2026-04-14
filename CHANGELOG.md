@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.52.2](https://github.com/alexandriashai/cbrowser/compare/v18.52.1...v18.52.2) (2026-04-14)
+
+### Fixed
+
+* /authorize redirects to registration page instead of serving HTML ([c2e2b6d](https://github.com/alexandriashai/cbrowser/commit/c2e2b6d426d71784908739d0d57d6a2fa791e695))
+
 ## [18.52.1](https://github.com/alexandriashai/cbrowser/compare/v18.52.0...v18.52.1) (2026-04-14)
 
 ### Fixed
