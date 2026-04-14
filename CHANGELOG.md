@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.44.0](https://github.com/alexandriashai/cbrowser/compare/v18.43.0...v18.44.0) (2026-04-14)
+
+### Added
+
+* add pricing tier gating for hosted MCP server ([4af83da](https://github.com/alexandriashai/cbrowser/commit/4af83da9815b8855af70c9d9bebe432984e46ced))
+
 ## [18.43.0](https://github.com/alexandriashai/cbrowser/compare/v18.42.7...v18.43.0) (2026-04-14)
 
 ### Added
