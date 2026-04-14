@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.46.1](https://github.com/alexandriashai/cbrowser/compare/v18.46.0...v18.46.1) (2026-04-14)
+
+### Fixed
+
+* oauth login uses native form submit instead of fetch ([437799d](https://github.com/alexandriashai/cbrowser/commit/437799dc74eb38e15151a2221c566f986c6d8d9e))
+
 ## [18.46.0](https://github.com/alexandriashai/cbrowser/compare/v18.45.0...v18.46.0) (2026-04-14)
 
 ### Added
