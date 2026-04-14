@@ -1547,19 +1547,13 @@ ${VERSION}
 
     // Protected Resource Metadata (RFC 9728) - required for OAuth
     // OAuth Authorization Server Metadata (RFC 8414)
-    if (url.pathname === "/.well-known/oauth-authorization-server") {
-      const serverHost = req.headers.host || `${host}:${port}`;
-      const protocol = req.headers["x-forwarded-proto"] || "http";
-      const baseUrl = `${protocol}://${serverHost}`;
-      res.writeHead(200, { "Content-Type": "application/json" });
+    // Return 404 when no Auth0 — prevents Claude.ai from initiating OAuth flow
+    // Users authenticate via Bearer token (cbk_ API key) instead
+    if (url.pathname === "/.well-known/oauth-authorization-server" && !auth0Enabled) {
+      res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
-        issuer: baseUrl,
-        authorization_endpoint: `${baseUrl}/authorize`,
-        token_endpoint: `${baseUrl}/token`,
-        response_types_supported: ["code"],
-        grant_types_supported: ["authorization_code", "client_credentials"],
-        code_challenge_methods_supported: ["S256"],
-        token_endpoint_auth_methods_supported: ["none"],
+        error: "No OAuth server configured",
+        message: "Authenticate with a Bearer token. Get your API key at https://cbrowser.ai/account/register",
       }));
       return;
     }
