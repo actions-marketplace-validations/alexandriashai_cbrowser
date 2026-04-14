@@ -37,7 +37,7 @@ function logToolCall(toolName: string): void {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ keyHash: currentKeyHash, toolName }),
-  }).catch(() => {}); // fire and forget
+  }).catch(() => {});
 }
 
 /** Set the active pricing tier. null = self-hosted (no gating). */

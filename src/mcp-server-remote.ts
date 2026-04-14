@@ -1623,7 +1623,8 @@ ${VERSION}
         // Set key hash for usage tracking
         if (requestApiKey?.startsWith("cbk_")) {
           const { createHash } = await import("crypto");
-          setActiveKeyHash(createHash("sha256").update(requestApiKey).digest("hex"));
+          const hash = createHash("sha256").update(requestApiKey).digest("hex");
+          setActiveKeyHash(hash);
         } else {
           setActiveKeyHash(null);
         }
