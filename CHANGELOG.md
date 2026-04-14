@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.46.0](https://github.com/alexandriashai/cbrowser/compare/v18.45.0...v18.46.0) (2026-04-14)
+
+### Added
+
+* built-in OAuth 2.1 PKCE for claude.ai MCP connector auth ([cd460b7](https://github.com/alexandriashai/cbrowser/commit/cd460b70244d8e29593a933c5d9cdeea9833125d))
+
 ## [18.45.0](https://github.com/alexandriashai/cbrowser/compare/v18.44.1...v18.45.0) (2026-04-14)
 
 ### Added
