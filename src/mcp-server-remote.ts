@@ -1107,15 +1107,8 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
 
     // In-memory auth code store (short-lived, 5 min TTL)
 
-    // GET /authorize — redirect to registration page with instructions
-    if (url.pathname === "/authorize" && req.method === "GET") {
-      res.writeHead(302, { Location: "https://cbrowser.ai/account/register" });
-      res.end();
-      return;
-    }
-
-    // Keep /login as an alias that shows the form (for direct browser use)
-    if (url.pathname === "/login" && req.method === "GET") {
+    // GET /authorize — login form for OAuth PKCE (Claude.ai opens this in a popup)
+    if ((url.pathname === "/authorize" || url.pathname === "/login") && req.method === "GET") {
       const clientId = url.searchParams.get("client_id") || "";
       const redirectUri = url.searchParams.get("redirect_uri") || "";
       const state = url.searchParams.get("state") || "";
