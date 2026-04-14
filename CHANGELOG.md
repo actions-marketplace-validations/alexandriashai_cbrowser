@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.51.1](https://github.com/alexandriashai/cbrowser/compare/v18.51.0...v18.51.1) (2026-04-14)
+
+### Fixed
+
+* clean up debug logging from usage tracking ([d486d42](https://github.com/alexandriashai/cbrowser/commit/d486d42c2a0c2ac4a91e43e8ddaac82c9239cf38))
+
 ## [18.51.0](https://github.com/alexandriashai/cbrowser/compare/v18.50.0...v18.51.0) (2026-04-14)
 
 ### Added
