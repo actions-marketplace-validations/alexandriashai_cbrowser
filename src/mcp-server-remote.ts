@@ -782,7 +782,11 @@ function createMcpServer(
       version: VERSION,
       description: "AI-powered browser automation with cognitive user simulation. 105 MCP tools for navigation, visual testing, accessibility auditing, persona-based testing, site knowledge learning, and security scanning. Simulates how real humans think, struggle, and give up on your site.",
       websiteUrl: "https://cbrowser.ai",
-      icons: [{ src: "https://cbrowser.ai/favicon.ico", sizes: ["32x32"] }],
+      icons: [
+        { src: "https://cbrowser.ai/icon-192.png", sizes: ["192x192"] },
+        { src: "https://cbrowser.ai/icon-512.png", sizes: ["512x512"] },
+        { src: "https://cbrowser.ai/logo.svg", sizes: ["1080x1080"] },
+      ],
     },
     {
       capabilities: {
