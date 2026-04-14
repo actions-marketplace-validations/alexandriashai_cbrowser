@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.52.0](https://github.com/alexandriashai/cbrowser/compare/v18.51.1...v18.52.0) (2026-04-14)
+
+### Added
+
+* client_credentials grant + token-based usage tracking ([c6e3933](https://github.com/alexandriashai/cbrowser/commit/c6e3933516cfc420fc996a3194ecc876a646ea01))
+
 ## [18.51.1](https://github.com/alexandriashai/cbrowser/compare/v18.51.0...v18.51.1) (2026-04-14)
 
 ### Fixed
