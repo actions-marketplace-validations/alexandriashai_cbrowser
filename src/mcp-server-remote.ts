@@ -1107,15 +1107,20 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
 
     // In-memory auth code store (short-lived, 5 min TTL)
 
-    // GET /authorize — show login form (client_id can be user's email)
+    // GET /authorize — redirect to registration page with instructions
     if (url.pathname === "/authorize" && req.method === "GET") {
+      res.writeHead(302, { Location: "https://cbrowser.ai/account/register" });
+      res.end();
+      return;
+    }
+
+    // Keep /login as an alias that shows the form (for direct browser use)
+    if (url.pathname === "/login" && req.method === "GET") {
       const clientId = url.searchParams.get("client_id") || "";
       const redirectUri = url.searchParams.get("redirect_uri") || "";
       const state = url.searchParams.get("state") || "";
       const codeChallenge = url.searchParams.get("code_challenge") || "";
       const codeChallengeMethod = url.searchParams.get("code_challenge_method") || "";
-
-      // If client_id looks like an email, pre-fill it
       const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientId);
       const prefillEmail = isEmail ? clientId : "";
 
