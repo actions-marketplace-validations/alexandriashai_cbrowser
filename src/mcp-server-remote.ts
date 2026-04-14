@@ -53,7 +53,7 @@ import {
 } from "./stealth/index.js";
 
 // Modular MCP tools (v17.5.0)
-import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate } from "./mcp-tools/index.js";
+import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash } from "./mcp-tools/index.js";
 import type { PricingTier } from "./mcp-tools/tool-categories.js";
 import type { ToolRegistrationContext } from "./mcp-tools/types.js";
 
@@ -1619,6 +1619,14 @@ ${VERSION}
         // Resolve pricing tier from API key (cbk_ keys → CMS lookup)
         const requestApiKey = extractApiKey(req);
         const resolvedTier = requestApiKey ? await resolveApiKeyTier(requestApiKey) : null;
+
+        // Set key hash for usage tracking
+        if (requestApiKey?.startsWith("cbk_")) {
+          const { createHash } = await import("crypto");
+          setActiveKeyHash(createHash("sha256").update(requestApiKey).digest("hex"));
+        } else {
+          setActiveKeyHash(null);
+        }
 
         // Create and connect server with session isolation and tier gating
         const server = createMcpServer(options?.registerTools, browserSessionId, resolvedTier);

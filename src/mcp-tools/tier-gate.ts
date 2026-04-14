@@ -16,6 +16,30 @@ import { type PricingTier, getToolPricingTier, tierHasAccess } from "./tool-cate
 /** The current user tier for this server session */
 let currentTier: PricingTier | null = null;
 
+/** The current session's API key hash (for usage logging) */
+let currentKeyHash: string | null = null;
+
+/** Set the current API key hash for usage tracking */
+export function setActiveKeyHash(hash: string | null): void {
+  currentKeyHash = hash;
+}
+
+/** Get the current API key hash */
+export function getActiveKeyHash(): string | null {
+  return currentKeyHash;
+}
+
+/** Log a tool call to the CMS usage endpoint (fire and forget) */
+function logToolCall(toolName: string): void {
+  if (!currentKeyHash) return;
+  const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+  fetch(`${cmsUrl}/api/accounts/log-usage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keyHash: currentKeyHash, toolName }),
+  }).catch(() => {}); // fire and forget
+}
+
 /** Set the active pricing tier. null = self-hosted (no gating). */
 export function setActiveTier(tier: PricingTier | null): void {
   currentTier = tier;
@@ -107,12 +131,16 @@ export function createGatedServer(server: unknown): unknown {
 
   srv.registerTool = (name: string, config: Record<string, unknown>, handler: (...args: unknown[]) => unknown) => {
     if (isToolAccessible(name)) {
-      // User has access — register normally, add tier prefix to description if gated at higher tier
+      // User has access — wrap handler with usage logging
       const prefix = tierPrefix(name);
       if (prefix && typeof config.description === "string") {
         config.description = prefix + config.description;
       }
-      originalRegisterTool(name, config, handler);
+      const wrappedHandler = (...args: unknown[]) => {
+        logToolCall(name);
+        return handler(...args);
+      };
+      originalRegisterTool(name, config, wrappedHandler);
     } else {
       // User doesn't have access — register with upgrade handler
       const required = getToolPricingTier(name);
