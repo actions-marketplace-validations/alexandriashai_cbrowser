@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.52.1](https://github.com/alexandriashai/cbrowser/compare/v18.52.0...v18.52.1) (2026-04-14)
+
+### Fixed
+
+* don't advertise OAuth authorization server to MCP clients ([e0a7d4b](https://github.com/alexandriashai/cbrowser/commit/e0a7d4b80254fa88a616b4ba8588318e9712b9dd))
+
 ## [18.52.0](https://github.com/alexandriashai/cbrowser/compare/v18.51.1...v18.52.0) (2026-04-14)
 
 ### Added
