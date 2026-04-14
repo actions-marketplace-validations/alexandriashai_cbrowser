@@ -707,7 +707,7 @@ async function validateAuth(
     }
   }
 
-  return { valid: false, reason: "Authentication required. Register at https://cbrowser.ai/account/register to get an API key, or connect via Claude.ai to authenticate with OAuth." };
+  return { valid: false, reason: "Authentication required. Get your API key at https://cbrowser.ai/account/register then enter it as the Bearer token when connecting." };
 }
 
 function sendUnauthorized(res: ServerResponse, message?: string): void {
@@ -1566,14 +1566,15 @@ ${VERSION}
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(metadata));
       } else {
-        // Built-in OAuth PKCE — advertise our own authorize/token endpoints
+        // No OAuth provider — advertise API key auth only
+        // Claude.ai will prompt user for Bearer token (their cbk_ API key)
         const serverHost = req.headers.host || `${host}:${port}`;
         const protocol = req.headers["x-forwarded-proto"] || "http";
         const baseUrl = `${protocol}://${serverHost}`;
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           resource: baseUrl,
-          authorization_servers: [baseUrl],
+          authorization_servers: [],
           bearer_methods_supported: ["header"],
           scopes_supported: [],
           resource_documentation: `${protocol}://${serverHost}/docs`,
