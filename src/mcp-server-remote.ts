@@ -455,6 +455,9 @@ function validateApiKey(req: IncomingMessage, validKeys: Set<string>): boolean {
 /** OAuth PKCE auth codes (short-lived, 5 min TTL) */
 const oauthCodes = new Map<string, { apiKey: string; redirectUri: string; codeChallenge: string; expiresAt: number }>();
 
+/** Token → key hash map (for session tracking after OAuth) */
+const tokenToKeyHash = new Map<string, { keyHash: string; expiresAt: number }>();
+
 /** Cache resolved tiers by API key hash (5-min TTL) */
 const tierCache = new Map<string, { tier: PricingTier; expiresAt: number }>();
 const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -1273,42 +1276,110 @@ if (urlParams.get('error')) {
       }
 
       const grantType = params.get("grant_type");
-      const code = params.get("code") || "";
-      const codeVerifier = params.get("code_verifier") || "";
 
-      if (grantType !== "authorization_code") {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "unsupported_grant_type" }));
-        return;
-      }
+      let accessToken: string | null = null;
 
-      const stored = oauthCodes.get(code);
-      if (!stored || stored.expiresAt < Date.now()) {
-        oauthCodes.delete(code);
-        res.writeHead(400, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "invalid_grant", error_description: "Code expired or invalid" }));
-        return;
-      }
+      if (grantType === "authorization_code") {
+        // Standard OAuth PKCE flow
+        const code = params.get("code") || "";
+        const codeVerifier = params.get("code_verifier") || "";
 
-      // Verify PKCE code_verifier against stored code_challenge
-      if (stored.codeChallenge && codeVerifier) {
-        const { createHash } = await import("crypto");
-        const computed = createHash("sha256").update(codeVerifier).digest("base64url");
-        if (computed !== stored.codeChallenge) {
+        const stored = oauthCodes.get(code);
+        if (!stored || stored.expiresAt < Date.now()) {
           oauthCodes.delete(code);
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "invalid_grant", error_description: "PKCE verification failed" }));
+          res.end(JSON.stringify({ error: "invalid_grant", error_description: "Code expired or invalid" }));
           return;
         }
+
+        // Verify PKCE
+        if (stored.codeChallenge && codeVerifier) {
+          const { createHash } = await import("crypto");
+          const computed = createHash("sha256").update(codeVerifier).digest("base64url");
+          if (computed !== stored.codeChallenge) {
+            oauthCodes.delete(code);
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "invalid_grant", error_description: "PKCE verification failed" }));
+            return;
+          }
+        }
+
+        accessToken = stored.apiKey;
+        oauthCodes.delete(code);
+
+      } else if (grantType === "client_credentials") {
+        // Direct auth: client_id = email, client_secret = password or cbk_ key
+        const clientId = params.get("client_id") || "";
+        const clientSecret = params.get("client_secret") || "";
+
+        if (!clientId || !clientSecret) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_request", error_description: "client_id and client_secret required" }));
+          return;
+        }
+
+        const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+
+        if (clientSecret.startsWith("cbk_")) {
+          // client_secret is an API key — validate directly
+          const valRes = await fetch(`${cmsUrl}/api/accounts/validate-key`, {
+            headers: { "X-API-Key": clientSecret },
+          });
+          if (!valRes.ok) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "invalid_client", error_description: "Invalid API key" }));
+            return;
+          }
+          accessToken = clientSecret;
+        } else {
+          // client_secret is a password — login via CMS
+          const loginRes = await fetch(`${cmsUrl}/api/accounts/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: clientId, password: clientSecret }),
+          });
+          if (!loginRes.ok) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "invalid_client", error_description: "Invalid email or password" }));
+            return;
+          }
+          const loginData = await loginRes.json() as { token: string };
+          // Generate API key for this session
+          const keyRes = await fetch(`${cmsUrl}/api/accounts/keys?name=Claude+Session`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${loginData.token}` },
+          });
+          const keyData = await keyRes.json() as { key?: string };
+          accessToken = keyData.key || null;
+          if (!accessToken) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "server_error", error_description: "Max API keys reached. Delete unused keys at cbrowser.ai/account" }));
+            return;
+          }
+        }
+      } else {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unsupported_grant_type", error_description: "Use authorization_code or client_credentials" }));
+        return;
       }
 
-      // Success — return the API key as bearer token
-      oauthCodes.delete(code);
+      if (!accessToken) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "server_error" }));
+        return;
+      }
+
+      // Store token→keyHash mapping for session tracking
+      // This ensures MCP tool calls get logged even when Claude.ai proxies the token
+      const { createHash: hashFn } = await import("crypto");
+      const tokenKeyHash = hashFn("sha256").update(accessToken).digest("hex");
+      tokenToKeyHash.set(accessToken, { keyHash: tokenKeyHash, expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
-        access_token: stored.apiKey,
+        access_token: accessToken,
         token_type: "Bearer",
-        expires_in: 2592000, // 30 days
+        expires_in: 2592000,
       }));
       return;
     }
@@ -1481,7 +1552,7 @@ ${VERSION}
         authorization_endpoint: `${baseUrl}/authorize`,
         token_endpoint: `${baseUrl}/token`,
         response_types_supported: ["code"],
-        grant_types_supported: ["authorization_code"],
+        grant_types_supported: ["authorization_code", "client_credentials"],
         code_challenge_methods_supported: ["S256"],
         token_endpoint_auth_methods_supported: ["none"],
       }));
@@ -1623,8 +1694,15 @@ ${VERSION}
         // Set key hash for usage tracking
         if (requestApiKey?.startsWith("cbk_")) {
           const { createHash } = await import("crypto");
-          const hash = createHash("sha256").update(requestApiKey).digest("hex");
-          setActiveKeyHash(hash);
+          setActiveKeyHash(createHash("sha256").update(requestApiKey).digest("hex"));
+        } else if (requestApiKey) {
+          // Check token→keyHash map (OAuth tokens that aren't raw cbk_ keys)
+          const mapped = tokenToKeyHash.get(requestApiKey);
+          if (mapped && mapped.expiresAt > Date.now()) {
+            setActiveKeyHash(mapped.keyHash);
+          } else {
+            setActiveKeyHash(null);
+          }
         } else {
           setActiveKeyHash(null);
         }
