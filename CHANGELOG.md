@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.51.0](https://github.com/alexandriashai/cbrowser/compare/v18.50.0...v18.51.0) (2026-04-14)
+
+### Added
+
+* per-session usage logging to CMS via tier-gate proxy ([78c1c50](https://github.com/alexandriashai/cbrowser/commit/78c1c50d463143a605ec524019e7de95d915680e))
+
 ## [18.50.0](https://github.com/alexandriashai/cbrowser/compare/v18.49.0...v18.50.0) (2026-04-14)
 
 ### Added
