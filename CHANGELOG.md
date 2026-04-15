@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.54.0](https://github.com/alexandriashai/cbrowser/compare/v18.53.0...v18.54.0) (2026-04-15)
+
+### Added
+
+* journey_heatmap_gif — animated cognitive journey visualization ([d31c09e](https://github.com/alexandriashai/cbrowser/commit/d31c09ed10460744dc8854b2dea6141b46ae0079))
+
 ## [18.53.0](https://github.com/alexandriashai/cbrowser/compare/v18.52.4...v18.53.0) (2026-04-14)
 
 ### Added
