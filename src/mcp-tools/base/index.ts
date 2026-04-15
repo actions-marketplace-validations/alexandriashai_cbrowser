@@ -31,6 +31,7 @@ import { registerMarketingTools } from "./marketing-tools.js";
 import { registerRemediationTools } from "./remediation-tools.js";
 import { registerLlmsTxtTools } from "./llms-txt-tools.js";
 import { registerSiteKnowledgeTools } from "./site-knowledge-tools.js";
+import { registerGifTools } from "./gif-tools.js";
 
 /**
  * Register all 65 base tools on an MCP server
@@ -127,6 +128,9 @@ export function registerBaseTools(
 
   // Site Knowledge (6) - page understanding, site model, site profiles
   registerSiteKnowledgeTools(server, context);
+
+  // GIF tools (1) - journey heatmap animation
+  registerGifTools(server, context);
 }
 
 // Re-export individual registration functions for granular use
@@ -151,3 +155,4 @@ export { registerMarketingTools } from "./marketing-tools.js";
 export { registerRemediationTools } from "./remediation-tools.js";
 export { registerLlmsTxtTools } from "./llms-txt-tools.js";
 export { registerSiteKnowledgeTools } from "./site-knowledge-tools.js";
+export { registerGifTools } from "./gif-tools.js";

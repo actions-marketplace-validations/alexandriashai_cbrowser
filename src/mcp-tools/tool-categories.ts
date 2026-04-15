@@ -239,6 +239,16 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
     ],
   },
 
+  {
+    name: "gif_generation",
+    description: "Animated cognitive journey heatmap GIFs",
+    tier: 2,
+    pricingTier: "pro",
+    tools: [
+      "journey_heatmap_gif",
+    ],
+  },
+
   // ── Enterprise Tools ──
   {
     name: "enterprise_security",

@@ -1,0 +1,227 @@
+/**
+ * Journey Heatmap GIF — animated cognitive journey visualization.
+ *
+ * Records attention heatmaps at each step of a cognitive journey
+ * and combines them into an animated GIF showing how attention
+ * shifts across pages and interactions.
+ *
+ * @since v18.53.0
+ */
+
+import { z } from "zod";
+import type { McpServer, ToolRegistrationContext } from "../types.js";
+
+export function registerGifTools(
+  server: McpServer,
+  context?: ToolRegistrationContext,
+): void {
+  const { getBrowser } = context || { getBrowser: async () => { throw new Error("No browser"); } };
+
+  server.registerTool("journey_heatmap_gif", {
+    title: "Journey Heatmap GIF",
+    description: "Run a cognitive journey and capture attention heatmaps at each step, then combine into an animated GIF. Shows how a persona's attention shifts across pages during a task. Returns a public URL to the GIF.",
+    inputSchema: {
+      url: z.string().url().describe("Starting URL"),
+      persona: z.string().optional().default("first-timer").describe("Persona name"),
+      goal: z.string().describe("What the persona is trying to accomplish"),
+      maxSteps: z.number().optional().default(8).describe("Maximum journey steps (each becomes a GIF frame)"),
+      frameDelay: z.number().optional().default(2000).describe("Milliseconds per frame in the GIF (default: 2000ms)"),
+      device: z.string().optional().describe("Device: 'mobile', 'tablet', 'desktop'"),
+    },
+    annotations: {
+      title: "Journey Heatmap GIF",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, persona, goal, maxSteps, frameDelay, device }) => {
+    const startTime = Date.now();
+
+    try {
+      const { CBrowser: BrowserClass } = await import("../../browser.js");
+      const { join } = await import("path");
+      const { tmpdir } = await import("os");
+      const { writeFileSync, mkdirSync, existsSync, unlinkSync, readFileSync } = await import("fs");
+      const sharp = (await import("sharp")).default;
+
+      const browser = new BrowserClass({
+        headless: true,
+        ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1280, viewportHeight: 800 }),
+      });
+
+      await browser.launch();
+      await browser.navigate(url);
+      await new Promise(r => setTimeout(r, 2000));
+
+      const page = await browser.getPage();
+      const frames: Buffer[] = [];
+      const stepDescriptions: string[] = [];
+      const tmpDir = join(tmpdir(), `journey-gif-${Date.now()}`);
+      mkdirSync(tmpDir, { recursive: true });
+
+      // Import heatmap tools
+      const { analyzeAttention } = await import("../../visual/attention-transport.js");
+      const { generateHeatmapOverlay } = await import("../../visual/heatmap-overlay.js");
+
+      // Step 0: initial page
+      for (let step = 0; step < maxSteps; step++) {
+        try {
+          // Screenshot current page
+          const ssPath = join(tmpDir, `step-${step}.png`);
+          await page.screenshot({ path: ssPath, fullPage: false });
+
+          // Generate attention heatmap
+          const attnResult = await analyzeAttention(ssPath, persona, 8);
+
+          if (attnResult.saliencyMap) {
+            const heatmapB64 = await generateHeatmapOverlay(
+              ssPath,
+              attnResult.saliencyMap.cells,
+              attnResult.saliencyMap.rows,
+              attnResult.saliencyMap.cols,
+              `${persona} · Step ${step + 1}`
+            );
+
+            const heatmapBuf = Buffer.from(heatmapB64, "base64");
+
+            // Resize to consistent dimensions for GIF
+            const resized = await sharp(heatmapBuf)
+              .resize(640, 400, { fit: "contain", background: { r: 10, g: 10, b: 20, alpha: 1 } })
+              .png()
+              .toBuffer();
+
+            frames.push(resized);
+          }
+
+          // Clean up screenshot
+          try { unlinkSync(ssPath); } catch {}
+
+          const currentUrl = await page.url();
+          const title = await page.title();
+          stepDescriptions.push(`Step ${step + 1}: ${title || currentUrl}`);
+
+          // Simulate journey step — click a link or interact
+          if (step < maxSteps - 1) {
+            // Find clickable elements
+            const links = await page.evaluate(() => {
+              const els = Array.from(document.querySelectorAll('a[href], button, [role="button"]'));
+              return els.slice(0, 10).map(el => ({
+                text: (el as HTMLElement).innerText?.trim().slice(0, 50) || '',
+                tag: el.tagName,
+                href: (el as HTMLAnchorElement).href || '',
+              })).filter((l: { text: string }) => l.text.length > 2);
+            });
+
+            if (links.length === 0) break;
+
+            // Pick a link based on persona goal
+            const targetLink = links.find((l: { text: string }) =>
+              l.text.toLowerCase().includes(goal.split(' ')[0]?.toLowerCase() || '')
+            ) || links[Math.floor(Math.random() * Math.min(links.length, 5))];
+
+            try {
+              await page.click(`text="${targetLink.text}"`).catch(() => {});
+              await new Promise(r => setTimeout(r, 2000));
+            } catch {
+              break;
+            }
+          }
+        } catch (e) {
+          console.debug(`[journey_gif] Step ${step} failed: ${(e as Error).message}`);
+          break;
+        }
+      }
+
+      await browser.close();
+
+      if (frames.length < 2) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: "Not enough frames captured", framesCollected: frames.length }) }],
+        };
+      }
+
+      // Combine frames into animated GIF
+      // Sharp requires all frames as a single multi-page input
+      const delays = frames.map(() => frameDelay);
+
+      // Create the animated GIF by joining frames vertically then converting
+      const frameHeight = 400;
+      const frameWidth = 640;
+
+      // Use sharp to create animated GIF from frames
+      const gifBuffer = await sharp(frames[0], { animated: false })
+        .gif()
+        .toBuffer();
+
+      // For multi-frame, we need to use sharp's join approach
+      // Build the GIF manually using sharp's composite
+      const compositeFrames = await Promise.all(
+        frames.map(f => sharp(f).resize(frameWidth, frameHeight).raw().toBuffer())
+      );
+
+      // Stack frames vertically for sharp animated GIF
+      const totalHeight = frameHeight * frames.length;
+      const stackedBuffer = Buffer.alloc(frameWidth * totalHeight * 4);
+      for (let i = 0; i < compositeFrames.length; i++) {
+        compositeFrames[i].copy(stackedBuffer, i * frameWidth * frameHeight * 4);
+      }
+
+      const animatedGif = await sharp(stackedBuffer, {
+        raw: { width: frameWidth, height: totalHeight, channels: 4 },
+      })
+        .gif({
+          delay: delays,
+          loop: 0,
+        })
+        .toBuffer();
+
+      // Save to public heatmaps directory
+      const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";
+      if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
+      const gifId = `journey-${persona}-${Date.now()}`;
+      const gifPath = join(webDir, `${gifId}.gif`);
+      writeFileSync(gifPath, animatedGif);
+
+      const gifUrl = `https://cbrowser.ai/heatmaps/${gifId}.gif`;
+      const elapsed = Date.now() - startTime;
+
+      // Clean up temp dir
+      try {
+        const { rmSync } = await import("fs");
+        rmSync(tmpDir, { recursive: true, force: true });
+      } catch {}
+
+      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            url,
+            persona,
+            goal,
+            frames: frames.length,
+            steps: stepDescriptions,
+            gifUrl,
+            duration: `${elapsed}ms`,
+            frameDelay: `${frameDelay}ms`,
+          }, null, 2),
+        },
+      ];
+
+      // Also return the GIF as inline image
+      if (animatedGif.length < 190000) {
+        content.push({
+          type: "image" as const,
+          data: animatedGif.toString("base64"),
+          mimeType: "image/gif",
+        });
+      }
+
+      return { content };
+    } catch (e) {
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ error: (e as Error).message }) }],
+      };
+    }
+  });
+}
