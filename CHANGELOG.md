@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.57.0](https://github.com/alexandriashai/cbrowser/compare/v18.56.0...v18.57.0) (2026-04-16)
+
+### Added
+
+* text readability metrics, CJK/abjad tokenization, script-family detection ([87b867b](https://github.com/alexandriashai/cbrowser/commit/87b867bcece3f755e5c5f71de9eb133d491e6a7a))
+
 ## [18.56.0](https://github.com/alexandriashai/cbrowser/compare/v18.55.0...v18.56.0) (2026-04-16)
 
 ### Added
