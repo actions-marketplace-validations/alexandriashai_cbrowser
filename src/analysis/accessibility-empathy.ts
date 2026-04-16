@@ -138,6 +138,8 @@ interface BarrierContext {
   frictionPoints: AccessibilityFrictionPoint[];
   wcagViolations: Set<string>;
   stepCount: number;
+  /** When true, barrier detectors only count elements in the initial viewport */
+  viewportOnly: boolean;
 }
 
 /**
@@ -146,24 +148,27 @@ interface BarrierContext {
  * (issues exist on the page whether or not this persona would encounter them)
  */
 async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
-  const { page, persona, barriers } = ctx;
+  const { page, persona, barriers, viewportOnly } = ctx;
 
   // v10.10.0: Removed trait-based skipping - always detect issues
-  // The severity is still adjusted based on persona traits
   const _motorControl = persona.accessibilityTraits.motorControl ?? 0.5;
 
   const smallTargets = await page.$$eval(
     'button, a, input[type="checkbox"], input[type="radio"], [role="button"], [onclick]',
-    (elements) => elements.map(el => {
-      const rect = el.getBoundingClientRect();
-      return {
-        selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
-        width: rect.width,
-        height: rect.height,
-        text: el.textContent?.trim().slice(0, 30) || '',
-        area: rect.width * rect.height,
-      };
-    }).filter(el => el.area > 0 && (el.width < 44 || el.height < 44))
+    (elements, vpOnly) => {
+      const vh = window.innerHeight;
+      return elements.map(el => {
+        const rect = el.getBoundingClientRect();
+        return {
+          selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+          width: rect.width,
+          height: rect.height,
+          text: el.textContent?.trim().slice(0, 30) || '',
+          area: rect.width * rect.height,
+          inViewport: rect.bottom > 0 && rect.top < vh,
+        };
+      }).filter(el => el.area > 0 && (el.width < 44 || el.height < 44) && (!vpOnly || el.inViewport));
+    }, viewportOnly
   );
 
   for (const target of smallTargets.slice(0, 10)) {
@@ -262,11 +267,12 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
 
   const cognitiveIssues = await page.evaluate(() => {
     const issues: Array<{ type: string; description: string; count?: number }> = [];
+    const inVp = (window as any).__cbrowserInViewport || (() => true);
 
-    // Check for long forms
-    const forms = Array.from(document.querySelectorAll('form'));
+    // Check for long forms (in scope)
+    const forms = Array.from(document.querySelectorAll('form')).filter(inVp);
     for (const form of forms) {
-      const inputs = form.querySelectorAll('input:not([type="hidden"]), textarea, select');
+      const inputs = Array.from(form.querySelectorAll('input:not([type="hidden"]), textarea, select')).filter(inVp);
       if (inputs.length > 7) {
         issues.push({
           type: "long-form",
@@ -276,20 +282,20 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
       }
     }
 
-    // Check for text walls
-    const paragraphs = Array.from(document.querySelectorAll('p'));
+    // Check for text walls (in scope)
+    const paragraphs = Array.from(document.querySelectorAll('p')).filter(inVp);
     for (const p of paragraphs) {
       if (p.textContent && p.textContent.length > 500) {
         issues.push({
           type: "text-wall",
           description: "Long paragraph without breaks may be difficult to process",
         });
-        break; // Only flag once
+        break;
       }
     }
 
-    // Check for animations/movement
-    const animations = document.querySelectorAll('[class*="animate"], [class*="slider"], [class*="carousel"]');
+    // Check for animations/movement (in scope)
+    const animations = Array.from(document.querySelectorAll('[class*="animate"], [class*="slider"], [class*="carousel"]')).filter(inVp);
     if (animations.length > 0) {
       issues.push({
         type: "animation",
@@ -298,8 +304,8 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
       });
     }
 
-    // Check for complex navigation
-    const navItems = document.querySelectorAll('nav a, header a, [role="navigation"] a');
+    // Check for complex navigation (in scope)
+    const navItems = Array.from(document.querySelectorAll('nav a, header a, [role="navigation"] a')).filter(inVp);
     if (navItems.length > 10) {
       issues.push({
         type: "complex-nav",
@@ -1053,6 +1059,7 @@ async function simulateAccessibilityJourney(
     frictionPoints: [],
     wcagViolations: new Set(),
     stepCount: 0,
+    viewportOnly: scope === "viewport",
   };
 
   let goalAchieved = false;
@@ -1087,6 +1094,23 @@ async function simulateAccessibilityJourney(
       }
     }
     // viewport scope: no scroll — evaluate only what the user sees on first paint
+
+    // Inject viewport filter helper so barrier detectors can scope their queries
+    if (scope === "viewport") {
+      await page.evaluate(() => {
+        const vh = window.innerHeight;
+        (window as any).__cbrowserInViewport = (el: Element): boolean => {
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < vh;
+        };
+        (window as any).__cbrowserViewportOnly = true;
+      });
+    } else {
+      await page.evaluate(() => {
+        (window as any).__cbrowserInViewport = () => true; // full page = everything counts
+        (window as any).__cbrowserViewportOnly = false;
+      });
+    }
 
     // Run barrier detection
     // v10.10.0: All general detectors run unconditionally regardless of persona

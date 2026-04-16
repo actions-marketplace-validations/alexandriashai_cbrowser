@@ -492,7 +492,15 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
 
         const pageTitle = await page.title().catch(() => "");
         const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || "").catch(() => "");
-        const elementCount = await page.evaluate(() => document.querySelectorAll("a, button, input, select, textarea").length).catch(() => 0);
+        const elementCount = await page.evaluate((vpOnly: boolean) => {
+          const els = Array.from(document.querySelectorAll("a, button, input, select, textarea"));
+          if (!vpOnly) return els.length;
+          const vh = window.innerHeight;
+          return els.filter(el => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < vh;
+          }).length;
+        }, auditScope === "viewport").catch(() => 0);
 
         const BLOCK_SIGNATURES = [
           "access denied", "403 forbidden", "just a moment", "press & hold",
