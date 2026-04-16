@@ -258,12 +258,15 @@ function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
     issue.category === "accessibility" && issue.detectionMethod?.includes("aria") ? "trivial" :
     "medium";
 
-  // For findability issues, generate a contextual code example instead of using the generic one
-  let after = issue.codeExample || "<!-- See recommendation below -->";
-  if (issue.category === "findability" && issue.element) {
-    // Extract tag from element selector (e.g., "a#link" → "a", "button.cls" → "button")
+  // Use the audit's codeExample if it's contextual (contains actual text, not just boilerplate).
+  // The agent_ready_audit generator already produces good examples like:
+  //   <a data-testid="learn-more" aria-label="Learn more">Learn more</a>
+  // Only generate a new one if the existing example is missing or generic.
+  let after = issue.codeExample || "";
+  const isGenericExample = !after || after.includes('>...</') || after === "<!-- See recommendation below -->";
+
+  if (isGenericExample && issue.category === "findability" && issue.element) {
     const tag = issue.element.split(/[#.\[]/)[0] || "div";
-    // Try to get meaningful text from the issue description or element
     const textMatch = issue.description?.match(/["']([^"']+)["']/);
     const elementText = textMatch?.[1] || issue.element.split("#")[1] || "";
     const testId = elementText
@@ -272,6 +275,7 @@ function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
     const ariaLabel = elementText || `${tag} action`;
     after = `<${tag} data-testid="${testId}" aria-label="${ariaLabel}">${elementText || "..."}</${tag}>`;
   }
+  if (!after) after = "<!-- See recommendation below -->";
 
   return {
     issueId: `issue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
