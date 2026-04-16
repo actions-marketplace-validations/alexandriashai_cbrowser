@@ -1,11 +1,11 @@
 # CBrowser — Cognitive Browser Automation
 
-> **The browser automation that thinks like your users.** 108 MCP tools. 26 cognitive traits. 11 disability personas. The only framework that predicts when users give up.
+> **The browser automation that thinks like your users.** 120 MCP tools. 26 cognitive traits. 11 disability personas. The only framework that predicts when users give up.
 
 [![npm version](https://img.shields.io/npm/v/cbrowser.svg)](https://www.npmjs.com/package/cbrowser)
 [![Documentation](https://img.shields.io/badge/Docs-cbrowser.ai-blue.svg)](https://cbrowser.ai/docs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP Ready](https://img.shields.io/badge/MCP-108%20Tools-blue)](https://modelcontextprotocol.io)
+[![MCP Ready](https://img.shields.io/badge/MCP-120%20Tools-blue)](https://modelcontextprotocol.io)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D18-green.svg)](https://nodejs.org/)
 
@@ -359,7 +359,7 @@ Deploy your own: see [Remote MCP Server Guide](https://cbrowser.ai/docs/Remote-M
 
 ### Token Cost & Selective Loading
 
-108 MCP tools consume ~45,000 tokens in LLM context. For cost-sensitive use, load selectively:
+120 MCP tools consume ~45,000 tokens in LLM context. For cost-sensitive use, load selectively:
 
 ```typescript
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -475,7 +475,7 @@ npx cbrowser config set-api-key  # Required for cognitive journeys
 | **Constitutional Stealth** | Full stealth measures for authorized penetration testing |
 | **Web Security Scan** | OWASP-based security scanning |
 
-All 108 MCP tools included with no rate limits.
+All 120 MCP tools included with no rate limits.
 
 ---
 

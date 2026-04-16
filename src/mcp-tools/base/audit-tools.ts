@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { McpServer } from "../types.js";
+import type { McpServer, ToolRegistrationContext } from "../types.js";
 import {
   runAgentReadyAudit,
   runCompetitiveBenchmark,
@@ -16,9 +16,10 @@ import {
 import { listAccessibilityPersonas } from "../../personas.js";
 
 /**
- * Register audit tools (4 tools: agent_ready_audit, competitive_benchmark, empathy_audit, webmcp_ready_audit)
+ * Register audit tools (4 tools + site_cognitive_assessment + visual_cognitive_story)
  */
-export function registerAuditTools(server: McpServer): void {
+export function registerAuditTools(server: McpServer, context?: ToolRegistrationContext): void {
+  const getBrowserByToken = context?.getBrowserByToken;
   server.registerTool("agent_ready_audit", {
     title: "Agent-Ready Audit",
     description: "Audit a website for AI-agent friendliness. Analyzes findability, stability, accessibility, and semantics. Returns score (0-100), grade (A-F), issues, and remediation recommendations.",
@@ -308,6 +309,9 @@ export function registerAuditTools(server: McpServer): void {
       proxy: z.string().optional().describe("Proxy server URL for geo-accurate testing (e.g., 'http://user:pass@proxy.example.com:12321'). Routes browser through the proxy so sites see the proxy's IP/location instead of the server's."),
       geoRegion: z.string().optional().describe("Route through a residential proxy in this region. Available: us-west, us-east, us-central, uk, germany, japan. Overrides proxy parameter."),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15'. Default: desktop."),
+      waitAfterLoad: z.number().optional().describe("Extra milliseconds to wait after page loads. Use for sites with client-side translation or deferred rendering (e.g., 3000-5000 for i18n sites)."),
+      waitForSelector: z.string().optional().describe("CSS selector to wait for after load. Example: '[data-translated]', '.content-loaded'. Times out gracefully."),
+      _browserToken: z.string().optional().describe("Reuse an existing browser session. Essential for testing translated pages: first navigate + click the language selector, then pass the token here to assess the already-translated page. Without this, the tool creates a fresh browser that defaults to English."),
     },
     annotations: {
       title: "Site Cognitive Assessment",
@@ -316,7 +320,7 @@ export function registerAuditTools(server: McpServer): void {
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, personas, threshold, userLocation, userTimezone, userLanguage, proxy, geoRegion }) => {
+  }, async ({ url, personas, threshold, userLocation, userTimezone, userLanguage, proxy, geoRegion, waitAfterLoad, waitForSelector, _browserToken }) => {
     const startTime = Date.now();
     const personaList = (personas || "first-timer,cognitive-adhd").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -336,42 +340,131 @@ export function registerAuditTools(server: McpServer): void {
     };
 
     // ── Gate 1: Bot Detection Probe ──
+    let ownsBrowser = true;
+    let proxyConfig: { server: string; username?: string; password?: string } | undefined;
     try {
       const { CBrowser: BrowserClass } = await import("../../browser.js");
-      // Set browser locale to match user's expected language
-      // Resolve geoRegion to proxy config (overrides raw proxy)
-      if (geoRegion && !proxy) {
-        const { getGeoProxy } = await import("../../geo-proxy.js");
-        const geoProxy = getGeoProxy(geoRegion);
-        if (geoProxy) {
-          proxy = `http://${encodeURIComponent(geoProxy.username)}:${encodeURIComponent(geoProxy.password)}@${geoProxy.server.replace('http://', '')}`;
-          (response as Record<string, unknown>).geoRegion = geoRegion;
+      let browser: InstanceType<typeof BrowserClass>;
+      let token: string | undefined;
+
+      // If _browserToken is provided, reuse existing session (preserves language selection, cookies, etc.)
+      if (_browserToken && getBrowserByToken) {
+        const session = await getBrowserByToken(_browserToken);
+        browser = session.browser;
+        token = session.token;
+        ownsBrowser = false; // Don't close — it belongs to the session pool
+        (response as Record<string, unknown>)._browserToken = token;
+        (response as Record<string, unknown>).sessionReused = true;
+      } else {
+        // Create fresh browser with locale and proxy settings
+        // Resolve geoRegion to proxy config (overrides raw proxy)
+        if (geoRegion && !proxy) {
+          const { getGeoProxy } = await import("../../geo-proxy.js");
+          const geoProxy = getGeoProxy(geoRegion);
+          if (geoProxy) {
+            proxy = `http://${encodeURIComponent(geoProxy.username)}:${encodeURIComponent(geoProxy.password)}@${geoProxy.server.replace('http://', '')}`;
+            (response as Record<string, unknown>).geoRegion = geoRegion;
+          }
+        }
+
+        proxyConfig = proxy ? (() => {
+          try {
+            const u = new URL(proxy);
+            return {
+              server: `${u.protocol}//${u.hostname}:${u.port}`,
+              ...(u.username ? { username: decodeURIComponent(u.username) } : {}),
+              ...(u.password ? { password: decodeURIComponent(u.password) } : {}),
+            };
+          } catch { return { server: proxy }; }
+        })() : undefined;
+
+        browser = new BrowserClass({
+          headless: true,
+          locale: expectedLocale,
+          ...(userTimezone ? { timezone: userTimezone } : {}),
+          ...(proxyConfig ? { proxy: proxyConfig, timeout: 60000 } : {}),
+        });
+        await browser.launch();
+
+        // Pre-seed localStorage for client-side i18n frameworks
+        if (expectedLang !== "en") {
+          try {
+            const page = await browser.getPage();
+            await page.context().addInitScript((lang: string) => {
+              try {
+                localStorage.setItem("cbrowser-lang", lang);
+                localStorage.setItem("lang", lang);
+                localStorage.setItem("locale", lang);
+              } catch {}
+            }, expectedLang);
+          } catch {}
         }
       }
 
-      // Parse proxy URL if provided (format: socks5://user:pass@host:port or http://host:port)
-      const proxyConfig = proxy ? (() => {
-        try {
-          const u = new URL(proxy);
-          return {
-            server: `${u.protocol}//${u.hostname}:${u.port}`,
-            ...(u.username ? { username: decodeURIComponent(u.username) } : {}),
-            ...(u.password ? { password: decodeURIComponent(u.password) } : {}),
-          };
-        } catch { return { server: proxy }; }
-      })() : undefined;
-
-      const browser = new BrowserClass({
-        headless: true,
-        locale: expectedLocale,
-        ...(userTimezone ? { timezone: userTimezone } : {}),
-        ...(proxyConfig ? { proxy: proxyConfig, timeout: 60000 } : {}),
-      });
-      await browser.launch();
-
       try {
-        const navResult = await browser.navigate(url);
+        // For non-English, ensure enough total wait time for client-side translation:
+        // waitForSelector catches the marker, then waitAfterLoad gives GT time to finish text swaps
+        const effectiveWaitAfterLoad = waitAfterLoad || (expectedLang !== "en" ? 3000 : 0);
+        const navResult = await browser.navigate(url, {
+          ...(effectiveWaitAfterLoad ? { waitAfterLoad: effectiveWaitAfterLoad } : {}),
+          ...(waitForSelector ? { waitForSelector } : {}),
+        });
         const page = await browser.getPage();
+
+        // Verify translation actually happened by checking page content, not just a DOM attribute.
+        // The selector may exist (set by our own addInitScript) even when GT failed silently.
+        if (expectedLang !== "en") {
+          const contentCheck = await page.evaluate(() => {
+            // Check VISIBLE body content only (not <title> which can't be client-side translated)
+            const h1 = document.querySelector("h1")?.textContent || "";
+            const nav = document.querySelector("nav")?.textContent || "";
+            const body = document.body?.innerText?.substring(0, 500) || "";
+            const visibleText = h1 + " " + nav + " " + body;
+            // Check primary nav items that are always above-fold and always visible.
+            // Translation is viewport-progressive, so only check items guaranteed
+            // to be in the first viewport at 1920x1080.
+            const englishIndicators = ["Docs", "Pricing", "Log in", "Sign up"];
+            const stillEnglish = englishIndicators.filter(en => visibleText.includes(en)).length;
+            // Also check page lang attribute
+            const pageLang = document.documentElement.lang || "en";
+            return { stillEnglish, totalChecked: englishIndicators.length, pageLang, visibleSample: visibleText.substring(0, 100) };
+          }).catch(() => ({ stillEnglish: 0, totalChecked: 0, pageLang: "en", visibleSample: "" }));
+
+          if (contentCheck.stillEnglish >= 2) {
+            // Multiple English indicators still present — translation didn't work
+            (response as Record<string, unknown>).translationWarning = {
+              expected: expectedLocale,
+              actual: "en",
+              englishIndicatorsFound: contentCheck.stillEnglish,
+              pageLang: contentCheck.pageLang,
+              message: `Page content appears to still be in English despite userLanguage="${expectedLocale}". ${contentCheck.stillEnglish}/${contentCheck.totalChecked} English UI strings found in visible content. The site may require a language selector click, not just Accept-Language. Scores reflect English content, not ${expectedLocale}.`,
+            };
+          } else if (contentCheck.stillEnglish === 0) {
+            (response as Record<string, unknown>).translationNote = {
+              language: expectedLocale,
+              verified: true,
+              pageLang: contentCheck.pageLang,
+              message: `Page content verified as translated — no English UI indicators found in visible text. Scores reflect ${expectedLocale} content.`,
+            };
+          } else {
+            (response as Record<string, unknown>).translationNote = {
+              language: expectedLocale,
+              verified: "partial",
+              pageLang: contentCheck.pageLang,
+              englishIndicatorsRemaining: contentCheck.stillEnglish,
+              message: `Page mostly translated — ${contentCheck.stillEnglish}/${contentCheck.totalChecked} English UI strings still present in visible content. Scores mostly reflect ${expectedLocale} content.`,
+            };
+          }
+        }
+
+        // Also surface waitForSelector timeout if relevant
+        if (waitForSelector && navResult.waitSelectorTimedOut) {
+          (response as Record<string, unknown>).waitWarning = {
+            selector: waitForSelector,
+            timedOut: true,
+            message: `waitForSelector "${waitForSelector}" timed out — element not found after page load.`,
+          };
+        }
 
         const pageTitle = await page.title().catch(() => "");
         const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || "").catch(() => "");
@@ -387,7 +480,7 @@ export function registerAuditTools(server: McpServer): void {
         const blockSignature = BLOCK_SIGNATURES.find(sig => lowerTitle.includes(sig) || lowerBody.includes(sig));
         const isEmpty = elementCount < 5 && bodyText.length < 100;
 
-        // Language mismatch detection
+        // Language mismatch detection — runs regardless of waitForSelector
         const pageLang = await page.evaluate(() => document.documentElement.lang || "").catch(() => "");
         const pageLangShort = pageLang.split("-")[0].toLowerCase();
         const languageMismatch = pageLangShort && pageLangShort !== expectedLang && pageLangShort !== "";
@@ -411,7 +504,7 @@ export function registerAuditTools(server: McpServer): void {
           response.result = "BLOCKED";
           response.message = `Site is bot-blocked (${blockSignature || "empty DOM"}). Cannot assess cognitive experience. Try with stealth mode enabled or use a staging URL.`;
           response.duration = `${Date.now() - startTime}ms`;
-          await browser.close();
+          if (ownsBrowser) await browser.close();
           return { content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }] };
         }
 
@@ -445,7 +538,7 @@ export function registerAuditTools(server: McpServer): void {
             response.result = "UNQUALIFIED";
             response.message = `Site scored ${score}/100 (grade ${grade}), below the ${threshold} threshold. Fix structural issues before persona testing adds value.`;
             response.duration = `${Date.now() - startTime}ms`;
-            await browser.close();
+            if (ownsBrowser) await browser.close();
             return { content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }] };
           }
         } catch (auditErr) {
@@ -525,15 +618,30 @@ export function registerAuditTools(server: McpServer): void {
         response.result = "COMPLETE";
         response.duration = `${Date.now() - startTime}ms`;
 
-        await browser.close();
+        if (ownsBrowser) await browser.close();
       } catch (navErr) {
-        response.gate1 = { status: "error", error: navErr instanceof Error ? navErr.message : String(navErr) };
-        response.result = "ERROR";
+        const errMsg = navErr instanceof Error ? navErr.message : String(navErr);
+        const isProxyBlock = errMsg.includes("ERR_TUNNEL_CONNECTION_FAILED") || errMsg.includes("ERR_PROXY_CONNECTION_FAILED");
+        const isProxyTimeout = errMsg.includes("ERR_NETWORK_CHANGED") && geoRegion;
+
+        if (isProxyBlock || isProxyTimeout) {
+          response.gate1 = {
+            status: "proxy_blocked",
+            error: errMsg.split("\n")[0],
+            geoRegion: geoRegion || undefined,
+          };
+          response.result = "PROXY_BLOCKED";
+          response.message = `The site rejected the residential proxy connection${geoRegion ? ` (${geoRegion})` : ""}. This means ${url} actively blocks proxy/VPN traffic — this is the site's anti-bot defense, not a CBrowser issue.\n\nRecommendations:\n1. Re-run without --geo-region to test from the server's direct IP\n2. Try a different geo region (the site may block specific IP ranges)\n3. If you need geo-accurate results, use a datacenter proxy or test from a machine in the target region`;
+        } else {
+          response.gate1 = { status: "error", error: errMsg };
+          response.result = "ERROR";
+        }
         response.duration = `${Date.now() - startTime}ms`;
-        await browser.close();
+        if (ownsBrowser) await browser.close();
       }
     } catch (browserErr) {
-      response.gate1 = { status: "error", error: browserErr instanceof Error ? browserErr.message : String(browserErr) };
+      const errMsg = browserErr instanceof Error ? browserErr.message : String(browserErr);
+      response.gate1 = { status: "error", error: errMsg };
       response.result = "ERROR";
       response.duration = `${Date.now() - startTime}ms`;
     }
@@ -551,6 +659,7 @@ export function registerAuditTools(server: McpServer): void {
       persona: z.string().optional().default("cognitive-adhd").describe("Persona name"),
       device: z.string().optional().describe("Device to emulate: 'mobile', 'tablet', 'desktop', or a specific device like 'iPhone 15', 'Pixel 7', 'iPad Pro'. Default: desktop (1920x1080)."),
       useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on saliency map generation, attention scoring, and narrative. Default: false."),
+      _browserToken: z.string().optional().describe("Reuse an existing browser session. Useful for testing translated or state-dependent pages."),
     },
     annotations: {
       title: "Visual Cognitive Story",
@@ -559,19 +668,30 @@ export function registerAuditTools(server: McpServer): void {
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, persona, device, useValues }) => {
+  }, async ({ url, persona, device, useValues, _browserToken }) => {
     const startTime = Date.now();
     const { join } = await import("path");
     const { tmpdir } = await import("os");
     const { writeFileSync, mkdirSync, existsSync, unlinkSync } = await import("fs");
+    let ownsVcsBrowser = true;
 
     try {
       const { CBrowser: BrowserClass } = await import("../../browser.js");
-      const browser = new BrowserClass({
-        headless: true,
-        ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
-      });
-      await browser.launch();
+      let browser: InstanceType<typeof BrowserClass>;
+      let vcsToken: string | undefined;
+
+      if (_browserToken && getBrowserByToken) {
+        const session = await getBrowserByToken(_browserToken);
+        browser = session.browser;
+        vcsToken = session.token;
+        ownsVcsBrowser = false;
+      } else {
+        browser = new BrowserClass({
+          headless: true,
+          ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
+        });
+        await browser.launch();
+      }
 
       try {
         await browser.navigate(url);
@@ -875,7 +995,7 @@ export function registerAuditTools(server: McpServer): void {
         try { unlinkSync(ssPath); } catch {}
         return { content };
       } finally {
-        await browser.close();
+        if (ownsVcsBrowser) await browser.close();
       }
     } catch (err) {
       return {

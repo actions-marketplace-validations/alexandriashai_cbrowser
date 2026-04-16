@@ -577,6 +577,8 @@ Begin with the first persona: ${personas[0]}
       geoRegion: z.string().optional().describe("Route through a residential proxy in this region: us-west, us-east, us-central, uk, germany, japan"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
       useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values modulate saliency maps, decision costs, and frustration costs. Default: false (trait-only mode)."),
+      waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
+      waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -585,7 +587,7 @@ Begin with the first persona: ${personas[0]}
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona: personaName, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues }) => {
+  }, async ({ url, persona: personaName, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues, waitAfterLoad, waitForSelector }) => {
     try {
       // Get browser
       let b: Awaited<ReturnType<typeof getBrowser>>;
@@ -599,8 +601,26 @@ Begin with the first persona: ${personas[0]}
       }
 
       // Navigate
-      await b.navigate(url);
+      await b.navigate(url, {
+        ...(waitAfterLoad ? { waitAfterLoad } : {}),
+        ...(waitForSelector ? { waitForSelector } : {}),
+      });
       const page = await b.getPage();
+
+      // If non-English language requested, seed localStorage for i18n frameworks
+      // and reload if the page hasn't translated yet
+      const requestedLang = (userLanguage || "en-US").split("-")[0];
+      if (requestedLang !== "en") {
+        const currentLang = await page.evaluate(() => document.documentElement.lang || "").catch(() => "");
+        if (currentLang.split("-")[0].toLowerCase() !== requestedLang.toLowerCase()) {
+          await page.evaluate((lang: string) => {
+            try { localStorage.setItem("cbrowser-lang", lang); localStorage.setItem("lang", lang); } catch {}
+          }, requestedLang);
+          await page.reload({ waitUntil: "domcontentloaded" });
+          if (waitAfterLoad) await page.waitForTimeout(waitAfterLoad);
+          if (waitForSelector) await page.waitForSelector(waitForSelector, { timeout: 10000 }).catch(() => {});
+        }
+      }
 
       // Detect language mismatch
       const expectedLang = (userLanguage || "en-US").split("-")[0];

@@ -14,8 +14,8 @@
  * @since 17.0.0
  */
 
-import { chromium, type Page, type Browser } from "playwright";
-import { launchBrowserWithFallback } from "../browser.js";
+import { type Page } from "playwright";
+import { CBrowser } from "../browser.js";
 
 /**
  * Extracted page data for llms.txt generation
@@ -347,11 +347,11 @@ export async function generateLlmsTxt(
 ): Promise<LlmsTxtResult> {
   const { url, crawl = false, maxPages = 10, headless = true } = options;
 
-  let browser: Browser | null = null;
+  let browser: CBrowser | null = null;
   try {
-    browser = await launchBrowserWithFallback(chromium, { headless });
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    browser = new CBrowser({ headless, persistent: false });
+    await browser.launch();
+    const page = await browser.getPage();
 
     // Extract main page data
     const mainPageData = await extractPageData(page, url);

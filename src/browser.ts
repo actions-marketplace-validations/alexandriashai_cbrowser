@@ -500,9 +500,15 @@ For more help: https://playwright.dev/docs/browsers
       contextOptions.permissions = ["geolocation"];
     }
 
-    // Apply locale if configured
+    // Apply locale if configured — sets navigator.language AND Accept-Language header
+    // This makes sites that respect Accept-Language serve localized content
     if (this.config.locale) {
       contextOptions.locale = this.config.locale;
+      const lang = this.config.locale.split("-")[0];
+      contextOptions.extraHTTPHeaders = {
+        ...contextOptions.extraHTTPHeaders,
+        "Accept-Language": `${this.config.locale},${lang};q=0.9,en;q=0.5`,
+      };
     }
 
     // Apply timezone if configured
@@ -1665,6 +1671,34 @@ For more help: https://playwright.dev/docs/browsers
     const waitTimeout = options.waitTimeout ?? 10000;
     const waitForStability = options.waitForStability ?? (waitStrategy === "auto" || waitStrategy === "domcontentloaded");
 
+    // Helper to detect proxy tunnel errors and provide actionable messages
+    const wrapProxyError = (e: unknown): never => {
+      const errMsg = (e as Error).message || "";
+      if (errMsg.includes("ERR_TUNNEL_CONNECTION_FAILED") || errMsg.includes("ERR_PROXY_CONNECTION_FAILED")) {
+        const proxyServer = this.config.proxy?.server || "configured proxy";
+        throw new Error(
+          `Proxy tunnel rejected by ${url}. The target site is blocking proxy/VPN connections ` +
+          `(proxy: ${proxyServer}). This is the site's anti-bot defense, not a CBrowser issue.\n\n` +
+          `Recommendations:\n` +
+          `1. Re-run without the proxy to test from your direct IP\n` +
+          `2. Try a different geo region — the site may block specific IP ranges\n` +
+          `3. Some sites (Stripe, GitHub, banking) aggressively block residential proxies`
+        );
+      }
+      if (errMsg.includes("ERR_NETWORK_CHANGED") && this.config.proxy) {
+        throw new Error(
+          `Network changed during proxy connection to ${url}. The residential proxy IP may have rotated mid-request ` +
+          `or the site detected and dropped the proxy tunnel.\n\n` +
+          `Recommendations:\n` +
+          `1. Retry — residential proxy IPs rotate and the next one may work\n` +
+          `2. Re-run without the proxy to test from your direct IP\n` +
+          `3. Use a sticky session proxy for sites that are sensitive to IP changes`
+        );
+      }
+      throw e;
+    };
+
+    try {
     if (waitStrategy === "commit") {
       // Fastest: don't wait at all after navigation commits
       await page.goto(url, { waitUntil: "commit", timeout: this.config.timeout || 30000 });
@@ -1710,10 +1744,30 @@ For more help: https://playwright.dev/docs/browsers
             await this.waitForStability(page, 2000);
           }
         } else {
-          // Non-timeout error, rethrow
-          throw e;
+          // Non-timeout error — proxy detection handled by outer catch
+          wrapProxyError(e);
         }
       }
+    }
+    } catch (navError) {
+      // Wrap any proxy-related navigation error with actionable message
+      wrapProxyError(navError);
+    }
+
+    // Post-navigation waits for dynamic content (translation, deferred rendering)
+    let waitSelectorTimedOut = false;
+    if (options.waitForSelector) {
+      try {
+        await page.waitForSelector(options.waitForSelector, {
+          timeout: options.waitTimeout ?? 10000,
+        });
+      } catch {
+        waitSelectorTimedOut = true;
+        warnings.push(`waitForSelector "${options.waitForSelector}" timed out after ${options.waitTimeout ?? 10000}ms — the expected element never appeared. The page may not have completed the operation you were waiting for (e.g., translation, dynamic render).`);
+      }
+    }
+    if (options.waitAfterLoad && options.waitAfterLoad > 0) {
+      await page.waitForTimeout(options.waitAfterLoad);
     }
 
     const loadTime = Date.now() - startTime;
@@ -1768,6 +1822,7 @@ For more help: https://playwright.dev/docs/browsers
       warnings,
       loadTime,
       success: true,
+      ...(waitSelectorTimedOut ? { waitSelectorTimedOut: true } : {}),
     };
   }
 

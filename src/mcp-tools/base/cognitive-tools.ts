@@ -112,6 +112,8 @@ export function registerCognitiveTools(
           accuracy: z.number().optional(),
         }).optional().describe("Geographic coordinates for geolocation-dependent features"),
       }).optional().describe("Override persona's location settings (timezone, locale, geolocation)"),
+      waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
+      waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
     },
     annotations: {
       title: "Initialize Cognitive Journey",
@@ -120,7 +122,7 @@ export function registerCognitiveTools(
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ persona: personaName, goal, startUrl, customTraits, location }) => {
+  }, async ({ persona: personaName, goal, startUrl, customTraits, location, waitAfterLoad, waitForSelector }) => {
       const existingPersona = getAnyPersona(personaName);
       let personaObj: Persona | AccessibilityPersona;
 
@@ -283,7 +285,11 @@ export function registerCognitiveTools(
         locationResult = await b.applyPersonaLocation(effectiveLocation);
       }
 
-      await b.navigate(startUrl);
+      const navOpts = {
+        ...(waitAfterLoad ? { waitAfterLoad } : {}),
+        ...(waitForSelector ? { waitForSelector } : {}),
+      };
+      await b.navigate(startUrl, navOpts);
 
       // v18.30.0: Verify browser is healthy after navigation
       // JS-heavy sites can crash the persistent browser context
@@ -297,13 +303,12 @@ export function registerCognitiveTools(
 
           // Page is blank — persistent context is corrupted
           console.warn(`[cognitive_journey_init] Blank page on attempt ${attempt + 1}. Resetting browser (persistent state preserved).`);
-          // close() + launch() with persistent=true restores cookies/localStorage from userDataDir
           await b.close();
           await b.launch();
-          await b.navigate(startUrl);
+          await b.navigate(startUrl, navOpts);
         } catch (e) {
           console.warn(`[cognitive_journey_init] Recovery attempt ${attempt + 1} failed: ${(e as Error).message}`);
-          try { await b.close(); await b.launch(); await b.navigate(startUrl); } catch {}
+          try { await b.close(); await b.launch(); await b.navigate(startUrl, navOpts); } catch {}
         }
       }
 

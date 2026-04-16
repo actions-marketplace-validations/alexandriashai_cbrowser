@@ -12,8 +12,8 @@
  * Flips CBrowser's "workaround" detections into "fix this" recommendations.
  */
 
-import { chromium, type Page, type Browser } from "playwright";
-import { launchBrowserWithFallback } from "../browser.js";
+import { type Page, type Browser } from "playwright";
+import { CBrowser } from "../browser.js";
 import { launchWithLightpandaFallback, isLightpandaConfigured } from "../lightpanda.js";
 import type {
   AgentReadyAuditResult,
@@ -1748,7 +1748,8 @@ export async function runAgentReadyAudit(
 
   const auditPromise = async (): Promise<AgentReadyAuditResult> => {
     try {
-      // Use Lightpanda if explicitly requested and configured
+      // Use Lightpanda if explicitly requested and configured (stays raw Playwright)
+      let page: Page;
       if (options.useLightpanda && isLightpandaConfigured()) {
         const result = await launchWithLightpandaFallback({
           headless: true,
@@ -1759,40 +1760,51 @@ export async function runAgentReadyAudit(
         if (result.isLightpanda) {
           console.log("🐼 Using Lightpanda for audit (11x faster)");
         }
-      } else {
-        browser = await launchBrowserWithFallback(chromium, {
-          headless: options.headless ?? true,
-          ...(options.proxy ? { proxy: options.proxy } : {}),
+        const context = await browser.newContext({
+          viewport: { width: 1920, height: 1080 },
+          ...(options.locale ? { locale: options.locale } : {}),
         });
+        page = await context.newPage();
+      } else {
+        // Use CBrowser for standard path — gets proxy error handling, crash recovery
+        const cbrowser = new CBrowser({
+          headless: options.headless ?? true,
+          persistent: false,
+          ...(options.proxy ? { proxy: options.proxy } : {}),
+          ...(options.locale ? { locale: options.locale } : {}),
+        });
+        await cbrowser.launch();
+        // Store the underlying Playwright browser for close() compatibility
+        browser = (cbrowser as any).browser;
+        page = await cbrowser.getPage();
       }
-
-      // v18.22.0: User agent rotation for bot detection hardening
-      const userAgents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      ];
-      const selectedUserAgent = options.useRandomUserAgent
-        ? userAgents[Math.floor(Math.random() * userAgents.length)]
-        : undefined;
-
-      // v18.22.0: Slight viewport variation to avoid detection
-      const viewportJitter = options.useRandomUserAgent
-        ? { width: 1920 + Math.floor(Math.random() * 40) - 20, height: 1080 + Math.floor(Math.random() * 40) - 20 }
-        : { width: 1920, height: 1080 };
-
-      const context = await browser.newContext({
-        viewport: viewportJitter,
-        ...(selectedUserAgent && { userAgent: selectedUserAgent }),
-        ...(options.locale ? { locale: options.locale } : {}),
-        ...(options.proxy ? { ignoreHTTPSErrors: true } : {}),
-      });
-      const page = await context.newPage();
 
       // Navigate to URL - use domcontentloaded for faster completion
       // networkidle can hang on sites with continuous network activity
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
+      try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
+      } catch (navError) {
+        const errMsg = navError instanceof Error ? navError.message : String(navError);
+        if (errMsg.includes("ERR_TUNNEL_CONNECTION_FAILED") || errMsg.includes("ERR_PROXY_CONNECTION_FAILED")) {
+          throw new Error(
+            `Proxy tunnel rejected by ${url}. The target site is blocking proxy/VPN connections. ` +
+            `This is the site's anti-bot defense, not a CBrowser issue.\n\n` +
+            `Recommendations:\n` +
+            `1. Re-run without the proxy/geo-region to test from your direct IP\n` +
+            `2. Try a different geo region — the site may block specific IP ranges\n` +
+            `3. Some sites (Stripe, GitHub, banking) aggressively block residential proxies`
+          );
+        }
+        if (errMsg.includes("ERR_NETWORK_CHANGED") && options.proxy) {
+          throw new Error(
+            `Network changed during proxy connection to ${url}. The residential proxy IP may have rotated mid-request.\n\n` +
+            `Recommendations:\n` +
+            `1. Retry — residential proxy IPs rotate and the next one may work\n` +
+            `2. Re-run without the proxy to test from your direct IP`
+          );
+        }
+        throw navError;
+      }
 
       // v18.22.0: SPA mode - detect framework and wait for hydration
       if (options.spaMode) {

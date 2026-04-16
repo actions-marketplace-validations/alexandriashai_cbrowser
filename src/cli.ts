@@ -1681,6 +1681,80 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         break;
       }
 
+      case "type": {
+        const text = args[0];
+        if (!text) {
+          console.error("Usage: cbrowser type \"text to type\" [--delay <ms>]");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        const delay = typeof options.delay === "number" ? options.delay : 50;
+        await page.keyboard.type(text, { delay });
+        console.log(`✓ Typed ${text.length} characters`);
+        break;
+      }
+
+      case "press": {
+        const key = args[0];
+        if (!key) {
+          console.error("Usage: cbrowser press <key> (e.g., Enter, Tab, Escape, Control+a)");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        await page.keyboard.press(key);
+        console.log(`✓ Pressed ${key}`);
+        break;
+      }
+
+      case "drag": {
+        const source = args[0];
+        const target = args[1];
+        if (!source || !target) {
+          console.error("Usage: cbrowser drag <source-selector> <target-selector>");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        await page.dragAndDrop(source, target);
+        console.log(`✓ Dragged ${source} → ${target}`);
+        break;
+      }
+
+      case "eval":
+      case "evaluate": {
+        const script = args[0];
+        if (!script) {
+          console.error("Usage: cbrowser eval \"<javascript>\"");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        try {
+          const evalResult = await page.evaluate(script);
+          console.log(typeof evalResult === "string" ? evalResult : JSON.stringify(evalResult, null, 2));
+        } catch (e) {
+          console.error(`✗ ${(e as Error).message}`);
+          process.exit(1);
+        }
+        break;
+      }
+
+      case "upload": {
+        const selector = args[0];
+        const filePath = args[1];
+        if (!selector || !filePath) {
+          console.error("Usage: cbrowser upload <selector> <file-path>");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        await page.locator(selector).setInputFiles(filePath);
+        console.log(`✓ Uploaded ${filePath} to ${selector}`);
+        break;
+      }
+
       case "fill": {
         const selector = args[0];
         const value = args[1];
@@ -5286,11 +5360,25 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           process.exit(1);
         }
 
-        console.log(`\n🤖 Running Agent-Ready Audit on ${url}...${useLightpanda ? " (with Lightpanda)" : ""}\n`);
+        // Resolve geo proxy if --geo-region is specified
+        const geoRegion = options["geo-region"] as string | undefined;
+        let auditProxy: { server: string; username?: string; password?: string } | undefined;
+        if (geoRegion) {
+          const { getGeoProxy } = await import("./geo-proxy.js");
+          const geoProxy = getGeoProxy(geoRegion);
+          if (geoProxy) {
+            auditProxy = { server: geoProxy.server, username: geoProxy.username, password: geoProxy.password };
+          } else {
+            console.error(`Warning: geo-region "${geoRegion}" not configured. Run without proxy.`);
+          }
+        }
+
+        console.log(`\n🤖 Running Agent-Ready Audit on ${url}...${useLightpanda ? " (with Lightpanda)" : ""}${geoRegion ? ` (via ${geoRegion})` : ""}\n`);
 
         const result = await runAgentReadyAudit(url, {
           headless,
           useLightpanda,
+          ...(auditProxy ? { proxy: auditProxy } : {}),
         });
 
         // Print formatted report

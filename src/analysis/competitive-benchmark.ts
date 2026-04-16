@@ -12,8 +12,8 @@
  * Output: head-to-head comparison with friction analysis.
  */
 
-import { chromium, type Browser, type Page } from "playwright";
-import { launchBrowserWithFallback } from "../browser.js";
+import { type Page } from "playwright";
+import { CBrowser } from "../browser.js";
 import type {
   CompetitiveBenchmarkResult,
   CompetitiveBenchmarkOptions,
@@ -1327,13 +1327,11 @@ export async function runCompetitiveBenchmark(
         }
 
         // Fallback: Heuristic simulation (when no API key or cognitive journey failed)
-        let browser: Browser | null = null;
+        let browser: CBrowser | null = null;
         try {
-          browser = await launchBrowserWithFallback(chromium, { headless });
-          const context = await browser.newContext({
-            viewport: { width: 1920, height: 1080 },
-          });
-          const page = await context.newPage();
+          browser = new CBrowser({ headless, persistent: false });
+          await browser.launch();
+          const page = await browser.getPage();
 
           const result = await simulateJourney(page, site.url, goal, personaConfig, maxSteps, maxTime);
 

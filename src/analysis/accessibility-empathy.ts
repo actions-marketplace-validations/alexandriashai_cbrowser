@@ -33,8 +33,8 @@
  * - User testing with people who have disabilities
  */
 
-import { chromium, type Browser, type Page } from "playwright";
-import { launchBrowserWithFallback } from "../browser.js";
+import { type Page } from "playwright";
+import { CBrowser } from "../browser.js";
 import type {
   EmpathyAuditResult,
   EmpathyAuditOptions,
@@ -2063,13 +2063,11 @@ export async function runEmpathyAudit(
     // TypeScript guard — persona is guaranteed non-null after continue above
     const resolvedPersona = persona!;
 
-    let browser: Browser | null = null;
+    let browser: CBrowser | null = null;
     try {
-      browser = await launchBrowserWithFallback(chromium, { headless });
-      const context = await browser.newContext({
-        viewport: { width: 1920, height: 1080 },
-      });
-      const page = await context.newPage();
+      browser = new CBrowser({ headless, persistent: false });
+      await browser.launch();
+      const page = await browser.getPage();
 
       const result = await simulateAccessibilityJourney(
         page,

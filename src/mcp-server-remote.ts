@@ -623,165 +623,111 @@ async function resolveApiKeyTier(apiKey: string): Promise<PricingTier | null> {
 }
 
 // ============================================================================
-// Rate Limiting (with session tracking and burst allowance)
+// Rate Limiting — per-account, tier-based
 // ============================================================================
 
-interface RateLimitConfig {
-  enabled: boolean;
-  maxRequests: number;        // Sustained limit per hour
-  windowMs: number;           // Main window (default: 1 hour)
-  burstRequests: number;      // Burst limit (first few minutes)
-  burstWindowMs: number;      // Burst window (default: 5 minutes)
-  whitelist: Set<string>;
-}
+/**
+ * Per-tier rate limits. MCP protocol sends ~8 requests per connection init,
+ * so limits must account for protocol overhead, not just tool calls.
+ */
+const TIER_RATE_LIMITS: Record<string, { requests: number; burst: number }> = {
+  free:       { requests: 100,  burst: 30  },  // ~12 reconnections/hour
+  pro:        { requests: 1000, burst: 100 },  // ~125 reconnections/hour
+  enterprise: { requests: 0,    burst: 0   },  // unlimited (0 = no limit)
+};
+
+const RATE_LIMIT_WINDOW_MS = 3600000;       // 1 hour
+const RATE_LIMIT_BURST_WINDOW_MS = 300000;  // 5 minutes
 
 interface RateLimitEntry {
-  requests: number[];         // Timestamps of all requests
-  sessionStart: number;       // When this session/IP first appeared
+  requests: number[];
+  sessionStart: number;
 }
 
-// Rate limit storage: key (session or IP) -> entry
+// Rate limit storage: account key hash or IP -> entry
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
-function getRateLimitConfig(): RateLimitConfig {
-  const enabled = process.env.RATE_LIMIT_ENABLED === "true";
-  const maxRequests = parseInt(process.env.RATE_LIMIT_REQUESTS || "30", 10);
-  const windowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS || "3600000", 10);
-  const burstRequests = parseInt(process.env.RATE_LIMIT_BURST || "15", 10);
-  const burstWindowMs = parseInt(process.env.RATE_LIMIT_BURST_WINDOW_MS || "300000", 10);
-  const whitelistStr = process.env.RATE_LIMIT_WHITELIST || "";
-
-  const whitelist = new Set<string>();
-  for (const ip of whitelistStr.split(",")) {
-    const trimmed = ip.trim();
-    if (trimmed) {
-      whitelist.add(trimmed);
-    }
-  }
-
-  return { enabled, maxRequests, windowMs, burstRequests, burstWindowMs, whitelist };
-}
-
 function getClientIP(req: IncomingMessage): string {
-  // Check X-Forwarded-For header (behind proxy/load balancer)
   const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    // Take the first IP in the chain (original client)
-    return forwarded.split(",")[0].trim();
-  }
-
-  // Check X-Real-IP header (nginx)
+  if (typeof forwarded === "string") return forwarded.split(",")[0].trim();
   const realIp = req.headers["x-real-ip"];
-  if (typeof realIp === "string") {
-    return realIp.trim();
-  }
-
-  // Fall back to socket remote address
+  if (typeof realIp === "string") return realIp.trim();
   return req.socket.remoteAddress || "unknown";
 }
 
-function getRateLimitKey(req: IncomingMessage): string {
-  // Prefer MCP session ID for per-session tracking
-  const sessionId = req.headers["mcp-session-id"];
-  if (typeof sessionId === "string" && sessionId.length > 0) {
-    return `session:${sessionId}`;
-  }
-
-  // Fall back to IP-based tracking
-  return `ip:${getClientIP(req)}`;
-}
-
+/**
+ * Check rate limit for a request, keyed by account (API key hash) with tier-based limits.
+ * Falls back to IP-based limiting for unauthenticated requests (free tier limits).
+ */
 function checkRateLimit(
   req: IncomingMessage,
-  config: RateLimitConfig
-): { allowed: boolean; remaining: number; resetTime: number; burstRemaining?: number } {
-  if (!config.enabled) {
-    return { allowed: true, remaining: config.maxRequests, resetTime: 0 };
+  tier: PricingTier | null,
+): { allowed: boolean; remaining: number; resetTime: number; limit: number } {
+  if (process.env.RATE_LIMIT_ENABLED !== "true") {
+    return { allowed: true, remaining: 999, resetTime: 0, limit: 999 };
   }
 
-  const ip = getClientIP(req);
+  const resolvedTier = tier || "free";
+  const limits = TIER_RATE_LIMITS[resolvedTier] || TIER_RATE_LIMITS.free;
 
-  // Skip rate limiting for whitelisted IPs
-  if (config.whitelist.has(ip)) {
-    return { allowed: true, remaining: config.maxRequests, resetTime: 0 };
+  // Enterprise = unlimited
+  if (limits.requests === 0) {
+    return { allowed: true, remaining: 999999, resetTime: 0, limit: 0 };
   }
 
-  const key = getRateLimitKey(req);
+  // Key by API key hash (account-based) or IP (unauthenticated)
+  const apiKey = extractApiKey(req);
+  let key: string;
+  if (apiKey) {
+    // Use a fast hash of the key for storage
+    let hash = 0;
+    for (let i = 0; i < apiKey.length; i++) {
+      hash = ((hash << 5) - hash + apiKey.charCodeAt(i)) | 0;
+    }
+    key = `account:${hash}`;
+  } else {
+    key = `ip:${getClientIP(req)}`;
+  }
+
   const now = Date.now();
-  const windowStart = now - config.windowMs;
-  const burstWindowStart = now - config.burstWindowMs;
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+  const burstWindowStart = now - RATE_LIMIT_BURST_WINDOW_MS;
 
-  // Get or create entry
   let entry = rateLimitStore.get(key);
   if (!entry) {
     entry = { requests: [], sessionStart: now };
     rateLimitStore.set(key, entry);
   }
 
-  // Filter out requests outside the main window
-  entry.requests = entry.requests.filter(timestamp => timestamp > windowStart);
+  // Prune old requests
+  entry.requests = entry.requests.filter(t => t > windowStart);
 
-  // Count requests in burst window
-  const burstRequests = entry.requests.filter(timestamp => timestamp > burstWindowStart).length;
+  // Determine which limit applies
+  const inBurstPeriod = (now - entry.sessionStart) < RATE_LIMIT_BURST_WINDOW_MS;
+  const burstCount = entry.requests.filter(t => t > burstWindowStart).length;
 
-  // Check if within burst period (first burstWindowMs of session)
-  const inBurstPeriod = (now - entry.sessionStart) < config.burstWindowMs;
+  const currentLimit = inBurstPeriod ? limits.burst : limits.requests;
+  const currentCount = inBurstPeriod ? burstCount : entry.requests.length;
 
-  // Determine current limit based on burst period
-  let currentLimit: number;
-  let currentWindowRequests: number;
-
-  if (inBurstPeriod) {
-    // During burst period: use burst limit
-    currentLimit = config.burstRequests;
-    currentWindowRequests = burstRequests;
-  } else {
-    // After burst period: use sustained limit
-    currentLimit = config.maxRequests;
-    currentWindowRequests = entry.requests.length;
-  }
-
-  // Calculate remaining requests
-  const remaining = Math.max(0, currentLimit - currentWindowRequests);
-
-  // Calculate reset time
+  const remaining = Math.max(0, currentLimit - currentCount);
   const resetTime = entry.requests.length > 0
-    ? entry.requests[0] + config.windowMs
-    : now + config.windowMs;
+    ? entry.requests[0] + RATE_LIMIT_WINDOW_MS
+    : now + RATE_LIMIT_WINDOW_MS;
 
-  if (currentWindowRequests >= currentLimit) {
-    // Rate limit exceeded
-    return {
-      allowed: false,
-      remaining: 0,
-      resetTime,
-      burstRemaining: inBurstPeriod ? 0 : undefined,
-    };
+  if (currentCount >= currentLimit) {
+    return { allowed: false, remaining: 0, resetTime, limit: limits.requests };
   }
 
-  // Allow request and record it
   entry.requests.push(now);
-
-  return {
-    allowed: true,
-    remaining: remaining - 1,
-    resetTime,
-    burstRemaining: inBurstPeriod ? Math.max(0, config.burstRequests - burstRequests - 1) : undefined,
-  };
+  return { allowed: true, remaining: remaining - 1, resetTime, limit: limits.requests };
 }
 
-// Cleanup old rate limit entries periodically (every 10 minutes)
+// Cleanup old rate limit entries every 10 minutes
 setInterval(() => {
   const now = Date.now();
-  const config = getRateLimitConfig();
-
   for (const [key, entry] of rateLimitStore.entries()) {
-    // Filter out old requests
-    entry.requests = entry.requests.filter(t => t > now - config.windowMs);
-
-    // Remove entry if no requests and session is old (2x window)
-    const sessionAge = now - entry.sessionStart;
-    if (entry.requests.length === 0 && sessionAge > config.windowMs * 2) {
+    entry.requests = entry.requests.filter(t => t > now - RATE_LIMIT_WINDOW_MS);
+    if (entry.requests.length === 0 && (now - entry.sessionStart) > RATE_LIMIT_WINDOW_MS * 2) {
       rateLimitStore.delete(key);
     }
   }
@@ -895,7 +841,7 @@ function createMcpServer(
       name: "cbrowser",
       title: "CBrowser — Cognitive Browser Automation",
       version: VERSION,
-      description: "AI-powered browser automation with cognitive user simulation. 105 MCP tools for navigation, visual testing, accessibility auditing, persona-based testing, site knowledge learning, and security scanning. Simulates how real humans think, struggle, and give up on your site.",
+      description: "AI-powered browser automation with cognitive user simulation. 120 MCP tools for navigation, visual testing, accessibility auditing, persona-based testing, site knowledge learning, and security scanning. Simulates how real humans think, struggle, and give up on your site.",
       websiteUrl: "https://cbrowser.ai",
       icons: [
         { src: "https://cbrowser.ai/icon-192.png", sizes: ["192x192"] },
@@ -909,7 +855,7 @@ function createMcpServer(
         prompts: {},
         resources: {},
       },
-      instructions: `CBrowser — cognitive browser automation with 107 tools across 16 categories.
+      instructions: `CBrowser — cognitive browser automation with 120 tools across 16 categories.
 
 CORE TOOLS (use these first):
 • navigate, click, fill, scroll, screenshot, extract — browser control
@@ -992,7 +938,7 @@ TIPS:
     async () => ({
       contents: [{
         uri: "docs://tools-overview",
-        text: "CBrowser provides 105 MCP tools across 11 categories: Browser Automation, Visual Testing, Cognitive Journeys, Site Knowledge, Accessibility, Persona System, Testing, Performance, Security, Session Management, and Marketing. Visit https://cbrowser.ai/docs/Tools-Overview for the complete reference.",
+        text: "CBrowser provides 120 MCP tools across 11 categories: Browser Automation, Visual Testing, Cognitive Journeys, Site Knowledge, Accessibility, Persona System, Testing, Performance, Security, Session Management, and Marketing. Visit https://cbrowser.ai/docs/Tools-Overview for the complete reference.",
         mimeType: "text/plain",
       }],
     })
@@ -1188,8 +1134,6 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
   // REQUIRE_AUTH=true forces auth even without static API keys (uses cbk_ keys + OAuth)
   const requireAuth = process.env.REQUIRE_AUTH === "true";
   const authEnabled = apiKeyAuthEnabled || auth0Enabled || requireAuth;
-  const rateLimitConfig = getRateLimitConfig();
-
   console.log(`Starting CBrowser Remote MCP Server v${VERSION}...`);
   console.log(`Mode: ${sessionMode}`);
   console.log(`Auth: ${authEnabled ? "enabled" : "disabled (open access)"}`);
@@ -1203,14 +1147,11 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
   console.log(`  - Max concurrent sessions: ${MAX_CONCURRENT_SESSIONS}`);
   console.log(`  - Idle timeout: ${SESSION_IDLE_TIMEOUT_MS / 1000}s`);
   console.log(`  - Memory limit per session: ${SESSION_MEMORY_LIMIT_MB}MB`);
-  if (rateLimitConfig.enabled) {
-    console.log(`Rate Limiting: enabled`);
-    console.log(`  - Sustained: ${rateLimitConfig.maxRequests} requests per ${rateLimitConfig.windowMs / 1000 / 60} min`);
-    console.log(`  - Burst: ${rateLimitConfig.burstRequests} requests in first ${rateLimitConfig.burstWindowMs / 1000 / 60} min`);
-    console.log(`  - Tracking: per-session (falls back to IP)`);
-    if (rateLimitConfig.whitelist.size > 0) {
-      console.log(`  - Whitelisted IPs: ${Array.from(rateLimitConfig.whitelist).join(", ")}`);
-    }
+  if (process.env.RATE_LIMIT_ENABLED === "true") {
+    console.log(`Rate Limiting: per-account, tier-based`);
+    console.log(`  - Free:       ${TIER_RATE_LIMITS.free.requests} req/hr (burst: ${TIER_RATE_LIMITS.free.burst})`);
+    console.log(`  - Pro:        ${TIER_RATE_LIMITS.pro.requests} req/hr (burst: ${TIER_RATE_LIMITS.pro.burst})`);
+    console.log(`  - Enterprise: unlimited`);
   }
   console.log(`Listening on ${host}:${port}`);
 
@@ -1720,40 +1661,8 @@ ${VERSION}
     // Protected Endpoints (auth required)
     // =====================================================================
 
-    // Rate limit check (if enabled)
-    const rateLimit = checkRateLimit(req, rateLimitConfig);
-    if (!rateLimit.allowed) {
-      const retryAfterSeconds = Math.ceil((rateLimit.resetTime - Date.now()) / 1000);
-      const retryAfterMinutes = Math.ceil(retryAfterSeconds / 60);
-      const humanReadableTime = retryAfterSeconds > 60
-        ? `${retryAfterMinutes} minute${retryAfterMinutes !== 1 ? "s" : ""}`
-        : `${retryAfterSeconds} second${retryAfterSeconds !== 1 ? "s" : ""}`;
-
-      res.writeHead(429, {
-        "Content-Type": "application/json",
-        "Retry-After": String(retryAfterSeconds),
-        "X-RateLimit-Limit": String(rateLimitConfig.maxRequests),
-        "X-RateLimit-Remaining": "0",
-        "X-RateLimit-Reset": String(Math.ceil(rateLimit.resetTime / 1000)),
-      });
-      res.end(JSON.stringify({
-        error: "Rate Limit Exceeded",
-        message: `⚠️ CBrowser Demo Rate Limit Reached\n\nThe demo server allows ${rateLimitConfig.maxRequests} requests per hour to ensure fair access for all users.\n\nPlease wait ${humanReadableTime} before trying again.\n\nFor unlimited access, see: https://cbrowser.ai/enterprise`,
-        user_message: `Rate limit reached. Please wait ${humanReadableTime} and try again.`,
-        retry_after_seconds: retryAfterSeconds,
-        retry_after_human: humanReadableTime,
-        limit: rateLimitConfig.maxRequests,
-        window_minutes: Math.round(rateLimitConfig.windowMs / 60000),
-      }));
-      return;
-    }
-
-    // Add rate limit headers to successful responses
-    res.setHeader("X-RateLimit-Limit", String(rateLimitConfig.maxRequests));
-    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
-    res.setHeader("X-RateLimit-Reset", String(Math.ceil(rateLimit.resetTime / 1000)));
-
-    // Auth check for protected endpoints
+    // Auth check first (we need the tier for rate limiting)
+    let requestTier: PricingTier | null = null;
     if (authEnabled) {
       const authResult = await validateAuth(req, apiKeys, auth0Enabled);
       if (!authResult.valid) {
@@ -1761,6 +1670,49 @@ ${VERSION}
         return;
       }
     }
+
+    // Resolve tier from API key for rate limiting
+    const requestApiKeyForRate = extractApiKey(req);
+    if (requestApiKeyForRate) {
+      requestTier = await resolveApiKeyTier(requestApiKeyForRate);
+    }
+
+    // Per-account, tier-based rate limit check
+    const rateLimit = checkRateLimit(req, requestTier);
+    if (!rateLimit.allowed) {
+      const retryAfterSeconds = Math.ceil((rateLimit.resetTime - Date.now()) / 1000);
+      const retryAfterMinutes = Math.ceil(retryAfterSeconds / 60);
+      const humanReadableTime = retryAfterSeconds > 60
+        ? `${retryAfterMinutes} minute${retryAfterMinutes !== 1 ? "s" : ""}`
+        : `${retryAfterSeconds} second${retryAfterSeconds !== 1 ? "s" : ""}`;
+
+      const tierName = requestTier || "free";
+      const tierLimit = rateLimit.limit;
+
+      res.writeHead(429, {
+        "Content-Type": "application/json",
+        "Retry-After": String(retryAfterSeconds),
+        "X-RateLimit-Limit": String(tierLimit),
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": String(Math.ceil(rateLimit.resetTime / 1000)),
+      });
+      res.end(JSON.stringify({
+        error: "Rate Limit Exceeded",
+        message: `⚠️ CBrowser Rate Limit Reached (${tierName} tier)\n\nYour ${tierName} plan allows ${tierLimit} requests per hour.\n\nPlease wait ${humanReadableTime} before trying again.${tierName === "free" ? "\n\nUpgrade to Pro for 1,000 requests/hour: https://cbrowser.ai/pricing" : ""}`,
+        user_message: `Rate limit reached (${tierName} tier). Please wait ${humanReadableTime} and try again.`,
+        retry_after_seconds: retryAfterSeconds,
+        retry_after_human: humanReadableTime,
+        limit: tierLimit,
+        tier: tierName,
+        window_minutes: 60,
+      }));
+      return;
+    }
+
+    // Add rate limit headers to successful responses
+    res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+    res.setHeader("X-RateLimit-Reset", String(Math.ceil(rateLimit.resetTime / 1000)));
 
     // Homepage (GET / with homepageHtml option)
     if (url.pathname === "/" && req.method === "GET" && options?.homepageHtml) {

@@ -13,8 +13,8 @@
  * @since 17.0.0
  */
 
-import { chromium, type Page, type Browser } from "playwright";
-import { launchBrowserWithFallback } from "../browser.js";
+import { type Page } from "playwright";
+import { CBrowser } from "../browser.js";
 
 /**
  * Detected page type
@@ -574,11 +574,11 @@ export async function suggestStructuredData(
 ): Promise<StructuredDataSuggestion> {
   const { url, headless = true } = options;
 
-  let browser: Browser | null = null;
+  let browser: CBrowser | null = null;
   try {
-    browser = await launchBrowserWithFallback(chromium, { headless });
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    browser = new CBrowser({ headless, persistent: false });
+    await browser.launch();
+    const page = await browser.getPage();
 
     const signals = await extractPageSignals(page, url);
 

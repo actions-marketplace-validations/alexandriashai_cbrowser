@@ -21,6 +21,8 @@ export function registerNavigationTools(
     description: "Navigate to a URL and take a screenshot. Pass _browserToken from a previous tool call to reuse the same browser session.",
     inputSchema: {
       url: z.string().url().describe("The URL to navigate to"),
+      waitAfterLoad: z.number().optional().describe("Additional milliseconds to wait after page loads. Useful for sites with client-side translation, deferred rendering, or async content. Example: 3000 for i18n sites."),
+      waitForSelector: z.string().optional().describe("CSS selector to wait for after navigation. Useful for dynamic content. Example: '[data-translated]', '.content-loaded', '#app:not(:empty)'. Times out gracefully after 10s."),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call. Pass this to maintain browser state (cookies, page) across calls."),
     },
     annotations: {
@@ -30,7 +32,7 @@ export function registerNavigationTools(
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, _browserToken }) => {
+  }, async ({ url, waitAfterLoad, waitForSelector, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
       let token: string | undefined;
       if (getBrowserByToken) {
@@ -40,7 +42,10 @@ export function registerNavigationTools(
       } else {
         b = await getBrowser();
       }
-      let result = await b.navigate(url);
+      let result = await b.navigate(url, {
+        ...(waitAfterLoad ? { waitAfterLoad } : {}),
+        ...(waitForSelector ? { waitForSelector } : {}),
+      });
 
       // v18.30.0: Auto-recover from corrupted browser state with retry
       if (!result.title && !result.screenshot) {
@@ -76,6 +81,8 @@ export function registerNavigationTools(
             title: result.title,
             loadTime: result.loadTime,
             screenshot: result.screenshot,
+            ...(result.waitSelectorTimedOut ? { waitSelectorTimedOut: true, waitWarning: `waitForSelector timed out — the expected element never appeared` } : {}),
+            ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
             ...(token ? { _browserToken: token } : {}),
           },
           result.screenshot

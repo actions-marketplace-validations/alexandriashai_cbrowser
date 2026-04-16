@@ -32,6 +32,8 @@ import { registerRemediationTools } from "./remediation-tools.js";
 import { registerLlmsTxtTools } from "./llms-txt-tools.js";
 import { registerSiteKnowledgeTools } from "./site-knowledge-tools.js";
 import { registerGifTools } from "./gif-tools.js";
+import { registerAdvancedInteractionTools } from "./advanced-interaction-tools.js";
+import { registerBrowserStateTools } from "./browser-state-tools.js";
 
 /**
  * Register all 65 base tools on an MCP server
@@ -108,8 +110,8 @@ export function registerBaseTools(
   // Performance (3) - no browser context needed
   registerPerformanceTools(server);
 
-  // Audit (3) - no browser context needed
-  registerAuditTools(server);
+  // Audit (6) - site_cognitive_assessment now supports _browserToken
+  registerAuditTools(server, context);
 
   // Browser Management (4)
   registerBrowserManagementTools(server, context);
@@ -131,6 +133,12 @@ export function registerBaseTools(
 
   // GIF tools (1) - journey heatmap animation
   registerGifTools(server, context);
+
+  // Advanced Interaction (6) - hover, type_text, press_key, handle_dialog, upload_file, drag
+  registerAdvancedInteractionTools(server, context);
+
+  // Browser State (5) - evaluate_script, get_console_messages, get_network_requests, manage_cookies, manage_storage
+  registerBrowserStateTools(server, context);
 }
 
 // Re-export individual registration functions for granular use
@@ -156,3 +164,5 @@ export { registerRemediationTools } from "./remediation-tools.js";
 export { registerLlmsTxtTools } from "./llms-txt-tools.js";
 export { registerSiteKnowledgeTools } from "./site-knowledge-tools.js";
 export { registerGifTools } from "./gif-tools.js";
+export { registerAdvancedInteractionTools } from "./advanced-interaction-tools.js";
+export { registerBrowserStateTools } from "./browser-state-tools.js";

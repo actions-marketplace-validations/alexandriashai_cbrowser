@@ -30,6 +30,7 @@ export function registerVisualTestingTools(server: McpServer): void {
       delay: z.number().optional().default(1500).describe("Delay between captures in ms"),
       selector: z.string().optional().describe("CSS selector to capture specific element"),
       device: z.string().optional().describe("Device emulation (e.g. mobile, tablet, iphone-15)"),
+      waitFor: z.union([z.number(), z.string()]).optional().describe("Wait after page load: number = ms delay, string = CSS selector to wait for. Useful for client-side translation or deferred rendering."),
     },
     annotations: {
       title: "Capture Visual Baseline",
@@ -38,13 +39,14 @@ export function registerVisualTestingTools(server: McpServer): void {
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, name, captures, delay, selector, device }) => {
+  }, async ({ url, name, captures, delay, selector, device, waitFor }) => {
       const { captureSmartBaseline } = await import("../../visual/index.js");
       const result = await captureSmartBaseline(url, name, {
         numCaptures: captures || 3,
         captureDelay: delay,
         selector,
         device,
+        waitFor,
       });
       return {
         content: [

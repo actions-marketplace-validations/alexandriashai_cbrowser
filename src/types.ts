@@ -2323,6 +2323,22 @@ export interface NavigateOptions {
    * Default: true when waitStrategy is "auto" or "domcontentloaded"
    */
   waitForStability?: boolean;
+
+  /**
+   * Additional milliseconds to wait after navigation completes.
+   * Useful for pages with client-side translation, deferred rendering,
+   * or other post-load async processing.
+   * Default: 0
+   */
+  waitAfterLoad?: number;
+
+  /**
+   * CSS selector to wait for after navigation, before considering the page ready.
+   * Useful for waiting on specific dynamic content (e.g., "[data-translated]",
+   * ".loaded", "#content:not(:empty)").
+   * Times out after waitTimeout ms (default 10s) without failing navigation.
+   */
+  waitForSelector?: string;
 }
 
 export interface NavigationResult {
@@ -2338,6 +2354,8 @@ export interface NavigationResult {
   desyncDetected?: boolean;
   /** v11.9.0: The originally requested URL (when desync detected) */
   expectedUrl?: string;
+  /** Whether waitForSelector timed out without finding the element */
+  waitSelectorTimedOut?: boolean;
 }
 
 export interface ClickResult {

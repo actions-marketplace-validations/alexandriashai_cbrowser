@@ -123,4 +123,68 @@ export function registerBrowserManagementTools(
       };
     }
   );
+
+  // ── manage_tabs ──
+  server.registerTool("manage_tabs", {
+    title: "Manage Browser Tabs",
+    description: "List, create, switch, or close browser tabs. Useful for multi-page workflows.",
+    inputSchema: {
+      action: z.enum(["list", "create", "switch", "close"]).describe("Action: list (show all tabs), create (new tab), switch (focus tab), close (close tab)"),
+      url: z.string().optional().describe("URL for new tab (create action)"),
+      index: z.number().optional().describe("Tab index to switch to or close (0-based)"),
+    },
+    annotations: { title: "Manage Tabs", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async ({ action, url, index }) => {
+    const b = await getBrowser();
+    const context = (b as any).context;
+    if (!context) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({ error: "No browser context. Navigate to a URL first." }) }] };
+    }
+
+    if (action === "list") {
+      const pages = context.pages();
+      const tabs = pages.map((p: any, i: number) => ({ index: i, url: p.url(), title: p.url() }));
+      // Get titles async
+      for (const tab of tabs) {
+        try { tab.title = await context.pages()[tab.index].title(); } catch { /* keep URL */ }
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify({ tabs, count: tabs.length }) }] };
+    }
+
+    if (action === "create") {
+      const page = await context.newPage();
+      if (url) await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+      // Switch to new tab
+      (b as any).page = page;
+      const title = await page.title().catch(() => "");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ created: true, url: page.url(), title, index: context.pages().length - 1 }) }] };
+    }
+
+    if (action === "switch" && index !== undefined) {
+      const pages = context.pages();
+      if (index < 0 || index >= pages.length) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Tab ${index} doesn't exist. ${pages.length} tabs open (0-${pages.length - 1}).` }) }] };
+      }
+      (b as any).page = pages[index];
+      const title = await pages[index].title().catch(() => "");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ switched: true, index, url: pages[index].url(), title }) }] };
+    }
+
+    if (action === "close" && index !== undefined) {
+      const pages = context.pages();
+      if (index < 0 || index >= pages.length) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Tab ${index} doesn't exist.` }) }] };
+      }
+      if (pages.length <= 1) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Can't close the last tab." }) }] };
+      }
+      await pages[index].close();
+      // If we closed the active tab, switch to first remaining
+      const remaining = context.pages();
+      (b as any).page = remaining[0];
+      return { content: [{ type: "text" as const, text: JSON.stringify({ closed: index, remainingTabs: remaining.length }) }] };
+    }
+
+    return { content: [{ type: "text" as const, text: JSON.stringify({ error: "Invalid params. 'switch'/'close' require index, 'create' optionally takes url." }) }] };
+  });
 }
