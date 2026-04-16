@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.55.0](https://github.com/alexandriashai/cbrowser/compare/v18.54.0...v18.55.0) (2026-04-16)
+
+### Added
+
+* schwartz value integration, CLI accessibility, SSE keepalive, session cleanup ([c74665a](https://github.com/alexandriashai/cbrowser/commit/c74665a68101ecff164abca502b88cbc4450d57a))
+
 ## [18.54.0](https://github.com/alexandriashai/cbrowser/compare/v18.53.0...v18.54.0) (2026-04-15)
 
 ### Added
