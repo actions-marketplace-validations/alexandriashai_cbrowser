@@ -251,15 +251,37 @@ const PATCH_TEMPLATES: Record<string, (issue: AgentReadyIssue) => RemediationPat
  * Default patch template for unknown issue types
  */
 function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
+  // Classify effort based on issue category — single-attribute additions are trivial
+  const effort: RemediationPatch["effort"] =
+    issue.category === "findability" ? "trivial" :
+    issue.category === "accessibility" && issue.detectionMethod?.includes("alt-text") ? "trivial" :
+    issue.category === "accessibility" && issue.detectionMethod?.includes("aria") ? "trivial" :
+    "medium";
+
+  // For findability issues, generate a contextual code example instead of using the generic one
+  let after = issue.codeExample || "<!-- See recommendation below -->";
+  if (issue.category === "findability" && issue.element) {
+    // Extract tag from element selector (e.g., "a#link" → "a", "button.cls" → "button")
+    const tag = issue.element.split(/[#.\[]/)[0] || "div";
+    // Try to get meaningful text from the issue description or element
+    const textMatch = issue.description?.match(/["']([^"']+)["']/);
+    const elementText = textMatch?.[1] || issue.element.split("#")[1] || "";
+    const testId = elementText
+      ? elementText.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").substring(0, 40)
+      : `${tag}-${Math.random().toString(36).substring(2, 6)}`;
+    const ariaLabel = elementText || `${tag} action`;
+    after = `<${tag} data-testid="${testId}" aria-label="${ariaLabel}">${elementText || "..."}</${tag}>`;
+  }
+
   return {
-    issueId: `issue-${Date.now()}`,
+    issueId: `issue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     category: issue.category,
     description: issue.description,
     before: issue.element || "<!-- Current implementation -->",
-    after: issue.codeExample || "<!-- See recommendation below -->",
+    after,
     explanation: issue.recommendation || "Review the element and apply accessibility best practices.",
-    effort: "medium",
-    impact: "medium",
+    effort,
+    impact: issue.category === "findability" ? "high" : "medium",
   };
 }
 
