@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.58.1](https://github.com/alexandriashai/cbrowser/compare/v18.58.0...v18.58.1) (2026-04-16)
+
+### Fixed
+
+* viewport scope actually clips barrier detection and element counts ([296c7a3](https://github.com/alexandriashai/cbrowser/commit/296c7a3d20b109e375b5f1ef94535d955ef7206d))
+
 ## [18.58.0](https://github.com/alexandriashai/cbrowser/compare/v18.57.0...v18.58.0) (2026-04-16)
 
 ### Added
