@@ -111,6 +111,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
       userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US')"),
       userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US') — affects readability scoring"),
+      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to score: 'viewport' (first impression, above-the-fold only — default) or 'full_page' (scroll through entire page, all barriers). Use 'viewport' for landing page optimization; 'full_page' for WCAG compliance audits."),
     },
     annotations: {
       title: "Empathy Accessibility Audit",
@@ -119,7 +120,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime }) => {
+  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope }) => {
       try {
         // Auto-limit to 1 persona to avoid MCP client timeout on Claude.ai (~60s limit)
         const allPersonas = listAccessibilityPersonas();
@@ -134,6 +135,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           maxSteps,
           maxTime,
           headless: true,
+          scope: scope || "viewport",
         });
         // Build response with guidance for additional personas
         const testedPersona = singlePersona[0];
@@ -144,6 +146,10 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           goal: result.goal,
           testedPersona,
           overallScore: result.overallScore,
+          scope: scope || "viewport",
+          scopeNote: scope === "full_page"
+            ? "Full-page audit: scrolled through entire page before barrier detection. Scores reflect all content including below-the-fold."
+            : "Viewport-only audit: scored first impression (above-the-fold). Use scope='full_page' for complete barrier inventory, or cognitive_journey for path-dependent experience.",
           resultsSummary: result.results.map((r) => {
             const uniqueTypes = new Set(r.barriers.map(b => b.type));
             return {
@@ -311,6 +317,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15'. Default: desktop."),
       waitAfterLoad: z.number().optional().describe("Extra milliseconds to wait after page loads. Use for sites with client-side translation or deferred rendering (e.g., 3000-5000 for i18n sites)."),
       waitForSelector: z.string().optional().describe("CSS selector to wait for after load. Example: '[data-translated]', '.content-loaded'. Times out gracefully."),
+      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to measure: 'viewport' (first impression, above-the-fold — default) or 'full_page' (scroll through entire page). Viewport is right for landing page optimization; full_page for WCAG compliance."),
       _browserToken: z.string().optional().describe("Reuse an existing browser session. Essential for testing translated pages: first navigate + click the language selector, then pass the token here to assess the already-translated page. Without this, the tool creates a fresh browser that defaults to English."),
     },
     annotations: {
@@ -320,7 +327,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, personas, threshold, userLocation, userTimezone, userLanguage, proxy, geoRegion, waitAfterLoad, waitForSelector, _browserToken }) => {
+  }, async ({ url, personas, threshold, userLocation, userTimezone, userLanguage, proxy, geoRegion, waitAfterLoad, waitForSelector, scope, _browserToken }) => {
     const startTime = Date.now();
     const personaList = (personas || "first-timer,cognitive-adhd").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -410,6 +417,23 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           ...(waitForSelector ? { waitForSelector } : {}),
         });
         const page = await browser.getPage();
+
+        // Scope-dependent page discovery
+        const auditScope = scope || "viewport";
+        if (auditScope === "full_page") {
+          try {
+            const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+            const viewportHeight = await page.evaluate(() => window.innerHeight);
+            const scrollSteps = Math.min(5, Math.ceil(pageHeight / viewportHeight));
+            for (let i = 1; i <= scrollSteps; i++) {
+              await page.evaluate((y: number) => window.scrollTo(0, y), i * viewportHeight);
+              await page.waitForTimeout(300);
+            }
+            await page.evaluate(() => window.scrollTo(0, 0));
+            await page.waitForTimeout(300);
+          } catch { /* scroll failure non-fatal */ }
+        }
+        (response as Record<string, unknown>).scope = auditScope;
 
         // Verify translation actually happened by checking page content, not just a DOM attribute.
         // The selector may exist (set by our own addInitScript) even when GT failed silently.

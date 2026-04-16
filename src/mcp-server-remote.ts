@@ -53,7 +53,7 @@ import {
 } from "./stealth/index.js";
 
 // Modular MCP tools (v17.5.0)
-import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash } from "./mcp-tools/index.js";
+import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash, getActiveKeyHash } from "./mcp-tools/index.js";
 import type { PricingTier } from "./mcp-tools/tool-categories.js";
 import type { ToolRegistrationContext } from "./mcp-tools/types.js";
 
@@ -1020,6 +1020,25 @@ async function handleMcpRequest(
     const params = parsedBody?.params as Record<string, unknown> | undefined;
     if (method === "tools/call" && params?.name) {
       logLine += ` [${params.name}]`;
+
+      // Deduct credits for tool calls (non-blocking)
+      const toolName = params.name as string;
+      const keyHash = getActiveKeyHash();
+      if (keyHash) {
+        const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+        fetch(`${cmsUrl}/api/credits/deduct?key_hash=${encodeURIComponent(keyHash)}&tool=${encodeURIComponent(toolName)}`, {
+          method: "POST",
+        }).then(async (r) => {
+          if (r.ok) {
+            const data = await r.json() as { allowed: boolean; cost?: number; remaining?: number; reason?: string };
+            if (!data.allowed) {
+              console.log(`[Credits] ${toolName}: DENIED (${data.reason}, remaining: ${data.remaining})`);
+            }
+          }
+        }).catch(() => {
+          // CMS unreachable — don't block tool execution
+        });
+      }
     }
     if (method === "notifications/initialized") {
       logLine = `← session initialized`;

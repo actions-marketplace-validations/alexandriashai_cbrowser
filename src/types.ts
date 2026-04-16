@@ -5138,6 +5138,8 @@ export interface EmpathyAuditOptions {
   headless?: boolean;
   /** Output path for JSON report */
   output?: string;
+  /** Scope: 'viewport' (default, above-the-fold only) or 'full_page' (scroll through all content) */
+  scope?: "viewport" | "full_page";
   /** Generate HTML report */
   html?: boolean;
 }

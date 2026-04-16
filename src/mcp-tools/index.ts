@@ -84,7 +84,7 @@ import { setActiveTier, createGatedServer } from "./tier-gate.js";
 import type { PricingTier } from "./tool-categories.js";
 
 // Re-export tier gating
-export { setActiveTier, getActiveTier, isToolAccessible, upgradePrompt, createGatedServer, setActiveKeyHash } from "./tier-gate.js";
+export { setActiveTier, getActiveTier, isToolAccessible, upgradePrompt, createGatedServer, setActiveKeyHash, getActiveKeyHash } from "./tier-gate.js";
 export type { PricingTier } from "./tool-categories.js";
 
 /**

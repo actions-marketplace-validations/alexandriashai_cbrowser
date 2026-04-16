@@ -1041,6 +1041,7 @@ async function simulateAccessibilityJourney(
   url: string,
   goal: string,
   persona: AccessibilityPersona,
+  scope: "viewport" | "full_page" = "viewport",
   maxSteps: number,
   maxTime: number
 ): Promise<AccessibilityEmpathyResult> {
@@ -1065,6 +1066,27 @@ async function simulateAccessibilityJourney(
     // Navigate to URL
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10000 });
     await page.waitForTimeout(1500);
+
+    // Scope-dependent page discovery
+    if (scope === "full_page") {
+      // Scroll through the full page to trigger lazy-loaded content
+      try {
+        const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+        const viewportHeight = await page.evaluate(() => window.innerHeight);
+        const scrollSteps = Math.min(5, Math.ceil(pageHeight / viewportHeight));
+
+        for (let i = 1; i <= scrollSteps; i++) {
+          await page.evaluate((y: number) => window.scrollTo(0, y), i * viewportHeight);
+          await page.waitForTimeout(300);
+        }
+        // Scroll back to top — detectors check full DOM
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.waitForTimeout(300);
+      } catch {
+        // Scroll failure is non-fatal
+      }
+    }
+    // viewport scope: no scroll — evaluate only what the user sees on first paint
 
     // Run barrier detection
     // v10.10.0: All general detectors run unconditionally regardless of persona
@@ -2035,8 +2057,37 @@ export async function runEmpathyAudit(
 
     if (!persona) {
       // Try to find as a regular cognitive persona and wrap it
-      const { getAnyPersona } = await import("../personas.js");
-      const cognitivePersona = getAnyPersona(personaName);
+      const { getAnyPersona, createCognitivePersona } = await import("../personas.js");
+      let cognitivePersona = getAnyPersona(personaName);
+
+      // CMS custom persona fallback — fetch from API if not found locally
+      if (!cognitivePersona) {
+        try {
+          const { getSessionApiKey } = await import("../mcp-tools/base/cognitive-tools.js");
+          const apiKey = getSessionApiKey();
+          if (apiKey) {
+            const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+            const res = await fetch(`${cmsUrl}/api/personas`, {
+              headers: { "Authorization": `Bearer ${apiKey}` },
+            });
+            if (res.ok) {
+              const data = await res.json() as { personas: Array<{ name: string; traits: Record<string, number> }> };
+              const cmsMatch = data.personas.find(
+                (p: { name: string }) => p.name.toLowerCase() === personaName.toLowerCase() ||
+                  p.name.toLowerCase().replace(/\s+/g, '-') === personaName.toLowerCase() ||
+                  p.name.toLowerCase().replace(/\s+/g, '_') === personaName.toLowerCase()
+              );
+              if (cmsMatch) {
+                cognitivePersona = createCognitivePersona(cmsMatch.name, cmsMatch.name, cmsMatch.traits);
+                console.log(`[empathy_audit] Found custom CMS persona: "${cmsMatch.name}"`);
+              }
+            }
+          }
+        } catch (e) {
+          console.debug(`[empathy_audit] CMS persona lookup failed: ${(e as Error).message}`);
+        }
+      }
+
       if (cognitivePersona) {
         // Wrap cognitive persona as accessibility persona with neutral traits
         persona = {
@@ -2055,7 +2106,19 @@ export async function runEmpathyAudit(
         isDisabilityPersona = false;
         console.log(`[empathy_audit] "${disability}" is not a disability persona — running with general accessibility traits`);
       } else {
-        console.warn(`Unknown persona: ${disability}, skipping`);
+        // Return an explicit error instead of silently skipping
+        console.error(`[empathy_audit] Persona "${disability}" not found in any registry (built-in, custom, CMS)`);
+        results.push({
+          persona: personaName,
+          disabilityType: disability,
+          goalAchieved: false,
+          empathyScore: 0,
+          barriers: [],
+          wcagViolations: [],
+          journey: [],
+          screenshotPath: null,
+          error: `Persona "${disability}" not found. Use list_cognitive_personas to see available personas, or create one with persona_create_from_description.`,
+        } as any);
         continue;
       }
     }
@@ -2069,11 +2132,13 @@ export async function runEmpathyAudit(
       await browser.launch();
       const page = await browser.getPage();
 
+      const auditScope = options.scope || "viewport";
       const result = await simulateAccessibilityJourney(
         page,
         url,
         goal,
         resolvedPersona,
+        auditScope,
         maxSteps,
         maxTime
       );
