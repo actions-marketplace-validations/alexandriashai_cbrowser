@@ -252,72 +252,152 @@ async function computeLabSaliency(
   return { cells: saliency, rows, cols, width: width / scale, height: height / scale };
 }
 
-// ── Persona-Filtered Saliency ──
+// ── Persona-Filtered Saliency (v18.54.0: value-driven attention) ──
 
 /**
- * Apply a persona's perceptual filter to the saliency map.
+ * Schwartz value → saliency modulation parameters.
  *
- * Different personas have different attention modes:
- * - uniform: all cells weighted equally (baseline)
- * - center-heavy: center cells boosted, edges suppressed (motor impairment)
- * - motion-attracted: high-variance cells boosted (ADHD)
- * - text-focused: low-variance, high-L cells boosted (dyslexia, elderly)
- * - large-elements: high-count cells boosted (low vision)
+ * Values don't just change how you process — they change WHERE you look.
+ * Research basis:
+ * - Motivated attention (Pessoa 2009): emotional/motivational state biases visual attention
+ * - Value-driven attentional capture (Anderson 2013): reward-associated stimuli capture attention
+ * - Need states alter perception (Balcetis & Dunning 2006): what you value changes what you see
+ *
+ * Each value modulates the saliency power curve:
+ * filtered[i] = saliency[i]^exponent × (1 + bias)
+ *
+ * High exponent → concentrated attention (only strongest signals register)
+ * Low exponent → dispersed attention (more things capture attention)
+ * Positive bias → global boost (vigilant, scanning everything)
+ * Negative bias → selective suppression (focused, ignoring distractors)
+ */
+interface ValueAttentionParams {
+  /** Saliency power exponent: <1 = dispersed (notices more), >1 = concentrated (fewer things) */
+  exponent: number;
+  /** Global saliency bias: +boost/-suppress */
+  bias: number;
+  /** Center-bias strength: 0 = none, 1 = strong center focus */
+  centerBias: number;
+  /** Threshold floor: below this, saliency is suppressed */
+  threshold: number;
+}
+
+function computeValueAttentionParams(
+  filter: PerceptualFilter,
+  schwartzValues?: Record<string, number>,
+): ValueAttentionParams {
+  // Start with the base attention mode
+  let exponent = 1.0;
+  let bias = 0.0;
+  let centerBias = 0.0;
+  let threshold = 0.0;
+
+  // Apply categorical attention mode (legacy — still used for accessibility personas)
+  switch (filter.attentionMode) {
+    case 'center-heavy':
+      centerBias = 0.7;
+      break;
+    case 'motion-attracted':
+      exponent = 0.5; // square root = more things register
+      break;
+    case 'text-focused':
+      threshold = 0.2; // suppress low-saliency distractors
+      bias = -0.1;     // slightly suppress overall
+      break;
+    case 'large-elements':
+      threshold = 0.3;
+      break;
+  }
+
+  // Apply value-driven modulation (v18.54.0)
+  if (schwartzValues) {
+    const v = (key: string) => schwartzValues[key] ?? 0.5;
+
+    // Stimulation: high → dispersed attention (notices novelty everywhere)
+    // Anderson (2013): reward-seeking broadens attentional spotlight
+    exponent -= (v('stimulation') - 0.5) * 0.4; // 0.9 stim → exponent -0.16
+
+    // Security: high → vigilant scanning (boost everything slightly, lower threshold)
+    // Pessoa (2009): threat-sensitive individuals show broadened attention
+    bias += (v('security') - 0.5) * 0.15;
+    threshold -= (v('security') - 0.5) * 0.1;
+
+    // Achievement: high → focused on high-value targets (increase exponent)
+    // Concentrate attention on the most salient elements, ignore distractors
+    exponent += (v('achievement') - 0.5) * 0.3;
+
+    // Conformity: high → center-biased (follows expected layout patterns)
+    // F-pattern and Z-pattern readers look where convention says to look
+    centerBias += (v('conformity') - 0.5) * 0.3;
+
+    // Self-direction: high → less center-biased (explores periphery)
+    centerBias -= (v('selfDirection') - 0.5) * 0.2;
+
+    // Tradition: high → suppresses novel elements (sticks to familiar patterns)
+    threshold += (v('tradition') - 0.5) * 0.1;
+  }
+
+  // Clamp values to sane ranges
+  exponent = Math.max(0.3, Math.min(2.0, exponent));
+  bias = Math.max(-0.3, Math.min(0.3, bias));
+  centerBias = Math.max(0, Math.min(1.0, centerBias));
+  threshold = Math.max(0, Math.min(0.5, threshold));
+
+  return { exponent, bias, centerBias, threshold };
+}
+
+/**
+ * Apply persona's perceptual filter + value-driven attention modulation.
+ *
+ * The saliency map is modified by both the persona's physical perceptual
+ * constraints (attention mode) and their motivational values (what they
+ * care about changes what they notice).
  */
 function applyPersonaFilter(
   saliency: Float64Array,
   rows: number,
   cols: number,
   filter: PerceptualFilter,
+  schwartzValues?: Record<string, number>,
 ): Float64Array {
-  const filtered = new Float64Array(saliency);
+  const params = computeValueAttentionParams(filter, schwartzValues);
+  const filtered = new Float64Array(saliency.length);
 
-  switch (filter.attentionMode) {
-    case 'center-heavy': {
-      // Boost center, suppress edges (motor: narrow attention to avoid accidents)
-      const centerRow = rows / 2, centerCol = cols / 2;
-      const maxDist = Math.sqrt(centerRow ** 2 + centerCol ** 2);
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const dist = Math.sqrt((r - centerRow) ** 2 + (c - centerCol) ** 2) / maxDist;
-          filtered[r * cols + c] *= 1 - dist * 0.7; // Edges get 30% of center weight
-        }
+  const centerRow = rows / 2;
+  const centerCol = cols / 2;
+  const maxDist = Math.sqrt(centerRow ** 2 + centerCol ** 2);
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      let s = saliency[idx];
+
+      // Apply threshold floor
+      if (s < params.threshold) {
+        s *= 0.2;
       }
-      break;
-    }
-    case 'motion-attracted': {
-      // ADHD: boost high-saliency areas (already prominent things capture more)
-      // This models the "attention captured by novelty" pattern
-      for (let i = 0; i < filtered.length; i++) {
-        filtered[i] = Math.pow(filtered[i], 0.5); // Square root amplifies high values
+
+      // Apply power curve (exponent controls attention concentration)
+      s = Math.pow(Math.max(0, s), params.exponent);
+
+      // Apply center bias
+      if (params.centerBias > 0) {
+        const dist = Math.sqrt((r - centerRow) ** 2 + (c - centerCol) ** 2) / maxDist;
+        s *= 1 - dist * params.centerBias;
       }
-      break;
+
+      // Apply global bias
+      s *= (1 + params.bias);
+
+      filtered[idx] = Math.max(0, s);
     }
-    case 'text-focused': {
-      // Dyslexia/elderly: suppress high-saliency distractors, focus on text areas
-      // Text areas typically have moderate, uniform saliency (not flashy)
-      for (let i = 0; i < filtered.length; i++) {
-        // Moderate saliency (0.2-0.6) boosted, extreme saliency suppressed
-        const s = filtered[i];
-        filtered[i] = s > 0.7 ? s * 0.5 : s * 1.3;
-      }
-      break;
-    }
-    case 'large-elements': {
-      // Low vision: only high-saliency regions register
-      for (let i = 0; i < filtered.length; i++) {
-        filtered[i] = filtered[i] > 0.3 ? filtered[i] : filtered[i] * 0.2;
-      }
-      break;
-    }
-    // 'uniform' — no modification
   }
 
-  // Apply processing speed: slower processors → more focused (fewer things register)
+  // Apply processing speed
   if (filter.processingSpeed < 0.8) {
-    const threshold = 0.3 + (1 - filter.processingSpeed) * 0.3;
+    const speedThreshold = 0.3 + (1 - filter.processingSpeed) * 0.3;
     for (let i = 0; i < filtered.length; i++) {
-      if (filtered[i] < threshold) filtered[i] *= filter.processingSpeed;
+      if (filtered[i] < speedThreshold) filtered[i] *= filter.processingSpeed;
     }
   }
 
@@ -340,17 +420,36 @@ export async function analyzeAttention(
   screenshotPath: string,
   personaName: string,
   cellSize: number = 16,
+  schwartzValues?: Record<string, number>,
 ): Promise<AttentionAnalysis> {
   const startTime = performance.now();
   const profile = getPerceptualProfile(personaName);
 
+  // v18.54.0: If no values passed, try to look them up from the built-in value profiles
+  let values = schwartzValues;
+  if (!values) {
+    try {
+      const { getPersonaValues } = await import('../values/index.js');
+      const pv = getPersonaValues(personaName);
+      if (pv) {
+        values = {
+          selfDirection: pv.selfDirection, stimulation: pv.stimulation,
+          hedonism: pv.hedonism, achievement: pv.achievement, power: pv.power,
+          security: pv.security, conformity: pv.conformity, tradition: pv.tradition,
+          benevolence: pv.benevolence, universalism: pv.universalism,
+        };
+      }
+    } catch { /* values not available — use filter-only mode */ }
+  }
+
   // Compute base saliency
   const baseSaliency = await computeLabSaliency(screenshotPath, cellSize);
 
-  // Apply persona filter
+  // Apply persona filter + value-driven attention modulation
   const filtered = applyPersonaFilter(
     baseSaliency.cells, baseSaliency.rows, baseSaliency.cols,
     profile.visualFilter,
+    values,
   );
 
   // Build saliency map with hotspots

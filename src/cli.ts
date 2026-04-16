@@ -62,6 +62,16 @@ import {
 // Version from package.json - single source of truth
 import { VERSION } from "./version.js";
 
+// Accessible output system (v18.54.0)
+import {
+  detectOutputOptions,
+  setOutputOptions,
+  getOutputOptions,
+  installOutputWrappers,
+  emitJson,
+  type JsonOutput,
+} from "./output.js";
+
 // Node readline for interactive input
 import * as readline from "readline";
 
@@ -690,6 +700,12 @@ DIAGNOSTICS
   version, -v, --version      Show version number
   status                      Show environment status and diagnostics
                               Displays data directories, browsers, config, heal cache
+  doctor                      Check environment health (Node, Playwright, API key)
+
+ACCESSIBILITY
+  --no-color                  Disable all color output (also respects NO_COLOR env var)
+  --plain                     Disable emoji, box-drawing, and unicode decorations
+  --json-output               Output structured JSON (for scripts and screen readers)
 
 STORAGE & CLEANUP
   storage                     Show storage usage statistics
@@ -1074,6 +1090,138 @@ function generateTestSuiteHtmlReport(result: NLTestSuiteResult): string {
 </html>`;
 }
 
+/**
+ * Doctor command — validates environment health with pass/fail checks.
+ * Checks: Node version, Playwright chromium, API key, data directory.
+ */
+async function runDoctor(outputOpts: import("./output.js").OutputOptions): Promise<void> {
+  const fs = await import("fs");
+  const { execSync } = await import("child_process");
+
+  interface DoctorCheck {
+    name: string;
+    status: "pass" | "fail" | "warn";
+    message: string;
+    fix?: string;
+  }
+
+  const checks: DoctorCheck[] = [];
+
+  // Check 1: Node.js version
+  const nodeVersion = process.versions.node;
+  const nodeMajor = parseInt(nodeVersion.split(".")[0], 10);
+  if (nodeMajor >= 18) {
+    checks.push({ name: "Node.js", status: "pass", message: `v${nodeVersion} (>= 18 required)` });
+  } else {
+    checks.push({
+      name: "Node.js",
+      status: "fail",
+      message: `v${nodeVersion} (>= 18 required)`,
+      fix: "Install Node.js 18+ from https://nodejs.org",
+    });
+  }
+
+  // Check 2: Playwright chromium — verify binary exists without launching a full browser
+  try {
+    execSync("npx playwright install --dry-run chromium 2>&1", {
+      encoding: "utf8",
+      timeout: 15000,
+    });
+    checks.push({ name: "Playwright Chromium", status: "pass", message: "Installed" });
+  } catch {
+    checks.push({
+      name: "Playwright Chromium",
+      status: "fail",
+      message: "Not installed or not launchable",
+      fix: "Run: npx playwright install chromium",
+    });
+  }
+
+  // Check 3: API key
+  const hasApiKey = isApiKeyConfigured();
+  if (hasApiKey) {
+    checks.push({ name: "Anthropic API Key", status: "pass", message: "Configured" });
+  } else {
+    checks.push({
+      name: "Anthropic API Key",
+      status: "warn",
+      message: "Not configured (cognitive features require it, basic commands work without it)",
+      fix: "Run: cbrowser config set-api-key <your-key>",
+    });
+  }
+
+  // Check 4: Data directory
+  const dataDir = getDataDir();
+  try {
+    await fs.promises.access(dataDir, fs.constants.W_OK);
+    checks.push({ name: "Data Directory", status: "pass", message: dataDir });
+  } catch {
+    checks.push({
+      name: "Data Directory",
+      status: "fail",
+      message: `${dataDir} (not writable)`,
+      fix: process.platform === "win32"
+        ? "Check directory permissions in Properties"
+        : `Run: sudo chown -R $USER:$USER ${dataDir}`,
+    });
+  }
+
+  // Output results
+  if (outputOpts.json) {
+    const jsonResult: import("./output.js").JsonOutput = {
+      success: checks.every(c => c.status !== "fail"),
+      command: "doctor",
+      data: { checks },
+      meta: { version: VERSION },
+    };
+    emitJson(jsonResult);
+    return;
+  }
+
+  const passSymbol = outputOpts.plain ? "[PASS]" : "✅";
+  const failSymbol = outputOpts.plain ? "[FAIL]" : "❌";
+  const warnSymbol = outputOpts.plain ? "[WARN]" : "⚠️";
+
+  console.log("");
+  console.log(outputOpts.plain
+    ? `CBrowser Doctor v${VERSION}`
+    : `🩺 CBrowser Doctor v${VERSION}`
+  );
+  console.log(outputOpts.plain ? "---" : "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+  for (const check of checks) {
+    const symbol = check.status === "pass" ? passSymbol
+      : check.status === "fail" ? failSymbol
+      : warnSymbol;
+    console.log(`${symbol} ${check.name}: ${check.message}`);
+    if (check.fix) {
+      console.log(`     Fix: ${check.fix}`);
+    }
+  }
+
+  console.log("");
+  const failCount = checks.filter(c => c.status === "fail").length;
+  const warnCount = checks.filter(c => c.status === "warn").length;
+
+  if (failCount === 0 && warnCount === 0) {
+    console.log(outputOpts.plain
+      ? "All checks passed. CBrowser is ready."
+      : "🎉 All checks passed. CBrowser is ready!"
+    );
+  } else if (failCount === 0) {
+    console.log(outputOpts.plain
+      ? `All critical checks passed. ${warnCount} warning(s).`
+      : `✅ All critical checks passed. ${warnCount} warning(s).`
+    );
+  } else {
+    console.log(outputOpts.plain
+      ? `${failCount} check(s) failed. Fix the issues above to use CBrowser.`
+      : `❌ ${failCount} check(s) failed. Fix the issues above to use CBrowser.`
+    );
+  }
+  console.log("");
+}
+
 function parseGeoLocation(location: string): { latitude: number; longitude: number } | null {
   // Check if it's a preset
   if (LOCATION_PRESETS[location]) {
@@ -1094,8 +1242,19 @@ function parseGeoLocation(location: string): { latitude: number; longitude: numb
 async function main(): Promise<void> {
   const { command, args, options } = parseArgs(process.argv.slice(2));
 
+  // Initialize accessible output system (v18.54.0)
+  const outputOpts = detectOutputOptions(options);
+  setOutputOptions(outputOpts);
+  installOutputWrappers();
+
   if (command === "help" || options.help) {
     showHelp();
+    process.exit(0);
+  }
+
+  // Doctor command - environment health check (v18.54.0)
+  if (command === "doctor") {
+    await runDoctor(outputOpts);
     process.exit(0);
   }
 
@@ -5750,6 +5909,36 @@ Examples:
 }
 
 main().catch((error) => {
-  console.error("Error:", error.message);
+  const opts = getOutputOptions();
+
+  if (opts.json) {
+    const jsonError: JsonOutput = {
+      success: false,
+      command: process.argv[2] || "unknown",
+      error: {
+        code: error.code || "E999",
+        message: error.message,
+        howToFix: error.howToFix,
+        docUrl: error.docUrl,
+      },
+      meta: { version: VERSION },
+    };
+    emitJson(jsonError);
+    process.exit(1);
+  }
+
+  // Enriched error output with remediation guidance
+  if (error.howToFix) {
+    console.error("");
+    console.error(opts.plain ? `Error [${error.code}]: ${error.message}` : `❌ Error [${error.code}]: ${error.message}`);
+    console.error("");
+    console.error(opts.plain ? `How to fix: ${error.howToFix}` : `💡 How to fix: ${error.howToFix}`);
+    if (error.docUrl) {
+      console.error(opts.plain ? `Docs: ${error.docUrl}` : `📚 Docs: ${error.docUrl}`);
+    }
+    console.error("");
+  } else {
+    console.error("Error:", error.message);
+  }
   process.exit(1);
 });

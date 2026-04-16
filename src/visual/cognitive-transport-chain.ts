@@ -301,6 +301,76 @@ function traitValue(traits: Record<string, number>, trait: string): number {
 }
 
 /**
+ * Schwartz Value → Trait Demand Modulation Coefficients
+ *
+ * Each entry maps a Schwartz value to the cognitive traits it amplifies or
+ * dampens in the demand distribution. The coefficient represents how much
+ * a high value score (1.0) amplifies (+) or dampens (-) the demand on that trait.
+ *
+ * Theoretical basis:
+ * - Security-driven personas demand MORE trustCalibration (Fogg 2003)
+ * - Achievement-driven personas demand LESS satisficing (Simon 1956 — they optimize)
+ * - Conformity-driven personas amplify socialProof demands (Cialdini 2001)
+ * - Stimulation-driven personas amplify curiosity but deplete patience faster
+ *
+ * @see Schwartz (1992) "Universals in the content and structure of values"
+ * @see Section 4.2 of "Cognitive Optimal Transport: A Unified Framework"
+ * @since v18.54.0
+ */
+const VALUE_DEMAND_MODULATION: Array<{
+  value: string;
+  trait: string;
+  coefficient: number; // positive = amplifies demand, negative = dampens
+  layer: string;       // which layer this modulation applies to
+}> = [
+  // ── Saliency Layer Modulations ──
+  // Stimulation → reduces changeBlindness threshold (novelty-seekers notice changes more)
+  { value: 'stimulation', trait: 'changeBlindness', coefficient: -0.20, layer: 'saliency' },
+  // Stimulation → amplifies attentionPattern demand (drawn to novel visual elements)
+  { value: 'stimulation', trait: 'attentionPattern', coefficient: 0.20, layer: 'saliency' },
+  // Security → amplifies changeBlindness demand (vigilant scanners notice more changes)
+  { value: 'security', trait: 'changeBlindness', coefficient: -0.15, layer: 'saliency' },
+  // Conformity → dampens attentionPattern (follows expected scan patterns, less exploratory)
+  { value: 'conformity', trait: 'attentionPattern', coefficient: -0.15, layer: 'saliency' },
+
+  // ── Frustration Layer ──
+  // Security → amplifies trust demand (Fogg 2003: high-security users need more trust signals)
+  { value: 'security', trait: 'trustCalibration', coefficient: 0.25, layer: 'frustration' },
+
+  // Achievement → reduces satisficing demand (optimizers don't settle for "good enough")
+  { value: 'achievement', trait: 'satisficing', coefficient: -0.20, layer: 'decision' },
+  // Achievement → increases riskTolerance capacity (confident decision-makers)
+  { value: 'achievement', trait: 'riskTolerance', coefficient: -0.15, layer: 'decision' },
+
+  // Conformity → amplifies social proof demand (Cialdini 2001: need validation from others)
+  { value: 'conformity', trait: 'socialProofSensitivity', coefficient: 0.30, layer: 'decision' },
+  // Conformity → amplifies anchoring (defer to first/default option)
+  { value: 'conformity', trait: 'anchoringBias', coefficient: 0.20, layer: 'decision' },
+
+  // Stimulation → amplifies curiosity demand (explore more, bored faster)
+  { value: 'stimulation', trait: 'curiosity', coefficient: 0.25, layer: 'cognitiveLoad' },
+  // Stimulation → depletes patience (novelty-seekers abandon monotonous pages)
+  { value: 'stimulation', trait: 'patience', coefficient: 0.20, layer: 'motor' },
+
+  // Self-Direction → reduces conformity-related demand (independent thinkers)
+  { value: 'selfDirection', trait: 'socialProofSensitivity', coefficient: -0.20, layer: 'decision' },
+  // Self-Direction → amplifies metacognitive planning (plan their own path)
+  { value: 'selfDirection', trait: 'metacognitivePlanning', coefficient: -0.15, layer: 'cognitiveLoad' },
+
+  // Tradition → amplifies mentalModelRigidity (resist new UI patterns)
+  { value: 'tradition', trait: 'mentalModelRigidity', coefficient: 0.25, layer: 'cognitiveLoad' },
+
+  // Benevolence → reduces emotionalContagion cost (emotionally regulated)
+  { value: 'benevolence', trait: 'emotionalContagion', coefficient: -0.15, layer: 'frustration' },
+
+  // Power → reduces fear of missing out (confident, not swayed by urgency)
+  { value: 'power', trait: 'fearOfMissingOut', coefficient: -0.20, layer: 'decision' },
+
+  // Universalism → amplifies readingTendency (reads everything, values completeness)
+  { value: 'universalism', trait: 'readingTendency', coefficient: 0.15, layer: 'readability' },
+];
+
+/**
  * Compute the Sequential Cognitive Transport Cost (CTC).
  *
  * Unlike additive cognitive load models, the sequential chain depletes
@@ -311,22 +381,45 @@ function traitValue(traits: Record<string, number>, trait: string): number {
  *   Saliency -> Cognitive Load -> Decision -> Motor -> Frustration -> Readability
  *
  * Each layer:
- * 1. Computes asymmetric transport cost (deficit is expensive, surplus is cheap)
- * 2. Depletes residual capacity proportional to cost incurred
- * 3. Records the remaining capacity for downstream layers
+ * 1. Applies Schwartz value modulation to demand (v18.54.0)
+ * 2. Computes asymmetric transport cost (deficit is expensive, surplus is cheap)
+ * 3. Depletes residual capacity proportional to cost incurred
+ * 4. Records the remaining capacity for downstream layers
  *
  * @param persona - OTCognitiveProfile with trait values
  * @param demand - 26D demand distribution from page analysis
- * @param options - Enable/disable asymmetric costs and interaction terms
+ * @param options - Enable/disable asymmetric costs, interaction terms, and value modulation
  * @returns Complete sequential transport result with per-layer breakdown
  */
 export function computeSequentialCTC(
   persona: OTCognitiveProfile,
   demand: DemandDistribution,
-  options?: { asymmetric?: boolean; interactions?: boolean },
+  options?: { asymmetric?: boolean; interactions?: boolean; schwartzValues?: Record<string, number> },
 ): SequentialTransportResult {
   const useAsymmetric = options?.asymmetric !== false; // default true
   const useInteractions = options?.interactions !== false; // default true
+  const values = options?.schwartzValues;
+
+  // Apply Schwartz value modulation to demand distribution (v18.54.0)
+  // Values amplify or dampen demands on specific traits, changing what the page "asks" of the user
+  const modulatedDemand: DemandDistribution = {
+    demands: { ...demand.demands },
+    variance: { ...demand.variance },
+  };
+
+  if (values && Object.keys(values).length > 0) {
+    for (const mod of VALUE_DEMAND_MODULATION) {
+      const valueScore = values[mod.value];
+      if (valueScore === undefined || valueScore === null) continue;
+
+      const currentDemand = modulatedDemand.demands[mod.trait] ?? 0;
+      // Modulation: demand += coefficient * valueScore * currentDemand
+      // High value score amplifies the modulation effect
+      // Multiplicative on current demand — no effect on zero-demand traits
+      const modulation = mod.coefficient * valueScore * Math.max(0.1, currentDemand);
+      modulatedDemand.demands[mod.trait] = Math.max(0, Math.min(1, currentDemand + modulation));
+    }
+  }
 
   // Initialize residual capacity from persona traits
   const residualCapacity: Record<string, number> = {};
@@ -351,9 +444,9 @@ export function computeSequentialCTC(
     let layerDeficit = 0;
     let layerSurplus = 0;
 
-    // Compute transport cost for this layer's traits
+    // Compute transport cost for this layer's traits (using modulated demands)
     for (const trait of layerDef.traits) {
-      const d = demand.demands[trait] ?? 0;
+      const d = modulatedDemand.demands[trait] ?? 0;
       const c = residualCapacity[trait] ?? 0.5;
       const gap = d - c;
 
@@ -374,7 +467,7 @@ export function computeSequentialCTC(
 
     // Scale layer cost by demand presence — empty pages shouldn't produce high costs
     const layerDemandMagnitude = layerDef.traits.reduce(
-      (sum, t) => sum + (demand.demands[t] ?? 0), 0
+      (sum, t) => sum + (modulatedDemand.demands[t] ?? 0), 0
     ) / layerDef.traits.length;
     const contentScale = Math.min(1.0, layerDemandMagnitude * 3); // 0-1 scale, saturates at demand=0.33
     layerCost *= contentScale;

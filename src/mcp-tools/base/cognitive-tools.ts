@@ -27,6 +27,41 @@ import type {
 } from "../../types.js";
 
 /**
+ * Fetch custom personas from CMS for the current account.
+ * Uses the API key from the session to authenticate.
+ */
+async function fetchCustomPersonasFromCMS(apiKey?: string): Promise<Array<{
+  name: string; slug: string; description: string; traits: Record<string, number>; values?: Record<string, number>; source: string;
+}>> {
+  if (!apiKey?.startsWith("cbk_")) return [];
+  const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+  try {
+    const res = await fetch(`${cmsUrl}/api/personas`, {
+      headers: { "Authorization": `Bearer ${apiKey}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { personas: Array<{
+      name: string; slug: string; description: string; traits: string; schwartz_values?: string; source: string;
+    }> };
+    return data.personas.map(p => ({
+      name: p.name,
+      slug: p.slug,
+      description: p.description,
+      traits: typeof p.traits === "string" ? JSON.parse(p.traits) : p.traits,
+      values: p.schwartz_values ? (typeof p.schwartz_values === "string" ? JSON.parse(p.schwartz_values) : p.schwartz_values) : undefined,
+      source: p.source,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Global API key for the current session (set by the remote server context)
+let _sessionApiKey: string | undefined;
+export function setSessionApiKey(key: string | undefined) { _sessionApiKey = key; }
+export function getSessionApiKey(): string | undefined { return _sessionApiKey; }
+
+/**
  * Register cognitive simulation tools (3 tools: cognitive_journey_init, cognitive_journey_update_state, list_cognitive_personas)
  */
 export function registerCognitiveTools(
@@ -104,7 +139,52 @@ export function registerCognitiveTools(
       }
 
       if (!existingPersona) {
-        personaObj = createCognitivePersona(personaName, personaName, customTraits || {});
+        // v18.54.0: Check CMS for account-scoped custom personas before creating a generic one
+        const cmsPersonas = await fetchCustomPersonasFromCMS(_sessionApiKey);
+        const cmsMatch = cmsPersonas.find(p => p.slug === personaName || p.name.toLowerCase() === personaName.toLowerCase());
+        if (cmsMatch) {
+          // Build persona directly with ALL CMS traits — skip createCognitivePersona
+          // which runs generatePersonaFromDescription and can normalize values
+          const basePersona = createCognitivePersona(cmsMatch.name, cmsMatch.description, {});
+          // Overwrite cognitiveTraits completely with CMS values (no defaults, no normalization)
+          basePersona.cognitiveTraits = { ...basePersona.cognitiveTraits, ...cmsMatch.traits } as typeof basePersona.cognitiveTraits;
+
+          // Register Schwartz values so saliency engine + journey engine can use them
+          if (cmsMatch.values) {
+            try {
+              const { registerPersonaValues, createPersonaValues } = await import("../../values/index.js");
+              const pv = createPersonaValues(
+                {
+                  selfDirection: cmsMatch.values.selfDirection ?? 0.5,
+                  stimulation: cmsMatch.values.stimulation ?? 0.5,
+                  hedonism: cmsMatch.values.hedonism ?? 0.5,
+                  achievement: cmsMatch.values.achievement ?? 0.5,
+                  power: cmsMatch.values.power ?? 0.5,
+                  security: cmsMatch.values.security ?? 0.5,
+                  conformity: cmsMatch.values.conformity ?? 0.5,
+                  tradition: cmsMatch.values.tradition ?? 0.5,
+                  benevolence: cmsMatch.values.benevolence ?? 0.5,
+                  universalism: cmsMatch.values.universalism ?? 0.5,
+                },
+                {
+                  autonomyNeed: cmsMatch.values.autonomyNeed ?? 0.5,
+                  competenceNeed: cmsMatch.values.competenceNeed ?? 0.5,
+                  relatednessNeed: cmsMatch.values.relatednessNeed ?? 0.5,
+                },
+                "esteem"
+              );
+              registerPersonaValues([{
+                personaName: cmsMatch.slug || cmsMatch.name,
+                values: pv,
+                rationale: "Custom persona values from CMS",
+              }]);
+            } catch { /* values registration failed — proceed without */ }
+          }
+
+          personaObj = basePersona;
+        } else {
+          personaObj = createCognitivePersona(personaName, personaName, customTraits || {});
+        }
       } else if (customTraits) {
         const defaultTraits: CognitiveTraits = {
           patience: 0.5,
@@ -733,10 +813,10 @@ Begin the simulation now. Narrate your thoughts as this persona.
         };
       }).filter(Boolean);
 
-      // v18.35.0: Include custom personas with "custom" category
+      // v18.35.0: Include local custom personas
       const { loadCustomPersonas } = await import("../../personas.js");
       const customPersonaMap = loadCustomPersonas();
-      const customPersonas = Object.values(customPersonaMap).map(p => {
+      const localCustomPersonas = Object.values(customPersonaMap).map(p => {
         const profile = getCognitiveProfile(p);
         return {
           name: p.name,
@@ -749,7 +829,46 @@ Begin the simulation now. Narrate your thoughts as this persona.
         };
       });
 
-      const allPersonas = [...builtinPersonas, ...accessibilityPersonas, ...customPersonas];
+      // v18.54.0: Include account-scoped custom personas from CMS
+      const cmsPersonas = await fetchCustomPersonasFromCMS(_sessionApiKey);
+      const cmsCustomPersonas = cmsPersonas.map(p => ({
+        name: p.name,
+        description: p.description,
+        category: "custom" as const,
+        source: p.source,
+        cognitiveTraits: p.traits,
+        values: p.values ? (() => {
+          const sv = {
+            selfDirection: p.values.selfDirection ?? 0.5,
+            stimulation: p.values.stimulation ?? 0.5,
+            hedonism: p.values.hedonism ?? 0.5,
+            achievement: p.values.achievement ?? 0.5,
+            power: p.values.power ?? 0.5,
+            security: p.values.security ?? 0.5,
+            conformity: p.values.conformity ?? 0.5,
+            tradition: p.values.tradition ?? 0.5,
+            benevolence: p.values.benevolence ?? 0.5,
+            universalism: p.values.universalism ?? 0.5,
+          };
+          return {
+            schwartz: sv,
+            higherOrder: {
+              openness: (sv.selfDirection + sv.stimulation) / 2,
+              selfEnhancement: (sv.achievement + sv.power) / 2,
+              conservation: (sv.security + sv.conformity + sv.tradition) / 3,
+              selfTranscendence: (sv.benevolence + sv.universalism) / 2,
+            },
+            sdt: {
+              autonomyNeed: p.values.autonomyNeed ?? 0.5,
+              competenceNeed: p.values.competenceNeed ?? 0.5,
+              relatednessNeed: p.values.relatednessNeed ?? 0.5,
+            },
+            maslowLevel: "esteem" as const,
+          };
+        })() : undefined,
+      }));
+
+      const allPersonas = [...builtinPersonas, ...accessibilityPersonas, ...localCustomPersonas, ...cmsCustomPersonas];
 
       return {
         content: [
@@ -761,7 +880,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
               categories: {
                 builtin: builtinPersonas.length,
                 accessibility: accessibilityPersonas.length,
-                custom: customPersonas.length,
+                custom: localCustomPersonas.length + cmsCustomPersonas.length,
               },
             }, null, 2),
           },

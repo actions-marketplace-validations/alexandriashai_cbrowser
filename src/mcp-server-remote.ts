@@ -210,12 +210,40 @@ async function getSessionBrowser(sessionId: string): Promise<CBrowser> {
 async function cleanupSession(sessionId: string, reason: string = "Session ended"): Promise<void> {
   const session = activeSessions.get(sessionId);
   if (session) {
+    // Capture Chrome PID before closing (for force-kill fallback)
+    let chromePid: number | undefined;
     try {
-      await session.browser.close();
+      const browserInstance = (session.browser as any).browser;
+      chromePid = browserInstance?.process?.()?.pid;
+    } catch { /* ignore */ }
+
+    // Graceful close with timeout
+    try {
+      await Promise.race([
+        session.browser.close(),
+        new Promise(resolve => setTimeout(resolve, 5000)), // 5s timeout
+      ]);
     } catch (e) {
       // Ignore cleanup errors
     }
+
+    // Force-kill Chrome if graceful close didn't work
+    if (chromePid) {
+      try {
+        process.kill(chromePid, 0); // Check if still alive
+        process.kill(chromePid, "SIGKILL");
+        console.log(`[Session] Force-killed Chrome PID ${chromePid} for session ${sessionId.substring(0, 8)}...`);
+      } catch { /* already dead — good */ }
+    }
+
     activeSessions.delete(sessionId);
+
+    // Also clean any browser tokens pointing to this session
+    for (const [token, info] of browserTokens) {
+      if (info.sessionId === sessionId) {
+        browserTokens.delete(token);
+      }
+    }
 
     // Track as expired so subsequent requests get a clear message
     expiredSessions.set(sessionId, {
@@ -254,7 +282,84 @@ async function getSessionMemoryMB(session: SessionInfo): Promise<number | null> 
 }
 
 /**
- * Periodic cleanup of idle sessions, memory hogs, and expired session tracking
+ * Kill orphaned chrome-headless-shell processes not tracked by any active session.
+ * These accumulate when clients disconnect abruptly or sessions aren't cleaned up properly.
+ */
+async function killOrphanedChromeProcesses(): Promise<number> {
+  try {
+    const { execSync } = await import("node:child_process");
+
+    // Get all chrome-headless-shell PIDs on the system
+    const output = execSync("pgrep -f chrome-headless-shell 2>/dev/null || true", { encoding: "utf-8" }).trim();
+    if (!output) return 0;
+
+    const allChromePids = new Set(output.split("\n").map(p => parseInt(p, 10)).filter(p => !isNaN(p)));
+    if (allChromePids.size === 0) return 0;
+
+    // Collect PIDs tracked by active sessions
+    const trackedPids = new Set<number>();
+    for (const [, session] of activeSessions) {
+      try {
+        const browserInstance = (session.browser as any).browser;
+        if (browserInstance) {
+          const proc = browserInstance.process?.();
+          if (proc?.pid) {
+            trackedPids.add(proc.pid);
+            // Also add child PIDs (chrome spawns sub-processes)
+            const children = execSync(`pgrep -P ${proc.pid} 2>/dev/null || true`, { encoding: "utf-8" }).trim();
+            if (children) {
+              children.split("\n").forEach(p => { const n = parseInt(p, 10); if (!isNaN(n)) trackedPids.add(n); });
+            }
+          }
+        }
+      } catch { /* session browser may not be launched yet */ }
+    }
+
+    // Also check the shared browser instance
+    if (browser) {
+      try {
+        const proc = (browser as any).browser?.process?.();
+        if (proc?.pid) {
+          trackedPids.add(proc.pid);
+          const children = execSync(`pgrep -P ${proc.pid} 2>/dev/null || true`, { encoding: "utf-8" }).trim();
+          if (children) {
+            children.split("\n").forEach(p => { const n = parseInt(p, 10); if (!isNaN(n)) trackedPids.add(n); });
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Kill orphans (chrome PIDs not tracked by any session)
+    // Safety: only kill processes older than 2 minutes to avoid killing
+    // browsers mid-tool-call that haven't been tracked yet
+    let killed = 0;
+    for (const pid of allChromePids) {
+      if (!trackedPids.has(pid)) {
+        try {
+          // Check process age via /proc/<pid>/stat (field 22 = starttime in jiffies)
+          const stat = execSync(`stat -c %Z /proc/${pid} 2>/dev/null || echo 0`, { encoding: "utf-8" }).trim();
+          const startTime = parseInt(stat, 10);
+          const ageSeconds = startTime > 0 ? Math.floor(Date.now() / 1000) - startTime : 0;
+          if (ageSeconds > 120) { // Only kill if older than 2 minutes
+            process.kill(pid, "SIGKILL");
+            killed++;
+          }
+        } catch { /* already dead or inaccessible */ }
+      }
+    }
+
+    if (killed > 0) {
+      console.log(`[Cleanup] Killed ${killed} orphaned chrome processes (${allChromePids.size} total, ${trackedPids.size} tracked)`);
+    }
+    return killed;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Periodic cleanup of idle sessions, memory hogs, expired session tracking,
+ * and orphaned Chrome processes.
  */
 setInterval(async () => {
   const now = Date.now();
@@ -263,6 +368,13 @@ setInterval(async () => {
   for (const [sessionId, info] of expiredSessions) {
     if (now - info.expiredAt > EXPIRED_SESSION_RETENTION_MS) {
       expiredSessions.delete(sessionId);
+    }
+  }
+
+  // Clean up expired browser tokens
+  for (const [token, info] of browserTokens) {
+    if (now - info.createdAt > TOKEN_EXPIRY_MS) {
+      browserTokens.delete(token);
     }
   }
 
@@ -283,7 +395,10 @@ setInterval(async () => {
       await cleanupSession(sessionId, `Memory limit exceeded (${memoryMB}MB used, ${SESSION_MEMORY_LIMIT_MB}MB limit)`);
     }
   }
-}, 30000); // Check every 30 seconds (more responsive for memory)
+
+  // Kill orphaned Chrome processes every cycle
+  await killOrphanedChromeProcesses();
+}, 30000); // Check every 30 seconds
 
 /**
  * Legacy getBrowser for backward compatibility (uses shared instance)
@@ -890,7 +1005,7 @@ TIPS:
     async () => ({
       contents: [{
         uri: "docs://personas",
-        text: "CBrowser includes 21 personas: Cognitive (7): power-user, first-timer, mobile-user, elderly-user, impatient-user, impatient-explorer, screen-reader-user. Accessibility (11): motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia, autism-spectrum, intellectual-disability, aphasia-receptive, dyscalculia. Each persona has 26 cognitive traits. Visit https://cbrowser.ai/docs/Persona-Index for details.",
+        text: "CBrowser includes 21 personas: Cognitive (6): power-user, first-timer, mobile-user, elderly-user, impatient-user, screen-reader-user. Accessibility (11): motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia, autism-spectrum, intellectual-disability, aphasia-receptive, dyscalculia. Emotional (4): anxious-user, confident-user, emotional-user, stoic-user. Each persona has 26 cognitive traits. Visit https://cbrowser.ai/docs/Persona-Index for details.",
         mimeType: "text/plain",
       }],
     })
@@ -993,12 +1108,33 @@ async function handleMcpRequest(
     req.on("close", () => {
       if (!res.writableEnded) {
         connectionClosed = true;
-        console.warn(`[Connection Closed] Client disconnected before response completed: GET`);
       }
+    });
+
+    // Start SSE keepalive pings BEFORE handling the request
+    // Claude.ai drops SSE connections that go idle — send `: ping` comments
+    // every 15 seconds to keep the connection alive through proxies
+    const keepaliveInterval = setInterval(() => {
+      if (!connectionClosed && !res.writableEnded) {
+        try {
+          res.write(": ping\n\n");
+        } catch {
+          // Connection already dead
+          clearInterval(keepaliveInterval);
+        }
+      } else {
+        clearInterval(keepaliveInterval);
+      }
+    }, 15000);
+
+    // Clean up keepalive on connection close
+    req.on("close", () => {
+      clearInterval(keepaliveInterval);
     });
 
     await transport.handleRequest(req, res);
 
+    clearInterval(keepaliveInterval);
     const duration = Date.now() - start;
     if (!connectionClosed) {
       console.log(`← ${req.method} → ${res.statusCode} (${duration}ms)`);
@@ -1704,6 +1840,10 @@ ${VERSION}
           setActiveKeyHash(null);
         }
 
+        // Set session API key for account-scoped features (custom personas, etc.)
+        const { setSessionApiKey } = await import("./mcp-tools/base/cognitive-tools.js");
+        setSessionApiKey(requestApiKey || undefined);
+
         // Create and connect server with session isolation and tier gating
         const server = createMcpServer(options?.registerTools, browserSessionId, resolvedTier);
 
@@ -1726,15 +1866,11 @@ ${VERSION}
             await cleanupSession(browserSessionId);
           };
         } else {
-          // For stateless mode, clean up after a delay
+          // For stateless mode, clean up idle sessions (the 30s interval handles this)
+          // Don't aggressively clean on transport close since Claude.ai sends rapid sequential requests
           transport.onclose = async () => {
-            // Give some time for rapid reconnects before cleanup
-            setTimeout(async () => {
-              const session = activeSessions.get(browserSessionId);
-              if (session && Date.now() - session.lastActivity > 30000) {
-                await cleanupSession(browserSessionId);
-              }
-            }, 30000);
+            // Mark the session so the periodic cleanup can evaluate it
+            // The 30s cleanup interval will handle actual cleanup after idle timeout
           };
         }
 

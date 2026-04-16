@@ -370,7 +370,7 @@ export function registerVisualTestingTools(server: McpServer): void {
       cellSize: z.number().optional().default(4).describe("Saliency grid cell size in pixels (smaller = finer heatmap, default: 4)"),
       heatmap: z.boolean().optional().default(true).describe("Generate visual heatmap overlay (default: true)"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
-      useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on attention quality scoring. Default: false."),
+      useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on saliency map generation and attention scoring. Default: false."),
     },
     annotations: {
       title: "Attention Saliency Analysis",
@@ -421,8 +421,36 @@ export function registerVisualTestingTools(server: McpServer): void {
           let pValues: Record<string, number> | undefined;
           if (useValues) {
             try {
-              const { getPersonaValues } = await import("../../values/index.js");
-              const vals = getPersonaValues(persona);
+              const { getPersonaValues, registerPersonaValues, createPersonaValues } = await import("../../values/index.js");
+              let vals = getPersonaValues(persona);
+
+              // If not found in built-ins, check CMS for custom persona values
+              if (!vals) {
+                try {
+                  const { getSessionApiKey } = await import("./cognitive-tools.js"); const _sessionApiKey = getSessionApiKey();
+                  if (_sessionApiKey) {
+                    const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+                    const res = await fetch(`${cmsUrl}/api/personas`, {
+                      headers: { "Authorization": `Bearer ${_sessionApiKey}` },
+                    });
+                    if (res.ok) {
+                      const data = await res.json() as { personas: Array<{ name: string; slug: string; schwartz_values?: string }> };
+                      const match = data.personas.find((p: any) => p.slug === persona || p.name.toLowerCase() === persona.toLowerCase());
+                      if (match?.schwartz_values) {
+                        const sv = typeof match.schwartz_values === "string" ? JSON.parse(match.schwartz_values) : match.schwartz_values;
+                        const pv = createPersonaValues(
+                          { selfDirection: sv.selfDirection ?? 0.5, stimulation: sv.stimulation ?? 0.5, hedonism: sv.hedonism ?? 0.5, achievement: sv.achievement ?? 0.5, power: sv.power ?? 0.5, security: sv.security ?? 0.5, conformity: sv.conformity ?? 0.5, tradition: sv.tradition ?? 0.5, benevolence: sv.benevolence ?? 0.5, universalism: sv.universalism ?? 0.5 },
+                          { autonomyNeed: sv.autonomyNeed ?? 0.5, competenceNeed: sv.competenceNeed ?? 0.5, relatednessNeed: sv.relatednessNeed ?? 0.5 },
+                          "esteem"
+                        );
+                        registerPersonaValues([{ personaName: persona, values: pv, rationale: "Custom persona from CMS" }]);
+                        vals = pv;
+                      }
+                    }
+                  }
+                } catch { /* CMS lookup failed — proceed without values */ }
+              }
+
               if (vals) pValues = vals as unknown as Record<string, number>;
             } catch {}
           }

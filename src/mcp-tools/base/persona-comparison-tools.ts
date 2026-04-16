@@ -576,7 +576,7 @@ Begin with the first persona: ${personas[0]}
       proxy: z.string().optional().describe("Proxy server URL for geo-accurate testing"),
       geoRegion: z.string().optional().describe("Route through a residential proxy in this region: us-west, us-east, us-central, uk, germany, japan"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
-      useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values scale decision and frustration costs. Default: false (trait-only mode)."),
+      useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values modulate saliency maps, decision costs, and frustration costs. Default: false (trait-only mode)."),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -673,8 +673,33 @@ Begin with the first persona: ${personas[0]}
 
       // Modulate demand by motivational values (opt-in, default off)
       if (useValues) try {
-        const { getPersonaValues } = await import("../../values/index.js");
-        const pValues = getPersonaValues(personaName);
+        const { getPersonaValues, registerPersonaValues: regPV2, createPersonaValues: createPV2 } = await import("../../values/index.js");
+        let pValues = getPersonaValues(personaName);
+
+        // Custom persona CMS fallback
+        if (!pValues) {
+          try {
+            const { getSessionApiKey } = await import("./cognitive-tools.js"); const _sessionApiKey = getSessionApiKey();
+            if (_sessionApiKey) {
+              const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+              const res = await fetch(`${cmsUrl}/api/personas`, { headers: { "Authorization": `Bearer ${_sessionApiKey}` } });
+              if (res.ok) {
+                const data = await res.json() as { personas: Array<{ name: string; slug: string; schwartz_values?: string }> };
+                const match = data.personas.find((p: any) => p.slug === personaName || p.name.toLowerCase() === personaName.toLowerCase());
+                if (match?.schwartz_values) {
+                  const sv = typeof match.schwartz_values === "string" ? JSON.parse(match.schwartz_values) : match.schwartz_values;
+                  const pv = createPV2(
+                    { selfDirection: sv.selfDirection ?? 0.5, stimulation: sv.stimulation ?? 0.5, hedonism: sv.hedonism ?? 0.5, achievement: sv.achievement ?? 0.5, power: sv.power ?? 0.5, security: sv.security ?? 0.5, conformity: sv.conformity ?? 0.5, tradition: sv.tradition ?? 0.5, benevolence: sv.benevolence ?? 0.5, universalism: sv.universalism ?? 0.5 },
+                    { autonomyNeed: sv.autonomyNeed ?? 0.5, competenceNeed: sv.competenceNeed ?? 0.5, relatednessNeed: sv.relatednessNeed ?? 0.5 },
+                    "esteem"
+                  );
+                  regPV2([{ personaName, values: pv, rationale: "Custom persona from CMS" }]);
+                  pValues = pv;
+                }
+              }
+            }
+          } catch { /* CMS fallback failed */ }
+        }
         if (pValues && demand.demands) {
           // Conservation (security+conformity+tradition)/3 amplifies decision layer
           const conservation = (pValues.security + pValues.conformity + pValues.tradition) / 3;

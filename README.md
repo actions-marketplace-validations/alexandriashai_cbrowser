@@ -16,6 +16,59 @@ npx cbrowser cognitive-effort --url "https://your-site.com" --persona first-time
 
 ---
 
+## 5-Minute Quickstart
+
+Get from zero to your first cognitive insight in 3 commands:
+
+```bash
+# 1. Install CBrowser
+npm install cbrowser
+
+# 2. Install the browser engine (~150MB)
+npx playwright install chromium
+
+# 3. Run your first cognitive audit
+npx cbrowser cognitive-effort --url "https://your-site.com" --persona first-timer
+```
+
+**What you get:** A cognitive transport score (0-1), abandonment risk percentage, and the UX bottleneck — in under 30 seconds.
+
+**No API key needed** for basic commands (navigate, screenshot, click, extract, explore). Cognitive journeys require an Anthropic API key:
+
+```bash
+npx cbrowser config set-api-key <your-anthropic-key>
+```
+
+**Check your environment:** Run `npx cbrowser doctor` to verify everything is set up correctly.
+
+**Accessibility:** CBrowser supports `--no-color` (or `NO_COLOR` env var), `--plain` (no emoji/decorations), and `--json-output` (structured JSON) for screen readers, CI pipelines, and scripting.
+
+---
+
+## Table of Contents
+
+- [5-Minute Quickstart](#5-minute-quickstart)
+- [Cognitive Transport Chain](#cognitive-transport-chain)
+- [Visual Overlays & Attention Analysis](#visual-overlays--attention-analysis)
+- [AI Friendliness Suite](#ai-friendliness-suite)
+- [Cognitive User Simulation](#cognitive-user-simulation)
+- [Accessibility Empathy Testing](#accessibility-empathy-testing)
+- [Constitutional AI Safety](#constitutional-ai-safety)
+- [Site Knowledge System](#site-knowledge-system)
+- [Natural Language Testing](#natural-language-testing)
+- [Visual Testing](#visual-testing)
+- [Competitive UX Benchmark](#competitive-ux-benchmark)
+- [Geo Proxy](#geo-proxy)
+- [MCP Server Integration](#mcp-server-integration)
+- [CI/CD Integration](#cicd-integration)
+- [API Reference](#api-reference)
+- [Configuration](#configuration)
+- [Enterprise Edition](#enterprise-edition)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
 ## Cognitive Transport Chain
 
 The 6-layer Sequential Transport Chain computes exactly how hard your page is for any persona — and predicts whether they'll abandon:
@@ -263,7 +316,7 @@ CBrowser runs as an MCP server for Claude Desktop and claude.ai.
 ### Remote MCP (claude.ai)
 
 **Public Demo Server** (rate-limited):
-```
+```text
 https://demo.cbrowser.ai/mcp
 ```
 
