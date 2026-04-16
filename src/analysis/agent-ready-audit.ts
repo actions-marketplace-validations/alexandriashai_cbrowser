@@ -470,7 +470,12 @@ async function detectLowFindabilityElements(ctx: DetectionContext): Promise<void
         : el.suggestions.needsAriaLabel
           ? "Add aria-label for accessibility and findability"
           : "Add unique id or data-testid",
-      codeExample: `<button data-testid="submit-form" aria-label="Submit form">${el.text || '...'}</button>`,
+      codeExample: (() => {
+        const tag = el.selector.split('#')[0].split('.')[0] || 'button';
+        const testId = (el.text || tag).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 30) || tag;
+        const label = el.text || `${tag} action`;
+        return `<${tag} data-testid="${testId}" aria-label="${label}">${el.text || '...'}</${tag}>`;
+      })(),
     });
   }
 
@@ -1853,8 +1858,11 @@ export async function runAgentReadyAudit(
     await detectStatePersistence(ctx);
     await detectDynamicContent(ctx);
 
-    // Update summary
-    summary.problematicElements = issues.length;
+    // Update summary — count total interactive elements actually on the page
+    summary.totalElements = await page.evaluate(() => {
+      return document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex], img, [aria-label]').length;
+    }).catch(() => 0);
+    summary.problematicElements = Math.min(issues.length, summary.totalElements);
 
     // Calculate scores
     const score = calculateAgentReadyScore(issues);
