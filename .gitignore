@@ -65,3 +65,16 @@ HN-RESPONSE-PREP.md
 
 # Research data — not for public distribution
 research/
+
+# PAI / oh-my-claudecode artifacts (personal AI infrastructure)
+skills/
+skill/
+.omc/
+.claude/
+CLAUDE.md
+
+# Lock files (npm users use package-lock, bun users regenerate)
+bun.lock
+
+# Browser state
+browser-state/
