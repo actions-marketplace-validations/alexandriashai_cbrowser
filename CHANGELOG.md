@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.56.0](https://github.com/alexandriashai/cbrowser/compare/v18.55.0...v18.56.0) (2026-04-16)
+
+### Added
+
+* _browserToken on assessment tools, content-verified i18n, Accept-Language header ([2f60bae](https://github.com/alexandriashai/cbrowser/commit/2f60baefbf982e8085ff3e360d5e042d14d6c2f3))
+
+### Fixed
+
+* restore skill/ directory (CBrowser MCP skill definitions) ([9abe051](https://github.com/alexandriashai/cbrowser/commit/9abe051f56a076dd8e7ae5c1e38a4de45ad708be))
+
 ## [18.55.0](https://github.com/alexandriashai/cbrowser/compare/v18.54.0...v18.55.0) (2026-04-16)
 
 ### Added
