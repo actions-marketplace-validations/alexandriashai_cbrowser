@@ -629,6 +629,13 @@ export async function extractPageMetrics(page: any): Promise<{
   animationLevel: number;
   choiceCount: number;
   navigationDepth: number;
+  // Text readability metrics (v18.56)
+  avgWordLength: number;      // 0-1: normalized average word length (longer = harder)
+  avgSentenceLength: number;  // 0-1: normalized average sentence length
+  lexicalDiversity: number;   // 0-1: type-token ratio (higher = more diverse vocabulary)
+  longWordRatio: number;      // 0-1: fraction of words with 7+ characters
+  technicalDensity: number;   // 0-1: fraction of words with 10+ characters (technical/compound terms)
+  scriptFamily: 'alphabetic' | 'cjk' | 'abjad';  // Detected script family
 }> {
   return page.evaluate(() => {
     const vw = window.innerWidth;
@@ -711,6 +718,188 @@ export async function extractPageMetrics(page: any): Promise<{
     const textDensity = logScale(textLength / Math.max(1, viewportArea * 0.001), 3);
     const animationLevel = Math.min(1, (animCount + (hasCarousel ? 3 : 0)) / 10);
 
+    // ── Text Readability Analysis (v18.56) ──
+    // Extract actual visible text for linguistic analysis
+    const visibleTextParts: string[] = [];
+    const proseSelectors = 'p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, figcaption';
+    document.querySelectorAll(proseSelectors).forEach(el => {
+      if (inViewport(el)) {
+        const t = (el as HTMLElement).innerText?.trim();
+        if (t && t.length > 5) visibleTextParts.push(t);
+      }
+    });
+    const visibleText = visibleTextParts.join(' ');
+
+    // ── Script detection ──
+    // Three script families with distinct tokenization requirements:
+    // 1. CJK logographic (Chinese, Japanese, Korean) — no word boundaries, character = morpheme
+    // 2. Abjad (Arabic, Hebrew, Persian, Urdu) — short stems, root-based morphology, RTL
+    // 3. Alphabetic (Latin, Cyrillic, Greek, Devanagari) — space-delimited, variable word length
+
+    // CJK characters
+    const cjkRegex = /[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]/;
+    // Arabic/Hebrew/Persian/Urdu characters
+    const abjadRegex = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0590-\u05FF]/;
+    const abjadCharRegex = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0590-\u05FF]/g;
+    const cjkCharRegex = /[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]/g;
+    const cjkCharCount = (visibleText.match(cjkCharRegex) || []).length;
+    const totalCharCount = visibleText.replace(/\s/g, '').length;
+
+    // Also check key page elements independently (Tolgee translations fire faster than GT)
+    const h1Text = document.querySelector('h1')?.textContent || '';
+    const navText = document.querySelector('nav')?.textContent || '';
+    const keyElementsCJK = (h1Text.match(cjkCharRegex) || []).length + (navText.match(cjkCharRegex) || []).length;
+    const keyElementsTotal = (h1Text + navText).replace(/\s/g, '').length;
+
+    // Abjad detection (Arabic, Hebrew, etc.)
+    const abjadCharCount = (visibleText.match(abjadCharRegex) || []).length;
+    const keyElementsAbjad = ((h1Text.match(abjadCharRegex) || []).length) + ((navText.match(abjadCharRegex) || []).length);
+
+    // Consider CJK if:
+    // - >30% of visible text is CJK, OR
+    // - >20% of key elements (h1 + nav) are CJK (catches partial translation)
+    // - AND at least 5 CJK characters present (avoid false positives on single emoji)
+    const isCJKDominant = cjkCharCount >= 5 && (
+      (totalCharCount > 0 && cjkCharCount / totalCharCount > 0.3) ||
+      (keyElementsTotal > 0 && keyElementsCJK / keyElementsTotal > 0.2)
+    );
+
+    // Consider Abjad if:
+    // - >30% of visible text is abjad, OR
+    // - >20% of key elements are abjad
+    // - AND at least 5 abjad characters present
+    const isAbjadDominant = !isCJKDominant && abjadCharCount >= 5 && (
+      (totalCharCount > 0 && abjadCharCount / totalCharCount > 0.3) ||
+      (keyElementsTotal > 0 && keyElementsAbjad / keyElementsTotal > 0.2)
+    );
+
+    let wordCount: number;
+    let totalWordLength: number;
+    let longWords: number;
+    let techWords: number;
+    const uniqueWords = new Set<string>();
+    let sentenceCount: number;
+    let avgWordsPerSentence: number;
+
+    if (isAbjadDominant) {
+      // ── Abjad text analysis (Arabic, Hebrew, Persian, Urdu) ──
+      // Arabic/Hebrew use spaces between words but have:
+      // - Short stems (3-4 char roots) — word length metrics need recalibration
+      // - Root-based morphology — complex words look short
+      // - Technical terms are multi-word phrases, not compound words
+      // - Diacritics (tashkeel) and ligatures affect visual complexity
+
+      const abjadWords = visibleText.split(/\s+/).filter(w => w.length > 0);
+      wordCount = abjadWords.length;
+      totalWordLength = 0;
+      longWords = 0;
+      techWords = 0;
+
+      for (const word of abjadWords) {
+        // Count only abjad + Latin characters (strip punctuation, numbers)
+        const clean = word.replace(/[^\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0590-\u05FFa-zA-ZÀ-ÿ]/g, '');
+        const len = clean.length;
+        // Arabic stems are 3-4 chars. Normalize: Arabic 3-char word → equivalent
+        // of 5 Latin chars for readability (higher information per character than Latin)
+        const isAbjadWord = abjadRegex.test(clean);
+        const normalizedLen = isAbjadWord ? Math.round(len * 1.6) : len;
+        totalWordLength += normalizedLen;
+        // "Long" in abjad: 5+ characters (stems with prefixes/suffixes)
+        // Equivalent to 8+ Latin chars
+        if (isAbjadWord ? len >= 5 : len >= 7) longWords++;
+        // "Technical" in abjad: 6+ character words or Latin technical terms
+        // Arabic technical vocab like المعرفية (7 chars) or الشخصيات (8 chars)
+        if (isAbjadWord ? len >= 6 : len >= 10) techWords++;
+        uniqueWords.add(clean);
+      }
+
+      // Sentence analysis: Arabic uses ، (comma) and . (period) and ؟ and ؛
+      const abjadSentences = visibleText.split(/[.。؟！!?؛]+|\n{2,}/).filter(s => s.trim().length > 5);
+      sentenceCount = Math.max(1, abjadSentences.length);
+      avgWordsPerSentence = wordCount / sentenceCount;
+
+    } else if (isCJKDominant) {
+      // ── CJK text analysis ──
+      // CJK languages don't use spaces between words. Each character is roughly
+      // one morpheme. We estimate word boundaries using bigram/trigram heuristics.
+
+      // Estimate word count: CJK averages ~1.5-2 characters per "word"
+      // (Chinese ~1.5, Japanese ~2 with particles, Korean ~2 with jamo)
+      const cjkWordEstimate = Math.round(cjkCharCount / 1.8);
+      // Latin words in CJK text (English loanwords, technical terms)
+      const latinWords = visibleText.split(/\s+/).filter(w => /^[a-zA-Z]/.test(w));
+      wordCount = cjkWordEstimate + latinWords.length;
+
+      // Average "word" length in CJK: 1.8 chars per word normalized to same scale
+      // CJK characters carry more meaning per character than Latin.
+      // A 2-character CJK word ≈ 5-7 character English word in information density.
+      // Normalize: CJK 2-char word → equivalent of ~6 Latin chars for readability
+      totalWordLength = cjkWordEstimate * 6 + latinWords.reduce((sum, w) => sum + w.length, 0);
+
+      // "Long words" in CJK: compound terms are 3-4+ characters (equivalent to 7+ Latin)
+      // Extract runs of CJK characters and count those ≥ 3 characters
+      const cjkRuns = visibleText.match(/[\u3000-\u9fff\uac00-\ud7af]{3,}/g) || [];
+      longWords = cjkRuns.filter(r => r.length >= 3).length;
+
+      // "Technical terms" in CJK: 4+ character compounds or Latin technical terms
+      const cjkTechRuns = cjkRuns.filter(r => r.length >= 4);
+      const latinTechWords = latinWords.filter(w => w.length >= 8);
+      techWords = cjkTechRuns.length + latinTechWords.length;
+
+      // Lexical diversity: use unique CJK bigrams as proxy for vocabulary
+      for (let i = 0; i < visibleText.length - 1; i++) {
+        if (cjkRegex.test(visibleText[i]) && cjkRegex.test(visibleText[i + 1])) {
+          uniqueWords.add(visibleText[i] + visibleText[i + 1]);
+        }
+      }
+      for (const w of latinWords) uniqueWords.add(w.toLowerCase());
+
+      // Sentence analysis: CJK uses 。！？ as sentence enders
+      const cjkSentences = visibleText.split(/[。！？.!?]+|\n{2,}/).filter(s => s.trim().length > 3);
+      sentenceCount = Math.max(1, cjkSentences.length);
+      // CJK sentences tend to be shorter in word count but longer in information density
+      avgWordsPerSentence = wordCount / sentenceCount;
+
+    } else {
+      // ── Alphabetic text analysis ──
+      const words_arr = visibleText.split(/\s+/).filter(w => w.length > 0);
+      wordCount = words_arr.length;
+      totalWordLength = 0;
+      longWords = 0;
+      techWords = 0;
+
+      for (const word of words_arr) {
+        const clean = word.replace(/[^a-zA-ZÀ-ÿ\u00C0-\u024F\u1E00-\u1EFF]/g, '');
+        totalWordLength += clean.length;
+        if (clean.length >= 7) longWords++;
+        if (clean.length >= 10) techWords++;
+        uniqueWords.add(clean.toLowerCase());
+      }
+
+      const sentences_arr = visibleText.split(/[.!?]+|\n{2,}/).filter(s => s.trim().length > 10);
+      sentenceCount = Math.max(1, sentences_arr.length);
+      avgWordsPerSentence = wordCount / sentenceCount;
+    }
+
+    // ── Normalize to 0-1 (script-aware) ──
+
+    // Average word length: Latin 4→0.2, 6→0.5, 9→0.8
+    // CJK equivalent: normalized through the 6-char equivalence above
+    const rawAvgWordLen = wordCount > 0 ? totalWordLength / wordCount : 0;
+    const avgWordLength = Math.min(1, Math.max(0, (rawAvgWordLen - 3) / 7.5));
+
+    // Average sentence length: 10 words → 0.3, 20 → 0.6, 35+ → 0.9
+    const avgSentenceLength = Math.min(1, avgWordsPerSentence / 40);
+
+    // Lexical diversity: unique items / total (capped at 100)
+    const lexicalDiversity = wordCount > 0 ? Math.min(1, uniqueWords.size / Math.min(wordCount, 100)) : 0;
+
+    // Long word ratio
+    const longWordRatio = wordCount > 0 ? longWords / wordCount : 0;
+
+    // Technical density
+    const technicalDensity = wordCount > 0 ? techWords / wordCount : 0;
+
     return {
       informationDensity,
       visualComplexity,
@@ -719,6 +908,12 @@ export async function extractPageMetrics(page: any): Promise<{
       animationLevel,
       choiceCount: Math.min(choiceCount, 100),
       navigationDepth: navDepth,
+      avgWordLength,
+      avgSentenceLength,
+      lexicalDiversity,
+      longWordRatio,
+      technicalDensity,
+      scriptFamily: isCJKDominant ? 'cjk' as const : isAbjadDominant ? 'abjad' as const : 'alphabetic' as const,
     };
   });
 }

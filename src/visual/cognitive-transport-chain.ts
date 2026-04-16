@@ -31,6 +31,13 @@ export interface PageMetrics {
   animationLevel: number;           // 0-1: motion/animation amount
   choiceCount: number;              // number of decision points
   navigationDepth: number;          // clicks to reach content
+  // Text readability metrics (v18.56) — HOW HARD the text is, not just how much
+  avgWordLength?: number;           // 0-1: normalized avg word length (longer = harder)
+  avgSentenceLength?: number;       // 0-1: normalized avg words per sentence
+  lexicalDiversity?: number;        // 0-1: type-token ratio (higher = more diverse vocab)
+  longWordRatio?: number;           // 0-1: fraction of 7+ character words
+  technicalDensity?: number;        // 0-1: fraction of 10+ character words
+  scriptFamily?: 'alphabetic' | 'cjk' | 'abjad';  // Detected script family
 }
 
 export interface DemandDistribution {
@@ -245,6 +252,53 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.readingTendency += textDens * 0.09;
   variance.patience += textDens * 0.06;
   variance.comprehension += textDens * 0.08;
+
+  // ── Text Readability Metrics (v18.56) ──
+  // These measure HOW HARD the text is to read, not just how much there is.
+  // Captures language effects (German compound words), technical jargon, prose complexity.
+  const avgWordLen = safe((pageMetrics as any).avgWordLength);
+  const avgSentLen = safe((pageMetrics as any).avgSentenceLength);
+  const lexDiv = safe((pageMetrics as any).lexicalDiversity);
+  const longWordR = safe((pageMetrics as any).longWordRatio);
+  const techDens = safe((pageMetrics as any).technicalDensity);
+
+  if (avgWordLen > 0 || avgSentLen > 0) {
+    // avgWordLength → comprehension, readingTendency
+    // Longer words = harder to parse (especially for dyslexic, ADHD, non-native speakers)
+    demands.comprehension = Math.max(demands.comprehension, avgWordLen * 0.9);
+    demands.readingTendency = Math.max(demands.readingTendency, avgWordLen * 0.85);
+    variance.comprehension += avgWordLen * 0.12;
+    variance.readingTendency += avgWordLen * 0.1;
+
+    // avgSentenceLength → workingMemory, patience, comprehension
+    // Longer sentences demand more working memory to hold clause structure
+    demands.workingMemory = Math.max(demands.workingMemory, avgSentLen * 0.85);
+    demands.patience = Math.max(demands.patience, avgSentLen * 0.7);
+    demands.comprehension = Math.max(demands.comprehension, avgSentLen * 0.8);
+    variance.workingMemory += avgSentLen * 0.1;
+    variance.patience += avgSentLen * 0.07;
+
+    // lexicalDiversity → comprehension, transferLearning
+    // High vocabulary diversity = more cognitive effort to track meaning
+    demands.comprehension = Math.max(demands.comprehension, lexDiv * 0.75);
+    demands.transferLearning = Math.max(demands.transferLearning, lexDiv * 0.65);
+    variance.comprehension += lexDiv * 0.08;
+
+    // longWordRatio → readingTendency, comprehension
+    // Pages with many 7+ character words are harder to skim
+    demands.readingTendency = Math.max(demands.readingTendency, longWordR * 0.9);
+    demands.comprehension = Math.max(demands.comprehension, longWordR * 0.8);
+    variance.readingTendency += longWordR * 0.11;
+
+    // technicalDensity → comprehension, transferLearning, mentalModelRigidity
+    // 10+ character words signal compound terms, jargon, domain-specific vocabulary
+    demands.comprehension = Math.max(demands.comprehension, techDens * 0.95);
+    demands.transferLearning = Math.max(demands.transferLearning, techDens * 0.8);
+    demands.mentalModelRigidity = Math.max(demands.mentalModelRigidity, techDens * 0.7);
+    variance.comprehension += techDens * 0.13;
+    variance.transferLearning += techDens * 0.09;
+    variance.mentalModelRigidity += techDens * 0.07;
+  }
 
   // ── animationLevel → changeBlindness, interruptRecovery, emotionalContagion
   const animDemand = sigmoid(animLevel, 0.3, 0.15);

@@ -603,7 +603,15 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           visualComplexity: Math.round(pageMetrics.visualComplexity * 1000) / 1000,
           interactiveElements: pageMetrics.interactiveElementCount,
           choiceCount: pageMetrics.choiceCount,
+          // Text readability metrics (v18.56)
+          avgWordLength: Math.round(pageMetrics.avgWordLength * 1000) / 1000,
+          avgSentenceLength: Math.round(pageMetrics.avgSentenceLength * 1000) / 1000,
+          lexicalDiversity: Math.round(pageMetrics.lexicalDiversity * 1000) / 1000,
+          longWordRatio: Math.round(pageMetrics.longWordRatio * 1000) / 1000,
+          technicalDensity: Math.round(pageMetrics.technicalDensity * 1000) / 1000,
+          scriptFamily: pageMetrics.scriptFamily || "alphabetic",
         };
+
         if (pageUnderstanding) response.pageUnderstanding = pageUnderstanding;
 
         // Generate recommendations
