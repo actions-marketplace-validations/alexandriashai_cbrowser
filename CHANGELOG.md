@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.58.0](https://github.com/alexandriashai/cbrowser/compare/v18.57.0...v18.58.0) (2026-04-16)
+
+### Added
+
+* viewport/full_page scope, CMS persona fallback, text readability metrics ([56d7233](https://github.com/alexandriashai/cbrowser/commit/56d7233cacad80eb9a5c41e5e91f4deadbad0aeb))
+
 ## [18.57.0](https://github.com/alexandriashai/cbrowser/compare/v18.56.0...v18.57.0) (2026-04-16)
 
 ### Added
