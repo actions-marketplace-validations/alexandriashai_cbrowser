@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.60.0](https://github.com/alexandriashai/cbrowser/compare/v18.59.2...v18.60.0) (2026-04-17)
+
+### Added
+
+* tool-result-saver — auto-save structured results to site dashboard ([2107f4a](https://github.com/alexandriashai/cbrowser/commit/2107f4a2b3f29b14c41c2fe6e1f0d65046b0c08b))
+
 ## [18.59.2](https://github.com/alexandriashai/cbrowser/compare/v18.59.1...v18.59.2) (2026-04-17)
 
 ## [18.59.1](https://github.com/alexandriashai/cbrowser/compare/v18.59.0...v18.59.1) (2026-04-17)
