@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.59.1](https://github.com/alexandriashai/cbrowser/compare/v18.59.0...v18.59.1) (2026-04-17)
+
+### Fixed
+
+* use full URL path in site names, not just hostname ([132aa40](https://github.com/alexandriashai/cbrowser/commit/132aa403024acfa4a2560cb66ad11c44c2a327c8))
+
 ## [18.59.0](https://github.com/alexandriashai/cbrowser/compare/v18.58.5...v18.59.0) (2026-04-17)
 
 ### Added
