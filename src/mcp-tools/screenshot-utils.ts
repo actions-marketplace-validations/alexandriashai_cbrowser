@@ -10,8 +10,9 @@
  * @license MIT
  */
 
-import { readFileSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, unlinkSync, createReadStream } from "node:fs";
 import { join, dirname } from "node:path";
+import { basename } from "node:path";
 
 /**
  * Maximum allowed size for tool responses in bytes.
@@ -252,19 +253,57 @@ export function getRemoteMode(): boolean {
  * @param screenshotPaths - Screenshot path(s) to convert to images in remote mode
  * @returns Array of MCP content blocks
  */
+/**
+ * Upload a screenshot to the CMS media endpoint and return a public URL.
+ * Falls back to null if CMS is unreachable.
+ */
+async function uploadScreenshotToCMS(filePath: string): Promise<string | null> {
+  const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+  try {
+    const fileBuffer = readFileSync(filePath);
+    const fileName = basename(filePath);
+
+    // Build multipart form data manually (no FormData in Node without polyfill)
+    const boundary = `----CBrowserUpload${Date.now()}`;
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${fileName}"\r\nContent-Type: image/png\r\n\r\n`),
+      fileBuffer,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+
+    const res = await fetch(`${cmsUrl}/api/media/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      },
+      body,
+    });
+
+    if (res.ok) {
+      const data = await res.json() as { media?: { url?: string } };
+      const mediaUrl = data.media?.url;
+      if (mediaUrl) {
+        // Convert relative URL to absolute
+        return mediaUrl.startsWith("http") ? mediaUrl : `https://cbrowser.ai${mediaUrl}`;
+      }
+    }
+  } catch {
+    // CMS unreachable — fall through to base64
+  }
+  return null;
+}
+
 export function buildContentWithScreenshots(
   data: Record<string, unknown>,
   ...screenshotPaths: (string | undefined)[]
 ): ContentBlock[] {
-  const content: ContentBlock[] = [
-    {
-      type: "text",
-      text: JSON.stringify(data, null, 2),
-    },
-  ];
-
-  // In remote mode, add image content blocks for screenshots
+  // In remote mode, upload screenshots to CMS for public URLs
+  // and include both the image content block AND a URL in the JSON
   if (getRemoteMode()) {
+    // Collect screenshot URLs synchronously (upload is best-effort)
+    const imageBlocks: ContentBlock[] = [];
+    const screenshotUrls: string[] = [];
+
     for (const path of screenshotPaths) {
       if (!path) continue;
 
@@ -272,14 +311,78 @@ export function buildContentWithScreenshots(
       if (base64Data) {
         const base64Only = base64Data.split(",")[1];
         const mimeType = base64Data.split(";")[0].split(":")[1];
-        content.push({
+        imageBlocks.push({
           type: "image",
           data: base64Only,
           mimeType: mimeType,
         });
       }
     }
+
+    // Add screenshot paths to data as URLs for Claude to render inline
+    // Claude.ai can render markdown images: ![](url)
+    if (screenshotPaths.filter(Boolean).length > 0) {
+      data._screenshotNote = "Screenshots are included as image content blocks below. If images don't render inline, the screenshot data is available in the image blocks of this tool response.";
+    }
+
+    const content: ContentBlock[] = [
+      { type: "text", text: JSON.stringify(data, null, 2) },
+      ...imageBlocks,
+    ];
+    return content;
   }
 
-  return content;
+  // Local mode: just return text with file paths
+  return [
+    { type: "text", text: JSON.stringify(data, null, 2) },
+  ];
+}
+
+/**
+ * Async version that uploads screenshots to CMS for public URLs.
+ * Use this when you need URLs that Claude.ai can render as markdown images.
+ */
+export async function buildContentWithScreenshotUrls(
+  data: Record<string, unknown>,
+  ...screenshotPaths: (string | undefined)[]
+): Promise<ContentBlock[]> {
+  if (!getRemoteMode()) {
+    return [{ type: "text", text: JSON.stringify(data, null, 2) }];
+  }
+
+  const imageBlocks: ContentBlock[] = [];
+  const uploadedUrls: string[] = [];
+
+  for (const path of screenshotPaths) {
+    if (!path) continue;
+
+    // Try to upload for a public URL
+    const url = await uploadScreenshotToCMS(path);
+    if (url) {
+      uploadedUrls.push(url);
+    }
+
+    // Also include as base64 image block (belt and suspenders)
+    const base64Data = screenshotToBase64(path);
+    if (base64Data) {
+      const base64Only = base64Data.split(",")[1];
+      const mimeType = base64Data.split(";")[0].split(":")[1];
+      imageBlocks.push({
+        type: "image",
+        data: base64Only,
+        mimeType: mimeType,
+      });
+    }
+  }
+
+  // Add public URLs to the data so Claude can render them as markdown
+  if (uploadedUrls.length > 0) {
+    data.screenshotUrls = uploadedUrls;
+    data._screenshotNote = "Screenshots uploaded to public URLs. Render with: ![Screenshot](" + uploadedUrls[0] + ")";
+  }
+
+  return [
+    { type: "text", text: JSON.stringify(data, null, 2) },
+    ...imageBlocks,
+  ];
 }

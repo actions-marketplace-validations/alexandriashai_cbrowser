@@ -498,25 +498,25 @@ export function registerVisualTestingTools(server: McpServer): void {
             const { homedir } = await import("os");
             const heatmapId = `attn-${persona}-${Date.now()}`;
 
-            // Known paths for the public web directory
-            const webPublicPaths = [
+            // Save to the DEPLOYED web directory (survives builds)
+            // and also to ~/.cbrowser/heatmaps as fallback
+            const deployedPaths = [
+              "/var/www/cbrowser-web/heatmaps",
               "/home/wyld-web/static/cbrowser-web/out/heatmaps",
-              join(homedir(), "static", "cbrowser-web", "out", "heatmaps"),
             ];
             const cbrowserDir = join(homedir(), ".cbrowser", "heatmaps");
 
             let savedPath = "";
             let publicUrl = "";
 
-            // Try public web directory first
-            const webDir = webPublicPaths.find(p => {
+            const deployDir = deployedPaths.find(p => {
               const parent = p.replace("/heatmaps", "");
               return existsSync(parent);
             });
 
-            if (webDir) {
-              if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
-              savedPath = join(webDir, `${heatmapId}.png`);
+            if (deployDir) {
+              if (!existsSync(deployDir)) mkdirSync(deployDir, { recursive: true });
+              savedPath = join(deployDir, `${heatmapId}.png`);
               writeFileSync(savedPath, Buffer.from(heatmapBase64, "base64"));
               publicUrl = `https://cbrowser.ai/heatmaps/${heatmapId}.png`;
             } else {

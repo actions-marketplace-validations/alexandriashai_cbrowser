@@ -741,7 +741,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const ssPath = join(tmpdir(), `story-${Date.now()}.png`);
         await page.screenshot({ path: ssPath, fullPage: false });
 
-        const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";
+        const webDir = "/var/www/cbrowser-web/heatmaps";
         if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
         const ts = Date.now();
 
