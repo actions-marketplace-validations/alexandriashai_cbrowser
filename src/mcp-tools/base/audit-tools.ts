@@ -976,7 +976,8 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const risk = (effortData?.abandonmentRisk as number) ?? 0;
         const qualityData = urls.qualityData as unknown as { ctaCaptureRate?: number; distractorRatio?: number; qualityScore?: number; interpretation?: string } | undefined;
 
-        let narrative = `## ${persona} on ${new URL(url).hostname}\n\n`;
+        const _nu = new URL(url);
+        let narrative = `## ${persona} on ${_nu.hostname.replace(/^www\d*\./, '')}${_nu.pathname !== '/' ? _nu.pathname.replace(/\/$/, '') : ''}\n\n`;
         narrative += `### The Eye: Where Attention Goes\n`;
         narrative += concentration > 0.5
           ? `Attention is focused (concentration: ${(concentration * 100).toFixed(0)}%). This persona quickly identifies a visual anchor and locks onto it.\n`

@@ -208,8 +208,9 @@ async function simulateJourney(
     abandonmentReason = `Error: ${(e as Error).message}`;
   }
 
-  // Extract site name from URL
-  const siteName = new URL(url).hostname.replace('www.', '');
+  // Use full URL (without protocol) as site name to distinguish subpaths
+  const parsed = new URL(url);
+  const siteName = parsed.hostname.replace(/^www\d*\./, '') + (parsed.pathname !== '/' ? parsed.pathname.replace(/\/$/, '') : '');
 
   return {
     url,
@@ -1293,7 +1294,8 @@ export async function runCompetitiveBenchmark(
               verbose: false,
             });
 
-            const siteName = site.name || new URL(site.url).hostname.replace('www.', '');
+            const _u = new URL(site.url);
+            const siteName = site.name || _u.hostname.replace(/^www\d*\./, '') + (_u.pathname !== '/' ? _u.pathname.replace(/\/$/, '') : '');
 
             return {
               url: site.url,
@@ -1544,7 +1546,8 @@ export async function runAIReadinessBenchmark(
 
     const batchResults = await Promise.all(
       batch.map(async (url): Promise<AIBenchmarkSiteResult> => {
-        const siteName = new URL(url).hostname.replace("www.", "");
+        const _ub = new URL(url);
+        const siteName = _ub.hostname.replace(/^www\d*\./, '') + (_ub.pathname !== '/' ? _ub.pathname.replace(/\/$/, '') : '');
         const auditStartTime = Date.now();
 
         // Retry with exponential backoff

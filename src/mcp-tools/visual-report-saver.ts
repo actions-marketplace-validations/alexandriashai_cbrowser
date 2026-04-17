@@ -23,7 +23,10 @@ export interface VisualReportParams {
  */
 function generateDescription(params: VisualReportParams): string {
   const hostname = params.targetUrl ? (() => {
-    try { return new URL(params.targetUrl).hostname; } catch { return params.targetUrl; }
+    try {
+      const u = new URL(params.targetUrl);
+      return u.hostname.replace(/^www\d*\./, '') + (u.pathname !== '/' ? u.pathname.replace(/\/$/, '') : '');
+    } catch { return params.targetUrl; }
   })() : "unknown";
 
   const personaLabel = params.persona || "";
