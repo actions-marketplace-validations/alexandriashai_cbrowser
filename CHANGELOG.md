@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.59.0](https://github.com/alexandriashai/cbrowser/compare/v18.58.5...v18.59.0) (2026-04-17)
+
+### Added
+
+* visual reports auto-save — heatmaps and overlays saved to gallery ([9b748f8](https://github.com/alexandriashai/cbrowser/commit/9b748f81d09a6768d74c1f724b7bf3be625a6a86))
+
 ## [18.58.5](https://github.com/alexandriashai/cbrowser/compare/v18.58.4...v18.58.5) (2026-04-17)
 
 ### Fixed
