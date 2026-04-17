@@ -36,22 +36,22 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
     },
   }, async ({ url }) => {
       const result = await runAgentReadyAudit(url, { headless: true });
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              url: result.url,
-              score: result.score,
-              grade: result.grade,
-              summary: result.summary,
-              topIssues: result.issues.slice(0, 5),
-              topRecommendations: result.recommendations.slice(0, 5),
-              duration: result.duration,
-            }, null, 2),
-          },
-        ],
+      const responseData = {
+        url: result.url,
+        score: result.score,
+        grade: result.grade,
+        summary: result.summary,
+        topIssues: result.issues.slice(0, 5),
+        topRecommendations: result.recommendations.slice(0, 5),
+        duration: result.duration,
       };
+      // Auto-save to site dashboard
+      try {
+        const { saveToolResult } = await import("../tool-result-saver.js");
+        const { getSessionApiKey } = await import("./cognitive-tools.js");
+        saveToolResult({ apiKey: getSessionApiKey(), toolName: "agent_ready_audit", targetUrl: url, result: responseData, durationMs: typeof result.duration === 'string' ? parseInt(result.duration) : result.duration });
+      } catch {}
+      return { content: [{ type: "text", text: JSON.stringify(responseData, null, 2) }] };
     }
   );
 
@@ -194,6 +194,12 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           response.remainingPersonas = remainingPersonas;
         }
 
+        // Auto-save empathy_audit to site dashboard
+        try {
+          const { saveToolResult } = await import("../tool-result-saver.js");
+          const { getSessionApiKey } = await import("./cognitive-tools.js");
+          saveToolResult({ apiKey: getSessionApiKey(), toolName: "empathy_audit", targetUrl: url, result: response as Record<string, unknown>, persona: response.testedPersona as string, scope: scope || "viewport" });
+        } catch {}
         return {
           content: [
             {
@@ -657,6 +663,13 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         response.recommendations = recommendations.slice(0, 5);
         response.result = "COMPLETE";
         response.duration = `${Date.now() - startTime}ms`;
+
+        // Auto-save to site dashboard
+        try {
+          const { saveToolResult } = await import("../tool-result-saver.js");
+          const { getSessionApiKey } = await import("./cognitive-tools.js");
+          saveToolResult({ apiKey: getSessionApiKey(), toolName: "site_cognitive_assessment", targetUrl: url, result: response as Record<string, unknown>, persona: personaList[0], scope: auditScope, durationMs: Date.now() - startTime });
+        } catch {}
 
         if (ownsBrowser) await browser.close();
       } catch (navErr) {
