@@ -767,6 +767,12 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             writeFileSync(join(webDir, `${heatId}.png`), Buffer.from(heatB64, "base64"));
             urls.attention = `https://cbrowser.ai/heatmaps/${heatId}.png`;
             images.push({ type: "image", data: heatB64, mimeType: "image/png" });
+            // Auto-save to gallery
+            try {
+              const { saveVisualReport } = await import("../visual-report-saver.js");
+              const { getSessionApiKey } = await import("./cognitive-tools.js");
+              saveVisualReport({ apiKey: getSessionApiKey(), imageUrl: urls.attention, toolName: "visual_cognitive_story_attention", targetUrl: url, persona });
+            } catch {}
           }
         } catch (e) { console.debug(`[story] Attention failed: ${(e as Error).message}`); }
 
@@ -809,6 +815,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           writeFileSync(join(webDir, `${motorId}.png`), Buffer.from(motorB64, "base64"));
           urls.motor = `https://cbrowser.ai/heatmaps/${motorId}.png`;
           images.push({ type: "image", data: motorB64, mimeType: "image/png" });
+          try { const { saveVisualReport } = await import("../visual-report-saver.js"); const { getSessionApiKey } = await import("./cognitive-tools.js"); saveVisualReport({ apiKey: getSessionApiKey(), imageUrl: urls.motor, toolName: "visual_cognitive_story_motor", targetUrl: url, persona }); } catch {}
         } catch (e) { console.debug(`[story] Motor failed: ${(e as Error).message}`); }
 
         // ── 3. Attention Quality Overlay ──
@@ -883,6 +890,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               writeFileSync(join(webDir, `${qualId}.png`), Buffer.from(qualB64, "base64"));
               urls.quality = `https://cbrowser.ai/heatmaps/${qualId}.png`;
               images.push({ type: "image", data: qualB64, mimeType: "image/png" });
+              try { const { saveVisualReport } = await import("../visual-report-saver.js"); const { getSessionApiKey } = await import("./cognitive-tools.js"); saveVisualReport({ apiKey: getSessionApiKey(), imageUrl: urls.quality, toolName: "visual_cognitive_story_quality", targetUrl: url, persona }); } catch {}
             }
 
             urls.qualityData = quality as unknown as string;
@@ -957,6 +965,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           writeFileSync(join(webDir, `${combId}.png`), Buffer.from(combinedB64, "base64"));
           urls.combined = `https://cbrowser.ai/heatmaps/${combId}.png`;
           images.push({ type: "image", data: combinedB64, mimeType: "image/png" });
+          try { const { saveVisualReport } = await import("../visual-report-saver.js"); const { getSessionApiKey } = await import("./cognitive-tools.js"); saveVisualReport({ apiKey: getSessionApiKey(), imageUrl: urls.combined, toolName: "visual_cognitive_story_combined", targetUrl: url, persona }); } catch {}
         } catch (e) { console.debug(`[story] Combined overlay failed: ${(e as Error).message}`); }
 
         // ── Build narrative ──

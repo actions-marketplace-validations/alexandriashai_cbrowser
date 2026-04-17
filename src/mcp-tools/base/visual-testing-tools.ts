@@ -541,6 +541,20 @@ export function registerVisualTestingTools(server: McpServer): void {
               textContent.heatmapNote = "Show this heatmap image to the user. The red areas show where this persona's attention concentrates. Blue areas receive little attention.";
               content[0] = { type: "text" as const, text: JSON.stringify(textContent, null, 2) };
             }
+
+            // Auto-save to Visual Reports gallery
+            try {
+              const { saveVisualReport } = await import("../visual-report-saver.js");
+              const { getSessionApiKey } = await import("./cognitive-tools.js");
+              saveVisualReport({
+                apiKey: getSessionApiKey(),
+                imageUrl: publicUrl,
+                toolName: "attention_analysis",
+                targetUrl: url,
+                persona,
+                metadata: { entropy: result.entropy, concentration: result.concentration, alignmentScore: result.alignmentScore },
+              });
+            } catch {}
           } catch (e) {
             console.debug(`[attention_analysis] Heatmap generation failed: ${(e as Error).message}`);
           }
