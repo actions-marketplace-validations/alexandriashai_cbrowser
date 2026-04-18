@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.63.0](https://github.com/alexandriashai/cbrowser/compare/v18.62.0...v18.63.0) (2026-04-18)
+
+### Added
+
+* public tools/list, site knowledge gating, WCAG accuracy, Claude.ai skill distinction ([dfed641](https://github.com/alexandriashai/cbrowser/commit/dfed6412c0ba1133a7d782fc1c58aaf0c73115ce))
+
 ## [18.62.0](https://github.com/alexandriashai/cbrowser/compare/v18.61.0...v18.62.0) (2026-04-18)
 
 ### Added
