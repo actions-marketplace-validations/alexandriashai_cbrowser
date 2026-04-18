@@ -11,8 +11,8 @@ import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 
 /**
- * Register site knowledge tools (6 tools: page_understand, site_model_status, site_model_query,
- * site_profile_list, site_profile_delete, site_profile_status)
+ * Register site knowledge tools (7 tools: page_understand, site_model_status, site_model_query,
+ * site_profile_list, site_profile_delete, site_profile_status, question_answer)
  */
 export function registerSiteKnowledgeTools(
   server: McpServer,
@@ -444,4 +444,67 @@ export function registerSiteKnowledgeTools(
       }
     }
   );
+
+  // ---------------------------------------------------------------------------
+  // Tool 7: question_answer — ask questions about CBrowser
+  // ---------------------------------------------------------------------------
+
+  server.registerTool("question_answer", {
+    title: "Ask About CBrowser",
+    description: "Ask any question about CBrowser tools, features, personas, traits, scores, or workflows. Queries the CBrowser knowledge base (289 pages of documentation) and returns a grounded answer. Use this when you need to understand what a tool does, what a score means, how to use a feature, or how tools work together.",
+    inputSchema: {
+      question: z.string().describe("Your question about CBrowser (e.g., 'What does empathy_audit measure?', 'How do I test mobile accessibility?', 'What is CTC?', 'Which persona should I use for elderly users?')"),
+      context: z.string().optional().describe("Optional context — the URL being tested, the tool being used, or the scores you're seeing"),
+    },
+    annotations: {
+      title: "Ask About CBrowser",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ question, context }) => {
+    const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+    const { getActiveKeyHash } = await import("../../mcp-tools/tier-gate.js");
+    const keyHash = getActiveKeyHash();
+
+    try {
+      const res = await fetch(`${cmsUrl}/api/ai/question`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(keyHash ? { Authorization: `Bearer ${keyHash}` } : {}),
+        },
+        body: JSON.stringify({ question, context }),
+      });
+
+      if (!res.ok) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: `Knowledge base query failed (${res.status})`, question }, null, 2) }],
+        };
+      }
+
+      const data = await res.json() as { answer: string; sources: string[] };
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            question,
+            answer: data.answer,
+            sources: data.sources,
+            note: "Answer grounded in CBrowser documentation (289 pages). Sources listed for reference.",
+          }, null, 2),
+        }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          error: "Could not reach CBrowser knowledge base",
+          question,
+          suggestion: "Try rephrasing or check https://cbrowser.ai/docs for documentation",
+        }, null, 2) }],
+      };
+    }
+  });
 }
