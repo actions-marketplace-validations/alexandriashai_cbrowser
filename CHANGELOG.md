@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.61.0](https://github.com/alexandriashai/cbrowser/compare/v18.60.0...v18.61.0) (2026-04-18)
+
+### Added
+
+* device emulation, WCAG-accurate scoring, auto-save all tool results ([19732cb](https://github.com/alexandriashai/cbrowser/commit/19732cb97030a628a5e0b5832f3bda626f7b0462))
+
 ## [18.60.0](https://github.com/alexandriashai/cbrowser/compare/v18.59.2...v18.60.0) (2026-04-17)
 
 ### Added
