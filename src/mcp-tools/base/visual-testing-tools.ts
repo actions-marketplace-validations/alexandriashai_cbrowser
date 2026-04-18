@@ -365,7 +365,7 @@ export function registerVisualTestingTools(server: McpServer): void {
 
   server.registerTool("attention_analysis", {
     title: "Attention Saliency Analysis",
-    description: "Analyze where a persona's visual attention goes on a page using Wasserstein saliency. Returns attention metrics AND a visual heatmap overlay showing where this persona looks. Based on Klein & Frintrop W₂ on CIE-Lab distributions.",
+    description: "Analyze where a persona's attention goes on a page. Two-layer model: (1) visual saliency via W₂ on CIE-Lab (what POPS), (2) DOM semantic analysis (what MATTERS — CTAs, headings, forms, nav). Blended 35/65 so a gray search bar a power-user prioritizes outweighs a flashy banner they ignore. Returns heatmap overlay, attention metrics, and quality score.",
     inputSchema: {
       url: z.string().describe("URL to analyze"),
       persona: z.string().optional().default("first-timer").describe("Persona name"),
@@ -400,25 +400,38 @@ export function registerVisualTestingTools(server: McpServer): void {
         const screenshotPath = join(tmpdir(), `attn-${Date.now()}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: false });
 
-        const { analyzeAttention } = await import("../../visual/attention-transport.js");
-        const result = await analyzeAttention(screenshotPath, persona, cellSize);
+        // Extract DOM elements BEFORE saliency computation so they feed into the attention model
+        const { computeAttentionQuality, extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
+        const rawElements = await extractPageElementsForAttention(page);
+        const dpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
+        const pageElements = rawElements.map(el => ({
+          ...el,
+          x: el.x * dpr,
+          y: el.y * dpr,
+          width: el.width * dpr,
+          height: el.height * dpr,
+        }));
 
-        // Compute attention quality — cross-reference hotspots with page elements
+        // Run attention analysis with DOM semantic layer (visual + semantic blend)
+        const { analyzeAttention } = await import("../../visual/attention-transport.js");
+        const domAttentionElements = pageElements.map(el => ({
+          type: el.type,
+          x: el.x,
+          y: el.y,
+          width: el.width,
+          height: el.height,
+          text: el.text,
+          isCTA: el.isCTA,
+          isHeading: el.isHeading,
+          isNav: el.isNav,
+          isDecorative: el.isDecorative,
+        }));
+        const result = await analyzeAttention(screenshotPath, persona, cellSize, undefined, domAttentionElements);
+
+        // Compute attention quality — cross-reference hotspots with classified elements
         let attentionQuality: unknown = null;
         try {
-          const { computeAttentionQuality, extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
-          const rawElements = await extractPageElementsForAttention(page);
           const hotspots = result.saliencyMap?.hotspots || [];
-
-          // Scale CSS coordinates to screenshot pixel coordinates (DPR adjustment)
-          const dpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
-          const pageElements = rawElements.map(el => ({
-            ...el,
-            x: el.x * dpr,
-            y: el.y * dpr,
-            width: el.width * dpr,
-            height: el.height * dpr,
-          }));
           // Pass persona values only when useValues is enabled
           let pValues: Record<string, number> | undefined;
           if (useValues) {
@@ -600,8 +613,19 @@ export function registerVisualTestingTools(server: McpServer): void {
         const screenshotPath = join(tmpdir(), `attn-cmp-${Date.now()}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: false });
 
+        // Extract DOM elements for semantic attention layer
+        const { extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
+        const rawEls = await extractPageElementsForAttention(page);
+        const cmpDpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
+        const domEls = rawEls.map(el => ({
+          type: el.type, x: el.x * cmpDpr, y: el.y * cmpDpr,
+          width: el.width * cmpDpr, height: el.height * cmpDpr,
+          text: el.text, isCTA: el.isCTA, isHeading: el.isHeading,
+          isNav: el.isNav, isDecorative: el.isDecorative,
+        }));
+
         const { compareAttention } = await import("../../visual/attention-transport.js");
-        const result = await compareAttention(screenshotPath, personaA, personaB, 4);
+        const result = await compareAttention(screenshotPath, personaA, personaB, 4, domEls);
 
         const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
 

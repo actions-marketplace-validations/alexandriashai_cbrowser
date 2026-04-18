@@ -408,19 +408,178 @@ function applyPersonaFilter(
   return filtered;
 }
 
+// ── DOM-Based Semantic Attention Layer ──
+
+/**
+ * Element type → base attention weight.
+ * These represent how inherently attention-grabbing each element type is,
+ * independent of visual appearance. A search bar is visually subtle but
+ * a power user looks there first.
+ */
+const ELEMENT_TYPE_WEIGHTS: Record<string, number> = {
+  cta: 1.0,           // Calls to action — highest inherent draw
+  heading: 0.8,       // Headings — structural anchors
+  form: 0.7,          // Form fields — interactive, task-relevant
+  search: 0.7,        // Search bars — navigation entry point
+  image: 0.5,         // Images — visual anchors
+  navigation: 0.4,    // Nav elements — wayfinding
+  link: 0.3,          // Regular links
+  content: 0.2,       // Body text
+  decorative: 0.1,    // Decorative images, spacers
+  price: 0.9,         // Prices — high commercial relevance
+  error: 0.9,         // Error messages — demand immediate attention
+};
+
+/**
+ * Persona trait → element type weight modifiers.
+ * Each persona amplifies or suppresses attention to certain element types
+ * based on their cognitive traits and goals.
+ */
+const PERSONA_ELEMENT_MODIFIERS: Record<string, Record<string, number>> = {
+  "first-timer": {
+    cta: 1.2, heading: 1.3, navigation: 1.2, search: 1.0, content: 0.6, decorative: 0.4,
+  },
+  "power-user": {
+    cta: 0.6, heading: 0.5, navigation: 1.4, search: 1.5, content: 0.3, form: 1.2, decorative: 0.1,
+  },
+  "impatient-user": {
+    cta: 1.5, heading: 1.0, navigation: 0.8, search: 1.3, content: 0.2, decorative: 0.1, price: 1.3,
+  },
+  "elderly-user": {
+    cta: 1.0, heading: 1.4, navigation: 1.3, search: 0.8, content: 0.8, form: 0.9, decorative: 0.3,
+  },
+  "cognitive-adhd": {
+    cta: 0.8, heading: 0.7, navigation: 0.5, image: 1.5, decorative: 1.2, content: 0.3, search: 0.6,
+  },
+  "anxious-user": {
+    cta: 0.7, heading: 1.0, price: 1.5, error: 1.5, form: 0.8, decorative: 0.3,
+  },
+  "motor-impairment-tremor": {
+    cta: 1.0, heading: 0.8, navigation: 0.6, form: 0.7, search: 0.9, content: 0.5,
+  },
+  "dyslexic-user": {
+    cta: 1.1, heading: 1.3, image: 1.3, content: 0.4, navigation: 0.9, decorative: 0.5,
+  },
+  "low-vision-magnified": {
+    cta: 1.2, heading: 1.5, navigation: 1.0, content: 0.5, image: 0.8, decorative: 0.2,
+  },
+  "mobile-user": {
+    cta: 1.3, heading: 1.0, search: 1.2, navigation: 0.7, content: 0.4, decorative: 0.2,
+  },
+  "confident-user": {
+    cta: 0.7, heading: 0.5, navigation: 1.3, search: 1.4, form: 1.2, content: 0.3, decorative: 0.1,
+  },
+};
+
+/** DOM element with bounding rect for semantic attention mapping */
+export interface DOMAttentionElement {
+  type: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text?: string;
+  isCTA?: boolean;
+  isHeading?: boolean;
+  isNav?: boolean;
+  isDecorative?: boolean;
+}
+
+/**
+ * Build a semantic attention map from DOM elements.
+ * Each grid cell gets a weight based on what DOM element(s) overlap it,
+ * modulated by the persona's priorities.
+ */
+function buildSemanticMap(
+  elements: DOMAttentionElement[],
+  rows: number,
+  cols: number,
+  cellSize: number,
+  imageWidth: number,
+  imageHeight: number,
+  personaName: string,
+): Float64Array {
+  const map = new Float64Array(rows * cols);
+  const modifiers = PERSONA_ELEMENT_MODIFIERS[personaName] || {};
+
+  for (const el of elements) {
+    // Determine element type
+    let elType = el.type || "content";
+    if (el.isCTA) elType = "cta";
+    else if (el.isHeading) elType = "heading";
+    else if (el.isNav) elType = "navigation";
+    else if (el.isDecorative) elType = "decorative";
+
+    // Base weight for this element type
+    const baseWeight = ELEMENT_TYPE_WEIGHTS[elType] ?? 0.2;
+    // Persona modifier
+    const modifier = modifiers[elType] ?? 1.0;
+    const weight = baseWeight * modifier;
+
+    // Map element bounds to grid cells
+    const startCol = Math.max(0, Math.floor(el.x / cellSize));
+    const endCol = Math.min(cols - 1, Math.floor((el.x + el.width) / cellSize));
+    const startRow = Math.max(0, Math.floor(el.y / cellSize));
+    const endRow = Math.min(rows - 1, Math.floor((el.y + el.height) / cellSize));
+
+    for (let r = startRow; r <= endRow; r++) {
+      for (let c = startCol; c <= endCol; c++) {
+        const idx = r * cols + c;
+        // Use max — if multiple elements overlap, the most attention-grabbing wins
+        map[idx] = Math.max(map[idx], weight);
+      }
+    }
+  }
+
+  // Normalize to 0-1
+  const maxVal = Math.max(...Array.from(map), 0.001);
+  for (let i = 0; i < map.length; i++) map[i] /= maxVal;
+
+  return map;
+}
+
+/**
+ * Blend visual saliency with semantic attention map.
+ * visual: what POPS visually (color contrast)
+ * semantic: what MATTERS structurally (element types × persona priorities)
+ */
+function blendSaliencyMaps(
+  visual: Float64Array,
+  semantic: Float64Array,
+  visualWeight: number = 0.35,
+  semanticWeight: number = 0.65,
+): Float64Array {
+  const blended = new Float64Array(visual.length);
+  for (let i = 0; i < visual.length; i++) {
+    blended[i] = visual[i] * visualWeight + semantic[i] * semanticWeight;
+  }
+  // Renormalize
+  const max = Math.max(...Array.from(blended), 0.001);
+  for (let i = 0; i < blended.length; i++) blended[i] /= max;
+  return blended;
+}
+
 // ── Public API ──
 
 /**
  * Compute persona-specific attention analysis for a screenshot.
  *
- * Generates a saliency map using W₂ on CIE-Lab distributions,
- * applies the persona's perceptual filter, and computes attention metrics.
+ * Two-layer attention model:
+ * 1. Visual saliency — W₂ on CIE-Lab distributions (what POPS visually)
+ * 2. Semantic attention — DOM element classification × persona priorities (what MATTERS)
+ *
+ * Blended at 35% visual / 65% semantic (research shows task-driven attention
+ * dominates bottom-up saliency for goal-oriented users — Yarbus 1967,
+ * Henderson 2003, Tatler et al. 2011).
+ *
+ * When DOM elements are not provided, falls back to visual-only mode.
  */
 export async function analyzeAttention(
   screenshotPath: string,
   personaName: string,
   cellSize: number = 16,
   schwartzValues?: Record<string, number>,
+  domElements?: DOMAttentionElement[],
 ): Promise<AttentionAnalysis> {
   const startTime = performance.now();
   const profile = getPerceptualProfile(personaName);
@@ -442,12 +601,29 @@ export async function analyzeAttention(
     } catch { /* values not available — use filter-only mode */ }
   }
 
-  // Compute base saliency
+  // Layer 1: Visual saliency — W₂ on CIE-Lab distributions
   const baseSaliency = await computeLabSaliency(screenshotPath, cellSize);
 
-  // Apply persona filter + value-driven attention modulation
+  // Layer 2: Semantic attention — DOM element types × persona priorities
+  let combinedSaliency: Float64Array;
+  if (domElements && domElements.length > 0) {
+    const semanticMap = buildSemanticMap(
+      domElements,
+      baseSaliency.rows, baseSaliency.cols,
+      cellSize,
+      baseSaliency.width, baseSaliency.height,
+      personaName,
+    );
+    // Blend: 35% visual (what pops) + 65% semantic (what matters)
+    combinedSaliency = blendSaliencyMaps(baseSaliency.cells, semanticMap, 0.35, 0.65);
+  } else {
+    // No DOM data — fall back to visual-only
+    combinedSaliency = baseSaliency.cells;
+  }
+
+  // Apply persona perceptual filter + value-driven attention modulation
   const filtered = applyPersonaFilter(
-    baseSaliency.cells, baseSaliency.rows, baseSaliency.cols,
+    combinedSaliency, baseSaliency.rows, baseSaliency.cols,
     profile.visualFilter,
     values,
   );
@@ -539,10 +715,11 @@ export async function compareAttention(
   personaA: string,
   personaB: string,
   cellSize: number = 16,
+  domElements?: DOMAttentionElement[],
 ): Promise<AttentionComparisonResult> {
   const [analysisA, analysisB] = await Promise.all([
-    analyzeAttention(screenshotPath, personaA, cellSize),
-    analyzeAttention(screenshotPath, personaB, cellSize),
+    analyzeAttention(screenshotPath, personaA, cellSize, undefined, domElements),
+    analyzeAttention(screenshotPath, personaB, cellSize, undefined, domElements),
   ]);
 
   const salA = analysisA.saliencyMap.cells;
