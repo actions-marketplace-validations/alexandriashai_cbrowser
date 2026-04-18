@@ -565,10 +565,10 @@ Begin with the first persona: ${personas[0]}
 
   server.registerTool("cognitive_effort", {
     title: "Cognitive Effort Analysis",
-    description: "Compute total cognitive effort for a persona to use a page. Uses the full 6-layer Sequential Transport Chain from Cognitive Optimal Transport theory: saliency → cognitive load → decision complexity → motor accessibility → frustration → readability. Each layer depletes capacity for subsequent layers. Returns per-layer costs, interaction effects, deficit/surplus breakdown, bottleneck layer, and abandonment risk.",
+    description: "Compute total cognitive effort for a persona to use a page. Uses the 6-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability. IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
       url: z.string().url().describe("URL to analyze"),
-      persona: z.string().describe("Persona name (e.g., 'first-timer', 'cognitive-adhd', 'elderly-user', 'autism-spectrum')"),
+      persona: z.string().describe("Persona name. WORKFLOW: For power-user, confident-user, or any persona the user describes as 'experienced' — check site_model_status first. If site knowledge exists, ask the user: 'Site knowledge exists for this domain. Should I use it to simulate an experienced user, or test as a first-time visitor?' If no site knowledge exists, warn: 'No site knowledge for this domain. power-user will be tested as a first-time visitor. Run page_understand first to build site knowledge.'"),
       _browserToken: z.string().optional().describe("Browser session token"),
       userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US')"),
       userTimezone: z.string().optional().describe("User's timezone (e.g., 'America/Denver')"),
@@ -677,10 +677,38 @@ Begin with the first persona: ${personas[0]}
         personaObj = existingPersona as Persona;
       }
 
-      // Build OT profile
+      // v18.61.0: siteFamiliarity is a binary gate based on site knowledge
+      // Has site knowledge → persona keeps its familiarity (maxed to 1.0 for experts)
+      // No site knowledge → forced to 0.0 (first visit)
+      const traits = { ...(personaObj.cognitiveTraits || {}) as Record<string, number> };
+      const requestedFamiliarity = traits.siteFamiliarity ?? 0.5;
+      let familiarityWarning: string | undefined;
+
+      let hasSiteKnowledge = false;
+      try {
+        const pageUrl = await page.url();
+        const domain = new URL(pageUrl).hostname;
+        const { SiteModelManager } = await import("../../site-model/manager.js");
+        const mgr = SiteModelManager.getInstance();
+        const stats = await mgr.getModelStats(domain);
+        hasSiteKnowledge = !!(stats && stats.navigationNodes > 0);
+      } catch {}
+
+      if (hasSiteKnowledge) {
+        // Site knowledge exists — high-familiarity personas get max familiarity
+        if (requestedFamiliarity > 0.5) traits.siteFamiliarity = 1.0;
+      } else {
+        // No site knowledge — everyone is a first-time visitor
+        traits.siteFamiliarity = 0.0;
+        if (requestedFamiliarity > 0.5) {
+          familiarityWarning = `"${personaName}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} but no site knowledge exists. Downgraded to 0.0 (first visit). To build site knowledge: navigate the site (navigate + click builds it automatically), or run page_understand for deeper analysis. Then re-run this tool.`;
+        }
+      }
+
+      // Build OT profile (with potentially adjusted siteFamiliarity)
       const otProfile = buildOTProfile(
         personaName,
-        (personaObj.cognitiveTraits || {}) as unknown as Record<string, number>
+        traits
       );
 
       // Extract page metrics
@@ -859,6 +887,7 @@ Begin with the first persona: ${personas[0]}
           : result.totalCTC < 0.8
           ? `${personaName} will struggle significantly. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
           : `${personaName} is likely to abandon this page. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`,
+        ...(familiarityWarning ? { familiarityWarning, siteFamiliarityAdjusted: true, originalFamiliarity: requestedFamiliarity, effectiveFamiliarity: traits.siteFamiliarity } : {}),
         ...(languageWarning ? { languageWarning } : {}),
         ...(userLocation ? { userContext: { location: userLocation, timezone: userTimezone, language: userLanguage } } : {}),
         ...(token ? { _browserToken: token } : {}),

@@ -185,6 +185,17 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           topBarriers: result.topBarriers.slice(0, 5),
           topRemediation: result.combinedRemediation.slice(0, 5),
           duration: result.duration,
+          // v18.60.0: Include per-result screenshots and element rects for WCAG overlay
+          pageScreenshots: result.results?.map((r: any) => ({
+            persona: r.persona,
+            screenshot: r.pageScreenshot,
+            viewportSize: r.viewportSize,
+            barrierRects: r.barriers?.filter((b: any) => b.rect).map((b: any) => ({
+              type: b.type, severity: b.severity, element: b.element,
+              description: b.description, rect: b.rect,
+              wcag: b.wcagCriteria,
+            })),
+          })).filter((s: any) => s.screenshot),
         };
 
         // Add guidance if we limited the request
@@ -304,7 +315,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
 
   server.registerTool("site_cognitive_assessment", {
     title: "Site Cognitive Assessment",
-    description: "Three-gate pipeline: (1) bot-detection probe, (2) agent-ready qualification, (3) per-persona cognitive effort analysis. Prevents misleading scores on blocked or broken pages. Returns unified report with gate results, per-persona transport costs, and recommendations.",
+    description: "Three-gate pipeline: (1) bot-detection probe, (2) agent-ready qualification, (3) per-persona cognitive effort analysis. IMPORTANT: If the user requests high-familiarity personas (power-user, confident-user), check site_model_status first. Without site knowledge, these personas are tested as first-time visitors and a familiarityWarning is returned. Ask the user if they want to build site knowledge first.",
     inputSchema: {
       url: z.string().url().describe("URL to assess"),
       personas: z.string().optional().default("first-timer,cognitive-adhd").describe("Comma-separated persona names (default: first-timer,cognitive-adhd)"),
@@ -605,11 +616,35 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           };
         } catch {}
 
+        // Check site knowledge — binary gate for siteFamiliarity
+        // Has data = persona keeps its familiarity. No data = forced to 0.0 (first visit).
+        let hasSiteKnowledge = false;
+        try {
+          const domain = new URL(url).hostname;
+          const { SiteModelManager } = await import("../../site-model/manager.js");
+          const mgr = SiteModelManager.getInstance();
+          const stats = await mgr.getModelStats(domain);
+          hasSiteKnowledge = !!(stats && stats.navigationNodes > 0);
+        } catch {}
+
         for (const personaName of personaList) {
           try {
             const existingPersona = getAnyPersona(personaName);
             const personaObj = existingPersona || createCognitivePersona(personaName, personaName, {});
-            const traits = ((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number>;
+            const traits = { ...((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number> };
+
+            // v18.61.0: siteFamiliarity is a binary gate, not a gradient
+            // Has site knowledge → persona keeps its configured familiarity (maxed to 1.0 for high-familiarity personas)
+            // No site knowledge → forced to 0.0 regardless of persona definition
+            const reqFam = traits.siteFamiliarity ?? 0.5;
+            if (hasSiteKnowledge) {
+              // Site knowledge exists — high-familiarity personas get max familiarity
+              if (reqFam > 0.5) traits.siteFamiliarity = 1.0;
+            } else {
+              // No site knowledge — everyone is a first-time visitor
+              traits.siteFamiliarity = 0.0;
+            }
+
             const otProfile = buildOTCognitiveProfile(personaName, traits);
             const result = computeSequentialCTC(otProfile, demand, { asymmetric: true, interactions: true });
 
@@ -623,6 +658,9 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
                 name: l.name,
                 cost: Math.round(l.transportCost * 1000) / 1000,
               })),
+              ...(reqFam > 0.5 && !hasSiteKnowledge ? {
+                familiarityWarning: `siteFamiliarity downgraded from ${reqFam} to 0.0 — no site knowledge exists. Run page_understand first for accurate ${personaName} results.`,
+              } : {}),
             };
           } catch (personaErr) {
             personaResults[personaName] = { error: personaErr instanceof Error ? personaErr.message : String(personaErr) };

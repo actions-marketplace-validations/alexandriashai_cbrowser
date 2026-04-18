@@ -63,6 +63,9 @@ let browser: CBrowser | null = null;
 // Stealth state (enterprise integration)
 const stealthConfig: Partial<StealthConfig> | null = null;
 
+// Cached tool manifest for unauthenticated tools/list requests (populated at startup)
+let cachedToolManifest: Array<{ name: string; description?: string; inputSchema?: unknown }> | null = null;
+
 // ============================================================================
 // Tool-Level Session Tokens (v18.33.0)
 // Provides browser continuity across tool calls without relying on MCP session
@@ -883,7 +886,21 @@ SPECIALIST CATEGORIES (use when the task requires them):
 TIPS:
 • Pass _browserToken between tool calls to maintain browser state
 • Use site_cognitive_assessment for comprehensive site analysis (runs all gates automatically)
-• For disability testing, pass one persona at a time to empathy_audit to avoid timeouts`,
+• For disability testing, pass one persona at a time to empathy_audit to avoid timeouts
+
+SITE KNOWLEDGE WORKFLOW (IMPORTANT):
+• High-familiarity personas (power-user, confident-user) REQUIRE site knowledge to produce accurate results
+• Before using these personas, run site_model_status to check if knowledge exists
+• If site knowledge EXISTS: ask the user "Site knowledge exists. Use it for experienced-user simulation, or test as first-time visitor?"
+• If NO site knowledge: warn the user and offer to build it (run page_understand or navigate the site first)
+• Without site knowledge, power-user/confident-user are automatically downgraded to first-time visitors
+• navigate, click, and page_understand all build site knowledge automatically
+
+SELF-HELP:
+• If you are unsure what a tool does, what a score means, which persona to use, or how tools work together — call question_answer with your question
+• question_answer searches 290+ pages of CBrowser documentation and returns a grounded answer
+• Use it before guessing. Example: question_answer(question: "What is the difference between viewport and full_page scope?")
+• Use it to explain results to the user. Example: question_answer(question: "What does a CTC of 1.6 with readability bottleneck mean?")`,
     }
   );
 
@@ -1710,6 +1727,56 @@ ${VERSION}
     if (authEnabled) {
       const authResult = await validateAuth(req, apiKeys, auth0Enabled);
       if (!authResult.valid) {
+        // Allow tools/list without auth (discovery surface is public, action surface is gated).
+        // Buffer the body to check if this is a tools/list or initialize request.
+        if (req.method === "POST" && (url.pathname === "/mcp" || url.pathname === "/")) {
+          const bodyChunks: Buffer[] = [];
+          for await (const chunk of req) {
+            bodyChunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+          }
+          const bodyStr = Buffer.concat(bodyChunks).toString("utf-8");
+          try {
+            const parsed = JSON.parse(bodyStr);
+            const method = parsed.method || "";
+            if (method === "tools/list" && cachedToolManifest) {
+              // Return cached tool manifest without auth
+              const response = { jsonrpc: "2.0", id: parsed.id ?? 1, result: { tools: cachedToolManifest } };
+              const sseData = `data: ${JSON.stringify(response)}\n\n`;
+              res.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+              });
+              res.end(sseData);
+              return;
+            }
+            if (method === "initialize") {
+              // Return server info without auth
+              const response = {
+                jsonrpc: "2.0",
+                id: parsed.id ?? 1,
+                result: {
+                  protocolVersion: "2025-03-26",
+                  serverInfo: { name: "cbrowser", version: VERSION },
+                  capabilities: { tools: { listChanged: false } },
+                },
+              };
+              const sseData = `data: ${JSON.stringify(response)}\n\n`;
+              res.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+              });
+              res.end(sseData);
+              return;
+            }
+            if (method === "notifications/initialized") {
+              res.writeHead(200, { "Content-Type": "text/event-stream" });
+              res.end();
+              return;
+            }
+          } catch {
+            // Not valid JSON — fall through to auth error
+          }
+        }
         sendUnauthorized(res, authResult.reason);
         return;
       }
@@ -1928,6 +1995,27 @@ ${VERSION}
     console.log(`  URL: http://${host}:${port}/mcp`);
     if (auth0Enabled) {
       console.log(`  OAuth metadata: http://${host}:${port}/.well-known/oauth-protected-resource`);
+    }
+
+    // Cache tool manifest for unauthenticated tools/list (discovery surface is public).
+    // Create a temporary server to extract the registered tool list directly.
+    // Tool registration works without a browser — only tool execution needs one.
+    try {
+      const dummyContext: ToolRegistrationContext = { getBrowser: () => null as any };
+      const tempServer = createMcpServer(options?.registerTools, "manifest-cache", null);
+      const toolMap = (tempServer as any)._registeredTools as Record<string, any> | undefined;
+      if (toolMap && typeof toolMap === "object") {
+        cachedToolManifest = Object.entries(toolMap)
+          .filter(([, tool]) => tool.enabled !== false)
+          .map(([name, tool]) => ({
+            name,
+            description: tool.description || "",
+            inputSchema: tool.inputSchema || { type: "object" as const },
+          }));
+        console.log(`[tools/list] Public manifest cached: ${cachedToolManifest.length} tools`);
+      }
+    } catch (err) {
+      console.log(`[tools/list] Direct cache failed, will cache on first authenticated request`);
     }
   });
 

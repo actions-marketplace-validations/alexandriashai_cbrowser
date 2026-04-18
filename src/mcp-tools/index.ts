@@ -63,6 +63,9 @@ export {
   registerRemediationTools,
   registerLlmsTxtTools,
   registerSiteKnowledgeTools,
+  registerAdvancedInteractionTools,
+  registerBrowserStateTools,
+  registerGifTools,
   setSecurityAuditToolList,
 } from "./base/index.js";
 

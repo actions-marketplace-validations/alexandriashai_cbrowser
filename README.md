@@ -311,18 +311,43 @@ npx cbrowser cognitive-journey \
 
 ## MCP Server Integration
 
-CBrowser runs as an MCP server for Claude Desktop and claude.ai.
+CBrowser runs as an MCP server for Claude.ai, Claude Desktop, and Claude Code.
 
-### Remote MCP (claude.ai)
+### Claude.ai (Easiest — No Install)
 
-**Public Demo Server** (rate-limited):
-```text
-https://demo.cbrowser.ai/mcp
+Add the MCP connector and optionally install the Claude.ai Skill:
+
+1. Go to [Customize → Connectors](https://claude.ai/customize/connectors) → "Add custom connector"
+2. Paste: `https://demo.cbrowser.ai/mcp`
+3. Download the [Claude.ai Skill (.zip)](https://cbrowser.ai/downloads/cbrowser-claudeai.skill) — gives Claude context about tools, pricing, and workflows
+4. Go to Customize → Skills → Upload the zip
+
+> **Note:** The Claude.ai Skill is a lightweight knowledge file for the web interface. It is NOT the same as the Claude Code Skill (see below).
+
+### Claude Code Skill (CLI — Not for Claude.ai)
+
+For [Claude Code](https://claude.ai/claude-code) terminal users:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alexandriashai/cbrowser/main/scripts/install-skill.sh | bash
+npm install -g cbrowser && npx playwright install
 ```
 
-Deploy your own: see [Remote MCP Server Guide](https://cbrowser.ai/docs/Remote-MCP-Server)
+The Claude Code Skill is a full CLI integration with workflow routing, TypeScript tools, persistent memory, and constitutional safety. See [Skill Installation Guide](https://cbrowser.ai/docs/claude-skill-installation) for details.
 
-### Local MCP (Claude Desktop)
+### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "cbrowser": {
+      "url": "https://demo.cbrowser.ai/mcp"
+    }
+  }
+}
+```
+
+### Local MCP Server
 
 ```json
 {

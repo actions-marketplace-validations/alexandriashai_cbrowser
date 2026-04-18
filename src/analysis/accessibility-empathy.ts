@@ -127,17 +127,20 @@ function _getWcagCriteriaForBarrier(barrierType: AccessibilityBarrierType): stri
   }
 }
 
-/** Get the highest WCAG level of a barrier's criteria */
+/** Get the LOWEST (most stringent) WCAG level of a barrier's criteria.
+ * A barrier that violates both 2.5.8 (AA) and 2.5.5 (AAA) should use AA
+ * because it fails the stricter standard. */
 function getBarrierWcagLevel(wcagCriteria: string[]): "A" | "AA" | "AAA" {
-  let highest: "A" | "AA" | "AAA" = "A";
+  if (!wcagCriteria.length) return "AAA"; // no criteria = treat as advisory
+  let lowest: "A" | "AA" | "AAA" = "AAA";
   const levelOrder: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
   for (const code of wcagCriteria) {
     const criteria = WCAG_CRITERIA[code];
-    if (criteria && levelOrder[criteria.level] > levelOrder[highest]) {
-      highest = criteria.level;
+    if (criteria && levelOrder[criteria.level] < levelOrder[lowest]) {
+      lowest = criteria.level;
     }
   }
-  return highest;
+  return lowest;
 }
 
 /**
@@ -204,8 +207,11 @@ async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
           el.classList.contains('skiplink') || el.id?.includes('skip')
         );
 
+        // Tiny elements (1x1, 0x0) are tracking pixels or hidden inputs, not real touch targets
+        const isTiny = rect.width <= 2 || rect.height <= 2;
+
         // Visually hidden / sr-only detection (intentionally offscreen, visible on focus)
-        const isVisuallyHidden =
+        const isVisuallyHidden = isTiny ||
           style.position === 'absolute' && (
             parseInt(style.left) < -100 || parseInt(style.top) < -100 ||
             style.clip === 'rect(0px, 0px, 0px, 0px)' || style.clip === 'rect(1px, 1px, 1px, 1px)' ||
@@ -219,12 +225,27 @@ async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
           selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
           width: rect.width,
           height: rect.height,
+          x: rect.left,
+          y: rect.top,
           text,
           area: rect.width * rect.height,
           inViewport: rect.bottom > 0 && rect.top < vh,
           exempt: isSkipLink || isVisuallyHidden,
         };
-      }).filter(el => el.area > 0 && (el.width < 44 || el.height < 44) && !el.exempt && (!vpOnly || el.inViewport));
+      }).filter(el => {
+        if (el.area <= 0 || el.exempt) return false;
+        if (vpOnly && !el.inViewport) return false;
+        // Only flag if the SMALLEST dimension is under the threshold
+        // A 1280x36px element is perfectly tappable — the 36px height is fine
+        // WCAG 2.5.8 AA: 24x24px minimum for the target area
+        const minDim = Math.min(el.width, el.height);
+        const maxDim = Math.max(el.width, el.height);
+        // Skip if the element is wide/tall enough to be easily tappable
+        // (one dimension >= 44px AND the other >= 24px = AA compliant)
+        if (minDim >= 24 && maxDim >= 44) return false;
+        // Flag if both dimensions are small
+        return minDim < 44;
+      });
     }, viewportOnly
   );
 
@@ -270,7 +291,8 @@ async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
       remediation: w < aaMinimum || h < aaMinimum
         ? `Increase clickable area to at least 24x24px (AA) — 44x44px recommended (AAA)`
         : `Consider increasing to 44x44px for AAA compliance and better mobile usability`,
-    });
+      rect: { x: Math.round(target.x), y: Math.round(target.y), width: w, height: h },
+    } as any);
   }
 }
 
@@ -326,14 +348,27 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
         if (!fg) continue;
 
         // Walk up to find non-transparent background
+        // rgba(0, 0, 0, 0) = transparent, rgb(0, 0, 0) = black (valid)
         let bgColor = bg;
-        let parent = el.parentElement;
-        while ((!bgColor || (bgColor[0] === 0 && bgColor[1] === 0 && bgColor[2] === 0 && styles.backgroundColor === 'rgba(0, 0, 0, 0)')) && parent) {
-          const pBg = parseColor(window.getComputedStyle(parent).backgroundColor);
-          if (pBg && window.getComputedStyle(parent).backgroundColor !== 'rgba(0, 0, 0, 0)') { bgColor = pBg; break; }
-          parent = parent.parentElement;
+        const elBgStr = styles.backgroundColor;
+        const isTransparent = (s: string) => s === 'rgba(0, 0, 0, 0)' || s === 'transparent' || s === 'initial';
+        if (isTransparent(elBgStr)) {
+          bgColor = null;
+          let parent = el.parentElement;
+          while (parent) {
+            const pStyle = window.getComputedStyle(parent);
+            const pBgStr = pStyle.backgroundColor;
+            if (!isTransparent(pBgStr)) {
+              bgColor = parseColor(pBgStr);
+              break;
+            }
+            parent = parent.parentElement;
+          }
         }
-        if (!bgColor) bgColor = [255, 255, 255]; // assume white background
+        if (!bgColor) bgColor = [255, 255, 255]; // assume white if no bg found
+
+        // Skip elements where fg and bg are identical — likely hidden/decorative
+        if (fg[0] === bgColor[0] && fg[1] === bgColor[1] && fg[2] === bgColor[2]) continue;
 
         const fgLum = luminance(fg[0], fg[1], fg[2]);
         const bgLum = luminance(bgColor[0], bgColor[1], bgColor[2]);
@@ -351,7 +386,7 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
         const aaaThreshold = isLargeText ? 4.5 : 7;
 
         if (ratio < aaaThreshold) {
-          results.push({
+          (results as any[]).push({
             selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : ''),
             text: text.slice(0, 30),
             fontSize,
@@ -359,6 +394,10 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
             isLargeText,
             color: styles.color,
             bgColor: styles.backgroundColor,
+            x: Math.round(rect.left),
+            y: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
           });
         }
       }
@@ -396,7 +435,8 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
       remediation: failsAA
         ? `Increase contrast to at least ${el.isLargeText ? '3' : '4.5'}:1 (current: ${el.ratio}:1)`
         : `For AAA compliance, increase contrast to ${el.isLargeText ? '4.5' : '7'}:1 (current: ${el.ratio}:1)`,
-    });
+      rect: { x: (el as any).x, y: (el as any).y, width: (el as any).width, height: (el as any).height },
+    } as any);
     if (failsAA) ctx.wcagViolations.add("1.4.3");
     else ctx.wcagViolations.add("1.4.6");
   }
@@ -465,12 +505,21 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
   });
 
   for (const issue of cognitiveIssues) {
+    // Map each cognitive issue type to appropriate WCAG criteria (if any)
+    const wcagMap: Record<string, { criteria: string[]; violation: string | null }> = {
+      "long-form": { criteria: ["3.3.2"], violation: "3.3.2" }, // Labels or Instructions
+      "text-wall": { criteria: ["1.3.1"], violation: null }, // Info and Relationships (recommendation, not violation)
+      "animation": { criteria: ["2.2.2", "2.3.1"], violation: "2.2.2" }, // Pause Stop Hide
+      "complex-nav": { criteria: [], violation: null }, // No WCAG criterion for nav item count — UX recommendation only
+    };
+    const mapping = wcagMap[issue.type] || { criteria: [], violation: null };
+
     barriers.push({
       type: "cognitive_load",
       element: issue.type,
-      description: issue.description,
+      description: issue.description + (mapping.criteria.length === 0 ? ' (UX recommendation, not a WCAG violation)' : ''),
       affectedPersonas: ["cognitive-adhd", "dyslexic-user"],
-      wcagCriteria: ["2.4.6", "3.3.2"],
+      wcagCriteria: mapping.criteria,
       severity: issue.type === "long-form" ? "major" : "minor",
       remediation: issue.type === "long-form"
         ? "Break form into multiple steps or sections"
@@ -478,9 +527,9 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
           ? "Break text into smaller paragraphs with headings"
           : issue.type === "animation"
             ? "Provide controls to pause/stop animations, or use prefers-reduced-motion"
-            : "Simplify navigation structure",
+            : "Consider simplifying navigation structure for cognitive accessibility",
     });
-    ctx.wcagViolations.add("3.3.2");
+    if (mapping.violation) ctx.wcagViolations.add(mapping.violation);
   }
 }
 
@@ -1469,6 +1518,16 @@ async function simulateAccessibilityJourney(
   // Generate remediation priorities
   const remediationPriority = generateRemediationPriority(ctx.barriers);
 
+  // Capture page screenshot for WCAG overlay visualization
+  let pageScreenshotBase64: string | undefined;
+  let viewportSize: { width: number; height: number } | undefined;
+  try {
+    const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: false });
+    pageScreenshotBase64 = Buffer.from(screenshotBuffer).toString('base64');
+    const vp = page.viewportSize();
+    if (vp) viewportSize = { width: vp.width, height: vp.height };
+  } catch {}
+
   return {
     url,
     persona: persona.name,
@@ -1484,6 +1543,8 @@ async function simulateAccessibilityJourney(
     finalEmotionalState,
     emotionalEvents,
     journeyValidation, // v18.29.0
+    pageScreenshot: pageScreenshotBase64, // v18.60.0: For WCAG overlay visualization
+    viewportSize, // v18.60.0
   } as any;
 }
 
