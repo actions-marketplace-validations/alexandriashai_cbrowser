@@ -12,6 +12,26 @@
  */
 
 import { type PricingTier, getToolPricingTier, tierHasAccess } from "./tool-categories.js";
+import { saveToolResult } from "./tool-result-saver.js";
+
+/** Tools that should NOT auto-save results (no analytics value) */
+const SKIP_AUTOSAVE = new Set([
+  "navigate", "click", "smart_click", "fill", "scroll", "dismiss_overlay",
+  "hover", "type_text", "press_key", "handle_dialog", "upload_file", "drag",
+  "screenshot", "extract",
+  "status", "browser_health", "browser_recover", "reset_browser", "manage_tabs",
+  "save_session", "load_session", "list_sessions", "delete_session",
+  "manage_cookies", "manage_storage", "evaluate_script",
+  "get_console_messages", "get_network_requests",
+  "list_cognitive_personas", "list_baselines",
+  "heal_stats",
+  "persona_values_list", "persona_values_lookup", "list_influence_patterns",
+  "persona_questionnaire_get", "persona_questionnaire_build",
+  "persona_trait_lookup", "persona_category_guidance",
+  "marketing_personas_list",
+  "site_profile_list", "site_profile_delete", "site_profile_status",
+  "site_model_status",
+]);
 
 /** The current user tier for this server session */
 let currentTier: PricingTier | null = null;
@@ -131,14 +151,39 @@ export function createGatedServer(server: unknown): unknown {
 
   srv.registerTool = (name: string, config: Record<string, unknown>, handler: (...args: unknown[]) => unknown) => {
     if (isToolAccessible(name)) {
-      // User has access — wrap handler with usage logging
+      // User has access — wrap handler with usage logging + auto-save
       const prefix = tierPrefix(name);
       if (prefix && typeof config.description === "string") {
         config.description = prefix + config.description;
       }
-      const wrappedHandler = (...args: unknown[]) => {
+      const wrappedHandler = async (...args: unknown[]) => {
         logToolCall(name);
-        return handler(...args);
+        const startTime = Date.now();
+        const result = await (handler as (...a: unknown[]) => Promise<unknown>)(...args);
+        const durationMs = Date.now() - startTime;
+        // Auto-save tool result (fire-and-forget)
+        try {
+          const toolArgs = args[0] as Record<string, unknown> | undefined;
+          const targetUrl = (toolArgs?.url || (Array.isArray(toolArgs?.sites) ? (toolArgs.sites as string[])[0] : null)) as string | null;
+          if (targetUrl && !SKIP_AUTOSAVE.has(name)) {
+            const resultContent = result as { content?: Array<{ type: string; text?: string }> };
+            let resultData: Record<string, unknown> = {};
+            try {
+              const text = resultContent?.content?.[0]?.text;
+              if (text) resultData = JSON.parse(text);
+            } catch {}
+            saveToolResult({
+              apiKey: currentKeyHash || undefined,
+              toolName: name,
+              targetUrl,
+              result: resultData,
+              persona: (toolArgs?.persona || (Array.isArray(toolArgs?.disabilities) ? (toolArgs.disabilities as string[])[0] : undefined)) as string | undefined,
+              scope: toolArgs?.scope as string | undefined,
+              durationMs,
+            });
+          }
+        } catch {}
+        return result;
       };
       originalRegisterTool(name, config, wrappedHandler);
     } else {

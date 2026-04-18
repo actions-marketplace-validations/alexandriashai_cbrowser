@@ -4717,6 +4717,8 @@ export interface AgentReadyAuditOptions {
   proxy?: { server: string; username?: string; password?: string };
   /** Browser locale for language-accurate testing (e.g., "en-US") @since v18.39.0 */
   locale?: string;
+  /** Device emulation: 'mobile', 'tablet', 'desktop', or specific device name @since v18.60.0 */
+  device?: string;
 }
 
 // ============================================================================
@@ -5140,6 +5142,8 @@ export interface EmpathyAuditOptions {
   output?: string;
   /** Scope: 'viewport' (default, above-the-fold only) or 'full_page' (scroll through all content) */
   scope?: "viewport" | "full_page";
+  /** Device emulation: 'mobile', 'tablet', 'desktop', or specific device name like 'iPhone 15' */
+  device?: string;
   /** Generate HTML report */
   html?: boolean;
 }

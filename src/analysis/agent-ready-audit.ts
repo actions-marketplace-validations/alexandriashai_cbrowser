@@ -1777,6 +1777,7 @@ export async function runAgentReadyAudit(
           persistent: false,
           ...(options.proxy ? { proxy: options.proxy } : {}),
           ...(options.locale ? { locale: options.locale } : {}),
+          ...(options.device ? { device: options.device.toLowerCase() } : {}),
         });
         await cbrowser.launch();
         // Store the underlying Playwright browser for close() compatibility

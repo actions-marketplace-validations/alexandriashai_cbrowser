@@ -127,6 +127,38 @@ function _getWcagCriteriaForBarrier(barrierType: AccessibilityBarrierType): stri
   }
 }
 
+/** Get the highest WCAG level of a barrier's criteria */
+function getBarrierWcagLevel(wcagCriteria: string[]): "A" | "AA" | "AAA" {
+  let highest: "A" | "AA" | "AAA" = "A";
+  const levelOrder: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
+  for (const code of wcagCriteria) {
+    const criteria = WCAG_CRITERIA[code];
+    if (criteria && levelOrder[criteria.level] > levelOrder[highest]) {
+      highest = criteria.level;
+    }
+  }
+  return highest;
+}
+
+/**
+ * Adjust barrier severity based on WCAG level context.
+ * AAA-only issues should not be "critical" when auditing at AA level.
+ */
+function adjustSeverityForLevel(
+  severity: AccessibilityBarrierSeverity,
+  barrierWcagLevel: "A" | "AA" | "AAA",
+  auditLevel: "A" | "AA" | "AAA"
+): AccessibilityBarrierSeverity {
+  const levelOrder: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
+  // If the barrier is from a higher WCAG level than the audit target, downgrade severity
+  if (levelOrder[barrierWcagLevel] > levelOrder[auditLevel]) {
+    if (severity === "critical") return "minor"; // AAA issue at AA audit → minor
+    if (severity === "major") return "minor";
+    return severity;
+  }
+  return severity;
+}
+
 // ============================================================================
 // Barrier Detection Functions
 // ============================================================================
@@ -140,6 +172,8 @@ interface BarrierContext {
   stepCount: number;
   /** When true, barrier detectors only count elements in the initial viewport */
   viewportOnly: boolean;
+  /** WCAG conformance level for this audit */
+  wcagLevel: "A" | "AA" | "AAA";
 }
 
 /**
@@ -159,33 +193,84 @@ async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
       const vh = window.innerHeight;
       return elements.map(el => {
         const rect = el.getBoundingClientRect();
+        const text = el.textContent?.trim().slice(0, 50) || '';
+        const href = (el as HTMLAnchorElement).href || el.getAttribute('href') || '';
+        const style = window.getComputedStyle(el);
+
+        // Skip link detection: anchor with # href + skip-related text
+        const isSkipLink = el.tagName === 'A' && (
+          (href.startsWith('#') && /skip|jump|main.content|nav.*content/i.test(text)) ||
+          el.classList.contains('skip-link') || el.classList.contains('skip-nav') ||
+          el.classList.contains('skiplink') || el.id?.includes('skip')
+        );
+
+        // Visually hidden / sr-only detection (intentionally offscreen, visible on focus)
+        const isVisuallyHidden =
+          style.position === 'absolute' && (
+            parseInt(style.left) < -100 || parseInt(style.top) < -100 ||
+            style.clip === 'rect(0px, 0px, 0px, 0px)' || style.clip === 'rect(1px, 1px, 1px, 1px)' ||
+            style.clipPath === 'inset(50%)' ||
+            (rect.width <= 1 && rect.height <= 1 && parseInt(style.overflow) === 0)
+          ) ||
+          el.classList.contains('sr-only') || el.classList.contains('visually-hidden') ||
+          el.classList.contains('screen-reader-text');
+
         return {
           selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
           width: rect.width,
           height: rect.height,
-          text: el.textContent?.trim().slice(0, 30) || '',
+          text,
           area: rect.width * rect.height,
           inViewport: rect.bottom > 0 && rect.top < vh,
+          exempt: isSkipLink || isVisuallyHidden,
         };
-      }).filter(el => el.area > 0 && (el.width < 44 || el.height < 44) && (!vpOnly || el.inViewport));
+      }).filter(el => el.area > 0 && (el.width < 44 || el.height < 44) && !el.exempt && (!vpOnly || el.inViewport));
     }, viewportOnly
   );
 
+  // WCAG 2.5.8 (AA) minimum: 24x24px
+  // WCAG 2.5.5 (AAA) target: 44x44px
+  const aaMinimum = 24;
+  const aaaTarget = 44;
+
   for (const target of smallTargets.slice(0, 10)) {
-    const severity: AccessibilityBarrierSeverity =
-      target.width < 24 || target.height < 24 ? "critical" :
-      target.width < 32 || target.height < 32 ? "major" : "minor";
+    const w = Math.round(target.width);
+    const h = Math.round(target.height);
+
+    // Determine which WCAG criteria are violated
+    const wcagCriteria: string[] = [];
+    let description: string;
+    let rawSeverity: AccessibilityBarrierSeverity;
+
+    if (w < aaMinimum || h < aaMinimum) {
+      // Fails WCAG 2.5.8 AA (24x24px minimum)
+      wcagCriteria.push("2.5.8", "2.5.5");
+      description = `Touch target too small (${w}x${h}px) — fails WCAG 2.5.8 AA minimum (24x24px)`;
+      rawSeverity = w < 16 || h < 16 ? "critical" : "major";
+      ctx.wcagViolations.add("2.5.8");
+    } else {
+      // Passes AA but fails AAA (24-44px range)
+      wcagCriteria.push("2.5.5");
+      description = `Touch target below AAA target (${w}x${h}px) — passes AA (24px) but below AAA target (44px)`;
+      rawSeverity = "minor";
+      ctx.wcagViolations.add("2.5.5");
+    }
+
+    // Adjust severity based on audit level — AAA-only issues are minor at AA
+    const barrierLevel = getBarrierWcagLevel(wcagCriteria);
+    const severity = adjustSeverityForLevel(rawSeverity, barrierLevel, ctx.wcagLevel);
 
     barriers.push({
       type: "touch_target",
       element: target.selector,
-      description: `Touch target too small (${Math.round(target.width)}x${Math.round(target.height)}px) - minimum 44x44px recommended`,
+      description,
       affectedPersonas: ["motor-impairment-tremor", "elderly-low-vision"],
-      wcagCriteria: ["2.5.5", "2.5.8"],
+      wcagCriteria,
       severity,
-      remediation: `Increase clickable area to at least 44x44 pixels, or add padding/margin to increase touch target`,
+      remediation: w < aaMinimum || h < aaMinimum
+        ? `Increase clickable area to at least 24x24px (AA) — 44x44px recommended (AAA)`
+        : `Consider increasing to 44x44px for AAA compliance and better mobile usability`,
     });
-    ctx.wcagViolations.add("2.5.8");
   }
 }
 
@@ -203,37 +288,78 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
 
   // Check text elements for contrast (simplified check - real check needs computed colors)
   const lowContrastElements = await page.$$eval(
-    'p, span, h1, h2, h3, h4, h5, h6, a, button, label',
+    'p, span, h1, h2, h3, h4, h5, h6, a, button, label, li, td, th',
     (elements) => {
+      // Relative luminance per WCAG 2.1
+      function luminance(r: number, g: number, b: number): number {
+        const [rs, gs, bs] = [r, g, b].map(c => {
+          c = c / 255;
+          return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        });
+        return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+      }
+      function contrastRatio(l1: number, l2: number): number {
+        const lighter = Math.max(l1, l2);
+        const darker = Math.min(l1, l2);
+        return (lighter + 0.05) / (darker + 0.05);
+      }
+      function parseColor(color: string): [number, number, number] | null {
+        const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+      }
+
+      const vh = window.innerHeight;
       const results: Array<{
-        selector: string;
-        text: string;
-        fontSize: string;
-        color: string;
-        bgColor: string;
+        selector: string; text: string; fontSize: number; ratio: number;
+        isLargeText: boolean; color: string; bgColor: string;
       }> = [];
 
-      for (const el of elements.slice(0, 100)) {
-        const styles = window.getComputedStyle(el);
-        const color = styles.color;
-        const bgColor = styles.backgroundColor;
+      for (const el of elements.slice(0, 150)) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0 || rect.bottom < 0 || rect.top > vh) continue;
+        const text = el.textContent?.trim();
+        if (!text || text.length < 2) continue;
 
-        // Simplified: flag light gray text as potential issue
-        if (color.includes('rgb')) {
-          const match = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-          if (match) {
-            const [, r, g, b] = match.map(Number);
-            // Light gray text (common contrast issue)
-            if (r > 150 && g > 150 && b > 150 && r < 200 && g < 200 && b < 200) {
-              results.push({
-                selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
-                text: el.textContent?.trim().slice(0, 30) || '',
-                fontSize: styles.fontSize,
-                color,
-                bgColor,
-              });
-            }
-          }
+        const styles = window.getComputedStyle(el);
+        const fg = parseColor(styles.color);
+        const bg = parseColor(styles.backgroundColor);
+        if (!fg) continue;
+
+        // Walk up to find non-transparent background
+        let bgColor = bg;
+        let parent = el.parentElement;
+        while ((!bgColor || (bgColor[0] === 0 && bgColor[1] === 0 && bgColor[2] === 0 && styles.backgroundColor === 'rgba(0, 0, 0, 0)')) && parent) {
+          const pBg = parseColor(window.getComputedStyle(parent).backgroundColor);
+          if (pBg && window.getComputedStyle(parent).backgroundColor !== 'rgba(0, 0, 0, 0)') { bgColor = pBg; break; }
+          parent = parent.parentElement;
+        }
+        if (!bgColor) bgColor = [255, 255, 255]; // assume white background
+
+        const fgLum = luminance(fg[0], fg[1], fg[2]);
+        const bgLum = luminance(bgColor[0], bgColor[1], bgColor[2]);
+        const ratio = contrastRatio(fgLum, bgLum);
+
+        const fontSize = parseFloat(styles.fontSize);
+        const fontWeight = parseInt(styles.fontWeight) || 400;
+        // Large text: >= 18pt (24px) or >= 14pt (18.66px) bold
+        const isLargeText = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
+
+        // WCAG thresholds:
+        // AA: 4.5:1 normal, 3:1 large (1.4.3)
+        // AAA: 7:1 normal, 4.5:1 large (1.4.6)
+        const aaThreshold = isLargeText ? 3 : 4.5;
+        const aaaThreshold = isLargeText ? 4.5 : 7;
+
+        if (ratio < aaaThreshold) {
+          results.push({
+            selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : ''),
+            text: text.slice(0, 30),
+            fontSize,
+            ratio: Math.round(ratio * 10) / 10,
+            isLargeText,
+            color: styles.color,
+            bgColor: styles.backgroundColor,
+          });
         }
       }
 
@@ -241,17 +367,38 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
     }
   );
 
-  for (const el of lowContrastElements.slice(0, 5)) {
+  // AA threshold: 4.5:1 normal, 3:1 large text (WCAG 1.4.3)
+  // AAA threshold: 7:1 normal, 4.5:1 large text (WCAG 1.4.6)
+  for (const el of lowContrastElements.slice(0, 8)) {
+    const aaThreshold = el.isLargeText ? 3 : 4.5;
+    const failsAA = el.ratio < aaThreshold;
+    const wcagCriteria = failsAA ? ["1.4.3", "1.4.6"] : ["1.4.6"];
+    const barrierLevel = getBarrierWcagLevel(wcagCriteria);
+
+    let rawSeverity: AccessibilityBarrierSeverity;
+    if (failsAA) {
+      rawSeverity = el.ratio < 2 ? "critical" : el.ratio < 3 ? "major" : "minor";
+    } else {
+      rawSeverity = "minor"; // passes AA, fails AAA
+    }
+
+    const severity = adjustSeverityForLevel(rawSeverity, barrierLevel, ctx.wcagLevel);
+
     barriers.push({
       type: "contrast",
       element: el.selector,
-      description: `Low contrast text may be difficult to read (color: ${el.color})`,
-      affectedPersonas: ["low-vision-magnified", "elderly-low-vision"],
-      wcagCriteria: ["1.4.3", "1.4.6"],
-      severity: contrastSensitivity > 2 ? "major" : "minor",
-      remediation: "Increase text contrast to at least 4.5:1 for normal text, 3:1 for large text",
+      description: failsAA
+        ? `Contrast ratio ${el.ratio}:1 fails AA minimum (${el.isLargeText ? '3' : '4.5'}:1 required for ${el.isLargeText ? 'large' : 'normal'} text)`
+        : `Contrast ratio ${el.ratio}:1 passes AA but fails AAA (${el.isLargeText ? '4.5' : '7'}:1 required)`,
+      affectedPersonas: ["low-vision-magnified", "elderly-low-vision", "color-blind-deuteranopia"],
+      wcagCriteria,
+      severity,
+      remediation: failsAA
+        ? `Increase contrast to at least ${el.isLargeText ? '3' : '4.5'}:1 (current: ${el.ratio}:1)`
+        : `For AAA compliance, increase contrast to ${el.isLargeText ? '4.5' : '7'}:1 (current: ${el.ratio}:1)`,
     });
-    ctx.wcagViolations.add("1.4.3");
+    if (failsAA) ctx.wcagViolations.add("1.4.3");
+    else ctx.wcagViolations.add("1.4.6");
   }
 }
 
@@ -1049,7 +1196,8 @@ async function simulateAccessibilityJourney(
   persona: AccessibilityPersona,
   scope: "viewport" | "full_page" = "viewport",
   maxSteps: number,
-  maxTime: number
+  maxTime: number,
+  wcagLevel: "A" | "AA" | "AAA" = "AA"
 ): Promise<AccessibilityEmpathyResult> {
   const startTime = Date.now();
   const ctx: BarrierContext = {
@@ -1060,6 +1208,7 @@ async function simulateAccessibilityJourney(
     wcagViolations: new Set(),
     stepCount: 0,
     viewportOnly: scope === "viewport",
+    wcagLevel,
   };
 
   let goalAchieved = false;
@@ -2152,7 +2301,11 @@ export async function runEmpathyAudit(
 
     let browser: CBrowser | null = null;
     try {
-      browser = new CBrowser({ headless, persistent: false });
+      browser = new CBrowser({
+        headless,
+        persistent: false,
+        ...(options.device ? { device: options.device.toLowerCase() } : {}),
+      });
       await browser.launch();
       const page = await browser.getPage();
 
@@ -2164,7 +2317,8 @@ export async function runEmpathyAudit(
         resolvedPersona,
         auditScope,
         maxSteps,
-        maxTime
+        maxTime,
+        wcagLevel
       );
 
       // v18.28.0: Run attention analysis FIRST so we can pass page-specific data to perceptual transport

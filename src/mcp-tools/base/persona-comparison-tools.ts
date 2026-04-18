@@ -915,12 +915,7 @@ Begin with the first persona: ${personas[0]}
         text: JSON.stringify(response, null, 2),
       });
 
-      // Auto-save cognitive_effort to site dashboard
-      try {
-        const { saveToolResult } = await import("../tool-result-saver.js");
-        const { getSessionApiKey } = await import("./cognitive-tools.js");
-        saveToolResult({ apiKey: getSessionApiKey(), toolName: "cognitive_effort", targetUrl: url, result: response as Record<string, unknown>, persona: personaName });
-      } catch {}
+      // Auto-save handled by tier-gate wrapper
 
       return { content };
     } catch (err) {

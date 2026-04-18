@@ -1021,23 +1021,48 @@ async function handleMcpRequest(
     if (method === "tools/call" && params?.name) {
       logLine += ` [${params.name}]`;
 
-      // Deduct credits for tool calls (non-blocking)
+      // Deduct credits and enforce domain scoping (blocking for denials)
       const toolName = params.name as string;
+      const toolArgs = params.arguments as Record<string, unknown> | undefined;
+      const targetUrl = (toolArgs?.url || (Array.isArray(toolArgs?.sites) ? (toolArgs.sites as string[])[0] : "") || "") as string;
       const keyHash = getActiveKeyHash();
       if (keyHash) {
         const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
-        fetch(`${cmsUrl}/api/credits/deduct?key_hash=${encodeURIComponent(keyHash)}&tool=${encodeURIComponent(toolName)}`, {
-          method: "POST",
-        }).then(async (r) => {
-          if (r.ok) {
-            const data = await r.json() as { allowed: boolean; cost?: number; remaining?: number; reason?: string };
+        const deductParams = new URLSearchParams({
+          key_hash: keyHash,
+          tool: toolName,
+          ...(targetUrl ? { target_url: targetUrl } : {}),
+        });
+        try {
+          const creditRes = await fetch(`${cmsUrl}/api/credits/deduct?${deductParams}`, { method: "POST" });
+          if (creditRes.ok || creditRes.status === 402 || creditRes.status === 403) {
+            const data = await creditRes.json() as { allowed: boolean; reason?: string; message?: string; remaining?: number };
             if (!data.allowed) {
-              console.log(`[Credits] ${toolName}: DENIED (${data.reason}, remaining: ${data.remaining})`);
+              console.log(`[Credits] ${toolName}: DENIED (${data.reason})`);
+              // Block tool execution — return JSON-RPC error to client
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({
+                jsonrpc: "2.0",
+                id: parsedBody?.id ?? null,
+                result: {
+                  content: [{
+                    type: "text",
+                    text: JSON.stringify({
+                      error: data.reason,
+                      message: data.message || "Tool execution denied",
+                      ...(data.reason === "domain_not_registered" ? { action: "Add this domain at cbrowser.ai/account/reports" } : {}),
+                      ...(data.reason === "insufficient_credits" ? { action: "Purchase credits at cbrowser.ai/pricing", remaining: data.remaining } : {}),
+                      ...(data.reason === "tool_not_available" ? { action: "Upgrade to Pro at cbrowser.ai/pricing" } : {}),
+                    }, null, 2),
+                  }],
+                },
+              }));
+              return;
             }
           }
-        }).catch(() => {
-          // CMS unreachable — don't block tool execution
-        });
+        } catch {
+          // CMS unreachable — allow tool execution (fail open)
+        }
       }
     }
     if (method === "notifications/initialized") {

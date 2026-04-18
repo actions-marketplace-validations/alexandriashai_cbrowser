@@ -26,6 +26,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
     inputSchema: {
       url: z.string().url().describe("URL to audit"),
       userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US') — for content language validation"),
+      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15'. Tests mobile AI-friendliness (responsive selectors, touch targets, viewport-specific layouts)."),
     },
     annotations: {
       title: "Agent-Ready Audit",
@@ -34,8 +35,8 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url }) => {
-      const result = await runAgentReadyAudit(url, { headless: true });
+  }, async ({ url, device }) => {
+      const result = await runAgentReadyAudit(url, { headless: true, ...(device ? { device } : {}) });
       const responseData = {
         url: result.url,
         score: result.score,
@@ -45,12 +46,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         topRecommendations: result.recommendations.slice(0, 5),
         duration: result.duration,
       };
-      // Auto-save to site dashboard
-      try {
-        const { saveToolResult } = await import("../tool-result-saver.js");
-        const { getSessionApiKey } = await import("./cognitive-tools.js");
-        saveToolResult({ apiKey: getSessionApiKey(), toolName: "agent_ready_audit", targetUrl: url, result: responseData, durationMs: typeof result.duration === 'string' ? parseInt(result.duration) : result.duration });
-      } catch {}
+      // Auto-save handled by tier-gate wrapper
       return { content: [{ type: "text", text: JSON.stringify(responseData, null, 2) }] };
     }
   );
@@ -112,6 +108,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US')"),
       userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US') — affects readability scoring"),
       scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to score: 'viewport' (first impression, above-the-fold only — default) or 'full_page' (scroll through entire page, all barriers). Use 'viewport' for landing page optimization; 'full_page' for WCAG compliance audits."),
+      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15', 'Pixel 7'. Essential for mobile WCAG audits — touch targets, viewport sizing, and responsive barriers differ significantly on mobile."),
     },
     annotations: {
       title: "Empathy Accessibility Audit",
@@ -120,7 +117,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope }) => {
+  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope, device }) => {
       try {
         // Auto-limit to 1 persona to avoid MCP client timeout on Claude.ai (~60s limit)
         const allPersonas = listAccessibilityPersonas();
@@ -136,6 +133,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           maxTime,
           headless: true,
           scope: scope || "viewport",
+          device: device || undefined,
         });
         // Build response with guidance for additional personas
         const testedPersona = singlePersona[0];
@@ -147,6 +145,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           testedPersona,
           overallScore: result.overallScore,
           scope: scope || "viewport",
+          device: device || "desktop",
           scopeNote: scope === "full_page"
             ? "Full-page audit: scrolled through entire page before barrier detection. Scores reflect all content including below-the-fold."
             : "Viewport-only audit: scored first impression (above-the-fold). Use scope='full_page' for complete barrier inventory, or cognitive_journey for path-dependent experience.",
@@ -194,12 +193,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           response.remainingPersonas = remainingPersonas;
         }
 
-        // Auto-save empathy_audit to site dashboard
-        try {
-          const { saveToolResult } = await import("../tool-result-saver.js");
-          const { getSessionApiKey } = await import("./cognitive-tools.js");
-          saveToolResult({ apiKey: getSessionApiKey(), toolName: "empathy_audit", targetUrl: url, result: response as Record<string, unknown>, persona: response.testedPersona as string, scope: scope || "viewport" });
-        } catch {}
+        // Auto-save handled by tier-gate wrapper
         return {
           content: [
             {
@@ -665,11 +659,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         response.duration = `${Date.now() - startTime}ms`;
 
         // Auto-save to site dashboard
-        try {
-          const { saveToolResult } = await import("../tool-result-saver.js");
-          const { getSessionApiKey } = await import("./cognitive-tools.js");
-          saveToolResult({ apiKey: getSessionApiKey(), toolName: "site_cognitive_assessment", targetUrl: url, result: response as Record<string, unknown>, persona: personaList[0], scope: auditScope, durationMs: Date.now() - startTime });
-        } catch {}
+        // Auto-save handled by tier-gate wrapper
 
         if (ownsBrowser) await browser.close();
       } catch (navErr) {
