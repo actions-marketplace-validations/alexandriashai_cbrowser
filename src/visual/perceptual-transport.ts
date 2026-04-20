@@ -265,9 +265,121 @@ const DEFAULT_PROFILE: PerceptualProfile = {
 
 /**
  * Get the perceptual profile for a persona.
+ *
+ * For built-in personas, returns the hardcoded profile.
+ * For custom personas, synthesizes a profile from accessibility traits if provided,
+ * or infers from the persona name as a fallback.
  */
-export function getPerceptualProfile(personaName: string): PerceptualProfile {
-  return PERCEPTUAL_PROFILES[personaName] || DEFAULT_PROFILE;
+export function getPerceptualProfile(
+  personaName: string,
+  accessibilityTraits?: {
+    motorControl?: number;
+    tremor?: boolean;
+    visionLevel?: number;
+    contrastSensitivity?: number;
+    processingSpeed?: number;
+    attentionSpan?: number;
+    fatigueSusceptibility?: number;
+  },
+): PerceptualProfile {
+  // Built-in profiles take priority
+  if (PERCEPTUAL_PROFILES[personaName]) {
+    return PERCEPTUAL_PROFILES[personaName];
+  }
+
+  // Synthesize from accessibility traits if provided
+  if (accessibilityTraits) {
+    return synthesizePerceptualProfile(personaName, accessibilityTraits);
+  }
+
+  // Name-based inference as last resort
+  const name = personaName.toLowerCase();
+  if (name.includes('vision') || name.includes('blind') || name.includes('magnif') || name.includes('elderly')) {
+    // Clone elderly-low-vision as a reasonable default for vision-related custom personas
+    return { ...PERCEPTUAL_PROFILES['elderly-low-vision'], persona: personaName };
+  }
+  if (name.includes('motor') || name.includes('tremor') || name.includes('parkinson')) {
+    return { ...PERCEPTUAL_PROFILES['motor-impairment-tremor'], persona: personaName };
+  }
+  if (name.includes('adhd') || name.includes('cognitive') || name.includes('dyslexic')) {
+    return { ...PERCEPTUAL_PROFILES['cognitive-adhd'], persona: personaName };
+  }
+  if (name.includes('deaf') || name.includes('hearing')) {
+    return { ...PERCEPTUAL_PROFILES['deaf-user'], persona: personaName };
+  }
+  if (name.includes('color') && name.includes('blind') || name.includes('deuteranop')) {
+    return { ...PERCEPTUAL_PROFILES['color-blind-deuteranopia'], persona: personaName };
+  }
+
+  return DEFAULT_PROFILE;
+}
+
+/**
+ * Synthesize a perceptual profile from accessibility traits.
+ * Maps trait values (0-1) to perceptual filter parameters.
+ */
+function synthesizePerceptualProfile(
+  personaName: string,
+  traits: Record<string, unknown>,
+): PerceptualProfile {
+  const motorControl = (traits.motorControl as number) ?? 1.0;
+  const visionLevel = (traits.visionLevel as number) ?? 1.0;
+  const contrastSensitivity = (traits.contrastSensitivity as number) ?? 1.0;
+  const processingSpeed = (traits.processingSpeed as number) ?? 1.0;
+  const attentionSpan = (traits.attentionSpan as number) ?? 1.0;
+  const fatigue = (traits.fatigueSusceptibility as number) ?? 0.0;
+  const hasTremor = !!traits.tremor;
+
+  // Determine category from trait profile
+  const isVision = visionLevel < 0.7 || contrastSensitivity < 0.7;
+  const isMotor = motorControl < 0.7 || hasTremor;
+  const isCognitive = processingSpeed < 0.6 || attentionSpan < 0.5;
+  const category: PerceptualProfile['category'] =
+    isVision ? 'vision' : isMotor ? 'motor' : isCognitive ? 'cognitive' : 'general';
+
+  // Map vision level to blur/contrast/attenuation
+  const blurRadius = Math.max(0, (1 - visionLevel) * 4); // 0 at 1.0, 4.0 at 0.0
+  const contrastThreshold = Math.max(0, (1 - contrastSensitivity) * 10); // 0 at 1.0, 10 at 0.0
+  const colorDim = 0.3 + visionLevel * 0.7; // 0.3 at 0.0, 1.0 at 1.0
+  const colorAttenuation: [number, number, number] = [colorDim, colorDim, colorDim * 0.9]; // slight yellowing
+
+  // Map motor control to motor cost
+  const motorCostMultiplier = hasTremor ? 3.0 : 1 + (1 - motorControl) * 2; // 1.0 at 1.0, 3.0 at 0.0
+
+  // Attention mode from traits
+  const attentionMode: PerceptualFilter['attentionMode'] =
+    isVision ? 'large-elements' :
+    isCognitive ? 'motion-attracted' :
+    isMotor ? 'center-heavy' :
+    'uniform';
+
+  // Barrier weights derived from trait profile
+  const barrierWeights: Record<string, number> = {
+    touch_target: isMotor ? 3.0 : isVision ? 1.5 : 1.0,
+    low_contrast: isVision ? 3.0 : 1.0,
+    cognitive_load: isCognitive ? 3.0 : isVision ? 2.0 : 1.0,
+    timing: isVision || isCognitive ? 2.0 : isMotor ? 1.5 : 1.0,
+    color_only: isVision ? 2.0 : 1.0,
+    missing_alt: isVision ? 2.5 : 1.0,
+    missing_label: isVision || isMotor ? 2.0 : 1.0,
+    hover_dependent: isMotor ? 2.5 : 1.0,
+    form_complexity: isCognitive ? 2.5 : isMotor ? 1.5 : 1.0,
+  };
+
+  return {
+    persona: personaName,
+    category,
+    barrierWeights,
+    visualFilter: {
+      contrastThreshold,
+      blurRadius,
+      colorAttenuation,
+      attentionMode,
+      motorCostMultiplier,
+      processingSpeed: Math.max(0.3, processingSpeed),
+      noiseTolerance: Math.max(0.2, attentionSpan * (1 - fatigue)),
+    },
+  };
 }
 
 /**
@@ -288,6 +400,7 @@ export function calculatePerceptualScore(
   frictionPoints: Array<{ impact: string }>,
   goalAchieved: boolean,
   personaName: string,
+  accessibilityTraits?: Record<string, unknown>,
 ): {
   score: number;
   deductions: Record<string, number>;
@@ -296,7 +409,7 @@ export function calculatePerceptualScore(
   motorCost: number;
   explanation: string;
 } {
-  const profile = getPerceptualProfile(personaName);
+  const profile = getPerceptualProfile(personaName, accessibilityTraits as any);
   const filter = profile.visualFilter;
   let score = 100;
   const deductions: Record<string, number> = {};
@@ -405,9 +518,10 @@ export async function analyzePerceptualTransport(
   screenshotPath: string,
   personaName: string,
   attentionData?: { entropy: number; concentration: number; transportCost: number },
+  accessibilityTraits?: Record<string, unknown>,
 ): Promise<PerceptualAnalysis> {
   const startTime = performance.now();
-  const profile = getPerceptualProfile(personaName);
+  const profile = getPerceptualProfile(personaName, accessibilityTraits as any);
   const filter = profile.visualFilter;
 
   // Load and apply perceptual filter to create "what this persona sees"

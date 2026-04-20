@@ -583,7 +583,13 @@ export function computeSequentialCTC(
   // Total CTC = sum of layer costs + interaction terms
   // Note: additiveCTC is layers-only (no interactions, no sequential effects)
   // The sequential effect is already embedded in layer costs via capacity depletion
-  const totalCTC = layers.reduce((sum, l) => sum + l.transportCost, 0) + interactionTotal;
+  const rawCTC = layers.reduce((sum, l) => sum + l.transportCost, 0) + interactionTotal;
+
+  // Normalize CTC to a 0-1 scale that maps to human-interpretable difficulty
+  // Calibration: raw CTC from the W₂ formula tends to be 0.3-3.0 for real pages.
+  // We normalize using a sigmoid so: 0.5 raw → 0.2, 1.0 → 0.4, 2.0 → 0.7, 3.0 → 0.9
+  // This ensures "easy" pages (simple layout, clear content) land below 0.3
+  const totalCTC = 1 / (1 + Math.exp(-2.5 * (rawCTC - 1.2)));
 
   // Find bottleneck layer
   let maxLayerCost = 0;

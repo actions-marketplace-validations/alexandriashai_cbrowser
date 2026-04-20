@@ -369,6 +369,7 @@ export function registerVisualTestingTools(server: McpServer): void {
     inputSchema: {
       url: z.string().describe("URL to analyze"),
       persona: z.string().optional().default("first-timer").describe("Persona name"),
+      goal: z.string().optional().describe("Task goal — elements matching this goal get boosted attention (e.g., 'find pricing', 'sign up for an account')"),
       cellSize: z.number().optional().default(4).describe("Saliency grid cell size in pixels (smaller = finer heatmap, default: 4)"),
       heatmap: z.boolean().optional().default(true).describe("Generate visual heatmap overlay (default: true)"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
@@ -381,7 +382,7 @@ export function registerVisualTestingTools(server: McpServer): void {
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona, cellSize, heatmap, device, useValues }) => {
+  }, async ({ url, persona, goal, cellSize, heatmap, device, useValues }) => {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({
         headless: true,
@@ -426,7 +427,7 @@ export function registerVisualTestingTools(server: McpServer): void {
           isNav: el.isNav,
           isDecorative: el.isDecorative,
         }));
-        const result = await analyzeAttention(screenshotPath, persona, cellSize, undefined, domAttentionElements);
+        const result = await analyzeAttention(screenshotPath, persona, cellSize, undefined, domAttentionElements, goal);
 
         // Compute attention quality — cross-reference hotspots with classified elements
         let attentionQuality: unknown = null;

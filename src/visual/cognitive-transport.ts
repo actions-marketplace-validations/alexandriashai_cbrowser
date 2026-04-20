@@ -674,10 +674,23 @@ export async function extractPageMetrics(page: any): Promise<{
     links.forEach(el => { if (inViewport(el)) choiceCount++; });
     selects.forEach(s => { if (inViewport(s)) choiceCount += s.querySelectorAll('option').length; });
 
-    // Animations — viewport only
-    const animations = Array.from(document.querySelectorAll('[class*="anim"], [class*="transition"], [class*="slide"], [class*="fade"], video, [autoplay]'));
+    // Animations — count only ACTUAL running animations, not CSS transition utilities
+    // WCAG 2.3.3 cares about content that moves/blinks automatically, not hover transitions
     let animCount = 0;
-    animations.forEach(el => { if (inViewport(el)) animCount++; });
+    document.querySelectorAll('*').forEach(el => {
+      if (!inViewport(el)) return;
+      const style = getComputedStyle(el);
+      // Only count elements with actual running CSS animations (not transitions)
+      if (style.animationName && style.animationName !== 'none' &&
+          style.animationPlayState === 'running' &&
+          style.animationDuration !== '0s' && style.animationDuration !== '0.01ms') {
+        animCount++;
+      }
+    });
+    // Also count auto-playing media
+    document.querySelectorAll('video[autoplay], [autoplay]').forEach(el => {
+      if (inViewport(el)) animCount++;
+    });
     const hasCarousel = !!document.querySelector('[class*="carousel"], [class*="slider"], [class*="swiper"]');
 
     // Navigation depth (breadcrumbs — these are structural, keep full-page)

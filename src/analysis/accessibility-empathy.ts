@@ -1498,7 +1498,8 @@ async function simulateAccessibilityJourney(
     ctx.barriers,
     ctx.frictionPoints,
     goalAchieved,
-    persona.name
+    persona.name,
+    (persona as any).accessibilityTraits,
   );
   const empathyScore = perceptualResult.score;
   const totalDeduction = Object.values(perceptualResult.deductions).reduce((a, b) => a + Math.abs(b), 0);
@@ -2305,15 +2306,25 @@ export async function runEmpathyAudit(
               headers: { "Authorization": `Bearer ${apiKey}` },
             });
             if (res.ok) {
-              const data = await res.json() as { personas: Array<{ name: string; traits: Record<string, number> }> };
+              const data = await res.json() as { personas: Array<{ name: string; slug?: string; traits: Record<string, number>; accessibility_traits?: Record<string, unknown>; age_range?: string }> };
               const cmsMatch = data.personas.find(
-                (p: { name: string }) => p.name.toLowerCase() === personaName.toLowerCase() ||
+                (p: { name: string; slug?: string }) =>
+                  p.name.toLowerCase() === personaName.toLowerCase() ||
                   p.name.toLowerCase().replace(/\s+/g, '-') === personaName.toLowerCase() ||
-                  p.name.toLowerCase().replace(/\s+/g, '_') === personaName.toLowerCase()
+                  p.name.toLowerCase().replace(/\s+/g, '_') === personaName.toLowerCase() ||
+                  (p.slug && p.slug.toLowerCase() === personaName.toLowerCase())
               );
               if (cmsMatch) {
-                cognitivePersona = createCognitivePersona(cmsMatch.name, cmsMatch.name, cmsMatch.traits);
-                console.log(`[empathy_audit] Found custom CMS persona: "${cmsMatch.name}"`);
+                const parsedTraits = typeof cmsMatch.traits === "string" ? JSON.parse(cmsMatch.traits) : cmsMatch.traits;
+                cognitivePersona = createCognitivePersona(cmsMatch.name, cmsMatch.name, parsedTraits, {
+                  ageRange: cmsMatch.age_range || undefined,
+                });
+                // Attach CMS accessibility traits if stored
+                if (cmsMatch.accessibility_traits) {
+                  const at = typeof cmsMatch.accessibility_traits === "string" ? JSON.parse(cmsMatch.accessibility_traits) : cmsMatch.accessibility_traits;
+                  (cognitivePersona as any).accessibilityTraits = at;
+                }
+                console.log(`[empathy_audit] Found custom CMS persona: "${cmsMatch.name}" with ${Object.keys(parsedTraits).length} traits${cmsMatch.accessibility_traits ? ' + disability modeling' : ''}`);
               }
             }
           }
@@ -2323,22 +2334,29 @@ export async function runEmpathyAudit(
       }
 
       if (cognitivePersona) {
-        // Wrap cognitive persona as accessibility persona with neutral traits
+        // Wrap cognitive persona as accessibility persona, inferring traits from name + cognitive traits
+        const ct = (cognitivePersona as any).cognitiveTraits || {};
+        const name = personaName.toLowerCase();
+        const hasVisionHint = name.includes("vision") || name.includes("blind") || name.includes("elderly") || name.includes("magnif");
+        const hasMotorHint = name.includes("motor") || name.includes("tremor") || name.includes("parkinsons");
+        const hasCognitiveHint = name.includes("adhd") || name.includes("dyslexic") || name.includes("cognitive") || name.includes("memory");
+
         persona = {
           ...cognitivePersona,
           accessibilityTraits: {
-            motorControl: 1.0,
-            tremor: false,
-            reachability: 1.0,
-            visionLevel: 1.0,
-            contrastSensitivity: 1.0,
-            processingSpeed: (cognitivePersona as any).cognitiveTraits?.comprehension ?? 0.8,
-            attentionSpan: (cognitivePersona as any).cognitiveTraits?.patience ?? 0.7,
-            fatigueSusceptibility: 0.3,
+            motorControl: hasMotorHint ? 0.3 : ct.motorControl ?? 1.0,
+            tremor: hasMotorHint,
+            reachability: hasMotorHint ? 0.4 : 1.0,
+            visionLevel: hasVisionHint ? 0.4 : ct.visionLevel ?? 1.0,
+            contrastSensitivity: hasVisionHint ? 0.5 : ct.contrastSensitivity ?? 1.0,
+            processingSpeed: ct.comprehension ?? (hasCognitiveHint ? 0.4 : 0.8),
+            attentionSpan: ct.patience ?? (hasCognitiveHint ? 0.3 : 0.7),
+            fatigueSusceptibility: hasVisionHint || hasMotorHint ? 0.7 : 0.3,
           },
         } as any;
-        isDisabilityPersona = false;
-        console.log(`[empathy_audit] "${disability}" is not a disability persona — running with general accessibility traits`);
+        // If the name hints at a disability, treat it as a disability persona for routing
+        isDisabilityPersona = hasVisionHint || hasMotorHint || hasCognitiveHint;
+        console.log(`[empathy_audit] "${disability}" wrapped as ${isDisabilityPersona ? "disability" : "general"} persona (vision=${hasVisionHint}, motor=${hasMotorHint}, cognitive=${hasCognitiveHint})`);
       } else {
         // Return an explicit error instead of silently skipping
         console.error(`[empathy_audit] Persona "${disability}" not found in any registry (built-in, custom, CMS)`);
@@ -2420,7 +2438,7 @@ export async function runEmpathyAudit(
         const screenshotPath = join(tmpdir(), `empathy-screenshot-${Date.now()}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: false });
 
-        const perceptualAnalysis = await analyzePerceptualTransport(screenshotPath, personaName, attentionData);
+        const perceptualAnalysis = await analyzePerceptualTransport(screenshotPath, personaName, attentionData, (resolvedPersona as any).accessibilityTraits);
 
         // Attach perceptual metrics to the result
         (result as any).perceptualTransport = {

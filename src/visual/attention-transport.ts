@@ -486,9 +486,74 @@ export interface DOMAttentionElement {
 }
 
 /**
+ * Compute trait-driven element modifiers from cognitive traits.
+ * Generalizes the static PERSONA_ELEMENT_MODIFIERS table to work with
+ * ANY persona's trait values, not just the 11 hardcoded ones.
+ */
+function computeTraitModifiers(traits: Record<string, number>): Record<string, number> {
+  const t = (key: string) => traits[key] ?? 0.5;
+  return {
+    // Low patience → fixate on CTAs and search, skip content
+    cta: 1.0 + (1.0 - t("patience")) * 0.5,
+    search: 0.7 + (1.0 - t("patience")) * 0.6,
+    content: 0.2 + t("patience") * 0.4,
+    // High curiosity → explore headings, images, more elements
+    heading: 0.8 + t("curiosity") * 0.4,
+    image: 0.5 + t("curiosity") * 0.5,
+    // Low siteFamiliarity → navigation, headings are important
+    navigation: 0.4 + (1.0 - t("siteFamiliarity")) * 0.6,
+    // High readingTendency → content draws attention
+    // (overrides patience for reading-heavy personas)
+    ...(t("readingTendency") > 0.6 ? { content: 0.4 + t("readingTendency") * 0.4 } : {}),
+    // Low selfEfficacy → error messages, help text draw attention
+    error: 0.5 + (1.0 - t("selfEfficacy")) * 0.5,
+    // High riskTolerance → prices don't scare, CTAs are natural
+    price: 0.5 + (1.0 - t("riskTolerance")) * 0.5,
+    // Decorative: ADHD-like attention (low metacognitivePlanning = distracted by visuals)
+    decorative: 0.1 + (1.0 - t("metacognitivePlanning")) * 0.4,
+    form: 0.5 + t("proceduralFluency") * 0.3,
+  };
+}
+
+/**
+ * Compute goal relevance boost for an element.
+ * If the element's text matches the user's goal, massively boost its weight.
+ * This is the "task-driven attention" component (Yarbus 1967).
+ */
+function computeGoalRelevance(elementText: string, goal: string): number {
+  if (!goal || !elementText) return 0;
+  const goalLower = goal.toLowerCase();
+  const textLower = elementText.toLowerCase();
+
+  // Extract goal keywords (remove stop words)
+  const stopWords = new Set(["the", "a", "an", "to", "for", "of", "in", "on", "at", "is", "it", "my", "i", "me", "and", "or", "how", "do", "can"]);
+  const goalWords = goalLower.split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+
+  if (goalWords.length === 0) return 0;
+
+  // Score based on keyword matches
+  let matches = 0;
+  for (const word of goalWords) {
+    if (textLower.includes(word)) matches++;
+  }
+
+  if (matches === 0) return 0;
+  // Partial match: some keywords found
+  const matchRatio = matches / goalWords.length;
+  // 2.0x boost for full match, proportional for partial
+  return matchRatio * 2.0;
+}
+
+/**
  * Build a semantic attention map from DOM elements.
- * Each grid cell gets a weight based on what DOM element(s) overlap it,
- * modulated by the persona's priorities.
+ *
+ * Three layers of element weighting:
+ * 1. Base weight by element type (CTA=1.0, heading=0.8, etc.)
+ * 2. Persona modifiers from cognitive traits (patience, curiosity, familiarity)
+ * 3. Goal relevance — elements matching the user's goal get massive boost
+ *
+ * Also applies Schwartz value relevance (trust signals for security-oriented,
+ * novelty badges for stimulation-seeking, etc.)
  */
 function buildSemanticMap(
   elements: DOMAttentionElement[],
@@ -498,9 +563,26 @@ function buildSemanticMap(
   imageWidth: number,
   imageHeight: number,
   personaName: string,
+  goal?: string,
+  cognitiveTraits?: Record<string, number>,
+  schwartzValues?: Record<string, number>,
 ): Float64Array {
   const map = new Float64Array(rows * cols);
-  const modifiers = PERSONA_ELEMENT_MODIFIERS[personaName] || {};
+
+  // Use trait-driven modifiers if traits available, else fall back to static table
+  const modifiers = cognitiveTraits
+    ? computeTraitModifiers(cognitiveTraits)
+    : (PERSONA_ELEMENT_MODIFIERS[personaName] || {});
+
+  // Value-driven semantic patterns (imported from attention-quality)
+  const VALUE_PATTERNS: Record<string, { pattern: RegExp; values: Record<string, number> }> = {
+    trust: { pattern: /secur|trust|verif|guarant|privacy|encrypt|safe|protect/i, values: { security: 1.0, conformity: 0.5 } },
+    social: { pattern: /review|rating|star|trusted.?by|\d+[kK]?\+?\s*users|testimonial/i, values: { conformity: 1.0, security: 0.6 } },
+    novelty: { pattern: /\bnew\b|beta|launch|updat|just.?added|latest|early.?access/i, values: { stimulation: 1.0, selfDirection: 0.5 } },
+    metrics: { pattern: /\d+%|\d+x\s|roi|faster|improv|performance|\$\d/i, values: { achievement: 1.0, power: 0.4 } },
+    urgency: { pattern: /limited|only\s*\d|hurry|expire|last.?chance|act.?now/i, values: { stimulation: 0.5, achievement: 0.4 } },
+    community: { pattern: /community|join|forum|together|open.?source|contrib/i, values: { benevolence: 0.8, universalism: 0.6 } },
+  };
 
   for (const el of elements) {
     // Determine element type
@@ -510,22 +592,46 @@ function buildSemanticMap(
     else if (el.isNav) elType = "navigation";
     else if (el.isDecorative) elType = "decorative";
 
-    // Base weight for this element type
-    const baseWeight = ELEMENT_TYPE_WEIGHTS[elType] ?? 0.2;
-    // Persona modifier
+    // Layer 1: Base weight by element type
+    let weight = ELEMENT_TYPE_WEIGHTS[elType] ?? 0.2;
+
+    // Layer 2: Persona modifier (trait-driven or static lookup)
     const modifier = modifiers[elType] ?? 1.0;
-    const weight = baseWeight * modifier;
+    weight *= modifier;
+
+    // Layer 3: Goal relevance — elements matching the goal get up to 3x boost
+    if (goal && el.text) {
+      const goalBoost = computeGoalRelevance(el.text, goal);
+      if (goalBoost > 0) {
+        weight *= (1.0 + goalBoost); // Up to 3x for full goal match
+      }
+    }
+
+    // Layer 4: Schwartz value relevance — elements matching persona values get boost
+    if (schwartzValues && el.text) {
+      for (const [, pattern] of Object.entries(VALUE_PATTERNS)) {
+        if (pattern.pattern.test(el.text)) {
+          let valueBoost = 0;
+          for (const [valueName, valueWeight] of Object.entries(pattern.values)) {
+            const personaValue = schwartzValues[valueName] ?? 0.5;
+            valueBoost += (personaValue - 0.5) * valueWeight;
+          }
+          weight *= (1.0 + Math.max(0, valueBoost));
+        }
+      }
+    }
 
     // Map element bounds to grid cells
-    const startCol = Math.max(0, Math.floor(el.x / cellSize));
-    const endCol = Math.min(cols - 1, Math.floor((el.x + el.width) / cellSize));
-    const startRow = Math.max(0, Math.floor(el.y / cellSize));
-    const endRow = Math.min(rows - 1, Math.floor((el.y + el.height) / cellSize));
+    const pxPerCol = imageWidth / cols;
+    const pxPerRow = imageHeight / rows;
+    const startCol = Math.max(0, Math.floor(el.x / pxPerCol));
+    const endCol = Math.min(cols - 1, Math.floor((el.x + el.width) / pxPerCol));
+    const startRow = Math.max(0, Math.floor(el.y / pxPerRow));
+    const endRow = Math.min(rows - 1, Math.floor((el.y + el.height) / pxPerRow));
 
     for (let r = startRow; r <= endRow; r++) {
       for (let c = startCol; c <= endCol; c++) {
         const idx = r * cols + c;
-        // Use max — if multiple elements overlap, the most attention-grabbing wins
         map[idx] = Math.max(map[idx], weight);
       }
     }
@@ -580,6 +686,8 @@ export async function analyzeAttention(
   cellSize: number = 16,
   schwartzValues?: Record<string, number>,
   domElements?: DOMAttentionElement[],
+  goal?: string,
+  cognitiveTraits?: Record<string, number>,
 ): Promise<AttentionAnalysis> {
   const startTime = performance.now();
   const profile = getPerceptualProfile(personaName);
@@ -607,12 +715,25 @@ export async function analyzeAttention(
   // Layer 2: Semantic attention — DOM element types × persona priorities
   let combinedSaliency: Float64Array;
   if (domElements && domElements.length > 0) {
+    // Load cognitive traits if not provided
+    let traits = cognitiveTraits;
+    if (!traits) {
+      try {
+        const { getAnyPersona, getCognitiveProfile } = await import('../personas.js');
+        const p = getAnyPersona(personaName);
+        if (p) traits = getCognitiveProfile(p as any).traits as unknown as Record<string, number>;
+      } catch {}
+    }
+
     const semanticMap = buildSemanticMap(
       domElements,
       baseSaliency.rows, baseSaliency.cols,
       cellSize,
       baseSaliency.width, baseSaliency.height,
       personaName,
+      goal,
+      traits,
+      values,
     );
     // Blend: 35% visual (what pops) + 65% semantic (what matters)
     combinedSaliency = blendSaliencyMaps(baseSaliency.cells, semanticMap, 0.35, 0.65);
@@ -716,10 +837,11 @@ export async function compareAttention(
   personaB: string,
   cellSize: number = 16,
   domElements?: DOMAttentionElement[],
+  goal?: string,
 ): Promise<AttentionComparisonResult> {
   const [analysisA, analysisB] = await Promise.all([
-    analyzeAttention(screenshotPath, personaA, cellSize, undefined, domElements),
-    analyzeAttention(screenshotPath, personaB, cellSize, undefined, domElements),
+    analyzeAttention(screenshotPath, personaA, cellSize, undefined, domElements, goal),
+    analyzeAttention(screenshotPath, personaB, cellSize, undefined, domElements, goal),
   ]);
 
   const salA = analysisA.saliencyMap.cells;
