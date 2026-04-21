@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.65.0](https://github.com/alexandriashai/cbrowser/compare/v18.64.1...v18.65.0) (2026-04-21)
+
+### Added
+
+* shared browser support for agent-ready + empathy audits ([9890a6a](https://github.com/alexandriashai/cbrowser/commit/9890a6a9a98cfc16626653ec7e9d655d51e522d5))
+
 ## [18.64.1](https://github.com/alexandriashai/cbrowser/compare/v18.64.0...v18.64.1) (2026-04-20)
 
 ### Fixed
