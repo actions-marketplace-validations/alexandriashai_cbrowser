@@ -1752,10 +1752,14 @@ export async function runAgentReadyAudit(
   });
 
   const auditPromise = async (): Promise<AgentReadyAuditResult> => {
+    // If a pre-existing page is provided, skip browser launch + navigation
+    const externalPage = options.page;
     try {
-      // Use Lightpanda if explicitly requested and configured (stays raw Playwright)
       let page: Page;
-      if (options.useLightpanda && isLightpandaConfigured()) {
+      if (externalPage) {
+        page = externalPage;
+        // Skip navigation — caller already navigated
+      } else if (options.useLightpanda && isLightpandaConfigured()) {
         const result = await launchWithLightpandaFallback({
           headless: true,
           explicitOptIn: true,
@@ -1771,7 +1775,6 @@ export async function runAgentReadyAudit(
         });
         page = await context.newPage();
       } else {
-        // Use CBrowser for standard path — gets proxy error handling, crash recovery
         const cbrowser = new CBrowser({
           headless: options.headless ?? true,
           persistent: false,
@@ -1780,14 +1783,12 @@ export async function runAgentReadyAudit(
           ...(options.device ? { device: options.device.toLowerCase() } : {}),
         });
         await cbrowser.launch();
-        // Store the underlying Playwright browser for close() compatibility
         browser = (cbrowser as any).browser;
         page = await cbrowser.getPage();
       }
 
-      // Navigate to URL - use domcontentloaded for faster completion
-      // networkidle can hang on sites with continuous network activity
-      try {
+      // Navigate to URL (skip if external page provided — already navigated)
+      if (!externalPage) try {
         await page.goto(url, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
       } catch (navError) {
         const errMsg = navError instanceof Error ? navError.message : String(navError);
@@ -1813,11 +1814,12 @@ export async function runAgentReadyAudit(
       }
 
       // v18.22.0: SPA mode - detect framework and wait for hydration
-      if (options.spaMode) {
-        await waitForSpaHydration(page, { timeout: 5000 });
-      } else {
-        // Brief wait for initial JS execution (reduced from 2s)
-        await page.waitForTimeout(1000);
+      if (!externalPage) {
+        if (options.spaMode) {
+          await waitForSpaHydration(page, { timeout: 5000 });
+        } else {
+          await page.waitForTimeout(1000);
+        }
       }
 
     // Initialize detection context
@@ -1885,7 +1887,8 @@ export async function runAgentReadyAudit(
 
     return result;
     } finally {
-      if (browser) {
+      // Don't close browser if it was externally provided
+      if (browser && !externalPage) {
         await browser.close();
       }
     }
@@ -1895,8 +1898,7 @@ export async function runAgentReadyAudit(
   try {
     return await Promise.race<AgentReadyAuditResult>([auditPromise(), timeoutPromise]);
   } catch (error) {
-    // Ensure browser is closed on timeout
-    if (browser) {
+    if (browser && !options.page) {
       await (browser as Browser).close();
     }
     throw error;

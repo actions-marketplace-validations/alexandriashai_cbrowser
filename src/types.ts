@@ -4719,6 +4719,8 @@ export interface AgentReadyAuditOptions {
   locale?: string;
   /** Device emulation: 'mobile', 'tablet', 'desktop', or specific device name @since v18.60.0 */
   device?: string;
+  /** Pre-existing Playwright Page — skip browser launch and navigation. The page must already be at the target URL. */
+  page?: import("playwright").Page;
 }
 
 // ============================================================================
@@ -5146,6 +5148,8 @@ export interface EmpathyAuditOptions {
   device?: string;
   /** Generate HTML report */
   html?: boolean;
+  /** Pre-existing Playwright Page — skip browser launch and navigation. Page must already be at the target URL. */
+  page?: import("playwright").Page;
 }
 
 /** Accessibility-focused persona extending base persona */

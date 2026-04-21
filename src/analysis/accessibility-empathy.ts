@@ -2378,19 +2378,26 @@ export async function runEmpathyAudit(
     // TypeScript guard — persona is guaranteed non-null after continue above
     const resolvedPersona = persona!;
 
+    // Use externally provided page or launch a new browser
+    const externalPage = options.page;
     let browser: CBrowser | null = null;
     try {
-      browser = new CBrowser({
-        headless,
-        persistent: false,
-        ...(options.device ? { device: options.device.toLowerCase() } : {}),
-      });
-      await browser.launch();
-      const page = await browser.getPage();
+      let page: import("playwright").Page;
+      if (externalPage) {
+        page = externalPage;
+      } else {
+        browser = new CBrowser({
+          headless,
+          persistent: false,
+          ...(options.device ? { device: options.device.toLowerCase() } : {}),
+        });
+        await browser.launch();
+        page = await browser.getPage();
+      }
 
       const auditScope = options.scope || "viewport";
       const result = await simulateAccessibilityJourney(
-        page,
+        page as any,
         url,
         goal,
         resolvedPersona,
@@ -2505,7 +2512,8 @@ export async function runEmpathyAudit(
       allBarriers.push(...result.barriers);
 
     } finally {
-      if (browser) {
+      // Don't close browser if page was externally provided
+      if (browser && !externalPage) {
         await browser.close();
       }
     }
