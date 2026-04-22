@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.66.0](https://github.com/alexandriashai/cbrowser/compare/v18.65.0...v18.66.0) (2026-04-22)
+
+### Added
+
+* comprehensive web interaction patterns for cognitive journeys ([5477ded](https://github.com/alexandriashai/cbrowser/commit/5477ded0053e909e09ae25561377d1b96d7f7c66))
+
 ## [18.65.0](https://github.com/alexandriashai/cbrowser/compare/v18.64.1...v18.65.0) (2026-04-21)
 
 ### Added
