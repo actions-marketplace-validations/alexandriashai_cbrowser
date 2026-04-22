@@ -300,9 +300,9 @@ export async function runCognitiveJourney(
   // Calculate abandonment thresholds
   const thresholds: AbandonmentThresholds = {
     patienceMin: 0.1,
-    confusionMax: traits.comprehension < 0.4 ? 0.6 : 0.8,
-    frustrationMax: traits.patience < 0.3 ? 0.7 : 0.85,
-    maxStepsWithoutProgress: traits.persistence > 0.7 ? 15 : 10,
+    confusionMax: traits.comprehension < 0.4 ? 0.75 : 0.9,
+    frustrationMax: traits.patience < 0.3 ? 0.8 : 0.95,
+    maxStepsWithoutProgress: traits.persistence > 0.7 ? 20 : 15,
     loopDetectionThreshold: 3,
     timeLimit:
       options.maxTime ||
@@ -888,6 +888,21 @@ export async function runCognitiveJourney(
     await sleep(500);
   }
 
+  // Post-journey goal validation:
+  // If goalProgress >= 80% and monologue indicates success, mark as achieved
+  // This catches cases where Claude forgets to set goalAchieved=true explicitly
+  if (!goalAchieved && state.goalProgress >= 0.8) {
+    const lastMonologue = (fullMonologue[fullMonologue.length - 1] || '').toLowerCase();
+    const successSignals = ['found', 'found it', 'excellent', 'perfect', 'exactly what', 'this is what', 'here it is', 'success', 'achieved', 'goal'];
+    const hasSuccessSignal = successSignals.some(s => lastMonologue.includes(s));
+    if (hasSuccessSignal) {
+      goalAchieved = true;
+      goalEvidence = `[AUTO-DETECTED: goalProgress=${Math.round(state.goalProgress * 100)}%, monologue indicates success] ${fullMonologue[fullMonologue.length - 1]?.substring(0, 200) || ''}`;
+      abandonmentReason = undefined;
+      abandonmentMessage = undefined;
+    }
+  }
+
   // Close browser
   await browser.close();
 
@@ -1225,24 +1240,24 @@ function checkAbandonmentTriggers(
   if (state.emotionalState) {
     const emotional = state.emotionalState;
 
-    // High anxiety + high frustration combination
-    if (emotional.anxiety > 0.7 && emotional.frustration > 0.6) {
+    // High anxiety + high frustration — only abandon if BOTH are extreme AND patience is depleted
+    if (emotional.anxiety > 0.85 && emotional.frustration > 0.8 && state.patienceRemaining < 0.3) {
       return {
         reason: "emotional" as CognitiveJourneyResult["abandonmentReason"],
         message: "This is too stressful. I need to take a break.",
       };
     }
 
-    // Extreme boredom
-    if (emotional.boredom > 0.8 && emotional.excitement < 0.2) {
+    // Extreme boredom — only after significant time with zero engagement
+    if (emotional.boredom > 0.9 && emotional.excitement < 0.1 && state.stepCount > 8) {
       return {
         reason: "emotional" as CognitiveJourneyResult["abandonmentReason"],
         message: "This is so boring... I'll do this later.",
       };
     }
 
-    // Overwhelming negative valence with high arousal
-    if (emotional.valence < -0.7 && emotional.arousal > 0.7) {
+    // Overwhelming negative valence — only with sustained high arousal AND low patience
+    if (emotional.valence < -0.85 && emotional.arousal > 0.85 && state.patienceRemaining < 0.4) {
       return {
         reason: "emotional" as CognitiveJourneyResult["abandonmentReason"],
         message: "I can't deal with this right now.",
@@ -1319,12 +1334,56 @@ async function executeAction(
       const selector = args.join(":");
       const page = await browser.getPage();
       const urlBefore = page.url();
-      const result = await browser.hoverClick(selector);
-      // Wait briefly for navigation to settle
-      try { await page.waitForTimeout(800); } catch {}
-      const urlAfter = page.url();
+
+      // Prefer <a> tags first (actual navigation links), then buttons, fall back to hoverClick
+      let clicked = false;
+      try {
+        const escapedSel = selector.replace(/"/g, '\\"');
+        const link = page.locator(`a:has-text("${escapedSel}")`).first();
+        if (await link.isVisible({ timeout: 1500 }).catch(() => false)) {
+          await link.click({ timeout: 3000 });
+          clicked = true;
+        }
+      } catch {}
+
+      if (!clicked) {
+        try {
+          const escapedSel = selector.replace(/"/g, '\\"');
+          const btn = page.locator(`button:has-text("${escapedSel}"), [role="button"]:has-text("${escapedSel}")`).first();
+          if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+            await btn.click({ timeout: 3000 });
+            clicked = true;
+          }
+        } catch {}
+      }
+
+      if (!clicked) {
+        const result = await browser.hoverClick(selector);
+        if (!result.success) return { success: false, movementTimeMs };
+      }
+
+      try { await page.waitForTimeout(1000); } catch {}
+      let urlAfter = page.url();
+
+      // If click didn't navigate but the element had an href, follow it directly
+      // This handles hover-dependent menus where click is intercepted by JS
+      if (urlAfter === urlBefore) {
+        try {
+          const escapedSel = selector.replace(/"/g, '\\"');
+          const href = await page.locator(`a:has-text("${escapedSel}")`).first().getAttribute('href').catch(() => null);
+          if (href && href.startsWith('http')) {
+            await page.goto(href, { waitUntil: 'domcontentloaded', timeout: 10000 });
+            urlAfter = page.url();
+          } else if (href && href.startsWith('/')) {
+            const base = new URL(urlBefore).origin;
+            await page.goto(base + href, { waitUntil: 'domcontentloaded', timeout: 10000 });
+            urlAfter = page.url();
+          }
+        } catch {}
+      }
+
       const navigated = urlAfter !== urlBefore;
-      return { success: result.success, movementTimeMs, ...(navigated ? { newUrl: urlAfter } : {}) };
+      return { success: true, movementTimeMs, ...(navigated ? { newUrl: urlAfter } : {}) };
     }
     case "hover": {
       const selector = args.join(":");
