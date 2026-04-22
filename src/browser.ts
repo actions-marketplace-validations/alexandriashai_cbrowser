@@ -4017,16 +4017,17 @@ For more help: https://playwright.dev/docs/browsers
       return await targetPage.$$eval(
         'button, a, [role="button"], [role="link"], input[type="submit"], input[type="button"], [onclick], [type="submit"]',
         els => {
-          // Deduplicate and filter to visible elements only
+          // Deduplicate, filter visible, sort by vertical position
           const seen = new Set<Element>();
           return els
             .filter(el => {
               if (seen.has(el)) return false;
               seen.add(el);
               const style = window.getComputedStyle(el);
-              return style.display !== 'none' && style.visibility !== 'hidden';
+              return style.display !== 'none' && style.visibility !== 'hidden' && el.getBoundingClientRect().height > 0;
             })
-            .slice(0, 50) // v14.2.1: Increased from 20 to 50 for better verbose output
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+            .slice(0, 80)
             .map((el, i) => ({
               tag: el.tagName.toLowerCase(),
               text: (el as HTMLElement).innerText?.trim().substring(0, 60) || el.getAttribute("aria-label") || el.getAttribute("value") || "",

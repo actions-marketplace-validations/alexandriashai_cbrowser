@@ -1046,7 +1046,11 @@ function buildStepPrompt(
   pageContent: string = ""
 ): string {
   const elementsStr = availableElements.length > 0
-    ? availableElements.map(e => `  - "${e.text}" (${e.tag}${e.role ? `, role=${e.role}` : ""})`).join("\n")
+    ? availableElements.map((e, i) => {
+        // Prominence hint: first few elements are typically most visible (above fold, larger)
+        const prominence = i < 5 ? ' ★ prominent' : i < 10 ? ' visible' : '';
+        return `  - "${e.text}" (${e.tag}${e.role ? `, role=${e.role}` : ""}${prominence})`;
+      }).join("\n")
     : "  (no clickable elements detected)";
 
   // Format inputs - highlight hidden ones with their triggers, show options for selects
@@ -1091,10 +1095,30 @@ CURRENT STATE:
 - Actions Attempted: ${state.memory.actionsAttempted.length}
 
 Based on the page content, AVAILABLE ELEMENTS, and FORM INPUTS above, what do you perceive, comprehend, and decide to do?
-- To click: use "click:ElementText"
-- To fill a form field: use "fill:FieldName:value"
-- To navigate: use "navigate:URL"
-- To scroll (if goal content might be below): use "scroll:down" or "scroll:up"
+
+ACTIONS (choose one):
+- click:ElementText — click a link or button (use exact text from AVAILABLE ELEMENTS)
+- fill:FieldName:value — type into a form field
+- scroll:down — scroll down to see more content (TRY THIS FIRST if goal not visible)
+- scroll:up — scroll back up
+- back — go back to the previous page (like hitting the browser back button)
+- find:searchterm — find text on the current page (like Ctrl+F)
+- navigate:URL — go directly to a URL
+- tab:count — press Tab key to move focus (keyboard navigation)
+- enter — press Enter to submit or activate focused element
+- select:FieldName:OptionText — choose from a dropdown menu
+- expand:SectionTitle — click an accordion, tab, or collapsible section to reveal content
+- dismiss — close a popup, cookie banner, or overlay blocking the page
+- hover:ElementText — hover over an element (to reveal dropdown menus)
+- wait:ms — wait for content to load
+
+STRATEGY:
+1. If you don't see what you need, scroll:down FIRST — most content is below the fold
+2. If scrolling doesn't help, try find:keyword to search the page
+3. Use back if you navigated to the wrong page
+4. Use dismiss if a popup is blocking you
+5. Only abandon after trying scroll + find + back
+
 Respond in JSON format.`;
 }
 
@@ -1293,10 +1317,14 @@ async function executeAction(
   switch (type) {
     case "click": {
       const selector = args.join(":");
-      // Use hoverClick for potentially dropdown menu items
-      // This will try hovering parent menus if the element isn't immediately found
+      const page = await browser.getPage();
+      const urlBefore = page.url();
       const result = await browser.hoverClick(selector);
-      return { success: result.success, movementTimeMs };
+      // Wait briefly for navigation to settle
+      try { await page.waitForTimeout(800); } catch {}
+      const urlAfter = page.url();
+      const navigated = urlAfter !== urlBefore;
+      return { success: result.success, movementTimeMs, ...(navigated ? { newUrl: urlAfter } : {}) };
     }
     case "hover": {
       const selector = args.join(":");
@@ -1359,6 +1387,108 @@ async function executeAction(
       } catch {
         return { success: false };
       }
+    }
+    case "back": {
+      // Browser back button — most common recovery action
+      const page = await browser.getPage();
+      try {
+        await page.goBack({ waitUntil: "domcontentloaded", timeout: 10000 });
+        await sleep(500);
+        return { success: true, newUrl: page.url() };
+      } catch {
+        return { success: false };
+      }
+    }
+    case "find": {
+      // Ctrl+F / Find on page — power users search for text within the page
+      const query = args.join(":").toLowerCase();
+      const page = await browser.getPage();
+      try {
+        // Scroll to the first matching text element
+        const found = await page.evaluate((q: string) => {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          let node;
+          while ((node = walker.nextNode())) {
+            if (node.textContent?.toLowerCase().includes(q)) {
+              const el = node.parentElement;
+              if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); return true; }
+            }
+          }
+          return false;
+        }, query);
+        await sleep(500);
+        return { success: found };
+      } catch {
+        return { success: false };
+      }
+    }
+    case "tab": {
+      // Tab key navigation — keyboard users move focus between elements
+      const page = await browser.getPage();
+      const count = parseInt(args[0] || "1", 10);
+      try {
+        for (let i = 0; i < Math.min(count, 10); i++) {
+          await page.keyboard.press("Tab");
+          await sleep(150);
+        }
+        return { success: true };
+      } catch {
+        return { success: false };
+      }
+    }
+    case "enter": {
+      // Press Enter — submit forms, activate focused element
+      const page = await browser.getPage();
+      try {
+        await page.keyboard.press("Enter");
+        await sleep(800);
+        const newUrl = page.url();
+        return { success: true, newUrl };
+      } catch {
+        return { success: false };
+      }
+    }
+    case "select": {
+      // Select dropdown option: select:fieldName:optionValue
+      const [selector, ...optionParts] = args;
+      const option = optionParts.join(":");
+      const page = await browser.getPage();
+      try {
+        await page.selectOption(`select:near(:text("${selector}"))`, { label: option }).catch(() =>
+          page.selectOption(`[name="${selector}"]`, { label: option })
+        );
+        return { success: true };
+      } catch {
+        return { success: false };
+      }
+    }
+    case "dismiss": {
+      // Dismiss overlay/popup/modal — close cookie banners, newsletter popups
+      try {
+        await browser.dismissOverlay({ type: "auto", timeout: 3000 });
+        return { success: true };
+      } catch {
+        return { success: false };
+      }
+    }
+    case "expand": {
+      // Click accordion/tab to expand content
+      const selector = args.join(":");
+      const page = await browser.getPage();
+      try {
+        await page.click(`details:has(summary:has-text("${selector}")) summary, [role="tab"]:has-text("${selector}"), button:has-text("${selector}")`);
+        await sleep(400);
+        return { success: true };
+      } catch {
+        // Fall back to regular click
+        const result = await browser.hoverClick(selector);
+        return { success: result.success };
+      }
+    }
+    case "wait": {
+      // Wait for page to load / content to appear
+      await sleep(parseInt(args[0] || "1000", 10));
+      return { success: true };
     }
     default:
       // Unknown action type, skip

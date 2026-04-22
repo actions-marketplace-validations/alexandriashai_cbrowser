@@ -63,6 +63,15 @@ export function saveVisualReport(params: VisualReportParams): void {
   const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
   const description = params.description || generateDescription(params);
 
+  // Normalize URL to relative path for CMS storage
+  let relativeUrl = params.imageUrl;
+  try {
+    const parsed = new URL(params.imageUrl);
+    relativeUrl = parsed.pathname; // "/heatmaps/story-attn-..."
+  } catch {
+    // Already relative or malformed — use as-is
+  }
+
   // Fire and forget
   fetch(`${cmsUrl}/api/visual-reports`, {
     method: "POST",
@@ -71,7 +80,7 @@ export function saveVisualReport(params: VisualReportParams): void {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      image_url: params.imageUrl,
+      image_url: relativeUrl,
       tool_name: params.toolName,
       target_url: params.targetUrl,
       persona: params.persona,

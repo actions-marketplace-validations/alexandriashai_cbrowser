@@ -696,10 +696,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
               source: "mcp",
             }),
           });
-          savedToCms = res.ok;
+          if (res.ok) {
+            savedToCms = true;
+            console.log(`[persona] Saved "${persona_name}" to CMS`);
+          } else {
+            const errBody = await res.text().catch(() => "");
+            console.warn(`[persona] CMS save failed (${res.status}): ${errBody.slice(0, 100)}`);
+          }
+        } else {
+          console.warn(`[persona] No API key in session — cannot save to CMS`);
         }
       } catch (e) {
-        // CMS save is best-effort — persona is still usable via runtime registry
+        console.warn(`[persona] CMS save error: ${(e as Error).message}`);
       }
 
       return {
