@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.66.1](https://github.com/alexandriashai/cbrowser/compare/v18.66.0...v18.66.1) (2026-04-22)
+
+### Fixed
+
+* cognitive journey abandonment thresholds + click reliability + URL cleaning ([a22624a](https://github.com/alexandriashai/cbrowser/commit/a22624a55bdde10b797bdeec1663b2947c40288a))
+
 ## [18.66.0](https://github.com/alexandriashai/cbrowser/compare/v18.65.0...v18.66.0) (2026-04-22)
 
 ### Added
