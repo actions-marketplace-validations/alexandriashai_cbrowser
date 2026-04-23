@@ -888,16 +888,59 @@ export async function runCognitiveJourney(
     await sleep(500);
   }
 
-  // Post-journey goal validation:
-  // If goalProgress >= 80% and monologue indicates success, mark as achieved
-  // This catches cases where Claude forgets to set goalAchieved=true explicitly
-  if (!goalAchieved && state.goalProgress >= 0.8) {
+  // Post-journey goal validation — final evaluation of the current page
+  if (!goalAchieved) {
+    try {
+      const page = await browser.getPage();
+      const finalPageText = await page.evaluate(() => document.body.innerText?.substring(0, 3000) || '');
+      const finalUrl = page.url();
+
+      // Ask Claude: did we actually achieve the goal?
+      const evalResponse = await anthropic.messages.create({
+        model,
+        max_tokens: 200,
+        messages: [{
+          role: "user",
+          content: `The user's goal was: "${options.goal}"
+
+They ended on this page: ${finalUrl}
+
+Page content (first 3000 chars):
+${finalPageText}
+
+Their last thought was: "${fullMonologue[fullMonologue.length - 1] || ''}"
+Goal progress was: ${Math.round(state.goalProgress * 100)}%
+
+Question: Did they ACTUALLY find the specific information or page that fully satisfies their goal?
+Be strict: "still searching", "looking for", "no results", or being on a search page does NOT count as achieved.
+The goal is only achieved if the page CURRENTLY SHOWS the specific content they were looking for.
+
+Answer with JSON:
+{"achieved": true/false, "evidence": "exact quote from the page that proves the goal was met, or null if not met"}`
+        }],
+      });
+
+      const evalText = evalResponse.content[0]?.type === 'text' ? evalResponse.content[0].text : '';
+      try {
+        const evalJson = JSON.parse(evalText.replace(/```json?\n?/g, '').replace(/```/g, '').trim());
+        if (evalJson.achieved) {
+          goalAchieved = true;
+          goalEvidence = `[FINAL EVAL] ${evalJson.evidence || finalPageText.substring(0, 200)}`;
+          abandonmentReason = undefined;
+          abandonmentMessage = undefined;
+        }
+      } catch {}
+    } catch {}
+  }
+
+  // Fallback: only if goalProgress is very high (90%+) AND final monologue explicitly says "found"
+  if (!goalAchieved && state.goalProgress >= 0.9) {
     const lastMonologue = (fullMonologue[fullMonologue.length - 1] || '').toLowerCase();
-    const successSignals = ['found', 'found it', 'excellent', 'perfect', 'exactly what', 'this is what', 'here it is', 'success', 'achieved', 'goal'];
-    const hasSuccessSignal = successSignals.some(s => lastMonologue.includes(s));
-    if (hasSuccessSignal) {
+    const strongSignals = ['found it', 'found exactly', 'this is exactly', 'goal achieved', 'here it is', 'perfect, this is'];
+    const hasStrongSignal = strongSignals.some(s => lastMonologue.includes(s));
+    if (hasStrongSignal) {
       goalAchieved = true;
-      goalEvidence = `[AUTO-DETECTED: goalProgress=${Math.round(state.goalProgress * 100)}%, monologue indicates success] ${fullMonologue[fullMonologue.length - 1]?.substring(0, 200) || ''}`;
+      goalEvidence = `[AUTO-DETECTED: goalProgress=${Math.round(state.goalProgress * 100)}%] ${fullMonologue[fullMonologue.length - 1]?.substring(0, 200) || ''}`;
       abandonmentReason = undefined;
       abandonmentMessage = undefined;
     }
