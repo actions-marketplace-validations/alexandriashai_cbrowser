@@ -389,15 +389,30 @@ export async function runDaemonServer(config: Partial<CBrowserConfig>, port: num
     }
 
     if (req.url === "/command" && req.method === "POST") {
+      // Cap body size to 10 MB. Without this, a malicious or buggy client
+      // can stream gigabytes into memory and OOM the daemon.
+      const MAX_BODY_SIZE = 10 * 1024 * 1024;
       let body = "";
-      req.on("data", chunk => { body += chunk; });
+      let aborted = false;
+      req.on("data", chunk => {
+        if (aborted) return;
+        body += chunk;
+        if (body.length > MAX_BODY_SIZE) {
+          aborted = true;
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: "Request body too large (>10 MB)" }));
+          req.destroy();
+        }
+      });
       req.on("end", async () => {
+        if (aborted) return;
         try {
           const request = JSON.parse(body) as DaemonRequest;
           const response = await handleCommand(request);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(response));
         } catch (err) {
+          console.error("[daemon] Request handling failed:", err);
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: false, error: `Invalid request: ${err}` }));
         }

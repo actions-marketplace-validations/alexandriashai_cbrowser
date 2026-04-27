@@ -305,7 +305,11 @@ export class CBrowser {
 
       writeFileSync(this.sessionStateFile, JSON.stringify(state, null, 2));
     } catch (e) {
-      // Silently fail - this is a best-effort feature
+      // Best-effort feature, but the user should know if it's silently failing
+      // (filesystem full, permissions, etc) — surface a warning when verbose.
+      if (this.config.verbose) {
+        console.warn(`[browser] saveSessionState failed: ${(e as Error).message}`);
+      }
     }
   }
 
@@ -769,7 +773,10 @@ For more help: https://playwright.dev/docs/browsers
       }
     }
 
-    return this.page!;
+    if (!this.page) {
+      throw new Error("Browser page is not available — launch and recovery both failed");
+    }
+    return this.page;
   }
 
   // =========================================================================
@@ -992,30 +999,31 @@ For more help: https://playwright.dev/docs/browsers
       }
     }
 
-    // Force close context
-    if (this.context) {
+    // Force close context with a timeout that doesn't leak its own timer.
+    // Plain Promise.race(close, setTimeout(r, 2000)) leaks the setTimeout if
+    // close() wins — the timer keeps the event loop alive for 2s and accumulates
+    // on every forceClose call.
+    const raceWithTimeout = async <T>(p: Promise<T>, ms: number): Promise<void> => {
+      let timer: NodeJS.Timeout | undefined;
       try {
         await Promise.race([
-          this.context.close(),
-          new Promise((r) => setTimeout(r, 2000)), // 2s timeout for close
+          p,
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); }),
         ]);
-      } catch {
-        // Ignore - may already be closed
+      } finally {
+        if (timer) clearTimeout(timer);
       }
+    };
+
+    if (this.context) {
+      try { await raceWithTimeout(this.context.close(), 2000); } catch { /* may already be closed */ }
       this.context = null;
       this.page = null;
     }
 
     // Force close browser
     if (this.browser) {
-      try {
-        await Promise.race([
-          this.browser.close(),
-          new Promise((r) => setTimeout(r, 2000)), // 2s timeout for close
-        ]);
-      } catch {
-        // Ignore - may already be closed
-      }
+      try { await raceWithTimeout(this.browser.close(), 2000); } catch { /* may already be closed */ }
       this.browser = null;
     }
   }
