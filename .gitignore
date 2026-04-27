@@ -71,6 +71,9 @@ skills/
 .omc/
 .claude/
 CLAUDE.md
+AGENTS.md
+**/AGENTS.md
+**/CLAUDE.md
 
 # Lock files (npm users use package-lock, bun users regenerate)
 bun.lock
