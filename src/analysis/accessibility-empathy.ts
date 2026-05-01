@@ -207,6 +207,25 @@ async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
           el.classList.contains('skiplink') || el.id?.includes('skip')
         );
 
+        // WCAG 2.5.8 exempts inline text links: "the target is in a sentence
+        // or its size is otherwise constrained by the line-height of non-target text."
+        // Detect: <a> whose parent contains other text content (not a button-styled element).
+        // Example: a 110×18 text link inside a paragraph is fine — the line-height bounds it.
+        const isInlineTextLink = el.tagName === 'A' && (() => {
+          const parent = el.parentElement;
+          if (!parent) return false;
+          // Parent has non-link text → this link is part of a sentence
+          const parentText = parent.textContent || '';
+          const linkText = el.textContent || '';
+          const otherText = parentText.replace(linkText, '').trim();
+          if (otherText.length < 10) return false;
+          // Must not be styled as a button (rough heuristic via display/padding)
+          const elStyle = window.getComputedStyle(el);
+          if (elStyle.display === 'inline-block' || elStyle.display === 'block' || elStyle.display === 'flex') return false;
+          if (parseInt(elStyle.padding) > 4) return false;
+          return true;
+        })();
+
         // Tiny elements (1x1, 0x0) are tracking pixels or hidden inputs, not real touch targets
         const isTiny = rect.width <= 2 || rect.height <= 2;
 
@@ -230,7 +249,7 @@ async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
           text,
           area: rect.width * rect.height,
           inViewport: rect.bottom > 0 && rect.top < vh,
-          exempt: isSkipLink || isVisuallyHidden,
+          exempt: isSkipLink || isVisuallyHidden || isInlineTextLink,
         };
       }).filter(el => {
         if (el.area <= 0 || el.exempt) return false;
@@ -539,24 +558,47 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
 async function detectTimingIssues(ctx: BarrierContext): Promise<void> {
   const { page, persona: _persona, barriers } = ctx;
 
-  // Check for elements that might have timing constraints
+  // Look for ACTUAL timing constraints — not CSS class substrings.
+  // Previous version matched `[class*="auto-"]` (every Tailwind utility) and
+  // `[class*="session"]` (Stripe's "Sessions" product, "session storage" UI,
+  // etc.) and flagged them as severity:major time-limited content. That alone
+  // dropped well-built sites by 30+ points on every empathy audit.
+  // Real signals: explicit data-timeout, role=timer, ARIA live regions with
+  // visible "expires/remaining/seconds" text, or meta http-equiv=refresh.
   const timingElements = await page.$$eval(
-    '[data-timeout], [class*="countdown"], [class*="timer"], [class*="auto-"], [class*="session"]',
-    (elements) => elements.map(el => ({
-      selector: el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''),
-      text: el.textContent?.trim().slice(0, 50) || '',
-    }))
+    '[data-timeout], [role="timer"], meta[http-equiv="refresh"], [aria-live]',
+    (elements) => elements
+      .map((el) => {
+        const text = el.textContent?.trim().slice(0, 100) || "";
+        const role = el.getAttribute("role") || "";
+        const dataTimeout = el.hasAttribute("data-timeout");
+        const httpRefresh = el.tagName === "META" && el.getAttribute("http-equiv")?.toLowerCase() === "refresh";
+        // ARIA live regions only count as timing-relevant when their text
+        // includes time-cue language (countdown, expires, remaining, seconds).
+        const hasTimeCueText = /\b(countdown|expir|remaining|time\s*left|seconds?\s+left|minutes?\s+left)\b/i.test(text);
+        const isTimingRelevant = dataTimeout || role === "timer" || httpRefresh || hasTimeCueText;
+        return {
+          isTimingRelevant,
+          selector: el.tagName.toLowerCase() + (el.className && typeof (el as HTMLElement).className === "string"
+            ? `.${(el as HTMLElement).className.split(" ")[0]}` : ""),
+          text,
+        };
+      })
+      .filter((el) => el.isTimingRelevant)
   );
 
   if (timingElements.length > 0) {
+    const wcagCriteria = ["2.2.1", "2.2.2"];
+    const barrierLevel = getBarrierWcagLevel(wcagCriteria);
+    const severity = adjustSeverityForLevel("major", barrierLevel, ctx.wcagLevel);
     for (const el of timingElements) {
       barriers.push({
         type: "timing",
         element: el.selector,
-        description: `Time-limited content detected - may not allow enough time for users who need longer`,
+        description: `Time-limited content detected — may not allow enough time for users who need longer`,
         affectedPersonas: ["motor-impairment-tremor", "low-vision-magnified", "cognitive-adhd", "dyslexic-user", "elderly-low-vision"],
-        wcagCriteria: ["2.2.1", "2.2.2"],
-        severity: "major",
+        wcagCriteria,
+        severity,
         remediation: "Allow users to extend, adjust, or disable time limits",
       });
       ctx.wcagViolations.add("2.2.1");
@@ -2167,14 +2209,17 @@ function deduplicateBarriers(
   }>();
 
   for (const result of results) {
-    const personaName = result.persona;
-
     for (const barrier of result.barriers) {
       const existing = barriersByType.get(barrier.type);
+      // Use the barrier's OWN affectedPersonas (set by the detector — accurate)
+      // rather than the test persona's name. Previously we overwrote with
+      // result.persona, which made every barrier appear to affect only the
+      // tested persona. That breaks downstream filtering and reporting.
+      const barrierPersonas = barrier.affectedPersonas ?? [];
 
       if (existing) {
         existing.barriers.push(barrier);
-        existing.personas.add(personaName);
+        for (const p of barrierPersonas) existing.personas.add(p);
         existing.elements.add(barrier.element);
 
         // Track highest severity
@@ -2185,7 +2230,7 @@ function deduplicateBarriers(
       } else {
         barriersByType.set(barrier.type, {
           barriers: [barrier],
-          personas: new Set([personaName]),
+          personas: new Set(barrierPersonas),
           elements: new Set([barrier.element]),
           highestSeverity: barrier.severity,
         });

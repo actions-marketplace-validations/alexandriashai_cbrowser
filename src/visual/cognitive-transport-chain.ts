@@ -348,10 +348,21 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
  * Resolve a trait value from the persona's trait record.
  * Falls back to 0.5 (neutral midpoint) for missing traits.
  */
-function traitValue(traits: Record<string, number>, trait: string): number {
-  const v = traits[trait];
-  if (v === undefined || v === null || Number.isNaN(v)) return 0.5;
-  return Math.max(0, Math.min(1, v));
+function traitValue(traits: Record<string, number | string>, trait: string): number {
+  const v = traits?.[trait];
+  // Handle string enum traits (e.g. attentionPattern: "targeted" | "f-pattern" | ...)
+  if (typeof v === 'string') {
+    const STRING_TRAIT_MAP: Record<string, number> = {
+      'targeted': 0.9,
+      'sequential': 0.8,
+      'f-pattern': 0.7,
+      'z-pattern': 0.6,
+      'exploratory': 0.3,
+    };
+    return STRING_TRAIT_MAP[v] ?? 0.5;
+  }
+  if (typeof v === 'number' && !isNaN(v)) return Math.max(0, Math.min(1, v));
+  return 0.5;
 }
 
 /**

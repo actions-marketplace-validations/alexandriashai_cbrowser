@@ -893,30 +893,8 @@ async function detectApiExposure(ctx: DetectionContext): Promise<void> {
 
   summary.apiEndpointsCount = apiInfo.apiEndpoints.length;
 
-  // Report API exposure as informational (positive for agents)
-  if (apiInfo.apiEndpoints.length > 0) {
-    issues.push({
-      category: "findability",
-      severity: "low", // Actually positive - just noting for awareness
-      subcategory: "api-exposure",
-      element: "script/link",
-      description: `${apiInfo.apiEndpoints.length} API endpoint(s) detected in page source`,
-      detectionMethod: "api-exposure-check",
-      recommendation: "API endpoints are agent-friendly. Ensure they're documented.",
-    });
-  }
-
-  if (apiInfo.hasGraphQL) {
-    issues.push({
-      category: "findability",
-      severity: "low",
-      subcategory: "api-exposure",
-      element: apiInfo.graphqlEndpoint || "script",
-      description: "GraphQL API detected",
-      detectionMethod: "graphql-check",
-      recommendation: "GraphQL is agent-friendly. Consider enabling introspection for agents.",
-    });
-  }
+  // API exposure is a POSITIVE signal for agent friendliness — do NOT add to issues.
+  // The summary.apiEndpointsCount is still tracked for informational display.
 }
 
 /**
@@ -1019,18 +997,8 @@ async function detectStatePersistence(ctx: DetectionContext): Promise<void> {
     };
   });
 
-  // Report CSRF presence as informational (awareness for agents)
-  if (stateInfo.hasCsrf) {
-    issues.push({
-      category: "stability",
-      severity: "low",
-      subcategory: "state-persistence",
-      element: "form",
-      description: `${stateInfo.csrfCount} CSRF token(s) detected - agents need fresh tokens per request`,
-      detectionMethod: "csrf-check",
-      recommendation: "Ensure API endpoints support token refresh or use stateless auth for agents",
-    });
-  }
+  // CSRF tokens are good security practice — do NOT penalize score.
+  // Just note their presence for informational purposes (no issue pushed).
 
   if (stateInfo.sessionIndicators > 0) {
     issues.push({
@@ -1111,6 +1079,33 @@ async function detectDynamicContent(ctx: DetectionContext): Promise<void> {
       description: `${dynamicInfo.loadingIndicators} loading indicator(s) found - agents should wait for content`,
       detectionMethod: "loading-state-check",
       recommendation: "Use aria-busy and loading states consistently for better agent detection",
+    });
+  }
+}
+
+/**
+ * Detect CAPTCHA scripts that block AI agent automation
+ * @since 17.1.0
+ */
+async function detectCaptcha(ctx: DetectionContext): Promise<void> {
+  const { page, issues } = ctx;
+
+  const captchaScripts = await page.$$eval('script[src], iframe[src]', (els) => {
+    const captchaPatterns = ['recaptcha', 'hcaptcha', 'turnstile', 'captcha'];
+    return els.filter(el => {
+      const src = el.getAttribute('src') || '';
+      return captchaPatterns.some(p => src.toLowerCase().includes(p));
+    }).map(el => ({ tag: el.tagName, src: el.getAttribute('src') }));
+  });
+
+  if (captchaScripts.length > 0) {
+    issues.push({
+      category: "findability",
+      severity: "high",
+      element: captchaScripts[0].tag,
+      description: `CAPTCHA detected (${captchaScripts[0].src?.split('/').pop()}) — blocks AI agent automation`,
+      detectionMethod: "captcha-check",
+      recommendation: 'Provide an API or authenticated bypass for automated agents',
     });
   }
 }
@@ -1860,6 +1855,7 @@ export async function runAgentReadyAudit(
     await detectLlmsTxt(ctx);
     await detectStatePersistence(ctx);
     await detectDynamicContent(ctx);
+    await detectCaptcha(ctx);
 
     // Update summary — count total interactive elements actually on the page
     summary.totalElements = await page.evaluate(() => {

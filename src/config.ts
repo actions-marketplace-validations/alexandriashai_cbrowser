@@ -96,6 +96,30 @@ export interface CBrowserConfig {
   skipSessionRestore?: boolean;
   /** Proxy configuration for residential/datacenter proxies */
   proxy?: ProxyConfig;
+  /** Extra env vars passed to the browser process at launch (e.g. DISPLAY for headed Xvfb). Merged with process.env. */
+  launchEnv?: Record<string, string>;
+  /**
+   * Launch chromium in kiosk mode — no URL bar, no tabs, no chrome at all.
+   * The page fills the entire OS window. Useful for screen-recording or VNC
+   * overlay alignment where any browser chrome offset would break coords.
+   */
+  kioskMode?: boolean;
+  /**
+   * OS window dimensions (chromium --window-size). When unset, chromium uses
+   * viewportWidth/Height. Decoupling lets us have a viewport smaller than the
+   * window — required for VNC overlay alignment, where viewport must equal
+   * the visible page area (after browser chrome) but the window must fill Xvfb.
+   */
+  windowWidth?: number;
+  windowHeight?: number;
+  /**
+   * When set, any new page opened via target="_blank", window.open(), or other
+   * popup mechanisms automatically becomes the active page (CBrowser.getPage()
+   * returns the new tab). bringToFront() is also called on the new page so
+   * VNC streams show the active tab. Used by live cognitive journeys so the
+   * persona follows clicks that open new tabs.
+   */
+  followPopups?: boolean;
 }
 
 /**

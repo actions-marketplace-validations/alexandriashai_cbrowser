@@ -68,6 +68,124 @@ export interface PerceptualAnalysis {
 // ── Persona Perceptual Profiles ──
 
 const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
+  // Non-disabled baseline personas. These existed conceptually in the persona
+  // registry but had no perceptual profile, so they fell through to DEFAULT_PROFILE
+  // (every weight = 1.0). That meant a non-disabled "first-timer" got full
+  // deductions for low_contrast / touch_target / missing_alt / color_only —
+  // i.e., scored as if they had low vision AND motor impairment AND were blind
+  // simultaneously. Stripe / Linear / Notion / GitHub all returning ~25 for
+  // first-timer was a direct consequence.
+  'first-timer': {
+    persona: 'first-timer',
+    category: 'general',
+    barrierWeights: {
+      cognitive_load: 1.0,     // New users do feel cognitive overload from complex UIs
+      form_complexity: 1.2,    // Unfamiliar forms add real friction for newcomers
+      timing: 0.8,             // Some patience pressure but not severe
+      hover_dependent: 0.6,    // Can hover; slightly hurts on mobile
+      missing_label: 0.8,      // Labels help orientation but they have time to figure out
+      // No disability — these matter little or not at all:
+      touch_target: 0.3,       // Has full motor control; only matters for badly broken targets
+      low_contrast: 0.2,       // Has full vision
+      color_only: 0.2,         // Has color vision
+      missing_alt: 0.1,        // Doesn't use a screen reader
+    },
+    visualFilter: {
+      contrastThreshold: 0, blurRadius: 0, colorAttenuation: [1, 1, 1],
+      attentionMode: 'uniform', motorCostMultiplier: 1.0,
+      processingSpeed: 0.9,    // Slightly slower because everything is new
+      noiseTolerance: 0.7,     // Moderately overwhelmed by busy pages
+    },
+  },
+
+  'mobile-user': {
+    persona: 'mobile-user',
+    category: 'general',
+    barrierWeights: {
+      touch_target: 1.5,       // Touch is their only input — small targets hurt
+      hover_dependent: 2.5,    // Can't hover on touch devices, period
+      cognitive_load: 0.8,
+      form_complexity: 1.2,    // Mobile keyboards make forms harder
+      timing: 0.8,
+      low_contrast: 0.4,       // Vision is fine but small screens compound
+      color_only: 0.3,
+      missing_alt: 0.1,
+      missing_label: 0.6,
+    },
+    visualFilter: {
+      contrastThreshold: 0, blurRadius: 0, colorAttenuation: [1, 1, 1],
+      attentionMode: 'center-heavy', motorCostMultiplier: 1.3,
+      processingSpeed: 0.9, noiseTolerance: 0.7,
+    },
+  },
+
+  'impatient-user': {
+    persona: 'impatient-user',
+    category: 'general',
+    barrierWeights: {
+      timing: 2.0,             // Anything slow is unbearable
+      cognitive_load: 1.8,     // Won't tolerate complex UIs
+      form_complexity: 2.0,    // Long forms = abandon
+      hover_dependent: 0.5,
+      touch_target: 0.4,
+      low_contrast: 0.2,
+      color_only: 0.2,
+      missing_alt: 0.1,
+      missing_label: 0.6,
+    },
+    visualFilter: {
+      contrastThreshold: 0, blurRadius: 0, colorAttenuation: [1, 1, 1],
+      attentionMode: 'uniform', motorCostMultiplier: 1.0,
+      processingSpeed: 1.2,    // Reads fast, expects fast response
+      noiseTolerance: 0.3,     // Quickly overwhelmed by clutter
+    },
+  },
+
+  'power-user': {
+    persona: 'power-user',
+    category: 'general',
+    barrierWeights: {
+      // Power users tolerate complexity but hate friction in flows they know
+      cognitive_load: 0.4,
+      form_complexity: 0.5,
+      timing: 1.0,
+      hover_dependent: 0.6,
+      touch_target: 0.3,
+      low_contrast: 0.2,
+      color_only: 0.2,
+      missing_alt: 0.1,
+      missing_label: 0.4,
+    },
+    visualFilter: {
+      contrastThreshold: 0, blurRadius: 0, colorAttenuation: [1, 1, 1],
+      attentionMode: 'uniform', motorCostMultiplier: 1.0,
+      processingSpeed: 1.3, noiseTolerance: 1.0,
+    },
+  },
+
+  'elderly-user': {
+    persona: 'elderly-user',
+    category: 'general',
+    barrierWeights: {
+      // Different from elderly-low-vision — this persona is older but not visually impaired.
+      // Real older users care about modest contrast, slower pace, clearer labels.
+      timing: 1.6,
+      form_complexity: 1.5,
+      cognitive_load: 1.3,
+      missing_label: 1.4,
+      low_contrast: 1.0,       // Contrast helps but isn't critical
+      touch_target: 1.0,       // Larger targets help; not crisis-level
+      hover_dependent: 1.2,
+      color_only: 0.7,
+      missing_alt: 0.4,
+    },
+    visualFilter: {
+      contrastThreshold: 1.5, blurRadius: 0.5, colorAttenuation: [0.95, 0.95, 0.9],
+      attentionMode: 'large-elements', motorCostMultiplier: 1.2,
+      processingSpeed: 0.7, noiseTolerance: 0.6,
+    },
+  },
+
   'motor-impairment-tremor': {
     persona: 'motor-impairment-tremor',
     category: 'motor',
@@ -422,9 +540,18 @@ export function calculatePerceptualScore(
     byType.set(b.type, existing);
   }
 
+  // Map detector-emitted barrier type keys to profile weight keys
+  const BARRIER_KEY_MAP: Record<string, string> = {
+    'contrast': 'low_contrast',
+    'sensory': 'color_only',
+    'motor_precision': 'hover_dependent',
+    'visual_clarity': 'low_contrast',
+  };
+
   // Apply persona-weighted deductions
   for (const [type, typeBarriers] of byType) {
-    const weight = profile.barrierWeights[type] ?? 1.0;
+    const weightKey = BARRIER_KEY_MAP[type] || type;
+    const weight = profile.barrierWeights[weightKey] ?? 1.0;
 
     const critical = typeBarriers.filter(b => b.severity === 'critical').length;
     const major = typeBarriers.filter(b => b.severity === 'major').length;

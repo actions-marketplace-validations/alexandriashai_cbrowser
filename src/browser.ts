@@ -542,7 +542,30 @@ For more help: https://playwright.dev/docs/browsers
 
     // Use persistent context if enabled (preserves cookies/localStorage between sessions)
     // Use browser-specific launch args for optimal performance
-    const launchArgs = BROWSER_LAUNCH_ARGS[this.config.browser];
+    const launchArgs = [...BROWSER_LAUNCH_ARGS[this.config.browser]];
+
+    // Size the OS window to the configured viewport. Without this, chromium
+    // launches at its default (~1280×720) regardless of viewportWidth/Height,
+    // leaving black margins inside Xvfb when viewing via VNC. Only meaningful
+    // for chromium — Firefox/WebKit ignore --window-size.
+    if (this.config.browser === "chromium") {
+      const winW = this.config.windowWidth ?? this.config.viewportWidth;
+      const winH = this.config.windowHeight ?? this.config.viewportHeight;
+      launchArgs.push(`--window-size=${winW},${winH}`);
+      launchArgs.push("--window-position=0,0");
+      // Stability flags for long-running journeys on Xvfb/software rendering:
+      //   --disable-background-timer-throttling: keep timers running while VNC peer disconnects
+      //   --disable-features=PaintHolding: disable paint holding which can leave white frames during nav
+      //   --disable-renderer-backgrounding: prevent renderer freezing when not focused
+      //   --renderer-process-limit=4: cap renderer count, avoid memory blowup
+      //   --js-flags=--max-old-space-size=512: cap V8 heap so a runaway page doesn't OOM the slot
+      launchArgs.push(
+        "--disable-renderer-backgrounding",
+        "--disable-features=PaintHolding,Translate",
+        "--renderer-process-limit=4",
+        "--js-flags=--max-old-space-size=512",
+      );
+    }
 
     // Build proxy options for Playwright if configured
     const proxyOptions = this.config.proxy ? {
@@ -564,6 +587,7 @@ For more help: https://playwright.dev/docs/browsers
         this.context = await browserType.launchPersistentContext(browserStateDir, {
           headless: this.config.headless,
           args: launchArgs,
+          env: this.config.launchEnv ? { ...process.env, ...this.config.launchEnv } as Record<string, string> : undefined,
           ...contextOptions,
           ...proxyOptions,
         });
@@ -578,6 +602,7 @@ For more help: https://playwright.dev/docs/browsers
         this.browser = await browserType.launch({
           headless: this.config.headless,
           args: launchArgs,
+          env: this.config.launchEnv ? { ...process.env, ...this.config.launchEnv } as Record<string, string> : undefined,
           ...proxyOptions,
         });
         this.context = await this.browser.newContext(contextOptions);
@@ -585,6 +610,29 @@ For more help: https://playwright.dev/docs/browsers
         if (this.config.verbose && this.config.proxy) {
           console.log(`🌐 Using proxy: ${this.config.proxy.server}`);
         }
+      }
+
+      // Live-journey mode: when a click opens a new tab, swap the journey's
+      // active page to it and bring it to the front so VNC stream follows.
+      // Closes the old page after a short grace period so its DOM is freed.
+      if (this.config.followPopups && this.context) {
+        this.context.on("page", async (newPage) => {
+          try {
+            await newPage.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+            const oldPage = this.page;
+            this.page = newPage;
+            try { await newPage.bringToFront(); } catch {}
+            // Close the old tab after a moment so the persona doesn't leak tabs
+            // across many popups. Skip if it's the same page or already closed.
+            if (oldPage && oldPage !== newPage && !oldPage.isClosed()) {
+              setTimeout(() => { oldPage.close().catch(() => {}); }, 1500);
+            }
+          } catch (e) {
+            if (this.config.verbose) {
+              console.warn(`[CBrowser] followPopups handler error: ${(e as Error).message}`);
+            }
+          }
+        });
       }
     };
 
@@ -4017,14 +4065,128 @@ For more help: https://playwright.dev/docs/browsers
    * Get all clickable elements on the page for verbose output.
    * Public so cognitive journey can use it to show Claude what's clickable.
    */
-  async getAvailableClickables(page?: Page): Promise<Array<{ tag: string; text: string; selector: string; role?: string }>> {
+  /**
+   * Snapshot of viewport-level state — what the cognitive journey AI needs to
+   * reason about layout, scroll position, and active overlays. Returned as a
+   * structured object that buildStepPrompt can format for Claude.
+   */
+  async getViewportContext(page?: Page): Promise<{
+    viewport: { width: number; height: number };
+    scroll: { y: number; max: number; pct: number; atTop: boolean; atBottom: boolean };
+    headings: Array<{ level: number; text: string; visible: boolean }>;
+    activeModals: number;
+    formErrors: string[];
+    bannersBlocking: string[];
+  }> {
+    const targetPage = page || await this.getPage();
+    try {
+      return await targetPage.evaluate(() => {
+        const docHeight = Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight,
+          document.body.offsetHeight,
+          document.documentElement.offsetHeight,
+        );
+        const vh = window.innerHeight;
+        const vw = window.innerWidth;
+        const scrollY = window.scrollY;
+        const maxScroll = Math.max(0, docHeight - vh);
+        const pct = maxScroll > 0 ? scrollY / maxScroll : 0;
+
+        // Headings outline — including which are currently visible
+        const headings: Array<{ level: number; text: string; visible: boolean }> = [];
+        document.querySelectorAll('h1, h2, h3, h4').forEach(el => {
+          const r = el.getBoundingClientRect();
+          const text = (el as HTMLElement).innerText?.trim().substring(0, 100);
+          if (text) {
+            headings.push({
+              level: parseInt(el.tagName.charAt(1)),
+              text,
+              visible: r.top < vh && r.bottom > 0,
+            });
+          }
+        });
+
+        // Active modals/dialogs that block interaction
+        const modalSelectors = '[role="dialog"], [aria-modal="true"], dialog[open], .modal:not(.hidden), [class*="overlay"][class*="active"]';
+        const activeModals = Array.from(document.querySelectorAll(modalSelectors)).filter(el => {
+          const r = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return style.display !== 'none' && style.visibility !== 'hidden' && r.width > 50 && r.height > 50;
+        }).length;
+
+        // Form errors (common patterns)
+        const formErrors: string[] = [];
+        document.querySelectorAll('[role="alert"], .error-message, [aria-invalid="true"], .invalid-feedback, .form-error').forEach(el => {
+          const text = (el as HTMLElement).innerText?.trim().substring(0, 120);
+          if (text && text.length > 3) formErrors.push(text);
+        });
+
+        // Banners that block content (cookie banners, full-screen overlays)
+        const bannersBlocking: string[] = [];
+        document.querySelectorAll('[class*="cookie"], [class*="consent"], [class*="banner"][class*="bottom"], [id*="cookie"]').forEach(el => {
+          const r = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          if (style.position === 'fixed' && r.width > vw * 0.5 && style.display !== 'none') {
+            const text = (el as HTMLElement).innerText?.trim().substring(0, 80);
+            if (text) bannersBlocking.push(text);
+          }
+        });
+
+        return {
+          viewport: { width: vw, height: vh },
+          scroll: {
+            y: Math.round(scrollY),
+            max: Math.round(maxScroll),
+            pct: Math.round(pct * 100) / 100,
+            atTop: scrollY < 50,
+            atBottom: scrollY > maxScroll - 50,
+          },
+          headings: headings.slice(0, 20),
+          activeModals,
+          formErrors: formErrors.slice(0, 5),
+          bannersBlocking: bannersBlocking.slice(0, 3),
+        };
+      });
+    } catch {
+      return {
+        viewport: { width: 0, height: 0 },
+        scroll: { y: 0, max: 0, pct: 0, atTop: true, atBottom: false },
+        headings: [],
+        activeModals: 0,
+        formErrors: [],
+        bannersBlocking: [],
+      };
+    }
+  }
+
+  async getAvailableClickables(page?: Page): Promise<Array<{ tag: string; text: string; selector: string; role?: string; aboveFold?: boolean; region?: string; x?: number; y?: number; width?: number; height?: number }>> {
     const targetPage = page || await this.getPage();
     try {
       // v11.6.0: Expanded selector to include all button types, form submits, and onclick handlers
-      // Fixed: Was missing button[type="submit"], form buttons, and onclick handlers
+      // v18.68.0: Returns spatial context (region, fold, bbox) so the cognitive
+      //           journey AI can disambiguate same-text targets and reason
+      //           about layout. Existing callers only read the original fields.
       return await targetPage.$$eval(
         'button, a, [role="button"], [role="link"], input[type="submit"], input[type="button"], [onclick], [type="submit"]',
         els => {
+          const vh = window.innerHeight;
+          const vw = window.innerWidth;
+          // Region classifier — uses semantic ancestors and viewport position.
+          // Order matters: most specific first.
+          const classifyRegion = (el: Element, top: number, bottom: number): string => {
+            const inside = (sel: string) => !!el.closest(sel);
+            if (inside('nav, [role="navigation"], header[role="banner"]') || inside('header')) return 'header-nav';
+            if (inside('footer, [role="contentinfo"]')) return 'footer';
+            if (inside('aside, [role="complementary"], [role="dialog"], [aria-modal="true"]')) {
+              return inside('[role="dialog"], [aria-modal="true"]') ? 'modal' : 'sidebar';
+            }
+            if (inside('form')) return 'form';
+            // Position-based fallback
+            if (top < vh * 0.15) return 'top-bar';
+            if (top < vh) return 'main-visible';
+            return 'below-fold';
+          };
           // Deduplicate, filter visible, sort by vertical position
           const seen = new Set<Element>();
           return els
@@ -4036,12 +4198,22 @@ For more help: https://playwright.dev/docs/browsers
             })
             .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
             .slice(0, 80)
-            .map((el, i) => ({
-              tag: el.tagName.toLowerCase(),
-              text: (el as HTMLElement).innerText?.trim().substring(0, 60) || el.getAttribute("aria-label") || el.getAttribute("value") || "",
-              selector: el.id ? `#${el.id}` : el.getAttribute("data-testid") ? `[data-testid="${el.getAttribute("data-testid")}"]` : `${el.tagName.toLowerCase()}:nth-of-type(${i + 1})`,
-              role: el.getAttribute("role") || undefined,
-            }));
+            .map((el, i) => {
+              const r = el.getBoundingClientRect();
+              const aboveFold = r.top < vh && r.bottom > 0;
+              return {
+                tag: el.tagName.toLowerCase(),
+                text: (el as HTMLElement).innerText?.trim().substring(0, 80) || el.getAttribute("aria-label") || el.getAttribute("value") || "",
+                selector: el.id ? `#${el.id}` : el.getAttribute("data-testid") ? `[data-testid="${el.getAttribute("data-testid")}"]` : `${el.tagName.toLowerCase()}:nth-of-type(${i + 1})`,
+                role: el.getAttribute("role") || undefined,
+                aboveFold,
+                region: classifyRegion(el, r.top, r.bottom),
+                x: Math.round(r.left),
+                y: Math.round(r.top),
+                width: Math.round(r.width),
+                height: Math.round(r.height),
+              };
+            });
         }
       );
     } catch {

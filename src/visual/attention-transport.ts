@@ -680,6 +680,120 @@ function blendSaliencyMaps(
  *
  * When DOM elements are not provided, falls back to visual-only mode.
  */
+/**
+ * Fast DOM-only attention analysis. Skips the slow CIE-Lab saliency pass
+ * (which decodes the screenshot, downscales, and computes per-pixel Lab
+ * variance — typically 1-3s). Uses the semantic saliency map alone, which
+ * is plenty for live cognitive-journey overlays where the persona is
+ * attending to elements (CTAs, headings, links), not raw color hotspots.
+ *
+ * Returns the same AttentionAnalysis shape as analyzeAttention so callers
+ * are interchangeable. Typical runtime: 5-30ms vs 1500-3000ms for the full
+ * version.
+ */
+export async function analyzeAttentionFromDOM(
+  viewportWidth: number,
+  viewportHeight: number,
+  domElements: DOMAttentionElement[],
+  personaName: string,
+  cellSize: number = 16,
+  schwartzValues?: Record<string, number>,
+  goal?: string,
+  cognitiveTraits?: Record<string, number>,
+): Promise<AttentionAnalysis> {
+  const startTime = performance.now();
+  const profile = getPerceptualProfile(personaName);
+
+  // Look up Schwartz values from built-in profiles if caller didn't pass any
+  let values = schwartzValues;
+  if (!values) {
+    try {
+      const { getPersonaValues } = await import('../values/index.js');
+      const pv = getPersonaValues(personaName);
+      if (pv) {
+        values = {
+          selfDirection: pv.selfDirection, stimulation: pv.stimulation,
+          hedonism: pv.hedonism, achievement: pv.achievement, power: pv.power,
+          security: pv.security, conformity: pv.conformity, tradition: pv.tradition,
+          benevolence: pv.benevolence, universalism: pv.universalism,
+        };
+      }
+    } catch { /* best-effort */ }
+  }
+  let traits = cognitiveTraits;
+  if (!traits) {
+    try {
+      const { getAnyPersona, getCognitiveProfile } = await import('../personas.js');
+      const p = getAnyPersona(personaName);
+      if (p) traits = getCognitiveProfile(p as any).traits as unknown as Record<string, number>;
+    } catch {}
+  }
+
+  // DOM elements come back in full viewport coordinates (getBoundingClientRect),
+  // so the grid + image dimensions passed to buildSemanticMap MUST also be in
+  // full viewport space. The screenshot-based path scaled by 0.5 because the
+  // image was downsampled; without an image we don't downsample. Using half
+  // dimensions here was the bug: elements with x > viewport/2 all clamped to
+  // the right edge of the grid, producing the "random hotspots on right side"
+  // artifact.
+  const rows = Math.ceil(viewportHeight / cellSize);
+  const cols = Math.ceil(viewportWidth / cellSize);
+
+  const semanticMap = buildSemanticMap(
+    domElements,
+    rows, cols, cellSize,
+    viewportWidth, viewportHeight,
+    personaName, goal, traits, values,
+  );
+
+  // Apply persona perceptual filter directly to the semantic map (no Lab blend)
+  const filtered = applyPersonaFilter(semanticMap, rows, cols, profile.visualFilter, values);
+
+  // Hotspots, entropy, concentration — same shape as analyzeAttention
+  const indexed = Array.from(filtered).map((s, i) => ({ s, i }));
+  indexed.sort((a, b) => b.s - a.s);
+  const hotspots = indexed.slice(0, 10).map(({ s, i }) => ({
+    row: Math.floor(i / cols),
+    col: i % cols,
+    x: (i % cols) * cellSize,
+    y: Math.floor(i / cols) * cellSize,
+    saliency: s,
+  }));
+
+  const totalSaliency = filtered.reduce((a, b) => a + b, 0) || 1;
+  let entropy = 0;
+  for (let i = 0; i < filtered.length; i++) {
+    const p = filtered[i] / totalSaliency;
+    if (p > 0) entropy -= p * Math.log2(p + 1e-10);
+  }
+  entropy = entropy / Math.log2(filtered.length || 1);
+
+  const sorted = Array.from(filtered).sort((a, b) => b - a);
+  const top20Count = Math.ceil(filtered.length * 0.2);
+  const top20Sum = sorted.slice(0, top20Count).reduce((a, b) => a + b, 0);
+  const concentration = top20Sum / totalSaliency;
+
+  return {
+    persona: personaName,
+    saliencyMap: {
+      cells: filtered,
+      rows, cols,
+      width: viewportWidth, height: viewportHeight,
+      cellSize,
+      hotspots,
+    },
+    alignmentScore: 1, // No base to compare against
+    entropy: Math.round(entropy * 1000) / 1000,
+    concentration: Math.round(concentration * 1000) / 1000,
+    attentionCompetitors: hotspots.slice(0, 5).map((h) => ({
+      region: `(${h.x}, ${h.y})`,
+      saliency: Math.round(h.saliency * 100) / 100,
+    })),
+    transportCost: 0,
+    computeTimeMs: performance.now() - startTime,
+  };
+}
+
 export async function analyzeAttention(
   screenshotPath: string,
   personaName: string,

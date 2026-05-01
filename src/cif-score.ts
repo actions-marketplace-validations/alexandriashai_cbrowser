@@ -264,7 +264,7 @@ function computeMotorFitness(data: CIFInput): CIFScore["motor"] {
 
   // --- interactionCount (20%) ---
   // Under 20 interactive elements is fine; penalize progressively above that
-  const interactiveCount = safe(data.interactiveCount, 15);
+  const interactiveCount = safe(data.interactiveCount, 50);
   const interactionCountScore = interactiveCount <= 20 ? 100
     : interactiveCount <= 40 ? clamp(Math.round(100 - (interactiveCount - 20) * 2.5))
     : clamp(Math.round(50 - (interactiveCount - 40) * 1));
@@ -437,12 +437,12 @@ function computeCognitiveFitness(data: CIFInput): CIFScore["cognitive"] {
   const flesch = data.fleschScore;
   const readabilityScore = flesch != null
     ? clamp(Math.round(Math.min(100, flesch * 1.2)))
-    : 85; // No data = assume reasonable readability
+    : 60; // No data = assume mediocre readability (not optimistic)
   const readability: CIFComponentScore = {
     score: readabilityScore,
     details: flesch != null
       ? `Flesch readability score: ${Math.round(flesch)} (higher = more readable)`
-      : "No readability data available — estimated 85",
+      : "No readability data available — estimated 60 (conservative)",
   };
 
   // --- informationDensity (20%) ---
@@ -464,12 +464,12 @@ function computeCognitiveFitness(data: CIFInput): CIFScore["cognitive"] {
   const captureRate = data.ctaCaptureRate;
   const attentionScore = captureRate != null
     ? clamp(Math.round(Math.min(100, captureRate * 200)))
-    : 80; // No data = assume reasonable CTA clarity
+    : 60; // No data = assume mediocre CTA clarity (not optimistic)
   const attentionClarity: CIFComponentScore = {
     score: attentionScore,
     details: captureRate != null
       ? `CTA capture rate: ${(captureRate * 100).toFixed(1)}% (higher = clearer attention guidance)`
-      : "No attention data available — estimated 80",
+      : "No attention data available — estimated 60 (conservative)",
   };
 
   // --- predictability (15%) ---
@@ -564,7 +564,7 @@ function computeSensoryFitness(data: CIFInput): CIFScore["sensory"] {
 
   // --- overloadThreshold (10%) ---
   // CTC ≤ 0.3 is "easy" per our scale, 0.3-0.6 moderate, 0.6-1.0 hard, >1.0 very hard
-  const totalCTC = safe(data.totalCTC, 0.3);
+  const totalCTC = safe(data.totalCTC, 0.7);
   const overloadScore = totalCTC <= 0.3 ? 100
     : totalCTC <= 0.6 ? clamp(Math.round(100 - (totalCTC - 0.3) * 130))
     : clamp(Math.round(60 - (totalCTC - 0.6) * 100));
