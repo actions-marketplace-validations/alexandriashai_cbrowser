@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.68.0](https://github.com/alexandriashai/cbrowser/compare/v18.67.0...v18.68.0) (2026-05-01)
+
+### Added
+
+* live cognitive journey — viewer infrastructure, human simulation, returning-visit memory ([f854ca1](https://github.com/alexandriashai/cbrowser/commit/f854ca12eda2cb9c991c281fec4e3b5b0b5dab3d)), closes [#N](https://github.com/alexandriashai/cbrowser/issues/N) [#2](https://github.com/alexandriashai/cbrowser/issues/2) [#5](https://github.com/alexandriashai/cbrowser/issues/5) [#10](https://github.com/alexandriashai/cbrowser/issues/10)
+
+### Fixed
+
+* 4 critical/high bugs in browser.ts + daemon.ts ([137fb09](https://github.com/alexandriashai/cbrowser/commit/137fb09fc79b64e4dd7b03e7bc05cca7e2917838))
+
 ## [18.67.0](https://github.com/alexandriashai/cbrowser/compare/v18.66.1...v18.67.0) (2026-04-23)
 
 ### Added
