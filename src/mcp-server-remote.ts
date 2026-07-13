@@ -1195,6 +1195,9 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
   // REQUIRE_AUTH=true forces auth even without static API keys (uses cbk_ keys + OAuth)
   const requireAuth = process.env.REQUIRE_AUTH === "true";
   const authEnabled = apiKeyAuthEnabled || auth0Enabled || requireAuth;
+  // In requireAuth mode the server accepts dynamic cbk_ API keys even with no static
+  // keys loaded, so API-key auth is genuinely active — advertise it as such in /health.
+  const apiKeyAuthAdvertised = apiKeyAuthEnabled || requireAuth;
   console.log(`Starting CBrowser Remote MCP Server v${VERSION}...`);
   console.log(`Mode: ${sessionMode}`);
   console.log(`Auth: ${authEnabled ? "enabled" : "disabled (open access)"}`);
@@ -1536,7 +1539,7 @@ if (urlParams.get('error')) {
         version: VERSION,
         auth: authEnabled,
         auth_methods: {
-          api_key: apiKeyAuthEnabled,
+          api_key: apiKeyAuthAdvertised,
           oauth: auth0Enabled,
         },
       }));
@@ -1553,7 +1556,7 @@ if (urlParams.get('error')) {
         mcp_endpoint: "/mcp",
         auth_required: authEnabled,
         auth_methods: {
-          api_key: apiKeyAuthEnabled,
+          api_key: apiKeyAuthAdvertised,
           oauth: auth0Enabled ? {
             domain: auth0?.domain,
             authorization_endpoint: `https://${auth0?.domain}/authorize`,
