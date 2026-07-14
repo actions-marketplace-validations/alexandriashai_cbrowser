@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.69.0](https://github.com/alexandriashai/cbrowser/compare/v18.68.1...v18.69.0) (2026-07-14)
+
+### Added
+
+* golden scoring harness + journey traces with LLM-free replay ([424910f](https://github.com/alexandriashai/cbrowser/commit/424910f003c5a76f97f9437c3ab32d98059a4f3b))
+
+### Fixed
+
+* **deps:** reconcile manifest/lock — admit installed playwright, lock sharp + fast-check ([9fc6148](https://github.com/alexandriashai/cbrowser/commit/9fc6148335cc12f2e46c7b880547b69d73c2e5bd))
+
 ## [18.68.1](https://github.com/alexandriashai/cbrowser/compare/v18.68.0...v18.68.1) (2026-07-14)
 
 ### Fixed
