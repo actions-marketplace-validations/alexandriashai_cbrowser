@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cbrowser-ui — The accessible CSS framework</title>
+  <meta name="description" content="One CSS file makes any site accessible and beautiful. 21kb, zero dependencies, WCAG AAA.">
+  <link rel="stylesheet" href="https://cdn.cbrowser.ai/ui.css">
+  <link rel="stylesheet" href="/cdn/playground.css">
+  <script type="module" src="https://cdn.cbrowser.ai/ui.mjs"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>:root { --cui-font: 'Inter', system-ui, sans-serif; --cui-primary: #4f46e5; --cui-primary-fg: #fff; --cui-primary-hover: #4338ca; --cui-gradient-start: #4f46e5; --cui-gradient-end: #7c3aed; }
+  @media (prefers-color-scheme: dark) { :root { --cui-primary: #818cf8; --cui-primary-fg: #0f172a; --cui-primary-hover: #a5b4fc; --cui-gradient-start: #818cf8; --cui-gradient-end: #a78bfa; } }
+  [id], h1, h2, h3, h4, h5, h6 { scroll-margin-top: 80px; }
+  .cui-nav-backdrop { pointer-events: none; }
+  .cui-nav-backdrop[aria-hidden="false"], .cui-header.cui-header-open .cui-nav-backdrop { pointer-events: auto; }</style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "cbrowser-ui",
+    "url": "https://playground.cbrowser.ai",
+    "description": "The accessible CSS framework. One CSS file makes any site accessible and beautiful."
+  }
+  </script>
+</head>
+<body>
+  <a href="#main" class="cui-skip-link" data-testid="skip-to-main">Skip to main content</a>
+
+  <header class="cui-header">
+    <a href="/" class="cui-header-logo" data-testid="site-logo"><span class="cui-gradient-text">cbrowser-ui</span></a>
+    <nav class="cui-header-nav" id="main-nav" aria-label="Main navigation">
+      <a href="/getting-started/" aria-label="Installation and setup guide" data-testid="nav-get-started">Get Started</a>
+      <a href="/components/" aria-label="Browse all UI components" data-testid="nav-components">Components</a>
+      <a href="/templates/" aria-label="Page templates to copy" data-testid="nav-templates">Templates</a>
+      <a href="https://github.com/alexandriashai/cbrowser-ui" target="_blank" rel="noopener" aria-label="View source code on GitHub" data-testid="nav-github">GitHub</a>
+      <a href="https://cbrowser.ai" target="_blank" rel="noopener" aria-label="Visit the CBrowser accessibility platform" data-testid="nav-cbrowser">CBrowser</a>
+    </nav>
+    <button class="cui-header-toggle" aria-controls="main-nav" aria-expanded="false" aria-label="Open menu" data-testid="menu-toggle">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+  </header>
+
+  <section class="pg-hero">
+    <div class="cui-container cui-text-center" style="position: relative; z-index: 1;">
+      <span class="cui-badge cui-badge-primary cui-mb-1">21kb · Zero deps · WCAG AAA · Open Source</span>
+      <h1 class="cui-display">One CSS file.<br><span class="cui-gradient-text">Beautiful. Accessible.</span></h1>
+      <p class="cui-lead cui-text-center cui-mt-1 cui-mb-1">Fix your site's accessibility with one file. Works on top of Bootstrap, Tailwind, or shadcn. Or use it as your full design system.</p>
+      <div class="cui-row cui-mt-2" style="justify-content: center; gap: 1rem;">
+        <a href="/getting-started/" class="cui-btn cui-glow" aria-label="Get started with cbrowser-ui installation" data-testid="hero-cta">Get Started</a>
+        <a href="/components/" class="cui-btn cui-btn-secondary" aria-label="Browse all accessible components" data-testid="cta-components">See Components</a>
+      </div>
+      <div class="pg-stats cui-mt-2">
+        <div class="pg-stat"><div class="pg-stat-value cui-gradient-text">21kb</div><div class="pg-stat-label">Minified CSS</div></div>
+        <div class="pg-stat"><div class="pg-stat-value cui-gradient-text">0</div><div class="pg-stat-label">Dependencies</div></div>
+        <div class="pg-stat"><div class="pg-stat-value cui-gradient-text">AAA</div><div class="pg-stat-label">WCAG Contrast</div></div>
+        <div class="pg-stat"><div class="pg-stat-value cui-gradient-text">44px</div><div class="pg-stat-label">Min Touch Target</div></div>
+      </div>
+    </div>
+  </section>
+
+  <hr class="pg-divider">
+
+  <main id="main">
+    <section class="cui-section">
+      <div class="cui-container cui-text-center cui-mb-2">
+        <span class="cui-badge">The Problem</span>
+        <h2 class="cui-display-sm cui-mt-1">Every framework fails accessibility</h2>
+        <p class="cui-lead cui-text-center cui-mt-1">Bootstrap buttons are 32px. Tailwind counts transitions as animations. shadcn dialogs don't trap focus. We fix all of it.</p>
+      </div>
+      <div class="cui-container">
+        <div class="pg-showcase">
+          <div class="cui-card cui-card-elevated pg-feature-card">
+            <h3 class="cui-mt-0">Touch targets too small</h3>
+            <p>Bootstrap's <code>.btn-sm</code> is 32px. WCAG requires 44px minimum.</p>
+            <p class="cui-text-sm" style="color: var(--cui-success); font-weight: 600;">&#10003; cbrowser-ui enforces 44px on everything</p>
+          </div>
+          <div class="cui-card cui-card-elevated pg-feature-card purple">
+            <h3 class="cui-mt-0">Animations ignore preferences</h3>
+            <p>Tailwind's <code>animate-*</code> classes run regardless of <code>prefers-reduced-motion</code>.</p>
+            <p class="cui-text-sm" style="color: var(--cui-success); font-weight: 600;">&#10003; cbrowser-ui pauses all motion by default</p>
+          </div>
+          <div class="cui-card cui-card-elevated pg-feature-card orange">
+            <h3 class="cui-mt-0">Contrast that fails AAA</h3>
+            <p>Bootstrap's <code>.text-muted</code> is 4.6:1. Tailwind's gray-400 on white? 3.0:1.</p>
+            <p class="cui-text-sm" style="color: var(--cui-success); font-weight: 600;">&#10003; cbrowser-ui guarantees 7:1 on all text</p>
+          </div>
+          <div class="cui-card cui-card-elevated pg-feature-card teal">
+            <h3 class="cui-mt-0">Focus rings get hidden</h3>
+            <p>Tailwind's <code>focus:outline-none</code> is on 90% of components.</p>
+            <p class="cui-text-sm" style="color: var(--cui-success); font-weight: 600;">&#10003; cbrowser-ui makes focus always visible</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="pg-divider">
+
+    <section class="cui-section cui-section-alt">
+      <div class="cui-container cui-text-center cui-mb-2">
+        <span class="cui-badge cui-badge-primary">Get Started</span>
+        <h2 class="cui-display-sm cui-mt-1">Three ways to use it</h2>
+      </div>
+      <div class="cui-container">
+        <div class="pg-showcase">
+          <div class="cui-card cui-card-highlight">
+            <span class="cui-badge cui-badge-primary">Recommended</span>
+            <h3>Patch your framework</h3>
+            <p>One line after your framework CSS. Nothing else changes.</p>
+            <div class="pg-code"><code>&lt;link rel="stylesheet"
+  href="https://cdn.cbrowser.ai/fix-bootstrap.css"&gt;</code></div>
+          </div>
+          <div class="cui-card">
+            <h3 class="cui-mt-0">Use as your framework</h3>
+            <p>Replace Bootstrap or Tailwind entirely.</p>
+            <div class="pg-code"><code>&lt;link rel="stylesheet"
+  href="https://cdn.cbrowser.ai/ui.css"&gt;</code></div>
+          </div>
+          <div class="cui-card">
+            <h3 class="cui-mt-0">npm install</h3>
+            <div class="pg-code"><code>npm install cbrowser-ui</code></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <hr class="pg-divider">
+
+    <section class="cui-section">
+      <div class="cui-container pg-compare">
+        <div class="cui-card pg-compare-bad">
+          <span class="pg-compare-label bad">Before — Bootstrap 5</span>
+          <ul>
+            <li><code>.btn-sm</code> is 32px — fails touch target</li>
+            <li><code>.carousel</code> ignores motion preferences</li>
+            <li><code>.text-muted</code> is 4.6:1 — fails AAA</li>
+            <li>Focus rings removed by default</li>
+          </ul>
+          <span class="cui-badge cui-badge-destructive">CIF: 52</span>
+        </div>
+        <div class="cui-card pg-compare-good">
+          <span class="pg-compare-label good">After — + fix-bootstrap.css</span>
+          <ul>
+            <li>All buttons enforced to 44px minimum</li>
+            <li>Carousel respects prefers-reduced-motion</li>
+            <li>Muted text boosted to 7:1 contrast</li>
+            <li>Focus rings always visible on keyboard</li>
+          </ul>
+          <span class="cui-badge cui-badge-success">CIF: 94</span>
+        </div>
+      </div>
+    </section>
+
+    <hr class="pg-divider">
+
+    <section class="cui-section cui-hero-gradient cui-text-center">
+      <div class="cui-container">
+        <h2 class="cui-display-sm">Accessible design is beautiful design.</h2>
+        <p class="cui-lead cui-text-center cui-mt-1 cui-mb-2">Start with the patch for your framework. Or go all-in. Every user can use your site.</p>
+        <div class="cui-row" style="justify-content: center; gap: 1rem;">
+          <a href="/getting-started/" class="cui-btn cui-glow" aria-label="Get started with cbrowser-ui" data-testid="cta-get-started">Get Started</a>
+          <a href="https://github.com/alexandriashai/cbrowser-ui" class="cui-btn cui-btn-secondary" target="_blank" rel="noopener" aria-label="Star cbrowser-ui on GitHub" data-testid="cta-github">Star on GitHub</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer aria-label="Site footer" style="border-top: 1px solid var(--cui-border);">
+    <div class="cui-container" style="padding: 2rem 0;">
+      <div class="cui-row" style="justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+        <p class="cui-text-sm"><strong class="cui-gradient-text">cbrowser-ui</strong> · MIT License · <a href="https://cbrowser.ai" data-testid="footer-cbrowser">CBrowser</a></p>
+        <div class="cui-row" style="gap: 1.5rem;">
+          <a href="https://github.com/alexandriashai/cbrowser-ui" class="cui-text-sm" target="_blank" rel="noopener" data-testid="footer-github">GitHub</a>
+          <a href="https://www.npmjs.com/package/cbrowser-ui" class="cui-text-sm" target="_blank" rel="noopener" data-testid="footer-npm">npm</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

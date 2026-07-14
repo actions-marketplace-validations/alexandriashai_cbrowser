@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Components — cbrowser-ui</title>
+  <meta name="description" content="Every cbrowser-ui component with live examples and copy-paste code. Buttons, forms, modals, tables, navigation, and more.">
+  <link rel="stylesheet" href="https://cdn.cbrowser.ai/ui.css">
+  <script type="module" src="https://cdn.cbrowser.ai/ui.mjs"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/cdn/playground.css">
+  <style>:root { --cui-font: 'Inter', system-ui, sans-serif; --cui-primary: #4f46e5; --cui-primary-fg: #fff; --cui-primary-hover: #4338ca; --cui-gradient-start: #4f46e5; --cui-gradient-end: #7c3aed; }
+  @media (prefers-color-scheme: dark) { :root { --cui-primary: #818cf8; --cui-primary-fg: #0f172a; --cui-primary-hover: #a5b4fc; } }
+  [id], h1, h2, h3, h4, h5, h6 { scroll-margin-top: 80px; }
+  .cui-nav-backdrop { pointer-events: none; }
+  .cui-nav-backdrop[aria-hidden="false"], .cui-header.cui-header-open .cui-nav-backdrop { pointer-events: auto; }</style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "Components — cbrowser-ui",
+    "url": "https://playground.cbrowser.ai/components/",
+    "description": "Every cbrowser-ui component with live examples and copy-paste code. Buttons, forms, modals, tables, navigation, and more."
+  }
+  </script>
+</head>
+<body>
+  <a href="#main" class="cui-skip-link" data-testid="skip-to-main">Skip to main content</a>
+
+  <header class="cui-header">
+    <div class="cui-container-lg cui-row" style="margin: 0 auto; width: 100%;">
+      <a href="/" class="cui-header-logo" style="margin-right: auto;" data-testid="site-logo">
+        <span class="cui-gradient-text" style="font-size: 1.25rem;">cbrowser-ui</span>
+      </a>
+      <nav class="cui-header-nav" id="main-nav" aria-label="Main navigation">
+        <a href="/" data-testid="nav-home">Home</a>
+        <a href="/getting-started/" data-testid="nav-get-started">Get Started</a>
+        <a href="/components/" aria-current="page" data-testid="nav-components">Components</a>
+        <a href="/templates/" data-testid="nav-templates">Templates</a>
+        <a href="https://github.com/alexandriashai/cbrowser-ui" target="_blank" rel="noopener" data-testid="nav-github">GitHub</a>
+      </nav>
+      <button class="cui-header-toggle" aria-controls="main-nav" aria-expanded="false" aria-label="Open menu" data-testid="menu-toggle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav aria-label="Breadcrumb" data-testid="breadcrumb">
+    <ol style="list-style: none; display: flex; gap: 0.5rem; padding: 0.75rem 0; margin: 0; font-size: 0.875rem;" class="cui-container">
+      <li><a href="/" data-testid="breadcrumb-home">Home</a></li>
+      <li aria-hidden="true">/</li>
+      <li aria-current="page">Components</li>
+    </ol>
+  </nav>
+
+  <main id="main" class="cui-container-lg" style="padding-block: 2rem;">
+    <div class="pg-docs">
+
+      <!-- Sidebar -->
+      <aside class="pg-docs-sidebar" aria-label="Component navigation">
+        <h4>General</h4>
+        <a href="#buttons" class="active" data-testid="sidebar-buttons">Buttons</a>
+        <a href="#badges" data-testid="sidebar-badges">Badges</a>
+        <a href="#alerts" data-testid="sidebar-alerts">Alerts</a>
+        <h4>Forms</h4>
+        <a href="#inputs" data-testid="sidebar-inputs">Inputs</a>
+        <a href="#select" data-testid="sidebar-select">Select</a>
+        <a href="#checkbox" data-testid="sidebar-checkbox">Checkbox &amp; Radio</a>
+        <h4>Layout</h4>
+        <a href="#cards" data-testid="sidebar-cards">Cards</a>
+        <a href="#grid" data-testid="sidebar-grid">Grid</a>
+        <a href="#stack" data-testid="sidebar-stack">Stack</a>
+        <h4>Navigation</h4>
+        <a href="#header" data-testid="sidebar-header">Header</a>
+        <a href="#nav" data-testid="sidebar-nav">Nav Links</a>
+        <a href="#breadcrumb" data-testid="sidebar-breadcrumb">Breadcrumbs</a>
+        <a href="#pagination" data-testid="sidebar-pagination">Pagination</a>
+        <h4>Data</h4>
+        <a href="#table" data-testid="sidebar-table">Table</a>
+        <a href="#progress" data-testid="sidebar-progress">Progress</a>
+        <h4>Overlay</h4>
+        <a href="#dialog" data-testid="sidebar-dialog">Dialog / Modal</a>
+        <a href="#accordion" data-testid="sidebar-accordion">Accordion</a>
+        <a href="#toast" data-testid="sidebar-toast">Toast</a>
+        <h4>Typography</h4>
+        <a href="#headings" data-testid="sidebar-headings">Headings</a>
+        <a href="#prose" data-testid="sidebar-prose">Prose</a>
+      </aside>
+
+      <!-- Content -->
+      <div>
+        <h1 style="margin-bottom: 0.5rem;">Components</h1>
+        <p class="pg-component-desc" style="margin-bottom: 2rem;">Every component with live preview and copy-paste code. All score 100 on CIF accessibility.</p>
+
+        <!-- BUTTONS -->
+        <section id="buttons" class="pg-component">
+          <h2 class="pg-component-title">Buttons</h2>
+          <p class="pg-component-desc">Four variants. All 44px minimum touch target. All keyboard accessible with visible focus ring.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <div class="pg-variants">
+                <button class="cui-btn">Primary</button>
+                <button class="cui-btn cui-btn-secondary">Secondary</button>
+                <button class="cui-btn cui-btn-destructive">Destructive</button>
+                <button class="cui-btn cui-btn-ghost">Ghost</button>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;button class="cui-btn"&gt;Primary&lt;/button&gt;
+&lt;button class="cui-btn cui-btn-secondary"&gt;Secondary&lt;/button&gt;
+&lt;button class="cui-btn cui-btn-destructive"&gt;Destructive&lt;/button&gt;
+&lt;button class="cui-btn cui-btn-ghost"&gt;Ghost&lt;/button&gt;</code></pre>
+            </div>
+          </div>
+
+          <h3>As links</h3>
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <div class="pg-variants">
+                <a href="#" class="cui-btn">Link as button</a>
+                <a href="#" class="cui-btn cui-btn-secondary">Secondary link</a>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;a href="/signup" class="cui-btn"&gt;Link as button&lt;/a&gt;
+&lt;a href="/learn" class="cui-btn cui-btn-secondary"&gt;Secondary link&lt;/a&gt;</code></pre>
+            </div>
+          </div>
+
+          <h3>CSS Classes</h3>
+          <table class="pg-props">
+            <thead><tr><th>Class</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>.cui-btn</code></td><td>Primary button — solid background, white text</td></tr>
+              <tr><td><code>.cui-btn-secondary</code></td><td>Outlined — border only, transparent background</td></tr>
+              <tr><td><code>.cui-btn-destructive</code></td><td>Danger action — red background</td></tr>
+              <tr><td><code>.cui-btn-ghost</code></td><td>Minimal — no border, hover reveals background</td></tr>
+              <tr><td><code>.cui-glow</code></td><td>Add glow shadow on focus (use with primary)</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <!-- BADGES -->
+        <section id="badges" class="pg-component">
+          <h2 class="pg-component-title">Badges</h2>
+          <p class="pg-component-desc">Inline labels for status, categories, and counts. All meet contrast requirements.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <div class="pg-variants">
+                <span class="cui-badge">Default</span>
+                <span class="cui-badge cui-badge-primary">Primary</span>
+                <span class="cui-badge cui-badge-success">Success</span>
+                <span class="cui-badge cui-badge-destructive">Error</span>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;span class="cui-badge"&gt;Default&lt;/span&gt;
+&lt;span class="cui-badge cui-badge-primary"&gt;Primary&lt;/span&gt;
+&lt;span class="cui-badge cui-badge-success"&gt;Success&lt;/span&gt;
+&lt;span class="cui-badge cui-badge-destructive"&gt;Error&lt;/span&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- ALERTS -->
+        <section id="alerts" class="pg-component">
+          <h2 class="pg-component-title">Alerts</h2>
+          <p class="pg-component-desc">Contextual feedback messages. Use <code>role="alert"</code> for screen reader announcement.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <div class="cui-stack">
+                <div class="cui-alert cui-alert-info" role="alert"><strong>Info:</strong> Your session will expire in 5 minutes.</div>
+                <div class="cui-alert cui-alert-success" role="alert"><strong>Success:</strong> Your profile has been updated.</div>
+                <div class="cui-alert cui-alert-warning" role="alert"><strong>Warning:</strong> Your credit card expires next month.</div>
+                <div class="cui-alert cui-alert-error" role="alert"><strong>Error:</strong> Payment could not be processed.</div>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;div class="cui-alert cui-alert-info" role="alert"&gt;
+  &lt;strong&gt;Info:&lt;/strong&gt; Your session will expire in 5 minutes.
+&lt;/div&gt;
+
+&lt;div class="cui-alert cui-alert-success" role="alert"&gt;
+  &lt;strong&gt;Success:&lt;/strong&gt; Your profile has been updated.
+&lt;/div&gt;
+
+&lt;div class="cui-alert cui-alert-warning" role="alert"&gt;
+  &lt;strong&gt;Warning:&lt;/strong&gt; Your credit card expires next month.
+&lt;/div&gt;
+
+&lt;div class="cui-alert cui-alert-error" role="alert"&gt;
+  &lt;strong&gt;Error:&lt;/strong&gt; Payment could not be processed.
+&lt;/div&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- INPUTS -->
+        <section id="inputs" class="pg-component">
+          <h2 class="pg-component-title">Inputs</h2>
+          <p class="pg-component-desc">Form inputs with labels, hints, and error states. All 44px minimum height.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render" style="max-width: 24rem;">
+              <div class="cui-stack">
+                <div>
+                  <label for="ex-name">Full name</label>
+                  <input type="text" id="ex-name" placeholder="Jane Smith">
+                  <p class="cui-hint">As it appears on your ID.</p>
+                </div>
+                <div>
+                  <label for="ex-email">Email address</label>
+                  <input type="email" id="ex-email" placeholder="jane@example.com">
+                </div>
+                <div class="cui-error">
+                  <label for="ex-pw">Password</label>
+                  <input type="password" id="ex-pw" value="short">
+                  <p class="cui-error-msg">Password must be at least 8 characters.</p>
+                </div>
+                <div>
+                  <label for="ex-bio">Bio</label>
+                  <textarea id="ex-bio" placeholder="Tell us about yourself..." rows="3"></textarea>
+                </div>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;div&gt;
+  &lt;label for="name"&gt;Full name&lt;/label&gt;
+  &lt;input type="text" id="name" placeholder="Jane Smith"&gt;
+  &lt;p class="cui-hint"&gt;As it appears on your ID.&lt;/p&gt;
+&lt;/div&gt;
+
+&lt;!-- Error state --&gt;
+&lt;div class="cui-error"&gt;
+  &lt;label for="pw"&gt;Password&lt;/label&gt;
+  &lt;input type="password" id="pw"&gt;
+  &lt;p class="cui-error-msg"&gt;Must be at least 8 characters.&lt;/p&gt;
+&lt;/div&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- CHECKBOX & RADIO -->
+        <section id="checkbox" class="pg-component">
+          <h2 class="pg-component-title">Checkbox &amp; Radio</h2>
+          <p class="pg-component-desc">44px hit area via label wrapping. No extra markup needed.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render" style="max-width: 24rem;">
+              <div class="cui-stack cui-gap-sm">
+                <label><input type="checkbox" checked> Receive email updates</label>
+                <label><input type="checkbox"> Accept terms and conditions</label>
+                <hr class="cui-separator">
+                <label><input type="radio" name="plan" checked> Free plan</label>
+                <label><input type="radio" name="plan"> Pro plan — $49/mo</label>
+                <label><input type="radio" name="plan"> Enterprise — Contact us</label>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;label&gt;&lt;input type="checkbox" checked&gt; Receive email updates&lt;/label&gt;
+&lt;label&gt;&lt;input type="checkbox"&gt; Accept terms&lt;/label&gt;
+
+&lt;label&gt;&lt;input type="radio" name="plan" checked&gt; Free plan&lt;/label&gt;
+&lt;label&gt;&lt;input type="radio" name="plan"&gt; Pro — $49/mo&lt;/label&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- CARDS -->
+        <section id="cards" class="pg-component">
+          <h2 class="pg-component-title">Cards</h2>
+          <p class="pg-component-desc">Content containers with elevation variants. Hover lifts with shadow.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 1rem;">
+                <div class="cui-card">
+                  <h3 style="margin-top: 0;">Default</h3>
+                  <p class="cui-text-sm cui-text-muted">Subtle border, hover shadow.</p>
+                </div>
+                <div class="cui-card cui-card-elevated">
+                  <h3 style="margin-top: 0;">Elevated</h3>
+                  <p class="cui-text-sm cui-text-muted">Standing shadow, deeper on hover.</p>
+                </div>
+                <div class="cui-card cui-card-highlight">
+                  <h3 style="margin-top: 0;">Highlighted</h3>
+                  <p class="cui-text-sm cui-text-muted">Primary tint border and inset glow.</p>
+                </div>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;div class="cui-card"&gt;Default card&lt;/div&gt;
+&lt;div class="cui-card cui-card-elevated"&gt;Elevated card&lt;/div&gt;
+&lt;div class="cui-card cui-card-highlight"&gt;Highlighted card&lt;/div&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- TABLE -->
+        <section id="table" class="pg-component">
+          <h2 class="pg-component-title">Table</h2>
+          <p class="pg-component-desc">Responsive data table with hover rows and sticky headers. Wrap in <code>.cui-table-wrapper</code> for horizontal scroll.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <div class="cui-table-wrapper">
+                <table class="cui-table">
+                  <thead><tr><th>Name</th><th>Role</th><th>Status</th><th>Score</th></tr></thead>
+                  <tbody>
+                    <tr><td>Alexandra Chen</td><td>Designer</td><td><span class="cui-badge cui-badge-success">Active</span></td><td>94</td></tr>
+                    <tr><td>Marcus Williams</td><td>Engineer</td><td><span class="cui-badge cui-badge-success">Active</span></td><td>87</td></tr>
+                    <tr><td>Sarah Kim</td><td>PM</td><td><span class="cui-badge">Away</span></td><td>91</td></tr>
+                    <tr><td>James Rodriguez</td><td>Designer</td><td><span class="cui-badge cui-badge-destructive">Inactive</span></td><td>78</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;div class="cui-table-wrapper"&gt;
+  &lt;table class="cui-table"&gt;
+    &lt;thead&gt;
+      &lt;tr&gt;&lt;th&gt;Name&lt;/th&gt;&lt;th&gt;Role&lt;/th&gt;&lt;th&gt;Status&lt;/th&gt;&lt;/tr&gt;
+    &lt;/thead&gt;
+    &lt;tbody&gt;
+      &lt;tr&gt;
+        &lt;td&gt;Alexandra Chen&lt;/td&gt;
+        &lt;td&gt;Designer&lt;/td&gt;
+        &lt;td&gt;&lt;span class="cui-badge cui-badge-success"&gt;Active&lt;/span&gt;&lt;/td&gt;
+      &lt;/tr&gt;
+    &lt;/tbody&gt;
+  &lt;/table&gt;
+&lt;/div&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- ACCORDION -->
+        <section id="accordion" class="pg-component">
+          <h2 class="pg-component-title">Accordion</h2>
+          <p class="pg-component-desc">Uses native <code>&lt;details&gt;</code> — works without JavaScript. Keyboard accessible. 44px trigger.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render" style="max-width: 32rem;">
+              <details class="cui-accordion" open>
+                <summary>How do I install cbrowser-ui?</summary>
+                <p>Add one link tag: <code>&lt;link rel="stylesheet" href="https://cdn.cbrowser.ai/ui.css"&gt;</code> — or install via npm with <code>npm install cbrowser-ui</code>.</p>
+              </details>
+              <details class="cui-accordion">
+                <summary>Does it work with React / Vue / Svelte?</summary>
+                <p>Yes. It's framework-agnostic CSS. Import the stylesheet and use the class names. The JS runtime is optional — only needed for focus traps and keyboard navigation.</p>
+              </details>
+              <details class="cui-accordion">
+                <summary>Can I customize the colors?</summary>
+                <p>Override any of the 20 CSS custom properties. Every <code>--cui-*</code> variable changes the entire theme. The playground's theme editor (coming soon) will enforce contrast accessibility as you pick colors.</p>
+              </details>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;details class="cui-accordion" open&gt;
+  &lt;summary&gt;How do I install cbrowser-ui?&lt;/summary&gt;
+  &lt;p&gt;Add one link tag or install via npm.&lt;/p&gt;
+&lt;/details&gt;
+&lt;details class="cui-accordion"&gt;
+  &lt;summary&gt;Does it work with React?&lt;/summary&gt;
+  &lt;p&gt;Yes. Framework-agnostic CSS.&lt;/p&gt;
+&lt;/details&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- DIALOG -->
+        <section id="dialog" class="pg-component">
+          <h2 class="pg-component-title">Dialog / Modal</h2>
+          <p class="pg-component-desc">Native <code>&lt;dialog&gt;</code> with focus trap, ESC to close, and backdrop. Add <code>data-cui-trap</code> for automatic focus management.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <button class="cui-btn" onclick="document.getElementById('demo-dialog').showModal()" data-testid="demo-open-dialog">Open Dialog</button>
+
+              <dialog id="demo-dialog" class="cui-dialog">
+                <div class="cui-dialog-content">
+                  <div class="cui-dialog-header">
+                    <h3 class="cui-dialog-title">Confirm Action</h3>
+                    <p class="cui-dialog-description">Are you sure you want to delete this item? This action cannot be undone.</p>
+                  </div>
+                  <div class="cui-dialog-footer">
+                    <button class="cui-btn cui-btn-secondary" onclick="document.getElementById('demo-dialog').close()" data-testid="demo-dialog-cancel">Cancel</button>
+                    <button class="cui-btn cui-btn-destructive" onclick="document.getElementById('demo-dialog').close()" data-testid="demo-dialog-delete">Delete</button>
+                  </div>
+                </div>
+              </dialog>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;button class="cui-btn" onclick="document.getElementById('my-dialog').showModal()"&gt;
+  Open Dialog
+&lt;/button&gt;
+
+&lt;dialog id="my-dialog" class="cui-dialog" data-cui-trap&gt;
+  &lt;div class="cui-dialog-content"&gt;
+    &lt;div class="cui-dialog-header"&gt;
+      &lt;h3 class="cui-dialog-title"&gt;Confirm Action&lt;/h3&gt;
+      &lt;p class="cui-dialog-description"&gt;Are you sure?&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class="cui-dialog-footer"&gt;
+      &lt;button class="cui-btn cui-btn-secondary" onclick="this.closest('dialog').close()"&gt;Cancel&lt;/button&gt;
+      &lt;button class="cui-btn cui-btn-destructive"&gt;Delete&lt;/button&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+&lt;/dialog&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- PROGRESS -->
+        <section id="progress" class="pg-component">
+          <h2 class="pg-component-title">Progress</h2>
+          <p class="pg-component-desc">Accessible progress bar with ARIA attributes.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render" style="max-width: 24rem;">
+              <div class="cui-stack">
+                <div>
+                  <p class="cui-text-sm cui-font-bold">Upload progress</p>
+                  <div class="cui-progress" role="progressbar" aria-valuenow="72" aria-valuemin="0" aria-valuemax="100" aria-label="Upload progress: 72%">
+                    <div class="cui-progress-bar" style="width: 72%;"></div>
+                  </div>
+                  <p class="cui-text-sm cui-text-muted">72% complete</p>
+                </div>
+                <div>
+                  <p class="cui-text-sm cui-font-bold">Storage used</p>
+                  <div class="cui-progress" role="progressbar" aria-valuenow="35" aria-valuemin="0" aria-valuemax="100" aria-label="Storage: 35%">
+                    <div class="cui-progress-bar" style="width: 35%; background: var(--cui-success);"></div>
+                  </div>
+                  <p class="cui-text-sm cui-text-muted">3.5 GB of 10 GB</p>
+                </div>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;div class="cui-progress" role="progressbar"
+     aria-valuenow="72" aria-valuemin="0" aria-valuemax="100"
+     aria-label="Upload progress: 72%"&gt;
+  &lt;div class="cui-progress-bar" style="width: 72%;"&gt;&lt;/div&gt;
+&lt;/div&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- NAV -->
+        <section id="nav" class="pg-component">
+          <h2 class="pg-component-title">Navigation</h2>
+          <p class="pg-component-desc">Vertical and horizontal nav with <code>aria-current</code> for active state. 44px touch targets.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: 1.5rem;">
+                <div>
+                  <p class="cui-text-sm cui-font-bold" style="margin-bottom: 0.5rem;">Vertical</p>
+                  <nav aria-label="Example vertical nav" class="cui-nav" style="flex-direction: column; align-items: stretch; background: var(--cui-surface); border-radius: var(--cui-radius); padding: 0.5rem;">
+                    <a href="#" aria-current="page">Dashboard</a>
+                    <a href="#">Analytics</a>
+                    <a href="#">Settings</a>
+                    <a href="#">Sign Out</a>
+                  </nav>
+                </div>
+                <div>
+                  <p class="cui-text-sm cui-font-bold" style="margin-bottom: 0.5rem;">Horizontal</p>
+                  <nav aria-label="Example horizontal nav" class="cui-nav" style="background: var(--cui-surface); border-radius: var(--cui-radius); padding: 0.25rem;">
+                    <a href="#" aria-current="page">Home</a>
+                    <a href="#">About</a>
+                    <a href="#">Blog</a>
+                    <a href="#">Contact</a>
+                  </nav>
+                </div>
+              </div>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;nav aria-label="Main" class="cui-nav"&gt;
+  &lt;a href="/" aria-current="page"&gt;Dashboard&lt;/a&gt;
+  &lt;a href="/analytics"&gt;Analytics&lt;/a&gt;
+  &lt;a href="/settings"&gt;Settings&lt;/a&gt;
+&lt;/nav&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- BREADCRUMB -->
+        <section id="breadcrumb" class="pg-component">
+          <h2 class="pg-component-title">Breadcrumbs</h2>
+          <p class="pg-component-desc">Wrap in <code>&lt;nav aria-label="Breadcrumb"&gt;</code>. Current page uses <code>aria-current</code>.</p>
+
+          <div class="pg-preview">
+            <div class="pg-preview-render">
+              <nav aria-label="Breadcrumb">
+                <ol class="cui-breadcrumb">
+                  <li><a href="#">Home</a></li>
+                  <li><a href="#">Products</a></li>
+                  <li><a href="#">Electronics</a></li>
+                  <li><span aria-current="page">Headphones</span></li>
+                </ol>
+              </nav>
+            </div>
+            <div class="pg-preview-code">
+              <button class="pg-copy" onclick="navigator.clipboard.writeText(this.closest('.pg-preview-code').querySelector('code').textContent)">Copy</button>
+              <pre><code>&lt;nav aria-label="Breadcrumb"&gt;
+  &lt;ol class="cui-breadcrumb"&gt;
+    &lt;li&gt;&lt;a href="/"&gt;Home&lt;/a&gt;&lt;/li&gt;
+    &lt;li&gt;&lt;a href="/products"&gt;Products&lt;/a&gt;&lt;/li&gt;
+    &lt;li&gt;&lt;span aria-current="page"&gt;Details&lt;/span&gt;&lt;/li&gt;
+  &lt;/ol&gt;
+&lt;/nav&gt;</code></pre>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </main>
+
+  <footer aria-label="Site footer" style="border-top: 1px solid var(--cui-border); margin-top: 3rem;">
+    <div class="cui-container" style="padding: 2rem 0;">
+      <p class="cui-text-sm cui-text-muted">
+        <strong class="cui-gradient-text">cbrowser-ui</strong> · MIT License · Built by <a href="https://cbrowser.ai" data-testid="footer-cbrowser">CBrowser</a>
+      </p>
+    </div>
+  </footer>
+</body>
+</html>

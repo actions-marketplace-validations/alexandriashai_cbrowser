@@ -111,7 +111,7 @@ function computeMotorFitness(data) {
     }
     // --- interactionCount (20%) ---
     // Under 20 interactive elements is fine; penalize progressively above that
-    const interactiveCount = safe(data.interactiveCount, 15);
+    const interactiveCount = safe(data.interactiveCount, 50);
     const interactionCountScore = interactiveCount <= 20 ? 100
         : interactiveCount <= 40 ? clamp(Math.round(100 - (interactiveCount - 20) * 2.5))
             : clamp(Math.round(50 - (interactiveCount - 40) * 1));
@@ -360,7 +360,7 @@ function computeSensoryFitness(data) {
     };
     // --- overloadThreshold (10%) ---
     // CTC ≤ 0.3 is "easy" per our scale, 0.3-0.6 moderate, 0.6-1.0 hard, >1.0 very hard
-    const totalCTC = safe(data.totalCTC, 0.3);
+    const totalCTC = safe(data.totalCTC, 0.7);
     const overloadScore = totalCTC <= 0.3 ? 100
         : totalCTC <= 0.6 ? clamp(Math.round(100 - (totalCTC - 0.3) * 130))
             : clamp(Math.round(60 - (totalCTC - 0.6) * 100));

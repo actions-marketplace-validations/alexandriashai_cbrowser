@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Templates — cbrowser-ui</title>
+  <meta name="description" content="Accessible page templates you can copy. Landing page, blog, dashboard, pricing, login — all score 100 on CIF.">
+  <link rel="stylesheet" href="https://cdn.cbrowser.ai/ui.css">
+  <link rel="stylesheet" href="/cdn/playground.css">
+  <script type="module" src="https://cdn.cbrowser.ai/ui.mjs"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>:root { --cui-font: 'Inter', system-ui, sans-serif; --cui-primary: #4f46e5; --cui-primary-fg: #fff; --cui-primary-hover: #4338ca; --cui-gradient-start: #4f46e5; --cui-gradient-end: #7c3aed; }
+  @media (prefers-color-scheme: dark) { :root { --cui-primary: #818cf8; --cui-primary-fg: #0f172a; } }
+  [id], h1, h2, h3, h4, h5, h6 { scroll-margin-top: 80px; }
+  .cui-nav-backdrop { pointer-events: none; }
+  .cui-nav-backdrop[aria-hidden="false"], .cui-header.cui-header-open .cui-nav-backdrop { pointer-events: auto; }</style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "Templates — cbrowser-ui",
+    "url": "https://playground.cbrowser.ai/templates/",
+    "description": "Accessible page templates you can copy. Landing page, blog, dashboard, pricing, login — all score 100 on CIF."
+  }
+  </script>
+</head>
+<body>
+  <a href="#main" class="cui-skip-link" data-testid="skip-to-main">Skip to main content</a>
+
+  <header class="cui-header">
+    <div class="cui-container-lg cui-row" style="margin: 0 auto; width: 100%;">
+      <a href="/" class="cui-header-logo" style="margin-right: auto;" data-testid="site-logo"><span class="cui-gradient-text" style="font-size: 1.25rem;">cbrowser-ui</span></a>
+      <nav class="cui-header-nav" id="main-nav" aria-label="Main navigation">
+        <a href="/" data-testid="nav-home">Home</a>
+        <a href="/getting-started/" data-testid="nav-get-started">Get Started</a>
+        <a href="/components/" data-testid="nav-components">Components</a>
+        <a href="/templates/" aria-current="page" data-testid="nav-templates">Templates</a>
+        <a href="https://github.com/alexandriashai/cbrowser-ui" target="_blank" rel="noopener" data-testid="nav-github">GitHub</a>
+      </nav>
+      <button class="cui-header-toggle" aria-controls="main-nav" aria-expanded="false" aria-label="Open menu" data-testid="menu-toggle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav aria-label="Breadcrumb" data-testid="breadcrumb">
+    <ol style="list-style: none; display: flex; gap: 0.5rem; padding: 0.75rem 0; margin: 0; font-size: 0.875rem;" class="cui-container">
+      <li><a href="/" data-testid="breadcrumb-home">Home</a></li>
+      <li aria-hidden="true">/</li>
+      <li aria-current="page">Templates</li>
+    </ol>
+  </nav>
+
+  <main id="main">
+    <section class="cui-section">
+      <div class="cui-container-lg">
+        <div style="text-align: center; margin-bottom: 2rem;">
+          <span class="cui-badge cui-badge-primary" style="margin-bottom: 1rem;">Templates</span>
+          <h1 class="cui-display-sm">Start from a template</h1>
+          <p class="cui-lead" style="margin: 1rem auto 0; text-align: center;">Every template scores 100 on CIF accessibility. Copy the HTML, customize the theme, ship.</p>
+        </div>
+
+        <div class="pg-template-grid">
+          <!-- Landing Page -->
+          <div class="pg-template-card">
+            <div class="pg-template-preview">
+              <div class="pg-template-preview-inner">
+                <div class="mini-header">
+                  <span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span>
+                  <div style="margin-left: auto; display: flex; gap: 3px;"><div class="mini-block w-40" style="margin: 0; width: 12px;"></div><div class="mini-block w-40" style="margin: 0; width: 12px;"></div><div class="mini-block w-40" style="margin: 0; width: 12px;"></div></div>
+                </div>
+                <div class="mini-content" style="text-align: center; padding: 0.75rem;">
+                  <div class="mini-block w-40 primary" style="margin: 0 auto 4px; width: 40px; height: 4px; border-radius: 100px;"></div>
+                  <div class="mini-block w-80" style="margin: 2px auto; height: 8px;"></div>
+                  <div class="mini-block w-60" style="margin: 2px auto;"></div>
+                  <div class="mini-block primary" style="margin: 6px auto 0; width: 30px; height: 8px; border-radius: 2px;"></div>
+                </div>
+                <div class="mini-content">
+                  <div class="mini-grid">
+                    <div class="mini-card"><div class="mini-block tall"></div><div class="mini-block w-80"></div></div>
+                    <div class="mini-card"><div class="mini-block tall"></div><div class="mini-block w-60"></div></div>
+                    <div class="mini-card"><div class="mini-block tall"></div><div class="mini-block w-80"></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="pg-template-info">
+              <h3>Landing Page</h3>
+              <p>Hero section, feature grid, testimonials, pricing, and CTA. The complete marketing page.</p>
+            </div>
+            <div class="pg-template-actions">
+              <a href="/templates/landing.html" class="cui-btn" style="font-size: 0.875rem; padding: 0.5rem 1rem;" data-testid="template-landing-preview">Preview</a>
+              <a href="https://github.com/alexandriashai/cbrowser-ui/blob/main/playground/templates/landing.html" class="cui-btn cui-btn-secondary" style="font-size: 0.875rem; padding: 0.5rem 1rem;" target="_blank" rel="noopener" data-testid="template-landing-code">View Code</a>
+            </div>
+          </div>
+
+          <!-- Blog -->
+          <div class="pg-template-card">
+            <div class="pg-template-preview">
+              <div class="pg-template-preview-inner">
+                <div class="mini-header">
+                  <span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span>
+                </div>
+                <div class="mini-content">
+                  <div class="mini-block w-80" style="height: 8px;"></div>
+                  <div class="mini-block w-40" style="height: 3px; opacity: 0.5;"></div>
+                  <div style="margin-top: 6px;">
+                    <div class="mini-block"></div>
+                    <div class="mini-block"></div>
+                    <div class="mini-block w-80"></div>
+                    <div class="mini-block"></div>
+                    <div class="mini-block w-60"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="pg-template-info">
+              <h3>Blog Post</h3>
+              <p>Article layout with readable typography, table of contents, author info, and related posts.</p>
+            </div>
+            <div class="pg-template-actions">
+              <a href="/templates/blog.html" class="cui-btn" style="font-size: 0.875rem; padding: 0.5rem 1rem;" data-testid="template-blog-preview">Preview</a>
+              <a href="https://github.com/alexandriashai/cbrowser-ui/blob/main/playground/templates/blog.html" class="cui-btn cui-btn-secondary" style="font-size: 0.875rem; padding: 0.5rem 1rem;" target="_blank" rel="noopener" data-testid="template-blog-code">View Code</a>
+            </div>
+          </div>
+
+          <!-- Dashboard -->
+          <div class="pg-template-card pg-coming-soon">
+            <div class="pg-template-preview">
+              <div class="pg-template-preview-inner">
+                <div class="mini-header">
+                  <span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span>
+                </div>
+                <div class="mini-content">
+                  <div style="display: grid; grid-template-columns: 40px 1fr; gap: 4px;">
+                    <div>
+                      <div class="mini-block" style="height: 4px; margin: 2px 0;"></div>
+                      <div class="mini-block" style="height: 4px; margin: 2px 0;"></div>
+                      <div class="mini-block" style="height: 4px; margin: 2px 0;"></div>
+                      <div class="mini-block primary" style="height: 4px; margin: 2px 0;"></div>
+                    </div>
+                    <div>
+                      <div class="mini-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr; margin-bottom: 4px;">
+                        <div class="mini-card" style="padding: 3px;"><div class="mini-block" style="height: 10px;"></div></div>
+                        <div class="mini-card" style="padding: 3px;"><div class="mini-block" style="height: 10px;"></div></div>
+                        <div class="mini-card" style="padding: 3px;"><div class="mini-block" style="height: 10px;"></div></div>
+                        <div class="mini-card" style="padding: 3px;"><div class="mini-block" style="height: 10px;"></div></div>
+                      </div>
+                      <div class="mini-card" style="padding: 3px;"><div class="mini-block tall" style="height: 30px;"></div></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="pg-template-info">
+              <h3>Dashboard</h3>
+              <p>Sidebar navigation, stat cards, data table, and chart placeholders. Admin panel starter.</p>
+            </div>
+            <div class="pg-template-actions">
+              <span class="cui-btn cui-btn-ghost" style="font-size: 0.875rem; padding: 0.5rem 1rem; opacity: 0.5;">Coming Soon</span>
+            </div>
+          </div>
+
+          <!-- Pricing -->
+          <div class="pg-template-card pg-coming-soon">
+            <div class="pg-template-preview">
+              <div class="pg-template-preview-inner">
+                <div class="mini-header"><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span></div>
+                <div class="mini-content" style="text-align: center; padding: 0.5rem;">
+                  <div class="mini-block w-60" style="margin: 0 auto 4px; height: 6px;"></div>
+                  <div class="mini-grid" style="margin-top: 6px;">
+                    <div class="mini-card" style="padding: 4px;"><div class="mini-block w-60" style="margin: 0 auto;"></div><div class="mini-block tall"></div><div class="mini-block primary" style="height: 6px; border-radius: 2px;"></div></div>
+                    <div class="mini-card" style="padding: 4px; border: 1px solid var(--cui-primary);"><div class="mini-block w-60" style="margin: 0 auto;"></div><div class="mini-block tall"></div><div class="mini-block primary" style="height: 6px; border-radius: 2px;"></div></div>
+                    <div class="mini-card" style="padding: 4px;"><div class="mini-block w-60" style="margin: 0 auto;"></div><div class="mini-block tall"></div><div class="mini-block primary" style="height: 6px; border-radius: 2px;"></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="pg-template-info">
+              <h3>Pricing Page</h3>
+              <p>Three-tier pricing with feature comparison, toggle for monthly/annual, and FAQ accordion.</p>
+            </div>
+            <div class="pg-template-actions">
+              <span class="cui-btn cui-btn-ghost" style="font-size: 0.875rem; padding: 0.5rem 1rem; opacity: 0.5;">Coming Soon</span>
+            </div>
+          </div>
+
+          <!-- Login -->
+          <div class="pg-template-card pg-coming-soon">
+            <div class="pg-template-preview">
+              <div class="pg-template-preview-inner">
+                <div class="mini-header"><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span></div>
+                <div class="mini-content" style="display: flex; align-items: center; justify-content: center; padding: 1rem;">
+                  <div style="width: 70%;">
+                    <div class="mini-block w-60" style="margin: 0 auto 4px; height: 6px;"></div>
+                    <div class="mini-block" style="height: 8px; margin: 4px 0;"></div>
+                    <div class="mini-block" style="height: 8px; margin: 4px 0;"></div>
+                    <div class="mini-block primary" style="height: 8px; margin: 6px 0 0; border-radius: 2px;"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="pg-template-info">
+              <h3>Login / Register</h3>
+              <p>Centered auth form with social login buttons, password visibility toggle, and error states.</p>
+            </div>
+            <div class="pg-template-actions">
+              <span class="cui-btn cui-btn-ghost" style="font-size: 0.875rem; padding: 0.5rem 1rem; opacity: 0.5;">Coming Soon</span>
+            </div>
+          </div>
+
+          <!-- Documentation -->
+          <div class="pg-template-card pg-coming-soon">
+            <div class="pg-template-preview">
+              <div class="pg-template-preview-inner">
+                <div class="mini-header"><span class="mini-dot"></span><span class="mini-dot"></span><span class="mini-dot"></span></div>
+                <div class="mini-content">
+                  <div style="display: grid; grid-template-columns: 35px 1fr; gap: 4px;">
+                    <div><div class="mini-block" style="height: 3px; margin: 2px 0;"></div><div class="mini-block" style="height: 3px; margin: 2px 0;"></div><div class="mini-block primary" style="height: 3px; margin: 2px 0;"></div><div class="mini-block" style="height: 3px; margin: 2px 0;"></div><div class="mini-block" style="height: 3px; margin: 2px 0;"></div></div>
+                    <div><div class="mini-block w-60" style="height: 6px;"></div><div class="mini-block"></div><div class="mini-block"></div><div class="mini-block w-80"></div><div class="mini-block"></div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="pg-template-info">
+              <h3>Documentation</h3>
+              <p>Sidebar navigation, article content, table of contents, code blocks, and search.</p>
+            </div>
+            <div class="pg-template-actions">
+              <span class="cui-btn cui-btn-ghost" style="font-size: 0.875rem; padding: 0.5rem 1rem; opacity: 0.5;">Coming Soon</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <div style="text-align: center; padding: 2rem 0;">
+          <p class="cui-text-muted">All templates use the same 20 CSS variables. Theme once, apply everywhere.</p>
+          <a href="/getting-started/" class="cui-btn cui-btn-secondary" style="margin-top: 1rem;" data-testid="cta-get-started">Learn how to customize &#8594;</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer aria-label="Site footer" style="border-top: 1px solid var(--cui-border);">
+    <div class="cui-container" style="padding: 2rem 0;">
+      <p class="cui-text-sm cui-text-muted"><strong class="cui-gradient-text">cbrowser-ui</strong> · MIT License · Built by <a href="https://cbrowser.ai" data-testid="footer-cbrowser">CBrowser</a></p>
+    </div>
+  </footer>
+</body>
+</html>
