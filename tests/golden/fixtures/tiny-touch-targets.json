@@ -1,0 +1,33 @@
+{
+  "url": "https://m.example.com/news",
+  "touchTargets": [
+    { "width": 24, "height": 24 },
+    { "width": 28, "height": 28 },
+    { "width": 18, "height": 18 },
+    { "width": 32, "height": 20 },
+    { "width": 40, "height": 24 },
+    { "width": 22, "height": 22 },
+    { "width": 48, "height": 48 },
+    { "width": 44, "height": 44 },
+    { "width": 30, "height": 30 },
+    { "width": 26, "height": 26 },
+    { "width": 16, "height": 16, "exempt": true }
+  ],
+  "barriers": [
+    { "type": "touch_target", "severity": "serious", "element": "nav.social-icons a", "description": "Social icons are 24px with no spacing between them", "wcagCriteria": ["2.5.5"] },
+    { "type": "touch_target", "severity": "serious", "element": ".pagination a", "description": "Pagination links only 18px tall", "wcagCriteria": ["2.5.5"] },
+    { "type": "drag_required", "severity": "moderate", "element": ".story-carousel", "description": "Carousel requires swipe with no button alternative", "wcagCriteria": ["2.5.7"] }
+  ],
+  "agentReadyScore": 68,
+  "semanticScore": 70,
+  "ariaScore": 62,
+  "formLabelScore": 65,
+  "pageType": "article",
+  "elementCount": 420,
+  "interactiveCount": 48,
+  "navItemCount": 9,
+  "linkCount": 85,
+  "imageCount": 15,
+  "informationDensity": 0.62,
+  "fleschScore": 66
+}

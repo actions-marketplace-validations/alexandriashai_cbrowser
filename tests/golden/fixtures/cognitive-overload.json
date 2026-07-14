@@ -1,0 +1,31 @@
+{
+  "url": "https://portal.example.gov/benefits/application",
+  "totalCTC": 1.42,
+  "layers": [
+    { "name": "perception", "cost": 0.22 },
+    { "name": "decision", "cost": 0.38 },
+    { "name": "motor", "cost": 0.18 },
+    { "name": "memory", "cost": 0.31 },
+    { "name": "navigation", "cost": 0.33 }
+  ],
+  "abandonmentRisk": 0.81,
+  "pageType": "form",
+  "elementCount": 2350,
+  "interactiveCount": 96,
+  "formFieldCount": 64,
+  "navItemCount": 19,
+  "linkCount": 210,
+  "imageCount": 12,
+  "animationCount": 0,
+  "agentReadyScore": 61,
+  "semanticScore": 66,
+  "ariaScore": 55,
+  "landmarkScore": 60,
+  "headingScore": 58,
+  "formLabelScore": 52,
+  "fleschScore": 34,
+  "avgSentenceLength": 28,
+  "technicalDensity": 0.42,
+  "informationDensity": 0.78,
+  "ctaCaptureRate": 0.07
+}

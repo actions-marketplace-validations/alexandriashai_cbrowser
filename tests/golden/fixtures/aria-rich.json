@@ -1,0 +1,42 @@
+{
+  "url": "https://app.example.com/dashboard",
+  "touchTargets": [
+    { "width": 44, "height": 44 },
+    { "width": 48, "height": 40 },
+    { "width": 52, "height": 44 },
+    { "width": 44, "height": 44 },
+    { "width": 160, "height": 48 },
+    { "width": 36, "height": 36 }
+  ],
+  "agentReadyScore": 88,
+  "semanticScore": 91,
+  "ariaScore": 95,
+  "landmarkScore": 93,
+  "headingScore": 89,
+  "formLabelScore": 94,
+  "totalCTC": 0.34,
+  "layers": [
+    { "name": "perception", "cost": 0.08 },
+    { "name": "decision", "cost": 0.07 },
+    { "name": "motor", "cost": 0.06 },
+    { "name": "memory", "cost": 0.06 },
+    { "name": "navigation", "cost": 0.07 }
+  ],
+  "abandonmentRisk": 0.14,
+  "pageType": "dashboard",
+  "elementCount": 480,
+  "interactiveCount": 38,
+  "formFieldCount": 6,
+  "navItemCount": 10,
+  "linkCount": 42,
+  "imageCount": 8,
+  "animationCount": 6,
+  "hasReducedMotionSupport": true,
+  "ctaCaptureRate": 0.36,
+  "distractorRatio": 0.2,
+  "attentionQualityScore": 79,
+  "avgSentenceLength": 16,
+  "fleschScore": 62,
+  "technicalDensity": 0.22,
+  "informationDensity": 0.44
+}

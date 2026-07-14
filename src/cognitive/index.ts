@@ -72,6 +72,12 @@ import {
   classifyUIPattern,
 } from "../types.js";
 import { loadConfigFile, getDataDir } from "../config.js";
+import type { DecisionProvider } from "./journey-trace.js";
+import {
+  JourneyTraceWriter,
+  TraceReplayProvider,
+  hashPageState,
+} from "./journey-trace.js";
 
 // ============================================================================
 // API Key Management
@@ -797,6 +803,25 @@ export interface CognitiveJourneyOptions {
     now: Date | string;
     timezone?: string;
   };
+  /**
+   * Record every per-step decision to <dataDir>/traces/<journeyId>.jsonl so
+   * the journey can later be replayed without the Anthropic API. Only the
+   * page-state HASH, persona, and redacted decision text are written — never
+   * raw HTML, page content, or secrets. Off by default.
+   */
+  trace?: boolean;
+  /**
+   * Path to a trace file recorded with `trace: true`. Replays its decisions
+   * step-by-step instead of calling the Anthropic API for step reasoning.
+   * If the live page diverges from the recorded run, the journey throws
+   * TraceDivergenceError rather than continuing with stale decisions.
+   */
+  replayTrace?: string;
+  /**
+   * Custom per-step decision source. Overrides both the live Claude API and
+   * `replayTrace`. Mainly for tests (deterministic fakes, no network).
+   */
+  decisionProvider?: DecisionProvider;
 }
 
 export interface CognitiveStep {
@@ -848,6 +873,27 @@ export async function runCognitiveJourney(
 
   const anthropic = new Anthropic({ apiKey });
   const model = getAnthropicModel();
+
+  // Decision-provider seam (v18.68.0): the per-step LLM call sits behind a
+  // DecisionProvider so a recorded trace (or an injected fake) can stand in
+  // for the live API. The default path is the same anthropic.messages.create
+  // call as before — params and text extraction unchanged. Note the
+  // post-journey goal eval below still uses the live API in all modes.
+  const liveLLMProvider: DecisionProvider = {
+    decide: async (ctx) => {
+      const response = await anthropic.messages.create({
+        model,
+        max_tokens: 2000,
+        system: ctx.systemPrompt,
+        messages: ctx.messages.map((m) => ({ role: m.role, content: m.content })),
+      });
+      return response.content[0].type === "text" ? response.content[0].text : "";
+    },
+  };
+  const decisionProvider: DecisionProvider =
+    options.decisionProvider ??
+    (options.replayTrace ? new TraceReplayProvider(options.replayTrace) : liveLLMProvider);
+  const traceWriter = options.trace ? new JourneyTraceWriter() : null;
 
   // Get or create persona
   const existingPersona = getPersona(options.persona);
@@ -1501,17 +1547,34 @@ Right now it's ${temporalState.description}.`;
 
     messages.push({ role: "user", content: messageContent as string });
 
-    // Call Claude for cognitive reasoning
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: 2000,
-      system: systemPrompt,
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    });
+    // Page-state hash keys this step for trace record/replay. Built from the
+    // same inputs at record and replay time (URL + extracted page content) so
+    // replay detects when the live page stops matching the recorded run.
+    const pageStateHash = hashPageState(currentUrl, pageContent);
 
-    const assistantMessage =
-      response.content[0].type === "text" ? response.content[0].text : "";
+    // Call the decision provider for cognitive reasoning — the live Claude
+    // API by default; a recorded trace or injected fake when the new
+    // trace/replayTrace/decisionProvider options are set.
+    const assistantMessage = await decisionProvider.decide({
+      stepIndex: step,
+      pageStateHash,
+      persona: personaObj.name,
+      systemPrompt,
+      messages,
+    });
     messages.push({ role: "assistant", content: assistantMessage });
+
+    // Record the decision when tracing is on (JSONL, redacted, hash-only
+    // page state — see journey-trace.ts).
+    if (traceWriter) {
+      traceWriter.record({
+        step,
+        pageStateHash,
+        persona: personaObj.name,
+        decision: assistantMessage,
+        ts: new Date().toISOString(),
+      });
+    }
 
     // Parse Claude's response
     const parsed = parseCognitiveResponse(assistantMessage);
@@ -3016,3 +3079,15 @@ export type {
   GoalResult,
   ExecutionOptions,
 } from "./goal-types.js";
+
+// ============================================================================
+// Re-export Journey Trace (v18.68.0)
+// ============================================================================
+
+export {
+  JourneyTraceWriter,
+  TraceReplayProvider,
+  TraceDivergenceError,
+  hashPageState,
+} from "./journey-trace.js";
+export type { DecisionProvider, StepContext, TraceStep } from "./journey-trace.js";

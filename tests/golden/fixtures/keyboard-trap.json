@@ -1,0 +1,22 @@
+{
+  "url": "https://app.example.com/checkout",
+  "barriers": [
+    { "type": "keyboard_trap", "severity": "critical", "element": "#newsletter-modal", "description": "Focus trapped inside newsletter modal with no Escape handler", "wcagCriteria": ["2.1.2"] },
+    { "type": "keyboard_inaccessible", "severity": "critical", "element": "div.custom-select", "description": "Custom dropdown not reachable via keyboard", "wcagCriteria": ["2.1.1"] },
+    { "type": "keyboard_inaccessible", "severity": "serious", "element": "span.tooltip-trigger", "description": "Tooltip only opens on hover, no keyboard equivalent", "wcagCriteria": ["2.1.1"] },
+    { "type": "motor_precision", "severity": "serious", "element": "input[type=range]", "description": "Tip-amount slider requires fine pointer control", "wcagCriteria": ["2.5.7"] },
+    { "type": "missing_skip_link", "severity": "moderate", "description": "No skip-to-content link before navigation", "wcagCriteria": ["2.4.1"] }
+  ],
+  "agentReadyScore": 66,
+  "semanticScore": 71,
+  "ariaScore": 58,
+  "formLabelScore": 74,
+  "pageType": "checkout",
+  "elementCount": 260,
+  "interactiveCount": 34,
+  "formFieldCount": 12,
+  "navItemCount": 6,
+  "totalCTC": 0.55,
+  "fleschScore": 65,
+  "informationDensity": 0.48
+}

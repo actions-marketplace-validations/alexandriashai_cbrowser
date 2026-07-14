@@ -4,7 +4,7 @@ slug: cbrowser
 effort: advanced
 effort_source: explicit
 phase: observe
-progress: 0/10
+progress: 6/12
 mode: iterate
 started: 2026-07-13T20:39:10Z
 updated: 2026-07-13T20:41:00Z
@@ -17,7 +17,7 @@ source: hand-authored
 > `package.json`, `src/` structure, and the cbrowser-web product site. Scope: the core
 > npm package `cbrowser` (this repo). Behavioural ISCs below marked **(candidate)** are
 > drawn from documented capabilities but need the owner to confirm the exact probe/contract.
-> **Current state is NOT green — `bun test` has 5 failures (see ISC-1).**
+> Suite green as of 2026-07-14 (332/0); scoring engine regression-pinned (ISC-11).
 
 ## Problem
 
@@ -55,9 +55,9 @@ cbrowser is a cognitive browser-automation package that simulates real user cogn
 
 ## Criteria
 
-- [ ] ISC-1: `bun test` reports **0 failures**. **CURRENTLY FAILING — 5 fail / 311 tests (17 files) as of 2026-07-13.** `bun-test`.
-- [ ] ISC-2: `bun run build` (`tsc`) produces a clean build with no type errors. `bash`.
-- [ ] ISC-3: `bun run lint` (`eslint src/`) reports no errors. `bash`.
+- [x] ISC-1: `bun test` reports **0 failures** — 332 pass / 0 fail as of 2026-07-14 (root cause of the earlier 5 failures: module-scope console.log→stderr redirect in mcp-server.ts, fixed + released in v18.68.1). `bun-test`.
+- [x] ISC-2: `bun run build` (`tsc`) produces a clean build with no type errors. `bash`.
+- [x] ISC-3: `bun run lint` (`eslint src/`) reports no errors — 0 errors / 74 warnings (under the 150 cap) as of 2026-07-14. `bash`.
 - [ ] ISC-4 (candidate): `cbrowser doctor` reports the environment is correctly set up (chromium installed, config valid). `bash`.
 - [ ] ISC-5 (candidate): `cbrowser cognitive-effort --url <site> --persona first-timer` returns a cognitive transport score in [0,1] **and** an abandonment-risk percentage. `bash` + JSON assert.
 - [ ] ISC-6 (candidate): the MCP server (`node dist/mcp-server.js`) advertises **120 tools** on `tools/list`. `bash` + count.
@@ -65,6 +65,8 @@ cbrowser is a cognitive browser-automation package that simulates real user cogn
 - [ ] ISC-8 (candidate): `--json-output` on a core command emits valid, schema-stable JSON (screen-reader / CI contract). `bash` + JSON parse.
 - [ ] Anti-ISC-9 (candidate): basic commands (navigate/screenshot/click/extract/explore) run **without** an Anthropic API key (keyless-basics invariant). `bash`.
 - [ ] Anti-ISC-10 (candidate): no cognitive-journey command silently runs without a key (fails loudly instead of a confusing empty result). `bash`.
+- [x] ISC-11: The scoring engine is regression-pinned — `bun test tests/golden` exits 0 (8 golden fixtures deep-equal their pinned CIFScores + 5 fast-check properties: determinism, [0,100] bounds, 3 monotonicity invariants; runs with no network/browser/key).
+- [x] ISC-12: Journeys are traceable + replayable — `bun test tests/journey-trace.test.ts` exits 0 (per-step JSONL traces, sha256-hashed page state, secret/HTML redaction, LLM-free deterministic step replay with divergence detection).
 
 ## Test Strategy
 
@@ -80,6 +82,8 @@ cbrowser is a cognitive browser-automation package that simulates real user cogn
 | ISC-8 | contract | `--json-output` | valid stable JSON | bash+json |
 | Anti-ISC-9 | invariant | basic cmd, no key | succeeds | bash |
 | Anti-ISC-10 | invariant | journey cmd, no key | fails loudly | bash |
+| ISC-11 | regression | `bun test tests/golden` | 0 fail | bun-test |
+| ISC-12 | replay | `bun test tests/journey-trace.test.ts` | 0 fail | bun-test |
 
 ## Features
 
@@ -90,6 +94,9 @@ Mapped to real `src/` modules (satisfying ISCs the owner should refine):
 | Cognitive transport chain | 6-layer cognitive-effort scoring per persona | `cognitive/`, `cif-score.ts`, `trait-reference.ts` |
 | User simulation / personas | 26 traits, 11 personas, questionnaire-built personas | `personas.ts`, `agent-personas.ts`, `persona-questionnaire.ts` |
 | AI friendliness | agent-ready / webmcp / llms.txt readiness | `analysis/`, `llms-txt/`, `mcp-tools/` |
+| Golden scoring harness | pins `computeCIFScore` in CI — score drift fails the build | `tests/golden/` (fixtures, pins, fast-check properties) |
+| Journey traces + replay | decision-provider seam; opt-in per-step traces; LLM-free deterministic replay | `cognitive/journey-trace.ts`, `tests/journey-trace.test.ts` |
+| Audit salvage (worker) | checkpoint/retry-once so failed audits stop refunding completed work; partial-charge flag default OFF | lives in `cbrowser-web/cms/audit-salvage.ts` (worker repo) |
 | Accessibility empathy | disability-persona barrier detection | `analysis/`, `values/` |
 | Constitutional safety | MCP tool-injection scanning, guardrails | `security/`, `mcp-guardian` dep |
 | Site knowledge | site model / profiles / ideal-profile gaps | `site-model/`, `ideal-profiles*.ts` |
