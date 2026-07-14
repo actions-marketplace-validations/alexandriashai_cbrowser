@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.68.1](https://github.com/alexandriashai/cbrowser/compare/v18.68.0...v18.68.1) (2026-07-14)
+
+### Fixed
+
+* advertise api_key auth in /health when requireAuth is on ([ddc8155](https://github.com/alexandriashai/cbrowser/commit/ddc81550dc55b371b7d1f79d1a68be3174f4e2a2))
+* **cli:** stop MCP stdio console redirect from hijacking CLI stdout ([b3d66c7](https://github.com/alexandriashai/cbrowser/commit/b3d66c7f0cbfdfdf03b04c313e9573e579a91dfb))
+
 ## [18.68.0](https://github.com/alexandriashai/cbrowser/compare/v18.67.0...v18.68.0) (2026-05-01)
 
 ### Added
