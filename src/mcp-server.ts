@@ -125,13 +125,6 @@ import {
   type SecurityAuditHandlerOptions,
 } from "mcp-guardian";
 
-// ============================================================================
-// CRITICAL: Redirect console.log to stderr for MCP stdio transport
-// MCP uses stdout for JSON-RPC messages. Any console.log output corrupts
-// the protocol and causes "Unexpected token" JSON parsing errors in clients.
-// ============================================================================
-console.log = (...args: unknown[]) => console.error(...args);
-
 // Shared browser instance
 let browser: CBrowser | null = null;
 
@@ -4269,6 +4262,14 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
 }
 
 export async function startMcpServer(): Promise<void> {
+  // CRITICAL: MCP stdio transport uses stdout for JSON-RPC messages — any console.log
+  // corrupts the protocol ("Unexpected token" in clients). Redirect it to stderr here, at
+  // the top of the stdio entry point (before createMcpServer's tool-registration logging),
+  // NOT at module scope: cli.ts imports this module, so a module-level redirect poisoned
+  // console.log for the whole CLI and sent command output to stderr. The HTTP remote server
+  // (mcp-server-remote.ts) doesn't need this — its stdout is not the protocol channel.
+  console.log = (...args: unknown[]) => console.error(...args);
+
   const server = await createMcpServer();
   await connectMcpServer(server);
 }
