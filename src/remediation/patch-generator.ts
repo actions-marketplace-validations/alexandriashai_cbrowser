@@ -266,7 +266,7 @@ function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
   const isGenericExample = !after || after.includes('>...</') || after === "<!-- See recommendation below -->";
 
   if (isGenericExample && issue.category === "findability" && issue.element) {
-    const tag = issue.element.split(/[#.\[]/)[0] || "div";
+    const tag = issue.element.split(/[#.[]/)[0] || "div";
     const textMatch = issue.description?.match(/["']([^"']+)["']/);
     const elementText = textMatch?.[1] || issue.element.split("#")[1] || "";
     const testId = elementText

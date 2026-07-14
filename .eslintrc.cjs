@@ -41,6 +41,10 @@ module.exports = {
     "dist/",
     "node_modules/",
     "tests/",
+    // Inline *.test.ts files are excluded from tsconfig (see "exclude"), so the
+    // type-aware parser (parserOptions.project) cannot parse them — don't lint them,
+    // consistent with the tests/ directory already being ignored.
+    "src/**/*.test.ts",
     "examples/",
     "docs/",
     "*.js",
