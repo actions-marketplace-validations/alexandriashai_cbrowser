@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.69.1](https://github.com/alexandriashai/cbrowser/compare/v18.69.0...v18.69.1) (2026-07-14)
+
+### Fixed
+
+* **skill:** shipped SKILL.md — routable frontmatter, probe-pinned facts, cost/replay guidance ([6b4d999](https://github.com/alexandriashai/cbrowser/commit/6b4d9991b97f3569f8190e337d53ba5ae8492210))
+
 ## [18.69.0](https://github.com/alexandriashai/cbrowser/compare/v18.68.1...v18.69.0) (2026-07-14)
 
 ### Added
