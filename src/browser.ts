@@ -286,6 +286,17 @@ export class CBrowser {
     return join(this.paths.dataDir, "browser-state", "last-session.json");
   }
 
+  /**
+   * Where cookies are snapshotted between CLI invocations. The persistent
+   * userDataDir preserves *persistent* cookies but NOT session cookies (no
+   * expiry) — Chromium keeps those only in memory, so they die when the browser
+   * closes between invocations. We snapshot all cookies on close and re-add them
+   * on launch so `cookie set` + a later `navigate` actually carries the cookie.
+   */
+  private get persistedCookiesFile(): string {
+    return join(this.paths.dataDir, "browser-state", "persisted-cookies.json");
+  }
+
   private saveSessionState(url: string, viewport?: { width: number; height: number }, device?: string): void {
     try {
       // Don't save about:blank or empty URLs
@@ -592,6 +603,22 @@ For more help: https://playwright.dev/docs/browsers
           ...proxyOptions,
         });
         this.page = this.context.pages()[0] || await this.context.newPage();
+        // Restore cookies snapshotted on the previous close — in particular
+        // session cookies, which the persistent userDataDir drops between CLI
+        // invocations. Additive: re-adding a persistent cookie by name is
+        // idempotent, so this only ever recovers what would otherwise be lost.
+        try {
+          if (existsSync(this.persistedCookiesFile)) {
+            const cookies = JSON.parse(readFileSync(this.persistedCookiesFile, "utf-8"));
+            if (Array.isArray(cookies) && cookies.length > 0) {
+              await this.context.addCookies(cookies);
+            }
+          }
+        } catch (e) {
+          if (this.config.verbose) {
+            console.warn(`[browser] cookie restore failed: ${(e as Error).message}`);
+          }
+        }
         if (this.config.verbose) {
           console.log(`🔄 Using persistent browser context: ${browserStateDir}`);
           if (this.config.proxy) {
@@ -714,6 +741,23 @@ For more help: https://playwright.dev/docs/browsers
         this.saveSessionState(currentUrl, viewport || undefined);
       } catch (e) {
         // Ignore errors during cleanup
+      }
+    }
+
+    // Snapshot cookies (incl. in-memory session cookies) so the next CLI
+    // invocation can restore them — the persistent userDataDir does not.
+    if (this.config.persistent && this.context) {
+      try {
+        const cookies = await this.context.cookies();
+        const stateDir = join(this.paths.dataDir, "browser-state");
+        if (!existsSync(stateDir)) {
+          mkdirSync(stateDir, { recursive: true });
+        }
+        writeFileSync(this.persistedCookiesFile, JSON.stringify(cookies, null, 2));
+      } catch (e) {
+        if (this.config.verbose) {
+          console.warn(`[browser] cookie snapshot failed: ${(e as Error).message}`);
+        }
       }
     }
 
@@ -1513,6 +1557,15 @@ For more help: https://playwright.dev/docs/browsers
   async clearCookies(): Promise<void> {
     if (!this.context) return;
     await this.context.clearCookies();
+    // Clear the cross-invocation snapshot too, so the clear actually sticks
+    // even if the process is killed before a graceful close re-snapshots.
+    try {
+      if (existsSync(this.persistedCookiesFile)) {
+        writeFileSync(this.persistedCookiesFile, "[]");
+      }
+    } catch {
+      /* best effort */
+    }
   }
 
   /**
