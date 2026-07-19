@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.70.0](https://github.com/alexandriashai/cbrowser/compare/v18.69.3...v18.70.0) (2026-07-19)
+
+### Added
+
+* **nl-test:** honor scroll amounts, add cookie + coordinate-tap steps ([1df30d7](https://github.com/alexandriashai/cbrowser/commit/1df30d729c4f30e60c0c2bdea6c99b9891402ca1))
+
 ## [18.69.3](https://github.com/alexandriashai/cbrowser/compare/v18.69.1...v18.69.3) (2026-07-18)
 
 ### Fixed
