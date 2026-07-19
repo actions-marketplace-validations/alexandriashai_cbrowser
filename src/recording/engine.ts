@@ -183,6 +183,29 @@ const FRAME_DUE_TOLERANCE_MS = 8;
  */
 const CLOSING_FRAME_THRESHOLD = 0.8;
 
+/**
+ * Strip the query string and fragment from a URL before it enters the manifest.
+ *
+ * The manifest is designed to be handed to AI models and shared around, and a
+ * query string routinely carries auth tokens, session ids and API keys. Only
+ * origin+pathname is kept - enough to say WHICH endpoint fired when, without
+ * the secret riding along. Full-fidelity network capture is HAR's job (cbrowser
+ * already has HAR), which carries the sensitive-handling expectations the
+ * manifest deliberately should not inherit.
+ *
+ * A URL that will not parse (data:, blob:, malformed) is truncated at the first
+ * `?` or `#` as a fail-safe rather than dropped, so an odd scheme still cannot
+ * smuggle a query through.
+ */
+function redactUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return u.origin && u.origin !== "null" ? `${u.origin}${u.pathname}` : `${u.protocol}${u.pathname}`;
+  } catch {
+    return raw.split(/[?#]/, 1)[0];
+  }
+}
+
 interface PendingFrame {
   index: number;
   tMs: number;
@@ -832,7 +855,7 @@ export class VideoCaptureSession {
       if (this.state !== "recording") return;
       this.networkEvents.push({
         t_ms: Math.max(0, Date.now() - this.startWallMs),
-        url: req.url(),
+        url: redactUrl(req.url()),
         method: req.method(),
       });
     };

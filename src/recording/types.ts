@@ -157,7 +157,16 @@ export const FrameSchema = z.object({
   path: z.string().min(1),
   /** Source-image crop this frame was cut from (post-clamp). */
   crop: RectSchema,
-  /** SSIM against the previous frame; null for frame 0 or when not computed. */
+  /**
+   * Change score against the previous frame; null for frame 0 or when not
+   * computed. Computed with the comparator named in `ssim_thresholds.method`:
+   * on v3 manifests that is minimum SSIM over a window grid (window-min), where
+   * a lower value means MORE of the frame changed and a localized change is not
+   * diluted by the unchanged remainder. v1/v2 manifests carry whole-frame
+   * (global) SSIM here, a different scale — do not compare the two without
+   * checking `method`. The field name is retained across versions because
+   * window-min is itself an SSIM statistic (the minimum of windowed SSIMs).
+   */
   ssim_prev: z.number().nullable(),
   /** Frame flagged as a visual anomaly by the change detector. */
   anomaly: z.boolean(),

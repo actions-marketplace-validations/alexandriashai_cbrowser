@@ -16,6 +16,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { createServer, type Server } from "node:http";
+import { AddressInfo } from "node:net";
 import { chromium, type Browser, type Page } from "playwright";
 import sharp from "sharp";
 
@@ -461,7 +463,10 @@ describe("VideoCaptureSession - side channels and artifacts", () => {
     expect(consoleEntries.length).toBeGreaterThan(0);
     expect(networkEntries.length).toBeGreaterThan(0);
     expect(consoleEntries.some((c) => c.text.includes("capture-fixture"))).toBe(true);
-    expect(networkEntries.some((n) => n.url.includes("capture-fixture-network"))).toBe(true);
+    // The fixture requests static.html?capture-fixture-network=<ts>; the query
+    // marker is REDACTED now (ISC-95), so match the pathname the redaction keeps.
+    expect(networkEntries.some((n) => n.url.endsWith("/static.html"))).toBe(true);
+    expect(networkEntries.every((n) => !n.url.includes("capture-fixture-network"))).toBe(true);
 
     // Each event must sit inside its frame's window, not merely somewhere.
     for (const entry of [...consoleEntries, ...networkEntries]) {
@@ -659,6 +664,64 @@ describe("two-tier change signal (window-min changeScore)", () => {
       const { result } = await recordAt("localized-counter.html", name, viewport);
       expect(result.manifest.change_points.length).toBeGreaterThan(0);
       expect(changeSignalIssues(result.manifest)).toEqual([]);
+    }
+  }, TIMEOUT);
+});
+
+describe("network entries are redacted (ISC-95)", () => {
+  test("a request's query string never reaches the manifest bytes", async () => {
+    // The manifest is built to be handed to AI models and shared, and a query
+    // string routinely carries auth tokens. This asserts against the FILE
+    // BYTES, not the parsed object: the claim is about the artifact anyone can
+    // open, and an empty network array would pass a parsed-object check
+    // vacuously. So the fixture animates (many frames) and fires a
+    // secret-bearing request every 200ms, guaranteeing several are captured.
+    const SECRET = "TOKZ_SUPER_SECRET_9f8e7d";
+    const server: Server = createServer((req, res) => {
+      const path = (req.url ?? "/").split("?")[0];
+      if (path === "/") {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(`<!doctype html><html><body><div id="b" style="width:120px;height:120px;background:#c33"></div>
+          <script>
+            var s=performance.now(),b=document.getElementById('b');
+            (function tick(n){var t=(n-s)/1000;b.style.transform='rotate('+(t*180)+'deg)';requestAnimationFrame(tick);})(s);
+            var i=0; setInterval(function(){var g=new Image();g.src='/pixel.png?token=${SECRET}&n='+(i++);},200);
+          </script></body></html>`);
+      } else {
+        res.writeHead(200, { "Content-Type": "image/png" });
+        res.end("");
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    try {
+      const page = await (await getBrowser()).newPage({ viewport: { width: 640, height: 400 } });
+      openPages.push(page);
+      await page.goto(`${base}/`);
+      await page.waitForLoadState("load");
+
+      const session = new VideoCaptureSession(page, "chromium", workDir);
+      await session.start({ fps: FPS, durationMs: 2000, outDir: join(workDir, "redact"), slug: "redact", format: ["gif"] });
+      const result = await session.finished;
+
+      const entries = result.manifest.frames.flatMap((f) => f.network);
+      // Not vacuous: the requests must actually have been captured.
+      expect(entries.length).toBeGreaterThan(0);
+      // Captured, but redacted to origin+pathname.
+      expect(entries.some((n) => n.url.endsWith("/pixel.png"))).toBe(true);
+      for (const n of entries) {
+        expect(n.url).not.toContain("?");
+        expect(n.url).not.toContain(SECRET);
+      }
+
+      // The load-bearing assertion: the SECRET is nowhere in the file a user
+      // would open and share.
+      const bytes = readFileSync(result.manifestPath, "utf-8");
+      expect(bytes).not.toContain(SECRET);
+      expect(bytes).not.toContain("token=");
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
     }
   }, TIMEOUT);
 });
