@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.69.3](https://github.com/alexandriashai/cbrowser/compare/v18.69.1...v18.69.3) (2026-07-18)
+
+### Fixed
+
+* **browser:** persist cookies (incl. session cookies) across CLI invocations ([1ad81ab](https://github.com/alexandriashai/cbrowser/commit/1ad81ab011b62c65063c78d38dde1741c61545a3))
+
 ## [18.69.1](https://github.com/alexandriashai/cbrowser/compare/v18.69.0...v18.69.1) (2026-07-14)
 
 ### Fixed
