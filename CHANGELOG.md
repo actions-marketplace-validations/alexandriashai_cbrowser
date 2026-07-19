@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.72.1](https://github.com/alexandriashai/cbrowser/compare/v18.72.0...v18.72.1) (2026-07-19)
+
+### Changed
+
+* **capture:** nest score provenance inside ssim_thresholds ([1a15ee3](https://github.com/alexandriashai/cbrowser/commit/1a15ee303b37ad175f21fe86546ac6dab69b77f4))
+
 ## [18.72.0](https://github.com/alexandriashai/cbrowser/compare/v18.71.0...v18.72.0) (2026-07-19)
 
 ### Added
