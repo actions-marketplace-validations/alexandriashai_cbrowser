@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.72.3](https://github.com/alexandriashai/cbrowser/compare/v18.72.2...v18.72.3) (2026-07-19)
+
+### Fixed
+
+* cookie set/delete honor --url host + auto-recover stale SingletonLock ([7591558](https://github.com/alexandriashai/cbrowser/commit/7591558dc472a5fef8a837e5503280c640f17218))
+
 ## [18.72.2](https://github.com/alexandriashai/cbrowser/compare/v18.72.1...v18.72.2) (2026-07-19)
 
 ### Fixed
