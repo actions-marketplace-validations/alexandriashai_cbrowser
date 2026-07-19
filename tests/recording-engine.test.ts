@@ -20,7 +20,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import sharp from "sharp";
 
 import { VideoCaptureSession, type VideoCaptureOptions, type VideoCaptureResult } from "../src/recording/engine.js";
-import { changeSignalIssues, parseManifest } from "../src/recording/types.js";
+import { changeSignal, changeSignalIssues, parseManifest } from "../src/recording/types.js";
 
 const FIXTURES = resolve(import.meta.dir, "fixtures");
 const DURATION_MS = 3000;
@@ -592,7 +592,10 @@ describe("two-tier change signal (window-min changeScore)", () => {
     const m = result.manifest;
 
     expect(m.version).toBe(3);
-    expect(m.method).toBe("changeScore-window-min");
+    // Read via changeSignal so it holds whether method is nested in
+    // ssim_thresholds (v3 canonical) or top-level (legacy files on disk).
+    expect(changeSignal(m).method).toBe("changeScore-window-min");
+    expect(m.ssim_thresholds!.method).toBe("changeScore-window-min");
     expect(m.change_points.length).toBeGreaterThan(0);
     expect(changeSignalIssues(m)).toEqual([]);
   }, TIMEOUT);

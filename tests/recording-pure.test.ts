@@ -611,6 +611,50 @@ describe("recording/types two-tier change signal", () => {
     expect(signal.manifestVersion).toBe(MANIFEST_VERSION);
   });
 
+  test("changeSignal reads method from the nested (canonical) location", () => {
+    const m = {
+      ...v2Manifest(),
+      ssim_thresholds: { ...SSIM_THRESHOLDS, method: "changeScore-window-min" },
+    };
+    delete (m as Record<string, unknown>).method; // no top-level
+    const signal = changeSignal(parseManifest(m));
+    expect(signal.method).toBe("changeScore-window-min");
+    // thresholds stays purely numeric — the nested method does not leak in.
+    expect(signal.thresholds).toEqual({ ...SSIM_THRESHOLDS });
+  });
+
+  test("changeSignal reads method from the deprecated top-level location", () => {
+    // The shape every v3 manifest on disk today has: method at top level, none
+    // nested. Must stay readable through the transition.
+    const m: Record<string, unknown> = { ...v2Manifest(), method: "changeScore-window-min" };
+    const signal = changeSignal(parseManifest(m));
+    expect(signal.method).toBe("changeScore-window-min");
+  });
+
+  test("changeSignal prefers the nested method when both are present", () => {
+    const m = {
+      ...v2Manifest(),
+      ssim_thresholds: { ...SSIM_THRESHOLDS, method: "nested-wins" },
+      method: "top-level-loses",
+    };
+    expect(changeSignal(parseManifest(m)).method).toBe("nested-wins");
+  });
+
+  test("nested method survives a schema round-trip", () => {
+    const m = {
+      ...v2Manifest(),
+      ssim_thresholds: { ...SSIM_THRESHOLDS, method: "changeScore-window-min" },
+    };
+    const parsed = parseManifest(JSON.parse(JSON.stringify(m)));
+    expect(parsed.ssim_thresholds?.method).toBe("changeScore-window-min");
+  });
+
+  test("method is undefined on a manifest that carries neither location", () => {
+    const m: Record<string, unknown> = { ...v2Manifest() };
+    delete m.method;
+    expect(changeSignal(parseManifest(m)).method).toBeUndefined();
+  });
+
   test("changeSignalIssues is quiet on a consistent manifest", () => {
     expect(changeSignalIssues(parseManifest(v2Manifest()))).toEqual([]);
   });

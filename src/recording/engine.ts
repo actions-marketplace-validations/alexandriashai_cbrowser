@@ -937,8 +937,12 @@ export class VideoCaptureSession {
       key_frames: keyFrames,
       change_points_saturated:
         frames.length > 0 && changePoints.length > frames.length * CHANGE_SATURATION_RATIO,
-      ssim_thresholds: { ...SSIM_THRESHOLDS },
-      method: "changeScore-window-min",
+      // method lives INSIDE ssim_thresholds now (v3): the metric and the
+      // numbers it's on are one fact. 0.95 under window-min and 0.95 under
+      // global SSIM are different tests, so a threshold without its metric is
+      // ambiguous. changeSignal() still reads a top-level method as a fallback
+      // for the v3 files already on disk.
+      ssim_thresholds: { ...SSIM_THRESHOLDS, method: "changeScore-window-min" },
       frame_gaps: tMs.length > 0 ? findFrameGaps(tMs, this.opts.fps) : [],
       region_clamped: this.regionClamped,
       artifacts: {} as Record<string, string>,

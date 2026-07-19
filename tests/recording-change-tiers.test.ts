@@ -257,7 +257,13 @@ describe("change-tier behaviour on real captures", () => {
     expect(manifest.version).toBeGreaterThanOrEqual(3);
     expect(manifest.key_frames).toBeDefined();
     expect(manifest.change_points_saturated).toBeDefined();
-    expect(manifest.ssim_thresholds).toEqual({ ...SSIM_THRESHOLDS });
+    // Assert the numeric thresholds, not object equality — `ssim_thresholds`
+    // may also carry a nested `method`, so equality against the bare constants
+    // would break the moment provenance moves into it. changeSignal() reads the
+    // method from either its nested or the deprecated top-level home.
+    expect(manifest.ssim_thresholds?.change).toBe(SSIM_THRESHOLDS.change);
+    expect(manifest.ssim_thresholds?.key).toBe(SSIM_THRESHOLDS.key);
+    expect(changeSignal(parseManifest(manifest)).method).toBe("changeScore-window-min");
     // Survives a round-trip through the schema rather than being stripped.
     expect(parseManifest(JSON.parse(JSON.stringify(manifest))).key_frames).toBeDefined();
   }, 180000);

@@ -227,13 +227,23 @@ export const RecordingManifestSchema = z.object({
   /**
    * The thresholds this build actually used, so a reader never has to infer
    * which build produced a file. v2+.
+   *
+   * `method` names the comparator the scores and thresholds are on, e.g.
+   * "changeScore-window-min" — the METRIC, which the threshold values alone
+   * cannot convey (0.95 under window-min and 0.95 under global SSIM are entirely
+   * different tests). It lives HERE, with the numbers it describes, rather than
+   * at the manifest top level where it read as a sibling of `capture_method`.
    */
-  ssim_thresholds: z.object({ change: z.number(), key: z.number() }).optional(),
+  ssim_thresholds: z
+    .object({ change: z.number(), key: z.number(), method: z.string().optional() })
+    .optional(),
   /**
-   * The comparator the scores and thresholds are on, e.g.
-   * "changeScore-window-min". Names the METRIC, which the threshold values
-   * alone cannot: 0.95 under window-min and 0.95 under global SSIM are entirely
-   * different tests. v3+.
+   * @deprecated Provenance moved into `ssim_thresholds.method` (its canonical
+   * home). Still admitted so the v3 manifests written before the move — which
+   * carry `method` at the top level — keep parsing and stay readable through
+   * {@link changeSignal}. Expand-contract: readers accept both locations now;
+   * this admission is removed once no top-level-method files remain. The engine
+   * writes only the nested location.
    */
   method: z.string().optional(),
   frame_gaps: z.array(FrameGapSchema),
@@ -296,18 +306,25 @@ export function changeSignal(manifest: RecordingManifest): {
   keyFrames: number[];
   saturated: boolean;
   thresholds: { change: number; key: number };
+  /** Comparator name, read from either the nested or the deprecated top-level location; undefined on pre-v3 files. */
+  method: string | undefined;
   legacy: boolean;
   manifestVersion: number;
 } {
   const legacy = manifest.key_frames === undefined;
+  const st = manifest.ssim_thresholds;
   return {
     changePoints: manifest.change_points,
     keyFrames: manifest.key_frames ?? manifest.change_points,
     saturated: manifest.change_points_saturated ?? false,
     // A legacy file's threshold is unknown and on a different scale; surface
     // its own recorded value if it has one, else NaN rather than a current-scale
-    // number that would misrepresent how the list was computed.
-    thresholds: manifest.ssim_thresholds ?? { change: NaN, key: NaN },
+    // number that would misrepresent how the list was computed. Strip any nested
+    // `method` back out so `thresholds` stays purely numeric.
+    thresholds: st ? { change: st.change, key: st.key } : { change: NaN, key: NaN },
+    // Read from either home: nested is canonical, top-level is the transitional
+    // v3 location still on disk today.
+    method: st?.method ?? manifest.method,
     legacy,
     manifestVersion: manifest.version,
   };
