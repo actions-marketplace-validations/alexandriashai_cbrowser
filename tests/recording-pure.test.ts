@@ -19,8 +19,12 @@ import {
 } from "../src/recording/timing.js";
 import {
   parseManifest,
+  changeSignal,
+  changeSignalIssues,
   RecordingManifestSchema,
   MANIFEST_VERSION,
+  SSIM_THRESHOLDS,
+  CHANGE_SATURATION_RATIO,
   type RecordingManifest,
 } from "../src/recording/types.js";
 
@@ -530,5 +534,127 @@ describe("recording/types parseManifest", () => {
     ];
     const parsed = RecordingManifestSchema.parse(manifest);
     expect(parsed.frames[1]!.console[0]!.stackTrace).toBe("at foo");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Two-tier change signal (v2)
+// ---------------------------------------------------------------------------
+
+describe("recording/types two-tier change signal", () => {
+  /** A current-version manifest with both tiers populated. */
+  function v2Manifest(): RecordingManifest {
+    const base = validManifest();
+    return {
+      ...base,
+      version: MANIFEST_VERSION,
+      change_points: [1],
+      key_frames: [1],
+      change_points_saturated: false,
+      ssim_thresholds: { ...SSIM_THRESHOLDS },
+    };
+  }
+
+  test("the new fields round-trip through the schema", () => {
+    const parsed = parseManifest(v2Manifest());
+    expect(parsed.key_frames).toEqual([1]);
+    expect(parsed.change_points_saturated).toBe(false);
+    // Thresholds come from the single source of truth, whatever it currently is.
+    expect(parsed.ssim_thresholds).toEqual({ ...SSIM_THRESHOLDS });
+  });
+
+  test("a v1 manifest without the new fields still parses", () => {
+    // Expand-contract: manifests written before this change are on disk now and
+    // `capture status` reads the most recent one.
+    const v1: Record<string, unknown> = { ...validManifest(), version: 1 };
+    delete v1.key_frames;
+    delete v1.change_points_saturated;
+    delete v1.ssim_thresholds;
+    const parsed = parseManifest(v1);
+    expect(parsed.key_frames).toBeUndefined();
+    expect(parsed.ssim_thresholds).toBeUndefined();
+  });
+
+  test("fields absent from the schema would be silently dropped", () => {
+    // Why the schema had to change rather than the engine just emitting: zod
+    // strips unknown keys, so an unlisted field vanishes on read.
+    const withExtra = { ...v2Manifest(), invented_field: "gone" };
+    const parsed = parseManifest(withExtra) as Record<string, unknown>;
+    expect(parsed.invented_field).toBeUndefined();
+    expect(parsed.key_frames).toEqual([1]);
+  });
+
+  test("changeSignal falls back to change_points for a legacy file, flagged as legacy", () => {
+    // A pre-v2 file has only change_points, computed with a DIFFERENT (global)
+    // detector. It is not a rename onto key_frames — the honest thing is to
+    // report the one list for both tiers and mark it legacy, with unknown-scale
+    // thresholds rather than current-scale numbers that would misrepresent it.
+    const v1: Record<string, unknown> = { ...validManifest(), version: 1, change_points: [1] };
+    delete v1.key_frames;
+    delete v1.change_points_saturated;
+    delete v1.ssim_thresholds;
+
+    const signal = changeSignal(parseManifest(v1));
+    expect(signal.keyFrames).toEqual([1]);
+    expect(signal.changePoints).toEqual([1]);
+    expect(signal.saturated).toBe(false);
+    expect(signal.legacy).toBe(true);
+    expect(Number.isNaN(signal.thresholds.change)).toBe(true);
+    expect(signal.manifestVersion).toBe(1);
+  });
+
+  test("changeSignal passes current-version data through untouched", () => {
+    const signal = changeSignal(parseManifest(v2Manifest()));
+    expect(signal.keyFrames).toEqual([1]);
+    expect(signal.thresholds).toEqual({ ...SSIM_THRESHOLDS });
+    expect(signal.legacy).toBe(false);
+    expect(signal.manifestVersion).toBe(MANIFEST_VERSION);
+  });
+
+  test("changeSignalIssues is quiet on a consistent manifest", () => {
+    expect(changeSignalIssues(parseManifest(v2Manifest()))).toEqual([]);
+  });
+
+  test("changeSignalIssues catches key_frames that is not a subset", () => {
+    const bad = { ...v2Manifest(), change_points: [1], key_frames: [0, 1] };
+    const issues = changeSignalIssues(parseManifest(bad));
+    expect(issues.join(" ")).toMatch(/subset of change_points/);
+  });
+
+  test("changeSignalIssues catches a mislabelled saturation flag", () => {
+    // 2 of 2 frames is 100% coverage, which is saturated by definition.
+    const bad = {
+      ...v2Manifest(),
+      change_points: [0, 1],
+      key_frames: [1],
+      change_points_saturated: false,
+    };
+    const issues = changeSignalIssues(parseManifest(bad));
+    expect(issues.join(" ")).toMatch(/change_points_saturated is false/);
+  });
+
+  test("changeSignalIssues catches out-of-range and inverted thresholds", () => {
+    const outOfRange = { ...v2Manifest(), change_points: [7], key_frames: [7] };
+    expect(changeSignalIssues(parseManifest(outOfRange)).join(" ")).toMatch(/only 2 frames/);
+
+    const inverted = { ...v2Manifest(), ssim_thresholds: { change: 0.5, key: 0.9 } };
+    expect(changeSignalIssues(parseManifest(inverted)).join(" ")).toMatch(/must not exceed/);
+  });
+
+  test("the thresholds keep the two tiers ordered and on the window-min scale", () => {
+    // KEY must stay below CHANGE or key_frames cannot be the sparse subset.
+    expect(SSIM_THRESHOLDS.key).toBeLessThan(SSIM_THRESHOLDS.change);
+    // Both are window-min values (0..1), not the old global-SSIM near-1 scale.
+    expect(SSIM_THRESHOLDS.change).toBeGreaterThan(0);
+    expect(SSIM_THRESHOLDS.change).toBeLessThan(1);
+    expect(SSIM_THRESHOLDS.key).toBeGreaterThan(0);
+    expect(CHANGE_SATURATION_RATIO).toBeGreaterThan(0.5);
+    expect(CHANGE_SATURATION_RATIO).toBeLessThan(1);
+  });
+
+  test("old manifest versions remain readable after the version bump", () => {
+    expect(MANIFEST_VERSION).toBeGreaterThanOrEqual(3);
+    expect(() => parseManifest({ ...validManifest(), version: 1 })).not.toThrow();
+    expect(() => parseManifest({ ...validManifest(), version: 2 })).not.toThrow();
   });
 });

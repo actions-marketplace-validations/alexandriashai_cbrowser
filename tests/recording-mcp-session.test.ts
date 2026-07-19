@@ -158,8 +158,24 @@ describe("capture session continuity across tool calls", () => {
   });
 
   test("idle only when nothing has run at all", () => {
+    // captureStatus reads the CLI/daemon pointer at <dataDir>/videos/active.json
+    // so a foreign capture is never invisible from MCP. That makes "idle"
+    // conditional on real machine state, and any live daemon capture — another
+    // agent, a user, CI parallelism — would flip this to "recording". Point the
+    // data dir at an empty temp dir for the duration of the call so the pointer
+    // read finds nothing, testing the idle path in isolation rather than
+    // asserting the box is quiet.
     clearCaptureSessions();
-    const status = captureStatus("tok-fresh");
-    expect(status.state).toBe("idle");
+    const emptyDataDir = mkdtempSync(join(tmpdir(), "cbrowser-empty-datadir-"));
+    const previous = process.env.CBROWSER_DATA_DIR;
+    process.env.CBROWSER_DATA_DIR = emptyDataDir;
+    try {
+      const status = captureStatus("tok-fresh");
+      expect(status.state).toBe("idle");
+    } finally {
+      if (previous === undefined) delete process.env.CBROWSER_DATA_DIR;
+      else process.env.CBROWSER_DATA_DIR = previous;
+      rmSync(emptyDataDir, { recursive: true, force: true });
+    }
   });
 });

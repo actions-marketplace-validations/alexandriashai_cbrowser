@@ -36,10 +36,12 @@ import type { CDPSession, ConsoleMessage, Locator, Page, Request } from "playwri
 
 import { buildContactSheet } from "./contact-sheet.js";
 import { encodeGif, encodeMp4, encodeWebm, encodeWebp, MissingEncoderError } from "./encoders.js";
-import { detectChangePoints, frameSignature, ssim } from "./ssim.js";
+import { changeScore, detectChangePoints, frameSignature } from "./ssim.js";
 import { clampRect, expandForPlayback, findFrameGaps } from "./timing.js";
 import {
+  CHANGE_SATURATION_RATIO,
   MANIFEST_VERSION,
+  SSIM_THRESHOLDS,
   parseManifest,
   type CaptureMethod,
   type ConsoleEntry,
@@ -143,37 +145,29 @@ const DEFAULT_FPS = 10;
 const DEFAULT_QUALITY = 80;
 const DEFAULT_MAX_FRAMES = 3000;
 
-/**
- * SSIM below this against the previous frame marks a change point. Screencast
- * JPEG noise on an unchanged region sits well above 0.99, so 0.9 separates real
- * motion from compression jitter without firing on every frame of a video.
- */
-const CHANGE_THRESHOLD = 0.9;
-
-/**
- * SSIM below this marks a frame as a change point.
+/*
+ * The change thresholds and the saturation ratio live in types.ts, next to the
+ * schema that documents them, and are imported rather than restated here.
+ * Two copies of a number that must agree is how they stop agreeing.
  *
- * Deliberately far stricter than CHANGE_THRESHOLD, which stays the bar for
- * `anomaly` (a big visual jump). change_points answers the question the
- * manifest exists to answer - "when did the page change" - and at 0.9 the
- * answer was NOTHING for a form fill: text typed into an input on a 1280x800
- * page scores ~0.998, and a whole daemon-recorded flow of two fills produced
- * zero change points. Measured on this box: a genuinely still page scores
- * exactly 1.00000, so 0.999 catches real changes without firing on JPEG noise.
- */
-const CHANGE_POINT_THRESHOLD = 0.999;
-
-/**
- * SSIM above this means "nothing moved" for the idle stop trigger.
+ * Two tiers, because one threshold cannot answer both questions a reader asks:
+ *   SSIM_THRESHOLDS.key    (0.9)   -> key_frames:    "something notable happened"
+ *   SSIM_THRESHOLDS.change (0.999) -> change_points: "anything changed at all"
  *
- * Same comparator as CHANGE_THRESHOLD, deliberately different sensitivity:
- * change_points answers "did something SIGNIFICANT happen", idle answers "did
- * anything happen at all". Measured on this box, consecutive frames of a
- * continuously animating page score 0.81-0.97 while a genuinely still page
- * scores exactly 1.00000, so 0.999 separates them with room to spare. Reusing
- * 0.9 here reports a visibly animating page as idle.
+ * 0.9 alone was blind to the events this feature exists to record (a form fill
+ * on a 1280x800 page scores ~0.998); 0.999 alone saturates on an animating page
+ * (measured 31 of 32 frames), and a filter that matches everything looks
+ * identical to one that works.
  */
-const IDLE_THRESHOLD = 0.999;
+
+/*
+ * There is no separate idle threshold. --until-idle uses changeScore against
+ * SSIM_THRESHOLDS.change, the same comparator and bar the manifest's
+ * change_points use (D-7: one definition of "the page changed"). Consequence,
+ * and it is correct: a page with a ticking clock or ticker never goes idle,
+ * because it IS changing every frame - which is exactly what --timeout is the
+ * backstop for (ISC-45). The capture help says so.
+ */
 
 /**
  * Slack allowed when matching a paint event to its slot on the frame grid.
@@ -685,7 +679,10 @@ export class VideoCaptureSession {
           .then(() => this.writeQueue)
           .then(() => frameSignature(frame.path))
           .then((signature) => {
-            if (this.idleSignature && ssim(this.idleSignature, signature) < IDLE_THRESHOLD) {
+            // D-7: ONE definition of "the page changed". Idle reuses the same
+            // changeScore comparator and the same change threshold the manifest
+            // reports, so "changed" means the same thing live and on disk.
+            if (this.idleSignature && changeScore(this.idleSignature, signature) < SSIM_THRESHOLDS.change) {
               this.lastChangeMs = Date.now();
             }
             this.idleSignature = signature;
@@ -901,10 +898,11 @@ export class VideoCaptureSession {
 
   private async buildManifest(durationMs: number): Promise<RecordingManifest> {
     const scores = await this.scoreFrames();
-    const changePoints = detectChangePoints(scores, CHANGE_POINT_THRESHOLD);
-    // `anomaly` keeps the stricter "something jumped" meaning, so the two
-    // fields answer different questions instead of duplicating one.
-    const anomalies = new Set(detectChangePoints(scores, CHANGE_THRESHOLD));
+    const changePoints = detectChangePoints(scores, SSIM_THRESHOLDS.change);
+    // The sparse tier. Derived from the same comparator and the same scores, so
+    // key_frames and the per-frame `anomaly` flags cannot disagree.
+    const keyFrames = detectChangePoints(scores, SSIM_THRESHOLDS.key);
+    const anomalies = new Set(keyFrames);
     const tMs = this.frames.map((f) => f.tMs);
 
     const frames: Frame[] = this.frames.map((f, i) => ({
@@ -936,6 +934,11 @@ export class VideoCaptureSession {
       output_dims: this.outputDims,
       frames,
       change_points: changePoints,
+      key_frames: keyFrames,
+      change_points_saturated:
+        frames.length > 0 && changePoints.length > frames.length * CHANGE_SATURATION_RATIO,
+      ssim_thresholds: { ...SSIM_THRESHOLDS },
+      method: "changeScore-window-min",
       frame_gaps: tMs.length > 0 ? findFrameGaps(tMs, this.opts.fps) : [],
       region_clamped: this.regionClamped,
       artifacts: {} as Record<string, string>,
@@ -956,7 +959,12 @@ export class VideoCaptureSession {
       } catch {
         // An unreadable frame scores null rather than poisoning its neighbours.
       }
-      scores.push(previous && signature ? ssim(previous, signature) : null);
+      // changeScore (window-min SSIM), not global ssim: a change score is the
+      // number the tiers and ssim_thresholds are computed from, so scores and
+      // thresholds are on ONE scale. Global ssim diluted a localized change
+      // into a whole-frame average, which is why a form fill on a large
+      // viewport scored ~0.998 and registered as nothing.
+      scores.push(previous && signature ? changeScore(previous, signature) : null);
       if (signature) previous = signature;
     }
     return scores;

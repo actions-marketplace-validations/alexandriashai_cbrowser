@@ -18,8 +18,59 @@
 
 import { z } from "zod";
 
-/** Manifest format version emitted by this build. */
-export const MANIFEST_VERSION = 1;
+/**
+ * Manifest format version emitted by this build.
+ *
+ * v2 (2026-07-19) added the two-tier change signal: `key_frames`,
+ * `change_points_saturated` and `ssim_thresholds`, all OPTIONAL in the schema
+ * (expand-contract, so older files keep parsing) but always emitted, so
+ * `version >= 2` reliably signals their presence.
+ *
+ * v3 (2026-07-19) changed the DETECTOR behind those fields from global SSIM to
+ * {@link SSIM_THRESHOLDS} window-min ({@link changeScore}), and re-tuned the
+ * thresholds to the new scale (0.999/0.9 -> 0.95/0.6). The field shapes are
+ * unchanged, but a v3 `change_points` is not numerically comparable to a v2
+ * one — the version is the signal for that, since the values in
+ * `ssim_thresholds` alone cannot convey that the underlying metric changed.
+ * Readers wanting a uniform view across versions should use {@link changeSignal}.
+ */
+export const MANIFEST_VERSION = 3;
+
+/**
+ * Change-detection thresholds for the two-tier signal.
+ *
+ * These are measured against the {@link changeScore} scale (minimum SSIM over an
+ * 8x8 window grid on a 128px signature), NOT global SSIM. The scale is entirely
+ * different from a whole-frame metric and the two are not interchangeable — a
+ * localized text change reads ~0.87 under changeScore versus ~0.9998 under
+ * global SSIM. The producer MUST feed these thresholds changeScore values;
+ * `ssim_thresholds` records them in every manifest so a reader never guesses.
+ *
+ * `CHANGE` (0.95) — "did anything change". Below the practical noise floor
+ * (an unchanging page scores exactly 1.0; window-min does not fire on codec
+ * noise) and above a 12px counter tick (~0.87), which is the localized change
+ * global SSIM could not see at any resolution.
+ *
+ * `KEY` (0.6) — "did something notable happen". The sparse tier, and the same
+ * signal that sets each frame's `anomaly` flag. It sits in the wide gap between
+ * a minor tick (~0.87, excluded) and a real interaction like a form fill
+ * (~0.21, included), so background chrome does not flood it. Because KEY <
+ * CHANGE, `key_frames` is necessarily a subset of `change_points`;
+ * {@link changeSignalIssues} checks a manifest honours it.
+ *
+ * Derived from measurement on five fixtures (static / ticking counter / two
+ * form fills / banner toggle / full-viewport animation), 2026-07-19. The
+ * counter fixture is why the two tiers matter: change_points fires on every
+ * tick and saturates, while key_frames stays empty — so key_frames is the
+ * usable signal precisely when change_points is not.
+ */
+export const SSIM_THRESHOLDS = { change: 0.95, key: 0.6 } as const;
+
+/**
+ * Fraction of frames above which `change_points` is considered saturated —
+ * carrying no discriminating information for that capture.
+ */
+export const CHANGE_SATURATION_RATIO = 0.7;
 
 // ============================================================================
 // Primitives
@@ -148,8 +199,43 @@ export const RecordingManifestSchema = z.object({
   duration_ms: z.number().nonnegative(),
   output_dims: DimsSchema,
   frames: z.array(FrameSchema),
-  /** Frame indices where SSIM dropped below the change threshold. */
+  /**
+   * Frame indices whose change score fell below the CHANGE threshold
+   * ({@link SSIM_THRESHOLDS}.change). Sensitive tier: catches a localized change
+   * like a form fill or a ticking counter, and saturates on a continuously
+   * changing page — see `change_points_saturated`.
+   */
   change_points: z.array(z.number().int().nonnegative()),
+  /**
+   * Frame indices where SSIM dropped below the KEY threshold: the sparse
+   * "something notable happened" list, and a subset of `change_points`.
+   *
+   * v2+. Absent on v1 manifests, where `change_points` was itself computed at
+   * the key threshold — see {@link changeSignal}.
+   */
+  key_frames: z.array(z.number().int().nonnegative()).optional(),
+  /**
+   * True when `change_points` covers more than
+   * {@link CHANGE_SATURATION_RATIO} of frames, i.e. it carries no
+   * discriminating information for this capture and a reader should fall back
+   * to `key_frames`.
+   *
+   * Explicit rather than left for the reader to derive, so a saturated field
+   * cannot masquerade as a working one. v2+.
+   */
+  change_points_saturated: z.boolean().optional(),
+  /**
+   * The thresholds this build actually used, so a reader never has to infer
+   * which build produced a file. v2+.
+   */
+  ssim_thresholds: z.object({ change: z.number(), key: z.number() }).optional(),
+  /**
+   * The comparator the scores and thresholds are on, e.g.
+   * "changeScore-window-min". Names the METRIC, which the threshold values
+   * alone cannot: 0.95 under window-min and 0.95 under global SSIM are entirely
+   * different tests. v3+.
+   */
+  method: z.string().optional(),
   frame_gaps: z.array(FrameGapSchema),
   /** Present when a region/element rect had to be clamped into the viewport. */
   region_clamped: z.boolean().optional(),
@@ -184,6 +270,105 @@ export type RecordingManifest = z.infer<typeof RecordingManifestSchema>;
  * whose message lists every failing path, so a malformed manifest reports all
  * of its problems at once instead of one per run.
  */
+/**
+ * Uniform view of the change signal across manifest versions.
+ *
+ * A pre-v2 manifest has only `change_points`, computed with a whole-frame
+ * (global) SSIM detector — a DIFFERENT metric from the current window-min
+ * {@link SSIM_THRESHOLDS} scale, so the two are not numerically comparable. For
+ * such a file this returns the single list it has as both tiers rather than
+ * inventing a key/change split it never carried, and marks `legacy: true` so a
+ * reader knows the tiers are not really separated and the thresholds are not on
+ * the current scale. `saturated` is false because the old global detector could
+ * not saturate the way window-min can.
+ *
+ * This is NOT the exact identity an earlier version of this comment claimed:
+ * once the detector changed from global SSIM to window-min, an old file's
+ * change points stopped mapping onto today's `key_frames`. Reporting the one
+ * list for both tiers is the honest fallback, not a translation.
+ *
+ * Use this in readers instead of touching the optional fields directly, so a
+ * pre-v2 file does not read as "no key frames" when its change_points are the
+ * only signal it has.
+ */
+export function changeSignal(manifest: RecordingManifest): {
+  changePoints: number[];
+  keyFrames: number[];
+  saturated: boolean;
+  thresholds: { change: number; key: number };
+  legacy: boolean;
+  manifestVersion: number;
+} {
+  const legacy = manifest.key_frames === undefined;
+  return {
+    changePoints: manifest.change_points,
+    keyFrames: manifest.key_frames ?? manifest.change_points,
+    saturated: manifest.change_points_saturated ?? false,
+    // A legacy file's threshold is unknown and on a different scale; surface
+    // its own recorded value if it has one, else NaN rather than a current-scale
+    // number that would misrepresent how the list was computed.
+    thresholds: manifest.ssim_thresholds ?? { change: NaN, key: NaN },
+    legacy,
+    manifestVersion: manifest.version,
+  };
+}
+
+/**
+ * Consistency problems in a manifest's change signal, as human-readable
+ * strings. Empty means consistent.
+ *
+ * These are invariants the two-tier design guarantees by construction, so a
+ * violation means the producer is miscomputing rather than that the file is
+ * merely old. Deliberately NOT enforced inside {@link parseManifest}: readers
+ * such as `capture status` open whatever manifest is most recent, and failing
+ * the read outright would turn a reporting bug into an unreadable capture. Call
+ * this where you want the check — tests, or a diagnostic path.
+ */
+export function changeSignalIssues(manifest: RecordingManifest): string[] {
+  const issues: string[] = [];
+  const frameCount = manifest.frames.length;
+
+  const inRange = (label: string, indices: number[]) => {
+    for (const i of indices) {
+      if (i >= frameCount) issues.push(`${label} contains index ${i} but there are only ${frameCount} frames`);
+    }
+  };
+  inRange("change_points", manifest.change_points);
+
+  if (manifest.key_frames) {
+    inRange("key_frames", manifest.key_frames);
+    const changeSet = new Set(manifest.change_points);
+    const stray = manifest.key_frames.filter((i) => !changeSet.has(i));
+    if (stray.length > 0) {
+      issues.push(
+        `key_frames must be a subset of change_points (the key threshold is lower, ` +
+          `so anything below it is below the change threshold too), but ` +
+          `${stray.length} index(es) are missing from change_points: ${stray.slice(0, 5).join(", ")}`,
+      );
+    }
+  }
+
+  if (manifest.ssim_thresholds) {
+    const { change, key } = manifest.ssim_thresholds;
+    if (key > change) {
+      issues.push(`ssim_thresholds.key (${key}) must not exceed ssim_thresholds.change (${change})`);
+    }
+  }
+
+  if (manifest.change_points_saturated !== undefined && frameCount > 0) {
+    const expected = manifest.change_points.length > frameCount * CHANGE_SATURATION_RATIO;
+    if (manifest.change_points_saturated !== expected) {
+      issues.push(
+        `change_points_saturated is ${manifest.change_points_saturated} but ` +
+          `${manifest.change_points.length}/${frameCount} change points ` +
+          `(ratio ${(manifest.change_points.length / frameCount).toFixed(3)}) implies ${expected}`,
+      );
+    }
+  }
+
+  return issues;
+}
+
 export function parseManifest(input: unknown): RecordingManifest {
   let candidate = input;
 

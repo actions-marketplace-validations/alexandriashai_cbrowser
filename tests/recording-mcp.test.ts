@@ -7,6 +7,9 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { getPaths } from "../src/config.js";
 import {
   registerCaptureTools,
   buildCaptureStopPayload,
@@ -403,11 +406,34 @@ describe("capture argument parsing", () => {
 });
 
 describe("captureStatus", () => {
-  test("reports idle when nothing has been started", () => {
+  test("reports idle only when nothing is running anywhere", () => {
     clearCaptureSessions();
     const status = captureStatus();
-    expect(status.state).toBe("idle");
     expect(status.success).toBe(true);
+
+    // captureStatus deliberately reads the CLI's videosDir/active.json pointer
+    // so a capture started by the CLI or daemon is never invisible from MCP.
+    // That makes this assertion depend on real machine state, so branch on it
+    // rather than pretend the box is quiet — a concurrent CLI capture is a
+    // legitimate observation, not a test failure.
+    const pointer = join(getPaths().videosDir, "active.json");
+    let foreignAlive = false;
+    if (existsSync(pointer)) {
+      try {
+        const active = JSON.parse(readFileSync(pointer, "utf-8")) as { pid: number };
+        process.kill(active.pid, 0);
+        foreignAlive = true;
+      } catch {
+        foreignAlive = false;
+      }
+    }
+
+    if (foreignAlive) {
+      expect(status.state).toBe("recording");
+      expect(String(status.started_by)).toMatch(/another process/);
+    } else {
+      expect(status.state).toBe("idle");
+    }
   });
 });
 

@@ -44,7 +44,7 @@ import { getStatusInfo, formatStatus, getDataDir, getPaths } from "./config.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { VideoCaptureSession, type CaptureFormat } from "./recording/engine.js";
-import { parseManifest, type RecordingTarget } from "./recording/types.js";
+import { changeSignal, parseManifest, type RecordingTarget } from "./recording/types.js";
 import type { AutoCaptureResult, AutoCaptureSetting } from "./recording/auto-capture.js";
 import type { StartTrigger, StopTrigger } from "./recording/engine.js";
 import { printEnterpriseStatus } from "./stealth/index.js";
@@ -639,7 +639,9 @@ SCREEN CAPTURE (video/GIF — distinct from 'record', which captures actions)
     --after-delay <500ms>     Extra delay after the start trigger
     --until-element <sel>     Stop when the element appears
     --until-element-gone <sel>  Stop when the element disappears
-    --until-idle <800ms>      Stop after this long with no visual change
+    --until-idle <800ms>      Stop after this long with NO part of the page
+                              changing. A page with a clock or ticker is always
+                              changing and will run to --timeout instead.
     --timeout <30s>           Trigger wait budget (default: 30s); a trigger that
                               never fires stops the capture, writes a manifest
                               with trigger_timeout, and exits non-zero
@@ -1804,6 +1806,17 @@ async function runCaptureStatus(): Promise<void> {
   console.log(`  Started: ${manifest.started_at}`);
   console.log(`  Frames: ${manifest.frames.length} over ${manifest.duration_ms}ms (${manifest.actual_fps.toFixed(1)} fps)`);
   console.log(`  Capture: ${manifest.capture_method}`);
+
+  // changeSignal() rather than the optional fields directly: it maps a v1
+  // manifest's change_points onto keyFrames, which is exact rather than a
+  // guess (v1 computed them at the 0.9 bar that v2 calls key_frames). Reading
+  // the raw field would report "no key frames" for a file that has them.
+  const signal = changeSignal(manifest);
+  console.log(`  Key frames: ${signal.keyFrames.length}${signal.keyFrames.length > 0 ? ` (${signal.keyFrames.slice(0, 8).join(", ")}${signal.keyFrames.length > 8 ? ", ..." : ""})` : ""}`);
+  console.log(
+    `  Change points: ${signal.changePoints.length}` +
+      (signal.saturated ? ` — saturated, use key frames instead` : ""),
+  );
   console.log(`  Artifacts: ${Object.entries(manifest.artifacts).map(([k, v]) => `${k} -> ${v}`).join(", ") || "none"}`);
   console.log(`  Manifest: ${manifests[0]}`);
 }

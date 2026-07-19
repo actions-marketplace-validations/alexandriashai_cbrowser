@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Single localized fill</title>
+<style>html,body{margin:0;height:100%;background:#f4f4f8;color:#111;font:16px system-ui}
+main{padding:40px}input{font:16px system-ui;padding:8px;width:280px}</style></head>
+<body><main><label>Name</label><br><input id="f" value=""></main>
+<script>
+// One localized change at 1.2s: a single input gets filled. Nothing else moves.
+// This is the form-fill case that scored zero change points at the 0.9 bar on
+// a large viewport, because the filled input is a tiny fraction of the frame.
+setTimeout(function(){document.getElementById('f').value='FILLED-VALUE-HERE';}, 1200);
+</script></body></html>

@@ -20,7 +20,7 @@ import { chromium, type Browser, type Page } from "playwright";
 import sharp from "sharp";
 
 import { VideoCaptureSession, type VideoCaptureOptions, type VideoCaptureResult } from "../src/recording/engine.js";
-import { parseManifest } from "../src/recording/types.js";
+import { changeSignalIssues, parseManifest } from "../src/recording/types.js";
 
 const FIXTURES = resolve(import.meta.dir, "fixtures");
 const DURATION_MS = 3000;
@@ -45,18 +45,28 @@ interface Recorded {
 
 const recordings = new Map<string, Promise<Recorded>>();
 
+/** Record a fixture at an explicit viewport, memoised by name. */
+function recordAt(
+  fixture: string,
+  name: string,
+  viewport: { width: number; height: number },
+): Promise<Recorded> {
+  return record(fixture, name, {}, viewport);
+}
+
 /** Record a fixture end to end, once per fixture name. */
 function record(
   fixture: string,
   name: string,
   overrides: Partial<VideoCaptureOptions> = {},
+  viewport: { width: number; height: number } = { width: 640, height: 400 },
 ): Promise<Recorded> {
   const existing = recordings.get(name);
   if (existing) return existing;
 
   const run = (async (): Promise<Recorded> => {
     const b = await getBrowser();
-    const page = await b.newPage({ viewport: { width: 640, height: 400 } });
+    const page = await b.newPage({ viewport });
     openPages.push(page);
     await page.goto(`file://${join(FIXTURES, fixture)}`);
     await page.waitForLoadState("load");
@@ -571,33 +581,81 @@ describe("VideoCaptureSession - event attribution against the absolute clock", (
   }, TIMEOUT);
 });
 
-describe("change_points vs anomaly", () => {
-  test("a small UI change is a change point but not an anomaly", async () => {
-    const page = await (await getBrowser()).newPage({ viewport: { width: 1280, height: 800 } });
-    openPages.push(page);
-    await page.goto(`file://${join(FIXTURES, "keyboard.html")}`);
+describe("two-tier change signal (window-min changeScore)", () => {
+  test("a localized change is caught — the regression that started this", async () => {
+    // THE headline. A small counter ticking in one corner of a 1280x800 frame
+    // is ~0.986 under whole-frame SSIM: it never dips below the 0.9 bar, so the
+    // old detector reported ZERO change points for a page that was visibly
+    // changing. changeScore takes the MINIMUM over a window grid, so the one
+    // window that contains the counter drives the score and the change is seen.
+    const { result } = await recordAt("localized-counter.html", "tiers-localized", { width: 1280, height: 800 });
+    const m = result.manifest;
 
-    const session = new VideoCaptureSession(page, "chromium", workDir);
-    await session.start({
-      fps: FPS,
-      durationMs: 2500,
-      outDir: join(workDir, "smallchange"),
-      slug: "smallchange",
-      format: ["gif"],
-    });
+    expect(m.version).toBe(3);
+    expect(m.method).toBe("changeScore-window-min");
+    expect(m.change_points.length).toBeGreaterThan(0);
+    expect(changeSignalIssues(m)).toEqual([]);
+  }, TIMEOUT);
 
-    // Type into a small field: the kind of change a recorded flow is made of,
-    // and far too small to move a whole-viewport SSIM past the anomaly bar.
-    await new Promise((r) => setTimeout(r, 700));
-    await page.fill("#field", "a small but real change");
-    const result = await session.finished;
+  test("the two tiers separate: change catches all, key catches the notable few", async () => {
+    // mixed-change ticks a small counter every frame (change tier) and flashes
+    // the whole screen twice (key tier). This is the fixture that exercises the
+    // separation the tiers exist for - a uniformly animating page can't, since
+    // there every frame is a big change and both tiers correctly agree.
+    const { result } = await recordAt("mixed-change.html", "tiers-mixed", { width: 1280, height: 800 });
+    const m = result.manifest;
 
-    const anomalies = result.manifest.frames.filter((f) => f.anomaly).map((f) => f.index);
-    expect(result.manifest.change_points.length).toBeGreaterThan(0);
-    // The two fields answer different questions, so the strict one must be a
-    // strict subset: everything flagged an anomaly is also a change point, and
-    // small real changes (the fill) are change points WITHOUT being anomalies.
-    expect(anomalies.length).toBeLessThan(result.manifest.change_points.length);
-    for (const index of anomalies) expect(result.manifest.change_points).toContain(index);
+    expect(m.key_frames!.length).toBeGreaterThan(0);          // the flashes register
+    expect(m.key_frames!.length).toBeLessThan(m.change_points.length); // but far fewer than every tick
+    expect(m.change_points_saturated).toBe(false);
+    // Subset by construction (key threshold < change threshold): a key frame
+    // the change tier missed would mean the computation is wrong.
+    for (const index of m.key_frames!) expect(m.change_points).toContain(index);
+    expect(changeSignalIssues(m)).toEqual([]);
+  }, TIMEOUT);
+
+  test("violent uniform motion saturates and SAYS so", async () => {
+    // Every frame is a large change, so both tiers fire on nearly everything.
+    // That is correct, not a bug - but a match-everything filter must announce
+    // itself rather than masquerade as a working one.
+    const { result } = await recordAt("animating.html", "tiers-animating", { width: 1280, height: 800 });
+    const m = result.manifest;
+
+    expect(m.change_points_saturated).toBe(true);
+    expect(m.change_points.length).toBeGreaterThan(m.frames.length * 0.7);
+    for (const index of m.key_frames!) expect(m.change_points).toContain(index);
+  }, TIMEOUT);
+
+  test("a near-static page does not report saturation", async () => {
+    const { result } = await record("static.html", "tiers-static");
+    expect(result.manifest.change_points_saturated).toBe(false);
+    expect(changeSignalIssues(result.manifest)).toEqual([]);
+  }, TIMEOUT);
+
+  test("key_frames is consistent with the per-frame anomaly flags", async () => {
+    const { result } = await recordAt("mixed-change.html", "tiers-mixed", { width: 1280, height: 800 });
+    const anomalyIndices = result.manifest.frames.filter((f) => f.anomaly).map((f) => f.index);
+    // The anomaly flag and the key_frames list come from the same scores at the
+    // same threshold, so they cannot disagree.
+    expect(anomalyIndices).toEqual(result.manifest.key_frames!);
+  }, TIMEOUT);
+
+  test("detection does not depend on viewport size — the v3 claim", async () => {
+    // The property the whole detector change exists to establish. A small
+    // corner counter is a LARGE fraction of a 640x400 frame and a TINY fraction
+    // of a 1920x1080 one, so whole-frame SSIM scored it as a change on the
+    // small viewport and as nothing on the large one (0 change points at
+    // 1920x1080 — the size-dependent blindness). Window-min measures the change
+    // where it happens, so the counter is caught at every size.
+    for (const viewport of [
+      { width: 640, height: 400 },
+      { width: 1280, height: 800 },
+      { width: 1920, height: 1080 },
+    ]) {
+      const name = `tiers-vp-${viewport.width}`;
+      const { result } = await recordAt("localized-counter.html", name, viewport);
+      expect(result.manifest.change_points.length).toBeGreaterThan(0);
+      expect(changeSignalIssues(result.manifest)).toEqual([]);
+    }
   }, TIMEOUT);
 });
