@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.71.0](https://github.com/alexandriashai/cbrowser/compare/v18.70.0...v18.71.0) (2026-07-19)
+
+### Added
+
+* **capture:** screen recording to GIF/WebP/WebM with an AI-readable frame manifest ([f8f2b6c](https://github.com/alexandriashai/cbrowser/commit/f8f2b6cc943a853a38618f07138e83f70559bf74))
+
 ## [18.70.0](https://github.com/alexandriashai/cbrowser/compare/v18.69.3...v18.70.0) (2026-07-19)
 
 ### Added
