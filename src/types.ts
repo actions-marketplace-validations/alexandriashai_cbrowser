@@ -2526,11 +2526,13 @@ export interface NLTestStep {
   /** Original natural language instruction */
   instruction: string;
   /** Parsed action type */
-  action: "navigate" | "click" | "fill" | "select" | "scroll" | "wait" | "assert" | "screenshot" | "unknown";
+  action: "navigate" | "click" | "fill" | "select" | "scroll" | "cookie" | "wait" | "assert" | "screenshot" | "unknown";
   /** Target element or URL */
   target?: string;
   /** Value for fill/select actions */
   value?: string;
+  /** Scroll amount unit — "pixels" scrolls value px, "times" scrolls value 500px steps */
+  unit?: "times" | "pixels";
   /** Assertion type for assert actions */
   assertionType?: "contains" | "equals" | "exists" | "count" | "url" | "title";
 }
