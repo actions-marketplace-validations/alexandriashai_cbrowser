@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.72.0](https://github.com/alexandriashai/cbrowser/compare/v18.71.0...v18.72.0) (2026-07-19)
+
+### Added
+
+* **capture:** window-min change detector, measured thresholds, manifest v3 ([2cdc01f](https://github.com/alexandriashai/cbrowser/commit/2cdc01f4c28e33119b034462093939cd9ee42a2d))
+
 ## [18.71.0](https://github.com/alexandriashai/cbrowser/compare/v18.70.0...v18.71.0) (2026-07-19)
 
 ### Added
