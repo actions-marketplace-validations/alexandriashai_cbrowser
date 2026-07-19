@@ -12,7 +12,8 @@
  */
 
 import { chromium, firefox, webkit, type Browser, type Page, type BrowserContext, type Route, type Locator } from "playwright";
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, mkdirSync, readlinkSync } from "fs";
+import { isStaleSingletonLock } from "./utils.js";
 import { join } from "path";
 import { execSync } from "child_process";
 
@@ -313,6 +314,45 @@ export class CBrowser {
     return join(this.paths.dataDir, "browser-state", "persisted-cookies.json");
   }
 
+  /**
+   * Remove a STALE Chromium `SingletonLock` from a persistent-profile dir before
+   * launch. A SIGKILL'd browser leaves the lock symlink pointing at a dead pid,
+   * which otherwise wedges `launchPersistentContext` indefinitely (the manual
+   * fix was `rm browser-state/SingletonLock`). We remove it ONLY when
+   * `isStaleSingletonLock` proves the target pid is not alive, so a lock held by
+   * a live browser is never touched.
+   */
+  private clearStaleSingletonLock(browserStateDir: string): void {
+    const lock = join(browserStateDir, "SingletonLock");
+    let target: string;
+    try {
+      target = readlinkSync(lock);
+    } catch {
+      return; // no lock, or not a symlink — nothing to recover
+    }
+    const stale = isStaleSingletonLock(target, (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true; // signal delivered — process is alive
+      } catch (e) {
+        // ESRCH = no such process (dead); EPERM = alive but not ours (keep it)
+        return (e as NodeJS.ErrnoException).code === "EPERM";
+      }
+    });
+    if (stale) {
+      try {
+        unlinkSync(lock);
+        if (this.config.verbose) {
+          console.log(`[browser] removed stale SingletonLock (target: ${target})`);
+        }
+      } catch (e) {
+        if (this.config.verbose) {
+          console.warn(`[browser] failed to remove stale SingletonLock: ${(e as Error).message}`);
+        }
+      }
+    }
+  }
+
   private saveSessionState(url: string, viewport?: { width: number; height: number }, device?: string): void {
     try {
       // Don't save about:blank or empty URLs
@@ -611,6 +651,9 @@ For more help: https://playwright.dev/docs/browsers
         if (!existsSync(browserStateDir)) {
           mkdirSync(browserStateDir, { recursive: true });
         }
+        // Recover from a stale SingletonLock left by a hard-killed browser,
+        // which would otherwise wedge the launch below (see method doc).
+        this.clearStaleSingletonLock(browserStateDir);
         this.context = await browserType.launchPersistentContext(browserStateDir, {
           headless: this.config.headless,
           args: launchArgs,

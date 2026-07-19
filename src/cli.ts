@@ -42,6 +42,7 @@ import { startRemoteMcpServer } from "./mcp-server-remote.js";
 import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning, sendToDaemon, runDaemonServer } from "./daemon.js";
 import { getStatusInfo, formatStatus, getDataDir, getPaths } from "./config.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolveCookieDomain, hostFromUrl } from "./utils.js";
 import { dirname, join, resolve } from "node:path";
 import { VideoCaptureSession, type CaptureFormat } from "./recording/engine.js";
 import { changeSignal, parseManifest, type RecordingTarget } from "./recording/types.js";
@@ -4395,7 +4396,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             if (options.url) {
               await browser.navigate(options.url as string);
             }
-            const domain = (options.domain as string) || "localhost";
+            const domain = resolveCookieDomain(options.domain as string | undefined, options.url as string | undefined);
             const path = (options.path as string) || "/";
             await browser.setCookies([{
               name,
@@ -4419,7 +4420,9 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             if (options.url) {
               await browser.navigate(options.url as string);
             }
-            await browser.deleteCookie(name, options.domain as string);
+            const delDomain = (options.domain as string | undefined)
+              ?? (options.url ? hostFromUrl(options.url as string) ?? undefined : undefined);
+            await browser.deleteCookie(name, delDomain);
             console.log(`✓ Cookie deleted: ${name}`);
             break;
           }
