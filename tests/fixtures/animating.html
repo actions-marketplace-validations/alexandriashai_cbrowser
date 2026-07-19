@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recording fixture — continuously animating</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101018; color: #f2f2f7; font: 16px/1.4 system-ui, sans-serif; }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 24px; }
+  #box { width: 160px; height: 160px; background: #d64545; }
+  #counter { font-size: 48px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <main>
+    <div id="box"></div>
+    <div id="counter">0</div>
+  </main>
+  <script>
+    // Paints on every animation frame so the CDP screencast always has a
+    // changed region to emit. Driven by rAF rather than CSS animation because
+    // a compositor-only animation can be promoted off the main thread and
+    // produce far fewer screencast events.
+    var start = performance.now();
+    var counter = document.getElementById('counter');
+    var box = document.getElementById('box');
+    function tick(now) {
+      var t = (now - start) / 1000;
+      // Rotation alone is periodic, so the element's bounding box repeats every
+      // half-turn and two frames seconds apart can share a crop. The drift term
+      // has a 20s period, making the box monotonic over any normal capture and
+      // giving element tracking a genuinely moving target.
+      var drift = Math.sin(t * Math.PI / 20) * 120;
+      box.style.transform = 'translateX(' + drift.toFixed(2) + 'px) rotate(' + (t * 180) + 'deg)';
+      box.style.background = 'hsl(' + ((t * 120) % 360) + ', 65%, 55%)';
+      counter.textContent = t.toFixed(2);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

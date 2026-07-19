@@ -15,6 +15,13 @@ import type { Page } from "playwright";
 import { existsSync, readFileSync } from "fs";
 
 import { CBrowser } from "../browser.js";
+import {
+  finishAutoCapture,
+  resolveCaptureOptions,
+  startAutoCapture,
+  type AutoCaptureResult,
+  type AutoCaptureSetting,
+} from "../recording/auto-capture.js";
 import type {
   NLTestStep,
   NLTestCase,
@@ -316,6 +323,15 @@ export interface NLTestSuiteOptions {
   headless?: boolean;
   /** Use fuzzy matching for text assertions */
   fuzzyMatch?: boolean;
+  /**
+   * Record the run to GIF/WebP/video (v18.70.0).
+   *
+   * `true` uses defaults; pass an options object to set fps, formats or output
+   * directory. The capture starts once the browser is up and stops before it
+   * closes, so no separate capture_start/capture_stop call is needed. Capture
+   * failures never fail the suite — they are reported on `result.capture.error`.
+   */
+  capture?: AutoCaptureSetting;
 }
 
 /**
@@ -413,6 +429,7 @@ export async function runNLTestSuite(
     screenshotOnFailure = true,
     headless = true,
     fuzzyMatch = false,
+    capture,
   } = options;
 
   const startTime = Date.now();
@@ -428,8 +445,20 @@ export async function runNLTestSuite(
     headless,
   });
 
+  let captureResult: AutoCaptureResult | undefined;
+  let captureSession: Awaited<ReturnType<typeof startAutoCapture>> = null;
+
   try {
     await browser.launch();
+
+    // Auto-capture (v18.70.0): starts here so the recording covers every test
+    // in the suite, and stops in the finally below before the browser closes.
+    captureSession = await startAutoCapture(
+      await browser.getPage(),
+      capture,
+      `suite-${suite.name.replace(/[^a-zA-Z0-9-_]+/g, "-").toLowerCase()}-${Date.now()}`,
+    );
+    if (captureSession) console.log(`   🎥 Capturing to ${captureSession.status().outDir}`);
 
     for (const test of suite.tests) {
       console.log(`\n📋 Test: ${test.name}`);
@@ -686,6 +715,12 @@ export async function runNLTestSuite(
       console.log(`   ${testPassed ? "✅" : "❌"} ${test.name}: ${testPassed ? "PASSED" : "FAILED"}`);
     }
   } finally {
+    // Stop before the browser closes — the page has to still exist. Bounded, so
+    // a wedged recorder cannot hang the suite (see finishAutoCapture).
+    captureResult = await finishAutoCapture(
+      captureSession,
+      resolveCaptureOptions(capture)?.stopTimeoutMs,
+    );
     await browser.close();
   }
 
@@ -723,6 +758,7 @@ export async function runNLTestSuite(
       stepPassRate,
     },
     recommendations: recommendations.length > 0 ? recommendations : undefined,
+    ...(captureResult ? { capture: captureResult } : {}),
   };
 
   return result;

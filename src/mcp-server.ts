@@ -19,6 +19,16 @@ import { z } from "zod";
 import { CBrowser } from "./browser.js";
 import { ensureDirectories, getStatusInfo } from "./config.js";
 
+// Screen capture tools — implementation shared with the remote MCP server
+import {
+  startCapture,
+  stopCapture,
+  captureStatus,
+  CAPTURE_START_DESCRIPTION,
+  CAPTURE_STOP_DESCRIPTION,
+  CAPTURE_STATUS_DESCRIPTION,
+} from "./mcp-tools/base/capture-tools.js";
+
 // Visual module imports
 import {
   runVisualRegression,
@@ -921,6 +931,88 @@ async function registerCBrowserTools(): Promise<McpServer> {
           ],
         };
       });
+    }
+  );
+
+  // =========================================================================
+  // Screen Capture Tools
+  //
+  // Same three tools as the remote server (src/mcp-tools/base/capture-tools.ts),
+  // in this server's older registration form and sharing that module's
+  // implementation — a tool that exists on only one server is half-shipped.
+  // This server is single-session, so no browser token is threaded through.
+  // =========================================================================
+
+  server.tool(
+    "capture_start",
+    CAPTURE_START_DESCRIPTION,
+    {
+      url: z.string().optional().describe("URL to navigate to before capturing. Omit to capture the current page."),
+      fps: z.number().optional().describe("Target frames per second (default: 10)"),
+      duration: z.string().optional().describe("Auto-stop after this long: 5s, 2m, 1500ms. Omit for an open-ended capture stopped by capture_stop."),
+      viewport: z.string().optional().describe("Viewport as WIDTHxHEIGHT (e.g. 1280x720) or a preset name (mobile, tablet, desktop, desktop-lg)"),
+      region: z.string().optional().describe("Capture a fixed region as x,y,width,height (e.g. 0,0,800,600). Clamped to the viewport."),
+      element: z.string().optional().describe("CSS selector to capture. Resolved to the element's bounding box once at start; the region does not follow the element if it moves."),
+      padding: z.number().optional().describe("Padding in pixels around the element region (default: 0)"),
+      format: z.string().optional().describe("Comma-separated output formats: gif,webp,mp4,webm (default: gif). mp4 needs a full ffmpeg; the bundled one does webm."),
+      quality: z.number().optional().describe("JPEG quality for captured frames, 1-100 (default: 80)"),
+      max_frames: z.number().optional().describe("Hard cap on retained frames (default: 3000)"),
+      name: z.string().optional().describe("Capture name / slug"),
+      out_dir: z.string().optional().describe("Output directory (default: a slug directory under the recordings dir)"),
+    },
+    async (args) => {
+      try {
+        const b = await getBrowser();
+        const payload = await startCapture(b, args);
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            }, null, 2),
+          }],
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "capture_stop",
+    CAPTURE_STOP_DESCRIPTION,
+    {},
+    async () => {
+      try {
+        const { payload } = await stopCapture();
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            }, null, 2),
+          }],
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "capture_status",
+    CAPTURE_STATUS_DESCRIPTION,
+    {},
+    async () => {
+      return {
+        content: [{ type: "text", text: JSON.stringify(captureStatus(), null, 2) }],
+      };
     }
   );
 

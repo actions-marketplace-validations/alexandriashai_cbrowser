@@ -2241,6 +2241,17 @@ export interface CognitiveJourneyResult {
   navigationPath?: string[];
   /** v18.29.0: Final page the persona was on */
   lastPage?: { url: string; title: string };
+  /** v18.70.0: Screen capture of the journey, when invoked with capture enabled */
+  capture?: {
+    slug: string;
+    outDir: string;
+    manifestPath?: string;
+    frames: number;
+    actualFps?: number;
+    durationMs?: number;
+    artifacts?: Record<string, string>;
+    error?: string;
+  };
 }
 
 // ============================================================================
@@ -2605,6 +2616,17 @@ export interface NLTestSuiteResult {
   };
   /** AI-generated recommendations for fixing failures */
   recommendations?: string[];
+  /** Screen capture of the run, when the suite was invoked with capture enabled (v18.70.0) */
+  capture?: {
+    slug: string;
+    outDir: string;
+    manifestPath?: string;
+    frames: number;
+    actualFps?: number;
+    durationMs?: number;
+    artifacts?: Record<string, string>;
+    error?: string;
+  };
 }
 
 // ============================================================================

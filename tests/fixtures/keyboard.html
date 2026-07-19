@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keyboard fixture — records the real event sequence</title>
+<style>
+  html, body { margin: 0; background: #101018; color: #f2f2f7; font: 15px/1.5 system-ui, sans-serif; }
+  main { padding: 24px; display: flex; flex-direction: column; gap: 12px; max-width: 640px; }
+  input, textarea { font: inherit; padding: 8px; width: 100%; box-sizing: border-box; }
+  pre { background: #1c1c28; padding: 12px; max-height: 240px; overflow: auto; }
+</style>
+</head>
+<body>
+  <main>
+    <label for="field">Field</label>
+    <input id="field" type="text">
+    <label for="notes">Notes</label>
+    <textarea id="notes" rows="3"></textarea>
+    <pre id="log"></pre>
+  </main>
+  <script>
+    // Records every keydown/keyup with its modifier flags so a test can assert
+    // the ACTUAL event sequence rather than just a zero exit code. Held
+    // modifiers show up as flags on the intervening events, which is the only
+    // way to tell "--hold Shift" from "pressed Shift then released it".
+    window.__keyLog = [];
+    // Mirrored into localStorage as well as window: each CLI invocation is a
+    // fresh page load, so an in-memory log alone cannot be read back by a
+    // following `cbrowser evaluate`. Clear it with:
+    //   cbrowser evaluate "localStorage.removeItem('keyLog')"
+    function persist() {
+      try {
+        var prior = JSON.parse(localStorage.getItem('keyLog') || '[]');
+        localStorage.setItem('keyLog', JSON.stringify(prior.concat(window.__keyLog.slice(-1))));
+      } catch (e) { /* storage disabled; the window log still works */ }
+    }
+    function record(event) {
+      window.__keyLog.push({
+        type: event.type,
+        key: event.key,
+        code: event.code,
+        ctrl: event.ctrlKey,
+        shift: event.shiftKey,
+        alt: event.altKey,
+        meta: event.metaKey,
+        target: event.target.id || event.target.tagName.toLowerCase()
+      });
+      persist();
+      document.getElementById('log').textContent =
+        window.__keyLog.map(function (e) {
+          var mods = [e.ctrl && 'Ctrl', e.shift && 'Shift', e.alt && 'Alt', e.meta && 'Meta']
+            .filter(Boolean).join('+');
+          return e.type + ' ' + e.key + (mods ? ' [' + mods + ']' : '');
+        }).join('\n');
+    }
+    document.addEventListener('keydown', record, true);
+    document.addEventListener('keyup', record, true);
+  </script>
+</body>
+</html>

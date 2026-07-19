@@ -28,6 +28,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { CBrowser } from "../browser.js";
+import { finishAutoCapture, resolveCaptureOptions, startAutoCapture, type AutoCaptureSetting } from "../recording/auto-capture.js";
 import {
   getPersona,
   getCognitiveProfile,
@@ -738,6 +739,15 @@ export interface CognitiveJourneyOptions {
   verbose?: boolean;
   /** Run in headless mode (default: false for live viewing, auto-detects server) */
   headless?: boolean;
+  /**
+   * Record the journey to GIF/WebP/video (v18.70.0).
+   *
+   * `true` uses defaults; pass an options object for fps/formats/output dir.
+   * Capture starts at the start URL and stops before the browser closes, so no
+   * separate capture_start/capture_stop call is needed. A capture failure is
+   * reported on `result.capture.error` and never fails the journey.
+   */
+  capture?: AutoCaptureSetting;
   /** Enable vision mode - send screenshots to Claude for visual understanding */
   vision?: boolean;
   /** Callback for step updates */
@@ -1192,6 +1202,15 @@ export async function runCognitiveJourney(
 
   // Inject into the freshly-loaded page (init script may have raced the navigation)
   await installMouseOverlay();
+
+  // Auto-capture (v18.70.0): recording starts once the journey's start URL is
+  // loaded, so frame 0 is the page the persona actually opens on, and stops
+  // just before the browser closes. Capture never fails the journey.
+  const captureSession = await startAutoCapture(
+    await browser.getPage(),
+    options.capture,
+    `journey-${options.persona.replace(/[^a-zA-Z0-9-_]+/g, "-").toLowerCase()}-${Date.now()}`,
+  );
 
   // Apply geolocation at runtime as well (ensures permission is granted after context exists)
   if (effectiveLocation.geolocation) {
@@ -2238,6 +2257,12 @@ Answer with JSON:
     }
   }
 
+  // Stop the capture before the browser closes — the page has to still exist.
+  const captureResult = await finishAutoCapture(
+    captureSession,
+    resolveCaptureOptions(options.capture)?.stopTimeoutMs,
+  );
+
   // Close browser
   await browser.close();
 
@@ -2251,6 +2276,7 @@ Answer with JSON:
     persona: personaObj.name,
     goal: options.goal,
     goalAchieved,
+    ...(captureResult ? { capture: captureResult } : {}),
     abandonmentReason,
     abandonmentMessage,
     totalTime: (Date.now() - startTime) / 1000,

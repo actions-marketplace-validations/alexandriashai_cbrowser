@@ -1,6 +1,6 @@
 ---
 name: CBrowser
-description: Cognitive Browser — AI browser automation that simulates real user cognition. 122 MCP tools, 21 personas, 25 cognitive traits, constitutional safety, cognitive journeys with LLM-free trace replay (v18.69.0). USE WHEN browser automation OR cognitive journey OR persona testing OR empathy audit OR agent-ready audit OR visual regression OR cross-browser test OR responsive test OR natural language tests OR flaky test detection OR performance regression OR user abandonment OR friction detection.
+description: Cognitive Browser — AI browser automation that simulates real user cognition. 122 MCP tools, 21 personas, 25 cognitive traits, constitutional safety, cognitive journeys with LLM-free trace replay, screen capture to GIF/WebP/WebM with an AI-readable frame manifest (v18.69.3). USE WHEN browser automation OR cognitive journey OR persona testing OR empathy audit OR agent-ready audit OR visual regression OR cross-browser test OR responsive test OR natural language tests OR flaky test detection OR performance regression OR user abandonment OR friction detection OR record a video OR record a gif OR screen capture OR capture animation OR capture motion OR screencast OR record the page OR capture an element as it moves.
 ---
 
 # CBrowser (Cognitive Browser)
@@ -138,6 +138,7 @@ Built for the Claude ecosystem. First-class MCP server for Claude Desktop integr
 | "cross-browser", "browser comparison" | npm: `cross-browser` | Cross-browser visual testing (v7.1.0) |
 | "responsive", "viewport", "mobile testing" | npm: `responsive` | Responsive visual testing (v7.2.0) |
 | "A/B", "compare URLs", "staging vs production" | npm: `ab` | A/B visual comparison (v7.3.0) |
+| "record a video", "record a gif", "screen capture", "capture motion", "screencast" | `Workflows/Capture.md` | Screen capture to GIF/WebP/WebM + frame manifest (v18.69.3) |
 
 ---
 
@@ -484,6 +485,34 @@ verify page contains "results"
 
 ---
 
+## Screen Capture (video/GIF) — v18.69.3
+
+Records a timed frame sequence and emits **two co-equal artifacts from one capture**: a human artifact (GIF / animated WebP / WebM) and an AI artifact (`manifest.json` plus the frames).
+
+```bash
+cbrowser capture start <url> [--duration 5s] [--fps 10] [--format gif,webp,webm] [--out DIR]
+cbrowser capture stop
+cbrowser capture status
+```
+
+**Three targets:**
+
+| Target | Flag | Behaviour |
+|--------|------|-----------|
+| Viewport | `--viewport 390x844` or `--device iphone-15` | Sets the viewport before the first frame |
+| Region | `--region x,y,w,h` | Fixed rect, clamped to the viewport (`region_clamped: true`); zero or negative area exits 1 |
+| Element | `--element "<sel>" [--element-padding 10]` | Crop **follows the element per frame** as it moves; output dimensions stay locked so encoders get constant frame size |
+
+**The manifest is the point.** An AI agent cannot watch a video file. `manifest.json` gives it per-frame `t_ms`, the `crop` used, `ssim_prev`, `anomaly`, `tracking`, and the console/network events inside each frame's window — plus a top-level `change_points` array naming the frame indices where the page actually changed. Read the manifest to find *when* something happened, then look only at those frames.
+
+**Two behaviours worth knowing up front:**
+- **Capture is event-driven.** Chromium's screencast emits frames when the compositor commits, so a static page produces very few. Idle spans are reported as `frame_gaps` and the manifest clock is wall-time, so `t_ms` always matches real elapsed time and the GIF still plays at true speed.
+- **mp4 needs a full ffmpeg.** Playwright's bundled binary is a stripped WebM/VP8 build with no mp4 muxer or H.264 encoder. Use `--format webm`, or point `CBROWSER_FFMPEG_PATH` at a full ffmpeg.
+
+**`capture` is not `record`.** `cbrowser record` is the Tier-2 feature that records *user actions* for test generation. `capture` records the screen. Separate commands, deliberately.
+
+Full recipes per target and per format: `Workflows/Capture.md`.
+
 ## AI Selector Modes
 
 | Mode | Syntax | Example |
@@ -769,7 +798,8 @@ bun run Tools/CBrowser.ts backend set claude-in-chrome
 │   ├── Authenticate.md         # Login handling
 │   ├── Test.md                 # Test scenarios
 │   ├── Journey.md              # Autonomous journeys
-│   └── CognitiveJourney.md     # Cognitive user simulation
+│   ├── CognitiveJourney.md     # Cognitive user simulation
+│   └── Capture.md              # Screen capture to GIF/WebP/WebM
 ├── Tools/
 │   └── CBrowser.ts     # CLI tool
 └── .memory/                    # Persistent storage

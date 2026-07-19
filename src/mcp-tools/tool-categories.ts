@@ -261,6 +261,18 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
     ],
   },
 
+  {
+    name: "screen_capture",
+    description: "Record the screen to GIF/WebP/video with a frame manifest and change points",
+    tier: 2,
+    pricingTier: "pro",
+    tools: [
+      "capture_start",
+      "capture_stop",
+      "capture_status",
+    ],
+  },
+
   // ── Enterprise Tools ──
   {
     name: "enterprise_security",

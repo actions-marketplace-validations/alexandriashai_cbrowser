@@ -68,6 +68,8 @@ import { SessionManager } from "./browser/session-manager.js";
 import { SelectorCacheManager } from "./browser/selector-cache.js";
 import { OverlayHandler } from "./browser/overlay-handler.js";
 import { getRemoteMode, MAX_RESPONSE_SIZE } from "./mcp-tools/screenshot-utils.js";
+import { clampRect } from "./recording/timing.js";
+import type { Rect } from "./recording/types.js";
 
 // Browser-specific fast launch args for performance optimization
 const BROWSER_LAUNCH_ARGS: Record<SupportedBrowser, string[]> = {
@@ -126,7 +128,21 @@ export interface ScreenshotOptions {
   maxSize?: number;
   /** Full page screenshot (default: false) */
   fullPage?: boolean;
+  /**
+   * Crop the screenshot to a rectangle in CSS pixels, relative to the top-left
+   * of the page. Clamped to the viewport (or the full page when fullPage=true);
+   * a rect that clamps to zero area throws.
+   */
+  clip?: { x: number; y: number; width: number; height: number };
 }
+
+/**
+ * A screenshot clip rectangle in CSS pixels.
+ *
+ * Clamping is delegated to `clampRect` in the recording module so screenshots
+ * and recordings share one definition of "trim this rect to the capture area".
+ */
+export type ClipRect = Rect;
 
 // =========================================================================
 // Standalone Browser Launch Utilities (for use outside CBrowser class)
@@ -4603,6 +4619,17 @@ For more help: https://playwright.dev/docs/browsers
   }
 
   /**
+   * Public accessor for the element resolver, for callers outside this class
+   * that need a Locator rather than an action (screen capture element
+   * tracking, for one). Deliberately a thin delegate: all nine resolution
+   * strategies, the self-healing cache and the verbose reporting stay in
+   * findElement, so there is exactly one resolver in the codebase.
+   */
+  async resolveElementLocator(selector: string): Promise<Locator | null> {
+    return this.findElement(selector);
+  }
+
+  /**
    * Find an element using multiple strategies.
    */
   private async findElement(selector: string, options: { skipCache?: boolean } = {}): Promise<Locator | null> {
@@ -5128,8 +5155,33 @@ For more help: https://playwright.dev/docs/browsers
 
     const filename = path || join(this.paths.screenshotsDir, `screenshot-${Date.now()}.png`);
 
-    await page.screenshot({ path: filename, fullPage: opts.fullPage || false });
+    const clip = opts.clip ? await this.resolveClip(opts) : undefined;
+    await page.screenshot({ path: filename, fullPage: opts.fullPage || false, ...(clip ? { clip } : {}) });
     return filename;
+  }
+
+  /**
+   * Clamp a caller-supplied clip rect to the surface actually being captured
+   * (the viewport, or the full document when fullPage is set).
+   */
+  private async resolveClip(opts: ScreenshotOptions): Promise<ClipRect | undefined> {
+    if (!opts.clip) return undefined;
+    const page = await this.getPage();
+    const viewport = page.viewportSize() || { width: 1280, height: 800 };
+    const bounds = opts.fullPage
+      ? await page.evaluate(() => ({
+          width: Math.max(document.documentElement.scrollWidth, window.innerWidth),
+          height: Math.max(document.documentElement.scrollHeight, window.innerHeight),
+        }))
+      : viewport;
+
+    const { rect, clamped } = clampRect(opts.clip, bounds);
+    if (clamped && this.config.verbose) {
+      console.log(`  Clip clamped to capture area (${bounds.width}x${bounds.height}): ` +
+        `{x:${opts.clip.x}, y:${opts.clip.y}, w:${opts.clip.width}, h:${opts.clip.height}} -> ` +
+        `{x:${rect.x}, y:${rect.y}, w:${rect.width}, h:${rect.height}}`);
+    }
+    return rect;
   }
 
   /**
@@ -5161,6 +5213,9 @@ For more help: https://playwright.dev/docs/browsers
     // Get viewport size for scaling
     const viewport = page.viewportSize() || { width: 1280, height: 800 };
 
+    // Clip is expressed in unscaled CSS pixels, so it has to scale with the viewport
+    const baseClip = options?.clip ? await this.resolveClip(options) : undefined;
+
     // Try different quality/scale combinations
     for (const tryScale of scaleSteps) {
       for (const tryQuality of qualitySteps) {
@@ -5176,11 +5231,19 @@ For more help: https://playwright.dev/docs/browsers
         }
 
         try {
+          const scaledClip = baseClip && {
+            x: Math.round(baseClip.x * tryScale),
+            y: Math.round(baseClip.y * tryScale),
+            width: Math.max(1, Math.round(baseClip.width * tryScale)),
+            height: Math.max(1, Math.round(baseClip.height * tryScale)),
+          };
+
           await page.screenshot({
             path: filename,
             fullPage,
             type: 'jpeg',
-            quality: tryQuality
+            quality: tryQuality,
+            ...(scaledClip ? { clip: scaledClip } : {})
           });
 
           // Check file size

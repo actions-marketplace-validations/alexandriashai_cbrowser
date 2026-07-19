@@ -11,6 +11,60 @@
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 
+/** Frame geometry of the heatmap GIF. Pinned — changing these changes output. */
+export const HEATMAP_GIF_FRAME_WIDTH = 640;
+export const HEATMAP_GIF_FRAME_HEIGHT = 400;
+
+/**
+ * Encode journey heatmap frames into an animated GIF.
+ *
+ * Lifted verbatim out of the `journey_heatmap_gif` handler so the encoder can
+ * be regression-tested without running a live journey. The operations, their
+ * order, and every parameter are unchanged: resize to 640x400, raw, stack
+ * vertically into an RGBA buffer, encode with per-frame delay and infinite
+ * loop. Output is byte-identical to the pre-extraction pipeline — see
+ * tests/recording-gif-regression.test.ts, which reproduces the original inline
+ * code and asserts equality.
+ *
+ * Note: the stacking assumes 4-channel (RGBA) frames, as the original did.
+ * That assumption is preserved deliberately rather than "fixed" — this
+ * function exists to hold behaviour still.
+ */
+export async function encodeJourneyHeatmapGif(
+  frames: Buffer[],
+  frameDelay: number,
+): Promise<Buffer> {
+  const sharp = (await import("sharp")).default;
+
+  // Sharp requires all frames as a single multi-page input
+  const delays = frames.map(() => frameDelay);
+
+  // Create the animated GIF by joining frames vertically then converting
+  const frameHeight = HEATMAP_GIF_FRAME_HEIGHT;
+  const frameWidth = HEATMAP_GIF_FRAME_WIDTH;
+
+  // For multi-frame, we need to use sharp's join approach
+  const compositeFrames = await Promise.all(
+    frames.map(f => sharp(f).resize(frameWidth, frameHeight).raw().toBuffer())
+  );
+
+  // Stack frames vertically for sharp animated GIF
+  const totalHeight = frameHeight * frames.length;
+  const stackedBuffer = Buffer.alloc(frameWidth * totalHeight * 4);
+  for (let i = 0; i < compositeFrames.length; i++) {
+    compositeFrames[i].copy(stackedBuffer, i * frameWidth * frameHeight * 4);
+  }
+
+  return sharp(stackedBuffer, {
+    raw: { width: frameWidth, height: totalHeight, channels: 4 },
+  })
+    .gif({
+      delay: delays,
+      loop: 0,
+    })
+    .toBuffer();
+}
+
 export function registerGifTools(
   server: McpServer,
   context?: ToolRegistrationContext,
@@ -141,40 +195,9 @@ export function registerGifTools(
         };
       }
 
-      // Combine frames into animated GIF
-      // Sharp requires all frames as a single multi-page input
-      const delays = frames.map(() => frameDelay);
-
-      // Create the animated GIF by joining frames vertically then converting
-      const frameHeight = 400;
-      const frameWidth = 640;
-
-      // Use sharp to create animated GIF from frames
-      const gifBuffer = await sharp(frames[0], { animated: false })
-        .gif()
-        .toBuffer();
-
-      // For multi-frame, we need to use sharp's join approach
-      // Build the GIF manually using sharp's composite
-      const compositeFrames = await Promise.all(
-        frames.map(f => sharp(f).resize(frameWidth, frameHeight).raw().toBuffer())
-      );
-
-      // Stack frames vertically for sharp animated GIF
-      const totalHeight = frameHeight * frames.length;
-      const stackedBuffer = Buffer.alloc(frameWidth * totalHeight * 4);
-      for (let i = 0; i < compositeFrames.length; i++) {
-        compositeFrames[i].copy(stackedBuffer, i * frameWidth * frameHeight * 4);
-      }
-
-      const animatedGif = await sharp(stackedBuffer, {
-        raw: { width: frameWidth, height: totalHeight, channels: 4 },
-      })
-        .gif({
-          delay: delays,
-          loop: 0,
-        })
-        .toBuffer();
+      // Combine frames into animated GIF (see encodeJourneyHeatmapGif below —
+      // the pipeline is unchanged, only lifted out so it can be regression-pinned)
+      const animatedGif = await encodeJourneyHeatmapGif(frames, frameDelay);
 
       // Save to public heatmaps directory
       const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";

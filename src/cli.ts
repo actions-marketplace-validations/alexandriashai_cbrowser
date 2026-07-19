@@ -40,7 +40,13 @@ import { DEVICE_PRESETS, LOCATION_PRESETS } from "./types.js";
 import { startMcpServer } from "./mcp-server.js";
 import { startRemoteMcpServer } from "./mcp-server-remote.js";
 import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning, sendToDaemon, runDaemonServer } from "./daemon.js";
-import { getStatusInfo, formatStatus, getDataDir } from "./config.js";
+import { getStatusInfo, formatStatus, getDataDir, getPaths } from "./config.js";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { VideoCaptureSession, type CaptureFormat } from "./recording/engine.js";
+import { parseManifest, type RecordingTarget } from "./recording/types.js";
+import type { AutoCaptureResult, AutoCaptureSetting } from "./recording/auto-capture.js";
+import type { StartTrigger, StopTrigger } from "./recording/engine.js";
 import { printEnterpriseStatus } from "./stealth/index.js";
 import {
   runCognitiveJourney,
@@ -93,13 +99,20 @@ function readlineQuestion(prompt: string): Promise<string> {
   });
 }
 
-function showHelp(): void {
+/**
+ * The full help text.
+ *
+ * Returned rather than printed so `help <command>` can slice a single section
+ * out of it - one source of truth for both the global dump and per-command
+ * help, which is what stops the two drifting apart.
+ */
+function helpText(): string {
   // Pad version string to maintain banner alignment
   const versionStr = `CBrowser CLI v${VERSION}`;
   const padding = ' '.repeat(Math.max(0, (80 - 2 - versionStr.length) / 2));
   const rightPadding = ' '.repeat(Math.max(0, 80 - 2 - padding.length - versionStr.length));
 
-  console.log(`
+  return (`
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║${padding}${versionStr}${rightPadding}║
 ║    AI-powered browser automation with cross-browser visual testing          ║
@@ -122,9 +135,46 @@ INTERACTION
     --url <url>               Navigate to URL first, then fill
     --verbose                 Show available inputs and AI suggestions on failure
     --debug-dir <dir>         Save debug screenshots to directory
+  hover <selector>            Hover over an element
+  press <key>                 Press a single key (Enter, Tab, Escape, Control+a)
+  type "<text>"               Type a string into the focused element
+    --delay <ms>              Per-character delay (default: 50)
+  drag <source> <target>      Drag one element onto another
+  upload <selector> <file>    Set a file input's value
+    --url <url>               Navigate to URL first
+    For sequences, chords or held modifiers, see 'cbrowser help keyboard'.
 
 EXTRACTION
   extract <what>              Extract data (links, images, headings, forms)
+
+SCRIPTING
+  evaluate "<js>"             Run JavaScript in the page and print the result
+    --file <path>             Read the script from a file instead of argv
+    --arg <json>              Argument for the script (repeatable, JSON-typed)
+    --json                    Always print JSON
+    --raw                     Print the raw value, unquoted
+    --wait-for <selector>     Wait for the selector before evaluating
+    --expect-truthy           Exit 1 when the result is falsy (CI assertion)
+    Examples:
+      cbrowser evaluate "document.title"
+      cbrowser evaluate --file check.js --arg '"#main"' --expect-truthy
+      cbrowser evaluate "(sel) => !!document.querySelector(sel)" --arg '"nav"'
+
+KEYBOARD
+  keyboard <token> [token...]  Send a key sequence: chords, keys and text
+    --selector <sel>          Focus this element first
+    --delay <ms>              Delay between steps (default: 50)
+    --hold <mod>              Hold a modifier across the whole sequence
+    --repeat <n>              Repeat the whole sequence n times
+    --text                    Treat every token as literal text (for "+" in text)
+    A token with modifiers is a chord (Control+A); a known key name is that key
+    (Enter, Tab, ArrowLeft); anything else is typed as literal text. Unknown
+    key names are rejected, not typed. For a single key use 'press', for a
+    single string use 'type'.
+    Examples:
+      cbrowser keyboard "Control+A" "Delete" "Hello world"
+      cbrowser keyboard "ArrowRight" --repeat 5 --hold Shift
+      cbrowser keyboard "Tab" "Tab" "Enter" --selector "#email" --delay 120
 
 SITE EXPLORATION (Free, heuristic-based)
   explore <persona>           Quick autonomous exploration using built-in heuristics
@@ -135,6 +185,10 @@ SITE EXPLORATION (Free, heuristic-based)
 
 COGNITIVE JOURNEY (API-powered, realistic user simulation)
   cognitive-journey           Simulate a real user with emotions, patience, and abandonment
+    --capture                 Record the run to GIF/WebP/video
+    --capture-fps <n>         Capture frame rate (default: 10)
+    --capture-format <list>   gif,webp,webm,mp4 (default: gif)
+    --capture-out <dir>       Capture output directory
     --persona <name>          Persona name or description (default: first-timer)
     --start <url>             Starting URL (required)
     --goal <goal>             Goal statement (required)
@@ -186,6 +240,10 @@ NATURAL LANGUAGE TEST SUITES (v6.1.0)
     --fuzzy-match              Use case-insensitive fuzzy matching for assertions
     --step-through             Pause before each step for interactive execution
   test-suite --inline "..."    Run inline test (semicolon-separated steps)
+    --capture                 Record the run to GIF/WebP/video
+    --capture-fps <n>         Capture frame rate (default: 10)
+    --capture-format <list>   gif,webp,webm,mp4 (default: gif)
+    --capture-out <dir>       Capture output directory
     Examples:
       cbrowser test-suite login-flow.txt --html
       cbrowser test-suite --inline "go to https://example.com ; click login ; verify url contains /dashboard"
@@ -562,6 +620,38 @@ TEST RECORDING (v2.5.0)
   record list                 List saved recordings
   record generate <name>      Generate Playwright test code
 
+SCREEN CAPTURE (video/GIF — distinct from 'record', which captures actions)
+  capture start <url>         Capture the screen to GIF/WebP/video
+    --fps <n>                 Target frames per second (default: 10)
+    --duration <5s>           Auto-stop after this long (5s, 2m, 1500ms)
+    --viewport <WxH>          Viewport size, e.g. 1280x720
+    --region <x,y,w,h>        Capture a fixed region instead of the viewport
+    --element <selector>      Track an element; crop follows it as it moves
+    --element-padding <n>     Expand the element box by n CSS px per side
+    --device <name>           Device preset, e.g. iphone-15 ('capture status'
+                              lists them on a bad value)
+    --format <list>           gif,webp,webm,mp4 (default: gif)
+    --quality <1-100>         JPEG quality of captured frames (default: 80)
+    --max-frames <n>          Stop retaining frames after n (default: 3000)
+    --contact-sheet           Also write one JPEG summarising the whole capture
+    --after <event>           Start on load|domcontentloaded|networkidle
+    --after-element <sel>     Start when the element is present and visible
+    --after-delay <500ms>     Extra delay after the start trigger
+    --until-element <sel>     Stop when the element appears
+    --until-element-gone <sel>  Stop when the element disappears
+    --until-idle <800ms>      Stop after this long with no visual change
+    --timeout <30s>           Trigger wait budget (default: 30s); a trigger that
+                              never fires stops the capture, writes a manifest
+                              with trigger_timeout, and exits non-zero
+    --out <dir>               Output directory
+                              (default: ~/.cbrowser/videos/<session>/<name>)
+    --name <slug>             Capture name
+  capture stop                Stop the running screen capture
+  capture status              Show the running or most recent capture
+    Note: capture is event-driven — a page that never repaints emits no frames,
+    and the still stretches are reported as frame_gaps rather than padded out.
+    mp4 needs a full ffmpeg (CBROWSER_FFMPEG_PATH); the bundled one does webm.
+
 TEST EXPORT (v2.5.0)
   export junit <name> [output]   Export test results as JUnit XML
   export tap <name> [output]     Export test results as TAP format
@@ -573,6 +663,14 @@ WEBHOOKS (v2.5.0)
   webhook list                List configured webhooks
   webhook delete <name>       Delete a webhook
   webhook test <name>         Send test notification
+
+PERSONA QUESTIONNAIRE
+  persona-questionnaire start        Build a persona from a behavioural questionnaire
+    --comprehensive                  All 25 traits (default: 8 core traits)
+    --name <name>                    Persona name (prompted if omitted)
+    --output <file>                  Save answers to JSON
+  persona-questionnaire list-traits  List available traits with descriptions
+  persona-questionnaire lookup       Look up behaviours for a trait value
 
 PARALLEL EXECUTION (v2.5.0)
   parallel devices <url>      Run same URL across multiple devices
@@ -769,6 +867,137 @@ EXAMPLES
 `);
 }
 
+function showHelp(): void {
+  console.log(helpText());
+}
+
+/**
+ * Commands that are aliases of another command in the dispatch switch.
+ *
+ * `help <alias>` resolves to the target's section: an alias that denies having
+ * help is the worst answer of all, because the user has no way to learn it IS
+ * an alias. Kept honest by the test that walks every `case` label in the
+ * dispatch switch and asserts it resolves.
+ */
+const COMMAND_ALIASES: Record<string, string> = {
+  eval: "evaluate",
+  "chaos-test": "chaos",
+  "generate-tests": "generate",
+  journey: "explore",
+};
+
+/** Escape a string for safe use inside a RegExp. */
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** A named block of the help text: its heading, its lines, and the commands it documents. */
+interface HelpSection {
+  heading: string;
+  lines: string[];
+  commands: Set<string>;
+}
+
+/**
+ * Split the help text into its top-level sections.
+ *
+ * A heading is an unindented line in caps; everything up to the next heading
+ * belongs to it. Command names are the first token of each two-space-indented
+ * entry, which is how `help <command>` finds the section to print.
+ */
+function parseHelpSections(): HelpSection[] {
+  const sections: HelpSection[] = [];
+  let current: HelpSection | null = null;
+
+  for (const line of helpText().split("\n")) {
+    // Headings are the only unindented prose in the help text: entries are
+    // indented at least two spaces, and the banner and rule lines are drawn
+    // with box characters. Matching on "looks uppercase" instead would miss
+    // headings like "VISUAL REGRESSION (v2.5.0)".
+    const isHeading =
+      /^[A-Za-z]/.test(line) &&
+      line.trim().length > 0 &&
+      !/^[\u2550-\u256c]+$/.test(line.trim());
+
+    if (isHeading) {
+      current = { heading: line.trim(), lines: [line], commands: new Set() };
+      sections.push(current);
+      continue;
+    }
+    if (!current) continue;
+
+    current.lines.push(line);
+    const entry = /^ {2}(\S+)/.exec(line);
+    if (entry) current.commands.add(entry[1]);
+  }
+
+  return sections;
+}
+
+/**
+ * Print help for a single command.
+ *
+ * Returns false when nothing matches, so the caller can exit non-zero - an
+ * unknown command that silently printed something would be the same
+ * accepted-and-ignored failure mode as a silently dropped flag.
+ */
+function showCommandHelp(command: string): boolean {
+  const sections = parseHelpSections();
+
+  const target = COMMAND_ALIASES[command];
+  if (target) {
+    console.log(`'${command}' is an alias for '${target}'.\n`);
+    return showCommandHelp(target);
+  }
+
+  const matches = sections.filter((s) => s.commands.has(command));
+
+  if (matches.length === 0) {
+    // A command can be real but documented inside another command's entry (an
+    // example line, a "see also"), so before declaring it unknown, look for it
+    // anywhere in the help text and point at the section that mentions it.
+    // Saying "no help section" about a command that exists is its own small
+    // version of lying to the user.
+    const mentions = sections.filter((s) =>
+      s.lines.some((line) => new RegExp(`(^|\\s|')${escapeForRegExp(command)}(\\s|$|'|"|,)`).test(line)),
+    );
+
+    if (mentions.length > 0) {
+      console.log(`'${command}' has no section of its own; it is documented under:`);
+      for (const section of mentions.slice(0, 3)) {
+        console.log(`\n${section.heading}`);
+        for (const line of section.lines.slice(1)) {
+          if (new RegExp(`(^|\\s|')${escapeForRegExp(command)}(\\s|$|'|"|,)`).test(line)) {
+            console.log(line);
+          }
+        }
+      }
+      console.log(`\nFull section: cbrowser help ${[...mentions[0].commands][0] ?? ""}`.trimEnd());
+      return true;
+    }
+
+    const known = [...new Set(sections.flatMap((s) => [...s.commands]))].sort();
+    const close = known.filter((c) => c.startsWith(command) || command.startsWith(c) || c.includes(command));
+
+    console.error(`No help section for '${command}'.`);
+    if (close.length > 0) {
+      console.error(`Did you mean: ${close.slice(0, 8).join(", ")}?`);
+    } else {
+      console.error(`Run 'cbrowser help' for the full command list.`);
+    }
+    return false;
+  }
+
+  for (const section of matches) {
+    // Trailing blank lines belong to the gap before the next section.
+    const lines = [...section.lines];
+    while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+    console.log(lines.join("\n"));
+    console.log("");
+  }
+  return true;
+}
+
 function parseArgs(args: string[]): { command: string; args: string[]; options: Record<string, string | boolean> } {
   const command = args[0] || "help";
   const restArgs: string[] = [];
@@ -791,6 +1020,1277 @@ function parseArgs(args: string[]): { command: string; args: string[]; options: 
   }
 
   return { command, args: restArgs, options };
+}
+
+
+// =========================================================================
+// Flag validation — one gate, before dispatch
+// =========================================================================
+
+/**
+ * Flags accepted by every command, consumed by the shared browser setup in
+ * main() rather than by any individual case.
+ */
+/**
+ * Commands that act on the live page and would therefore be wrong to run
+ * against a second browser while the daemon holds the first. Anything listed
+ * here must either be daemon-routed or refuse to run.
+ */
+const DRIVES_THE_PAGE = [
+  "navigate", "click", "fill", "hover", "screenshot", "extract", "run",
+  "keyboard", "press", "type", "evaluate", "eval", "drag", "upload",
+  "smart-click", "dismiss-overlay", "assert",
+];
+
+const GLOBAL_FLAGS = [
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose", "help", "no-color", "quiet", "json",
+];
+
+/**
+ * Declared options per command.
+ *
+ * This exists because "accepted and ignored" showed up eight times in this
+ * build - each time a flag reached a code path that never read it, and the
+ * command cheerfully exited 0. Per-command vigilance did not hold, so the rule
+ * moved here: argv is validated against the command's declared set BEFORE
+ * dispatch, and an undeclared flag never reaches an execution path.
+ *
+ * Commands absent from this map are not validated yet; see UNVALIDATED_REASON.
+ * Lists for the large pre-existing commands are supersets derived from the
+ * flags their case blocks actually read - deliberately permissive, since a
+ * false rejection of a working flag would be a worse defect than the one being
+ * fixed. They are still tight enough to catch a typo or an invented flag.
+ */
+const COMMAND_FLAGS: Record<string, string[]> = {
+  capture: [
+    "fps", "duration", "format", "out", "name", "quality", "max-frames",
+    "viewport", "region", "element", "element-padding", "contact-sheet",
+    "after", "after-element", "after-delay",
+    "until-element", "until-element-gone", "until-idle", "timeout",
+  ],
+  evaluate: ["file", "arg", "json", "raw", "wait-for", "expect-truthy"],
+  eval: ["file", "arg", "json", "raw", "wait-for", "expect-truthy"],
+  keyboard: ["delay", "selector", "hold", "repeat", "text"],
+  "test-suite": [
+    "capture", "capture-fps", "capture-format", "capture-out",
+    "api-key", "auto-apply", "comprehensive", "concurrency", "continue-on-failure",
+    "delay", "disabilities", "dry-run", "exclude", "fuzzy-match", "goal",
+    "html", "include", "inline", "length", "lightpanda", "max-pages", "max-steps",
+    "max-time", "min-coverage", "name", "no-vision", "oauth-token", "output",
+    "persona", "retries", "runs", "screenshot-on-failure", "sensitivity",
+    "sitemap", "sites", "start", "step-through", "tests", "threshold",
+    "threshold-cls", "threshold-fcp", "threshold-lcp", "threshold-tbt",
+    "threshold-ttfb", "threshold-tti", "timeout", "trait", "urls", "value",
+    "verify", "wcag-level", "geolocation", "geo-region",
+  ],
+  "cognitive-journey": [
+    "capture", "capture-fps", "capture-format", "capture-out",
+    "api-key", "comprehensive", "concurrency", "disabilities", "goal", "html",
+    "length", "lightpanda", "max-steps", "max-time", "name", "no-vision",
+    "oauth-token", "output", "persona", "sites", "start", "timeout", "trait",
+    "urls", "value", "wcag-level", "geolocation", "geo-region", "vision",
+    "trace", "replay-trace",
+  ],
+};
+
+/**
+ * Why the rest are not covered yet: cbrowser has ~90 commands whose flag sets
+ * are not declared anywhere machine-readable, and inventing a list for a
+ * command I have not exercised risks rejecting a flag that works today. Each
+ * entry above was derived from that command's own code and then exercised.
+ * Extending coverage is one line per command plus a run to confirm it.
+ */
+const UNVALIDATED_REASON =
+  "not yet declared - see COMMAND_FLAGS in src/cli.ts";
+
+/**
+ * Reject undeclared flags before the command runs.
+ *
+ * Fails on the FIRST invalid flag with the command's full accepted set, so a
+ * typo is a one-command fix rather than a guessing game.
+ */
+function validateCommandFlags(command: string, options: Record<string, string | boolean>): void {
+  const declared = COMMAND_FLAGS[command];
+  if (!declared) return; // UNVALIDATED_REASON
+
+  const allowed = new Set([...declared, ...GLOBAL_FLAGS]);
+  const unknown = Object.keys(options).filter((flag) => !allowed.has(flag));
+  if (unknown.length === 0) return;
+
+  for (const flag of unknown) {
+    const hint = flag.startsWith("record")
+      ? " (did you mean --capture?)"
+      : flag.startsWith("capture") ? " (capture options are --capture, --capture-fps, --capture-format, --capture-out)" : "";
+    console.error(`Error: '${command}' does not support --${flag}${hint}`);
+  }
+  console.error(`  Accepted: ${[...declared].sort().map((f) => `--${f}`).join(" ")}`);
+  console.error(`  Plus globals: ${GLOBAL_FLAGS.map((f) => `--${f}`).join(" ")}`);
+  process.exit(1);
+}
+
+// =========================================================================
+// Screen capture (capture start/stop/status)
+//
+// Distinct from the `record` command, which records user ACTIONS for test
+// generation. This captures PIXELS into a GIF/WebP/video.
+// =========================================================================
+
+/** Where the active-capture pointer lives, so `capture stop` can find it. */
+function captureStatePath(): string {
+  return join(getPaths().videosDir, "active.json");
+}
+
+interface ActiveCapture {
+  pid: number;
+  slug: string;
+  outDir: string;
+  url?: string;
+  startedAt: string;
+}
+
+/** Parse "5s", "2m", "1500ms" or a bare millisecond count. */
+function parseDurationMs(input: string): number {
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m)?$/i.exec(input.trim());
+  if (!match) {
+    throw new Error(`Invalid duration "${input}" - use 5s, 2m, 1500ms or a millisecond count`);
+  }
+  const value = parseFloat(match[1]);
+  const unit = (match[2] || "ms").toLowerCase();
+  const ms = unit === "s" ? value * 1000 : unit === "m" ? value * 60_000 : value;
+  if (ms <= 0) throw new Error(`Invalid duration "${input}" - must be greater than zero`);
+  return Math.round(ms);
+}
+
+/** Parse "gif,webp,mp4" into validated formats. */
+function parseFormats(input: string): CaptureFormat[] {
+  const allowed: CaptureFormat[] = ["gif", "webp", "mp4", "webm"];
+  const parsed = input.split(",").map((f) => f.trim().toLowerCase()).filter(Boolean);
+  const bad = parsed.filter((f) => !allowed.includes(f as CaptureFormat));
+  if (bad.length > 0) {
+    throw new Error(`Unknown format(s): ${bad.join(", ")}. Supported: ${allowed.join(", ")}`);
+  }
+  if (parsed.length === 0) throw new Error("--format requires at least one format");
+  return parsed as CaptureFormat[];
+}
+
+/** Parse "1280x720". */
+function parseViewportSize(input: string): { width: number; height: number } {
+  const match = /^(\d+)x(\d+)$/i.exec(input.trim());
+  if (!match) throw new Error(`Invalid viewport "${input}" - use WIDTHxHEIGHT, e.g. 1280x720`);
+  const width = parseInt(match[1], 10);
+  const height = parseInt(match[2], 10);
+  if (width <= 0 || height <= 0) {
+    throw new Error(`Invalid viewport "${input}" - width and height must be positive`);
+  }
+  return { width, height };
+}
+
+/** Parse "390x844,1280x800" into one or more viewport sizes. */
+function parseViewportList(input: string): { width: number; height: number }[] {
+  const parts = input.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) throw new Error("--viewport requires at least one WIDTHxHEIGHT");
+  return parts.map(parseViewportSize);
+}
+
+/** Parse "x,y,width,height" in CSS pixels. */
+function parseRegion(input: string): { x: number; y: number; width: number; height: number } {
+  const parts = input.split(",").map((p) => p.trim());
+  if (parts.length !== 4) {
+    throw new Error(`Invalid --region "${input}" - use x,y,width,height (4 comma-separated numbers)`);
+  }
+  const [x, y, width, height] = parts.map(Number);
+  for (const [name, value] of [["x", x], ["y", y], ["width", width], ["height", height]] as const) {
+    if (!Number.isFinite(value)) {
+      throw new Error(`Invalid --region "${input}" - ${name} is not a number ("${parts[["x", "y", "width", "height"].indexOf(name)]}")`);
+    }
+  }
+  if (width <= 0 || height <= 0) {
+    throw new Error(`Invalid --region "${input}" - width and height must be positive (got ${width}x${height})`);
+  }
+  return { x, y, width, height };
+}
+
+/**
+ * Flags `capture start` understands. Anything outside this set is rejected
+ * rather than ignored: a flag that is accepted and silently dropped returns a
+ * confident "✓" for a capture the user did not ask for, which is worse than
+ * an error. The globals are the ones the CLI itself consumes before dispatch.
+ */
+const CAPTURE_FLAGS = new Set([
+  // capture-specific
+  "fps", "duration", "format", "out", "name", "quality", "max-frames",
+  "viewport", "region", "element", "element-padding",
+  "contact-sheet",
+  "after", "after-element", "after-delay",
+  "until-element", "until-element-gone", "until-idle", "timeout",
+  // globals honoured by the shared CBrowser construction
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose",
+]);
+
+/**
+ * Resolve `--device` to a real preset key, or exit naming the bad value.
+ *
+ * CBrowser silently ignores an unknown device name (browser.ts: the preset
+ * lookup is inside the `if`), which would hand back a 1280x800 desktop capture
+ * for `--device "iPhone 14"` and call it success. Spaces and case are
+ * normalised so "iPhone 15" finds "iphone-15".
+ */
+function resolveDevicePreset(value: string): string {
+  const normalised = value.trim().toLowerCase().replace(/\s+/g, "-");
+  if (DEVICE_PRESETS[normalised]) return normalised;
+
+  const known = Object.keys(DEVICE_PRESETS);
+  const stem = normalised.replace(/-?\d+.*$/, "");
+  const close = known.filter((k) => k.startsWith(stem) && stem.length > 0);
+
+  console.error(`Error: unknown --device "${value}"`);
+  if (close.length > 0) console.error(`  Did you mean: ${close.join(", ")}?`);
+  console.error(`  Available presets: ${known.join(", ")}`);
+  process.exit(1);
+}
+
+/** Reject any flag `capture start` cannot honour, naming it. */
+function assertCaptureFlagsSupported(options: Record<string, string | boolean>): void {
+  const unknown = Object.keys(options).filter((flag) => !CAPTURE_FLAGS.has(flag));
+  if (unknown.length === 0) return;
+
+  console.error(`Error: 'capture start' does not support ${unknown.map((f) => `--${f}`).join(", ")}`);
+  console.error(`  Supported: ${[...CAPTURE_FLAGS].map((f) => `--${f}`).join(" ")}`);
+  process.exit(1);
+}
+
+/**
+ * Build the start/stop triggers from the trigger flags.
+ *
+ * Triggers compose: `--after-element .modal --after-delay 200ms --duration 3s`
+ * waits for the modal, waits another 200ms, then records for three seconds.
+ */
+function buildCaptureTriggers(options: Record<string, string | boolean>): {
+  startTrigger?: StartTrigger;
+  startDelayMs?: number;
+  stopTrigger?: StopTrigger;
+  triggerTimeoutMs?: number;
+} {
+  const LIFECYCLE = ["load", "domcontentloaded", "networkidle"] as const;
+
+  let startTrigger: StartTrigger | undefined;
+  if (typeof options.after === "string" && typeof options["after-element"] === "string") {
+    console.error("Error: --after and --after-element are mutually exclusive - pick one");
+    process.exit(1);
+  }
+  if (typeof options.after === "string") {
+    const event = options.after.trim().toLowerCase();
+    if (!LIFECYCLE.includes(event as typeof LIFECYCLE[number])) {
+      console.error(`Error: --after must be one of ${LIFECYCLE.join(", ")} (got "${options.after}")`);
+      process.exit(1);
+    }
+    startTrigger = { kind: "lifecycle", event: event as typeof LIFECYCLE[number] };
+  } else if (typeof options["after-element"] === "string") {
+    startTrigger = { kind: "element", selector: options["after-element"] };
+  } else if (options.after !== undefined || options["after-element"] !== undefined) {
+    console.error("Error: --after / --after-element require a value");
+    process.exit(1);
+  }
+
+  const startDelayMs = typeof options["after-delay"] === "string"
+    ? parseDurationMs(options["after-delay"])
+    : undefined;
+
+  const stopFlags = ["until-element", "until-element-gone", "until-idle"].filter(
+    (f) => options[f] !== undefined,
+  );
+  if (stopFlags.length > 1) {
+    console.error(`Error: ${stopFlags.map((f) => `--${f}`).join(" and ")} are mutually exclusive - pick one`);
+    process.exit(1);
+  }
+
+  let stopTrigger: StopTrigger | undefined;
+  if (typeof options["until-element"] === "string") {
+    stopTrigger = { kind: "element-appears", selector: options["until-element"] };
+  } else if (typeof options["until-element-gone"] === "string") {
+    stopTrigger = { kind: "element-disappears", selector: options["until-element-gone"] };
+  } else if (typeof options["until-idle"] === "string") {
+    stopTrigger = { kind: "idle", idleMs: parseDurationMs(options["until-idle"]) };
+  } else if (stopFlags.length === 1) {
+    console.error(`Error: --${stopFlags[0]} requires a value`);
+    process.exit(1);
+  }
+
+  const triggerTimeoutMs = typeof options.timeout === "string"
+    ? parseDurationMs(options.timeout)
+    : undefined;
+
+  return { startTrigger, startDelayMs, stopTrigger, triggerTimeoutMs };
+}
+
+/**
+ * Build the capture target from the target flags.
+ *
+ * The three targets are mutually exclusive; asking for two is a contradiction
+ * the CLI cannot silently resolve, so it errors instead of picking one.
+ */
+function buildCaptureTarget(options: Record<string, string | boolean>): RecordingTarget {
+  const hasRegion = typeof options.region === "string";
+  const hasElement = typeof options.element === "string";
+
+  if (hasRegion && hasElement) {
+    console.error("Error: --region and --element are mutually exclusive - pick one");
+    process.exit(1);
+  }
+
+  if (typeof options["element-padding"] !== "undefined" && !hasElement) {
+    console.error("Error: --element-padding only applies with --element");
+    process.exit(1);
+  }
+
+  if (hasRegion) {
+    return { kind: "region", rect: parseRegion(options.region as string) };
+  }
+
+  if (hasElement) {
+    const selector = options.element as string;
+    if (selector.trim() === "") {
+      console.error("Error: --element requires a selector");
+      process.exit(1);
+    }
+    const padding = options["element-padding"] !== undefined ? Number(options["element-padding"]) : 0;
+    if (!Number.isFinite(padding) || padding < 0) {
+      console.error(`Error: --element-padding must be a non-negative number (got "${String(options["element-padding"])}")`);
+      process.exit(1);
+    }
+    return { kind: "element", selector, padding };
+  }
+
+  return { kind: "viewport" };
+}
+
+/**
+ * Run a screencast capture to completion in this process.
+ *
+ * Capture is single-process by necessity: the browser profile is locked by
+ * whoever launched it, so a second CLI invocation cannot attach to a running
+ * capture's page. `capture stop` therefore signals this process rather than
+ * doing any capture work of its own.
+ */
+async function runCaptureStart(
+  browser: CBrowser,
+  url: string | undefined,
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  assertCaptureFlagsSupported(options);
+
+  // A capture with no end condition needs somewhere to live that outlasts this
+  // process. The daemon owns the browser, so the capture runs there and later
+  // commands drive the same page into the same recording.
+  const openEnded = options.duration === undefined
+    && options["until-element"] === undefined
+    && options["until-element-gone"] === undefined
+    && options["until-idle"] === undefined;
+
+  if (openEnded) {
+    if (await isDaemonRunning()) {
+      await runCaptureStartViaDaemon(url, options);
+      return;
+    }
+    console.error("Error: an open-ended capture needs the daemon, which is not running.");
+    console.error("  Without it the capture would live and die inside this one process, so");
+    console.error("  'capture stop' from another shell and any later click/fill/navigate");
+    console.error("  would never reach it.");
+    console.error("");
+    console.error("  Start it:      cbrowser daemon start");
+    console.error("  Or bound it:   --duration 5s | --until-element <sel> | --until-idle 800ms");
+    process.exit(1);
+  }
+
+  const fps = options.fps !== undefined ? Number(options.fps) : undefined;
+  if (fps !== undefined && (!Number.isFinite(fps) || fps <= 0)) {
+    console.error(`Error: --fps must be a positive number (got "${String(options.fps)}")`);
+    process.exit(1);
+  }
+
+  const quality = options.quality !== undefined ? Number(options.quality) : undefined;
+  if (quality !== undefined && (!Number.isInteger(quality) || quality < 1 || quality > 100)) {
+    console.error(`Error: --quality must be an integer from 1 to 100 (got "${String(options.quality)}")`);
+    process.exit(1);
+  }
+
+  const maxFrames = options["max-frames"] !== undefined ? Number(options["max-frames"]) : undefined;
+  if (maxFrames !== undefined && (!Number.isInteger(maxFrames) || maxFrames < 1)) {
+    console.error(`Error: --max-frames must be a positive integer (got "${String(options["max-frames"])}")`);
+    process.exit(1);
+  }
+
+  // Normalise in place so the browser built below gets a key it recognises.
+  if (typeof options.device === "string") options.device = resolveDevicePreset(options.device);
+
+  const durationMs = typeof options.duration === "string" ? parseDurationMs(options.duration) : undefined;
+  const format = typeof options.format === "string" ? parseFormats(options.format) : undefined;
+  const outDir = typeof options.out === "string" ? resolve(options.out) : undefined;
+
+  if (url) await browser.navigate(url);
+  const page = await browser.getPage();
+
+  // Multiple viewports run as separate, sequential captures. Sequential rather
+  // than concurrent by design: one page cannot be two sizes at once, so
+  // overlapping them would interleave frames from different viewports into one
+  // stream. Each run gets its own slug, directory and manifest.
+  const viewports = typeof options.viewport === "string" ? parseViewportList(options.viewport) : [];
+  if (viewports.length > 1) {
+    if (durationMs === undefined && !options["until-element"] && !options["until-element-gone"] && !options["until-idle"]) {
+      console.error("Error: --viewport with more than one size needs --duration or a stop trigger, so each run can end on its own");
+      process.exit(1);
+    }
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      console.log(`\n── viewport ${viewport.width}x${viewport.height} ──`);
+      // Each viewport gets its OWN directory. Sharing one --out would let the
+      // second run overwrite the first run's manifest.json and frames/ while
+      // both GIFs survived - keeping the human artifact and destroying the AI
+      // artifact, which inverts this feature's whole premise.
+      await runOneCapture(
+        browser, page, options,
+        `${slugFor(options)}-${viewport.width}x${viewport.height}`,
+        typeof options.out === "string"
+          ? join(resolve(options.out), `${viewport.width}x${viewport.height}`)
+          : undefined,
+      );
+    }
+    return;
+  }
+
+  await runOneCapture(browser, page, options, slugFor(options));
+}
+
+/** The capture name, defaulted to a timestamp slug. */
+function slugFor(options: Record<string, string | boolean>): string {
+  return typeof options.name === "string" ? options.name : `capture-${Date.now()}`;
+}
+
+/** Run exactly one capture to completion and report it. */
+async function runOneCapture(
+  browser: CBrowser,
+  page: Awaited<ReturnType<CBrowser["getPage"]>>,
+  options: Record<string, string | boolean>,
+  slug: string,
+  outDirOverride?: string,
+): Promise<void> {
+  const fps = options.fps !== undefined ? Number(options.fps) : undefined;
+  const quality = options.quality !== undefined ? Number(options.quality) : undefined;
+  const maxFrames = options["max-frames"] !== undefined ? Number(options["max-frames"]) : undefined;
+  const durationMs = typeof options.duration === "string" ? parseDurationMs(options.duration) : undefined;
+  const format = typeof options.format === "string" ? parseFormats(options.format) : undefined;
+  const outDir = outDirOverride ?? (typeof options.out === "string" ? resolve(options.out) : undefined);
+
+  const target = buildCaptureTarget(options);
+  const triggers = buildCaptureTriggers(options);
+  const engine = options.browser === "firefox" ? "firefox" : options.browser === "webkit" ? "webkit" : "chromium";
+  // Output lives under paths.videosDir, session-scoped.
+  //
+  // videosDir over recordingsDir: `recordings/` is the legacy action-recording
+  // store (`record save` writes *.json there, and status counts them), so
+  // video artifacts in the same tree would be two features sharing a folder.
+  // videosDir over screenshotsDir: screenshot retention deletes whole session
+  // directories after an hour by default, which would silently delete the
+  // user's GIF. The session segment is what stops concurrent captures from
+  // colliding, the same isolation rule screenshots already use.
+  const paths = getPaths();
+  const session = new VideoCaptureSession(page, engine, join(paths.videosDir, paths.sessionId));
+
+  await session.start({
+    fps, durationMs, outDir, format, slug, target, quality, maxFrames,
+    contactSheet: options["contact-sheet"] === true || typeof options["contact-sheet"] === "string",
+    ...triggers,
+    // Element tracking resolves through the browser's existing nine-strategy
+    // resolver rather than a second one living in the capture engine.
+    resolveElement: (selector) => browser.resolveElementLocator(selector),
+  });
+  const status = session.status();
+
+  mkdirSync(dirname(captureStatePath()), { recursive: true });
+  const active: ActiveCapture = {
+    pid: process.pid,
+    slug: status.slug,
+    outDir: status.outDir,
+    url: typeof options.url === "string" ? options.url : undefined,
+    startedAt: new Date().toISOString(),
+  };
+  writeFileSync(captureStatePath(), JSON.stringify(active, null, 2));
+
+  console.log(`🎥 Capturing ${status.captureMethod === "cdp-screencast" ? "via CDP screencast" : "via screenshot loop"}`);
+  console.log(`  Output: ${status.outDir}`);
+  if (triggers.startTrigger) {
+    console.log(`  Waited for: ${triggers.startTrigger.kind === "lifecycle" ? triggers.startTrigger.event : triggers.startTrigger.selector}`);
+  }
+  if (target.kind === "region") {
+    const r = target.rect;
+    console.log(`  Region: ${r.width}x${r.height} at (${r.x}, ${r.y})`);
+  } else if (target.kind === "element") {
+    console.log(`  Element: ${target.selector}${target.padding ? ` +${target.padding}px padding` : ""}`);
+  }
+  if (durationMs) {
+    console.log(`  Duration: ${durationMs}ms (auto-stops)`);
+  } else {
+    console.log(`  Stop with 'cbrowser capture stop' (or Ctrl-C in this terminal)`);
+  }
+
+  // A signal from `capture stop`, or an interactive Ctrl-C, finalises the same
+  // way the duration timer does; stop() is idempotent so they cannot collide.
+  let finished = false;
+  const finish = async (): Promise<void> => {
+    if (finished) return;
+    finished = true;
+    const result = await session.stop();
+
+    if (existsSync(captureStatePath())) unlinkSync(captureStatePath());
+
+    finishCaptureCommand(result);
+  };
+
+  process.on("SIGINT", () => { void finish().then(() => process.exit(process.exitCode ?? 0)); });
+  process.on("SIGTERM", () => { void finish().then(() => process.exit(process.exitCode ?? 0)); });
+
+  // Wait for whichever ends the capture first: the duration timer, a stop
+  // trigger, an explicit `capture stop` signal, or the safety cap. Waiting on
+  // the duration alone would sleep straight through a stop trigger.
+  const capMs = 10 * 60_000;
+  let hitCap = false;
+  await Promise.race([
+    session.finished,
+    new Promise((r) => setTimeout(r, durationMs !== undefined ? durationMs + 500 : capMs))
+      .then(() => { hitCap = durationMs === undefined; }),
+  ]);
+  if (hitCap) console.log(`\n⚠️  Reached the ${capMs / 60_000}-minute capture cap`);
+  await finish();
+}
+
+/**
+ * The one place a capture command ends.
+ *
+ * Printing the artifacts, reporting encoder failures and setting the exit code
+ * were duplicated across the direct and daemon paths, and the duplicate drifted
+ * immediately: the daemon path printed a "✗" and exited 0. Every capture path
+ * funnels through here so "how a capture command ends" has a single definition.
+ */
+function finishCaptureCommand(result: {
+  manifestPath: string;
+  manifest: {
+    frames: unknown[];
+    duration_ms: number;
+    actual_fps: number;
+    target_fps: number;
+    artifacts: Record<string, string>;
+    frame_gaps?: { gap_ms: number }[];
+    trigger_timeout?: boolean;
+    start_trigger?: string | null;
+    stop_trigger?: string | null;
+  };
+  encodeErrors: Record<string, string>;
+}): void {
+  const m = result.manifest;
+
+  if (m.trigger_timeout) {
+    console.error(`\n✗ Capture trigger timed out`);
+  } else {
+    console.log(`\n✓ Capture stopped`);
+  }
+  if (m.start_trigger) console.log(`  Start trigger: ${m.start_trigger}`);
+  if (m.stop_trigger) console.log(`  Stop trigger: ${m.stop_trigger}`);
+
+  console.log(`  Frames: ${m.frames.length} (${m.actual_fps.toFixed(1)} fps actual vs ${m.target_fps} requested)`);
+  console.log(`  Duration: ${m.duration_ms}ms`);
+  if (m.frame_gaps && m.frame_gaps.length > 0) {
+    const worst = Math.max(...m.frame_gaps.map((g) => g.gap_ms));
+    console.log(`  Frame gaps: ${m.frame_gaps.length} (largest ${Math.round(worst)}ms - the page was not repainting)`);
+  }
+  console.log(`  Manifest: ${result.manifestPath}`);
+  for (const [fmt, rel] of Object.entries(m.artifacts)) {
+    console.log(`  ${fmt.toUpperCase()}: ${join(dirname(result.manifestPath), rel)}`);
+  }
+  for (const [fmt, message] of Object.entries(result.encodeErrors)) {
+    console.error(`  ✗ ${fmt}: ${message}`);
+  }
+
+  // A requested format that could not be encoded, or a trigger that never
+  // fired, is a failed run even though the frames and manifest survive.
+  if (Object.keys(result.encodeErrors).length > 0 || m.trigger_timeout) process.exitCode = 1;
+}
+
+/**
+ * Fail a capture command with a message. Centralised for the same reason as
+ * finishCaptureCommand: a "✗" printed with a zero exit is a lie a script
+ * cannot detect.
+ */
+function failCaptureCommand(message: string): never {
+  console.error(`✗ ${message}`);
+  process.exit(1);
+}
+
+/**
+ * Start a capture inside the daemon and return immediately.
+ *
+ * The capture keeps running after this process exits, which is what lets a
+ * later `cbrowser click` or `cbrowser fill` appear in the recording.
+ */
+async function runCaptureStartViaDaemon(
+  url: string | undefined,
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  const target = buildCaptureTarget(options);
+  const triggers = buildCaptureTriggers(options);
+  const slug = slugFor(options);
+
+  const response = await sendToDaemon("captureStart", {
+    url,
+    engine: options.browser === "firefox" ? "firefox" : options.browser === "webkit" ? "webkit" : "chromium",
+    options: {
+      fps: options.fps !== undefined ? Number(options.fps) : undefined,
+      quality: options.quality !== undefined ? Number(options.quality) : undefined,
+      maxFrames: options["max-frames"] !== undefined ? Number(options["max-frames"]) : undefined,
+      format: typeof options.format === "string" ? parseFormats(options.format) : undefined,
+      outDir: typeof options.out === "string" ? resolve(options.out) : undefined,
+      contactSheet: options["contact-sheet"] === true,
+      slug,
+      target,
+      ...triggers,
+    },
+  });
+
+  if (!response.success) failCaptureCommand(response.error ?? "daemon refused the capture");
+
+  const status = response.result as { slug: string; outDir: string; captureMethod: string };
+  console.log(`🎥 Capturing in the daemon (${status.captureMethod})`);
+  console.log(`  Name: ${status.slug}`);
+  console.log(`  Output: ${status.outDir}`);
+  console.log("");
+  console.log("  The capture is live and this shell is free. Commands you run now drive");
+  console.log("  the same page and appear in the recording:");
+  console.log("    cbrowser navigate <url> / click <sel> / fill <sel> <value>");
+  console.log("  Finish with: cbrowser capture stop");
+}
+
+/** Stop the daemon's capture and report it. */
+async function runCaptureStopViaDaemon(): Promise<void> {
+  const response = await sendToDaemon("captureStop", {});
+  if (!response.success) failCaptureCommand(response.error ?? "daemon could not stop the capture");
+
+  finishCaptureCommand(response.result as Parameters<typeof finishCaptureCommand>[0]);
+}
+
+/** Signal the running capture process and wait for its manifest to land. */
+async function runCaptureStop(): Promise<void> {
+  // The daemon owns any open-ended capture, so ask it first.
+  if (await isDaemonRunning()) {
+    const status = await sendToDaemon("captureStatus", {});
+    const state = (status.result as { state?: string } | undefined)?.state;
+    if (status.success && state === "recording") {
+      await runCaptureStopViaDaemon();
+      return;
+    }
+  }
+
+  const statePath = captureStatePath();
+  if (!existsSync(statePath)) {
+    console.error("No active capture. A capture is stopped from the process that started it.");
+    process.exit(1);
+  }
+
+  const active: ActiveCapture = JSON.parse(readFileSync(statePath, "utf-8"));
+  try {
+    // SIGTERM rather than SIGINT: a capture launched into the background by a
+    // non-interactive shell inherits SIGINT as ignored, so an interrupt never
+    // reaches the handler and the capture dies without writing its manifest.
+    process.kill(active.pid, "SIGTERM");
+  } catch {
+    console.error(`Capture process ${active.pid} is gone; clearing stale state.`);
+    unlinkSync(statePath);
+    process.exit(1);
+  }
+
+  const manifestPath = join(active.outDir, "manifest.json");
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (existsSync(manifestPath)) {
+      console.log(`✓ Capture stopped: ${active.slug}`);
+      console.log(`  Manifest: ${manifestPath}`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  console.error(`Signalled process ${active.pid} but no manifest appeared at ${manifestPath} within 60s`);
+  process.exit(1);
+}
+
+/** Report the active capture, or the most recent finished one. */
+async function runCaptureStatus(): Promise<void> {
+  if (await isDaemonRunning()) {
+    const response = await sendToDaemon("captureStatus", {});
+    const status = response.result as {
+      state?: string; slug?: string; frames?: number; elapsedMs?: number;
+      outDir?: string; captureMethod?: string; manifestPath?: string;
+    } | undefined;
+
+    if (response.success && status && status.state === "recording") {
+      console.log("🎥 Capture in progress (in the daemon)");
+      console.log(`  Name: ${status.slug}`);
+      console.log(`  Frames so far: ${status.frames}`);
+      console.log(`  Elapsed: ${status.elapsedMs}ms`);
+      console.log(`  Method: ${status.captureMethod}`);
+      console.log(`  Output: ${status.outDir}`);
+      console.log("  Stop with: cbrowser capture stop");
+      return;
+    }
+    if (response.success && status && status.state === "stopped" && status.manifestPath) {
+      console.log("No capture in progress. The daemon's most recent:");
+      console.log(`  Name: ${status.slug}`);
+      console.log(`  Frames: ${status.frames}`);
+      console.log(`  Manifest: ${status.manifestPath}`);
+      return;
+    }
+  }
+
+  const statePath = captureStatePath();
+  if (existsSync(statePath)) {
+    const active: ActiveCapture = JSON.parse(readFileSync(statePath, "utf-8"));
+    let alive = true;
+    try { process.kill(active.pid, 0); } catch { alive = false; }
+
+    if (alive) {
+      const frames = existsSync(join(active.outDir, "frames"))
+        ? readdirSync(join(active.outDir, "frames")).length
+        : 0;
+      console.log(`🎥 Capture in progress`);
+      console.log(`  Name: ${active.slug}`);
+      console.log(`  PID: ${active.pid}`);
+      console.log(`  Started: ${active.startedAt}`);
+      console.log(`  Frames so far: ${frames}`);
+      console.log(`  Output: ${active.outDir}`);
+      return;
+    }
+    console.log(`⚠️  Stale state file for a dead process (${active.pid}); last output: ${active.outDir}`);
+    return;
+  }
+
+  const recordingsDir = getPaths().videosDir;
+  if (!existsSync(recordingsDir)) {
+    console.log("No captures yet");
+    return;
+  }
+  // Captures live at videos/<session>/<slug>; earlier builds wrote
+  // videos/<slug> and recordings/<slug>, so look one level either way.
+  const candidates: string[] = [];
+  for (const entry of readdirSync(recordingsDir)) {
+    const entryPath = join(recordingsDir, entry);
+    if (!statSync(entryPath).isDirectory()) continue;
+    candidates.push(join(entryPath, "manifest.json"));
+    for (const nested of readdirSync(entryPath)) {
+      const nestedPath = join(entryPath, nested);
+      if (statSync(nestedPath).isDirectory()) candidates.push(join(nestedPath, "manifest.json"));
+    }
+  }
+  const manifests = candidates
+    .filter((p) => existsSync(p))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+
+  if (manifests.length === 0) {
+    console.log("No captures yet");
+    return;
+  }
+
+  const manifest = parseManifest(readFileSync(manifests[0], "utf-8"));
+  console.log(`No capture in progress. Most recent:`);
+  console.log(`  Name: ${manifest.slug}`);
+  console.log(`  Started: ${manifest.started_at}`);
+  console.log(`  Frames: ${manifest.frames.length} over ${manifest.duration_ms}ms (${manifest.actual_fps.toFixed(1)} fps)`);
+  console.log(`  Capture: ${manifest.capture_method}`);
+  console.log(`  Artifacts: ${Object.entries(manifest.artifacts).map(([k, v]) => `${k} -> ${v}`).join(", ") || "none"}`);
+  console.log(`  Manifest: ${manifests[0]}`);
+}
+
+
+/**
+ * Reject capture-namespace flags a wrapped run cannot honour.
+ *
+ * Deliberately narrower than the allowlists on `capture`/`evaluate`/`keyboard`:
+ * `test-suite` and `cognitive-journey` have large, long-established flag sets
+ * that I cannot enumerate with confidence, and a wrong allowlist would reject
+ * flags that work today. So this rejects only what it can be sure about - any
+ * unrecognised `--capture*` flag, plus the two spellings people actually
+ * reached for before `--capture` existed.
+ */
+function assertCaptureNamespaceFlags(command: string, options: Record<string, string | boolean>): void {
+  const valid = new Set(["capture", "capture-fps", "capture-format", "capture-out"]);
+  const wrong = Object.keys(options).filter((f) => f.startsWith("capture") && !valid.has(f));
+
+  // `--record-video` is a real flag on `explore` (an older, separate feature
+  // that saves a Playwright video). It is NOT a flag here, and silently
+  // ignoring it is what let this whole class survive.
+  const aliases = ["record", "record-video"].filter((f) => options[f] !== undefined);
+
+  if (wrong.length === 0 && aliases.length === 0) return;
+
+  for (const flag of wrong) {
+    console.error(`Error: '${command}' does not support --${flag}`);
+  }
+  for (const flag of aliases) {
+    console.error(`Error: '${command}' does not support --${flag}; use --capture`);
+  }
+  console.error(`  Capture flags: ${[...valid].map((f) => `--${f}`).join(" ")}`);
+  process.exit(1);
+}
+
+/**
+ * Build the `AutoCaptureSetting` for a wrapped run (test-suite, journey).
+ *
+ * Returns undefined when no capture flag was given, so a run that does not ask
+ * for a recording behaves exactly as before.
+ */
+function buildAutoCaptureSetting(
+  options: Record<string, string | boolean>,
+  defaultName: string,
+): AutoCaptureSetting {
+  const asked = options.capture === true || typeof options.capture === "string";
+  const detailFlags = ["capture-fps", "capture-format", "capture-out"].filter(
+    (f) => options[f] !== undefined,
+  );
+
+  if (!asked) {
+    if (detailFlags.length > 0) {
+      console.error(`Error: ${detailFlags.map((f) => `--${f}`).join(", ")} require --capture`);
+      process.exit(1);
+    }
+    return undefined;
+  }
+
+  const fps = options["capture-fps"] !== undefined ? Number(options["capture-fps"]) : undefined;
+  if (fps !== undefined && (!Number.isFinite(fps) || fps <= 0)) {
+    console.error(`Error: --capture-fps must be a positive number (got "${String(options["capture-fps"])}")`);
+    process.exit(1);
+  }
+
+  return {
+    name: defaultName,
+    fps,
+    format: typeof options["capture-format"] === "string" ? parseFormats(options["capture-format"]) : undefined,
+    outDir: typeof options["capture-out"] === "string" ? resolve(options["capture-out"]) : undefined,
+  };
+}
+
+/** Report where a wrapped run's recording landed, or why it failed. */
+function reportAutoCapture(capture: AutoCaptureResult | undefined): void {
+  if (!capture) return;
+
+  if (capture.error) {
+    console.error(`\n🎥 Capture failed: ${capture.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`\n🎥 Capture: ${capture.frames} frames${capture.durationMs ? ` over ${capture.durationMs}ms` : ""}${capture.actualFps ? ` (${capture.actualFps.toFixed(1)} fps)` : ""}`);
+  if (capture.manifestPath) console.log(`   Manifest: ${capture.manifestPath}`);
+  for (const [fmt, rel] of Object.entries(capture.artifacts ?? {})) {
+    console.log(`   ${fmt.toUpperCase()}: ${join(capture.outDir, rel)}`);
+  }
+}
+
+// =========================================================================
+// evaluate — run JavaScript in the page
+// =========================================================================
+
+/** Flags `evaluate` understands; anything else is rejected rather than ignored. */
+const EVALUATE_FLAGS = new Set([
+  "file", "arg", "json", "raw", "wait-for", "expect-truthy",
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose",
+]);
+
+/**
+ * Collect a repeatable flag's values.
+ *
+ * parseArgs keeps only the last value for a repeated flag, so `--arg` is
+ * re-read from argv here. Without this, `--arg 1 --arg 2` would silently pass
+ * a single argument.
+ */
+function repeatedFlag(name: string): string[] {
+  const values: string[] = [];
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === `--${name}` && argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) {
+      values.push(argv[i + 1]);
+      i++;
+    }
+  }
+  return values;
+}
+
+/**
+ * Evaluate a script in the page, accepting all three shapes people write.
+ *
+ * `--file` exists because multi-line scripts die in shell quoting, so it has to
+ * accept real scripts - `const`, `let`, an explicit `return` - not only a
+ * single expression. The source is compiled inside the page as a function
+ * body: a bare expression gets an implicit return, a statement body keeps its
+ * own, and a function/arrow literal is called with the arguments.
+ */
+async function evaluateScript(
+  page: Awaited<ReturnType<CBrowser["getPage"]>>,
+  script: string,
+  args: unknown[],
+): Promise<unknown> {
+  const source = script.trim();
+
+  // A function or arrow literal is called with the arguments directly.
+  const isCallable = /^(async\s+)?function\b/.test(source) || /=>/.test(source);
+
+  return page.evaluate(
+    (payload: { src: string; a: unknown[]; callable: boolean }) => {
+      if (payload.callable) {
+        const fn = (0, eval)(`(${payload.src})`);
+        return fn(...payload.a);
+      }
+
+      // Compile in the page, trying the three shapes people write, in order.
+      // Deciding by regex was wrong twice: `({a:1}).a` starts with "(" but is
+      // not a function, and a statement body with no `return` silently produced
+      // undefined. Letting the JS parser decide is the only reliable test.
+      const compile = (src: string): Function => {
+        // 1. A bare expression: implicit return.
+        try {
+          return new Function("args", `return (${src});`);
+        } catch { /* not an expression */ }
+
+        // 2. Statements with no explicit return: return the final expression,
+        //    which is what a REPL and the old one-arg form both did.
+        if (!/\breturn\b/.test(src)) {
+          const trimmed = src.replace(/;\s*$/, "");
+          const split = Math.max(trimmed.lastIndexOf(";"), trimmed.lastIndexOf("\n"));
+          if (split > -1) {
+            const head = trimmed.slice(0, split + 1);
+            const tail = trimmed.slice(split + 1).trim();
+            if (tail) {
+              try {
+                return new Function("args", `${head}\nreturn (${tail});`);
+              } catch { /* the tail is not an expression either */ }
+            }
+          }
+        }
+
+        // 3. Statements as written. Any syntax error surfaces from here, which
+        //    is the error the user should actually see.
+        return new Function("args", src);
+      };
+
+      return compile(payload.src)(payload.a);
+    },
+    { src: source, a: args, callable: isCallable },
+  );
+}
+
+/**
+ * Run JavaScript in the page.
+ *
+ * The bare `evaluate "<js>"` form is unchanged. Everything else is additive:
+ * a script from a file (shell quoting mangles multi-line scripts), JSON
+ * arguments (so a script is reusable instead of string-interpolated), an
+ * explicit output mode, and an assertion mode for CI.
+ */
+async function runEvaluate(
+  browser: CBrowser,
+  args: string[],
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  const unknown = Object.keys(options).filter((f) => !EVALUATE_FLAGS.has(f));
+  if (unknown.length > 0) {
+    console.error(`Error: 'evaluate' does not support ${unknown.map((f) => `--${f}`).join(", ")}`);
+    console.error(`  Supported: ${[...EVALUATE_FLAGS].map((f) => `--${f}`).join(" ")}`);
+    process.exit(1);
+  }
+
+  if (options.json === true && options.raw === true) {
+    console.error("Error: --json and --raw are mutually exclusive - pick one");
+    process.exit(1);
+  }
+
+  const fromFile = typeof options.file === "string";
+  if (fromFile && args[0]) {
+    console.error("Error: pass the script as an argument OR --file, not both");
+    process.exit(1);
+  }
+
+  let script: string;
+  if (fromFile) {
+    const path = resolve(options.file as string);
+    if (!existsSync(path)) {
+      console.error(`Error: script file not found: ${path}`);
+      process.exit(1);
+    }
+    script = readFileSync(path, "utf-8");
+  } else if (args[0]) {
+    script = args[0];
+  } else {
+    console.error('Usage: cbrowser evaluate "<javascript>" | --file <path>');
+    console.error("  Run 'cbrowser help evaluate' for options");
+    process.exit(1);
+  }
+
+  // Arguments arrive as JSON so types survive: --arg 3 is a number, --arg '"3"'
+  // is a string. A malformed value names itself rather than reaching the page.
+  const rawArgs = repeatedFlag("arg");
+  const evalArgs = rawArgs.map((raw, i) => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      console.error(`Error: --arg #${i + 1} is not valid JSON: ${raw}`);
+      console.error(`  Strings need quotes the shell will keep, e.g. --arg '"text"'`);
+      process.exit(1);
+    }
+  });
+
+  if (options.url) await browser.navigate(options.url as string);
+  const page = await browser.getPage();
+
+  if (typeof options["wait-for"] === "string") {
+    try {
+      await page.waitForSelector(options["wait-for"], { timeout: 30_000 });
+    } catch {
+      console.error(`✗ Timed out waiting for selector: ${options["wait-for"]}`);
+      process.exit(1);
+    }
+  }
+
+  let result: unknown;
+  try {
+    result = await evaluateScript(page, script, evalArgs);
+  } catch (e) {
+    const error = e as Error;
+    console.error(`✗ ${error.message}`);
+    // The page-side stack is the part that says WHERE in the script it broke.
+    if (error.stack) console.error(error.stack.split("\n").slice(1).join("\n"));
+    process.exit(1);
+  }
+
+  if (options.raw === true) {
+    console.log(String(result));
+  } else if (options.json === true) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    // Legacy default, kept so the existing one-arg form behaves identically.
+    console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));
+  }
+
+  if (options["expect-truthy"] === true && !result) {
+    console.error(`✗ Expected a truthy result, got ${JSON.stringify(result)}`);
+    process.exit(1);
+  }
+}
+
+// =========================================================================
+// keyboard — sequences, chords and held modifiers
+// =========================================================================
+
+/** Modifier names Playwright accepts in a chord. */
+const KEYBOARD_MODIFIERS = ["Control", "Shift", "Alt", "Meta", "ControlOrMeta"];
+
+/**
+ * Named keys Playwright accepts. Anything not here and not a single character
+ * is rejected: silently typing an unrecognised key name as literal text is how
+ * `--element` and `--device` used to fail.
+ */
+const KEYBOARD_NAMED_KEYS = [
+  "Enter", "Tab", "Escape", "Backspace", "Delete", "Insert", "Space",
+  "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+  "Home", "End", "PageUp", "PageDown", "CapsLock", "ContextMenu",
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
+  ...KEYBOARD_MODIFIERS,
+];
+
+/** Levenshtein distance, capped early since only small distances matter here. */
+function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 1) return 99;
+
+  const rows: number[][] = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      rows[i][j] = a[i - 1] === b[j - 1]
+        ? rows[i - 1][j - 1]
+        : 1 + Math.min(rows[i - 1][j - 1], rows[i - 1][j], rows[i][j - 1]);
+    }
+  }
+  return rows[a.length][b.length];
+}
+
+/** One step of a keyboard sequence. */
+type KeyboardStep =
+  | { kind: "chord"; key: string }
+  | { kind: "key"; key: string }
+  | { kind: "text"; text: string };
+
+/**
+ * Classify a token as a chord, a named key, or literal text.
+ *
+ * A token is a chord only when every `+`-separated part but the last is a known
+ * modifier - so "Control+A" is a chord and "a+b" or "1+1" is text.
+ */
+function parseKeyboardToken(token: string, literal = false): KeyboardStep {
+  // --text forces literal typing, which is how a string containing "+" is
+  // expressed now that "+" always means a chord.
+  if (literal) return { kind: "text", text: token };
+
+  // ANY interior "+" means the user intended a chord, so every segment is
+  // validated. The previous rule - chord only if every modifier was already
+  // valid - meant a typo like "Ctrl+NotAKey" failed the test and fell through
+  // to the literal-text branch, silently TYPING the typo into the page.
+  if (token.includes("+") && token.length > 1 && !token.startsWith("+") && !token.endsWith("+")) {
+    const parts = token.split("+");
+    const mods = parts.slice(0, -1);
+    const key = parts[parts.length - 1];
+
+    const badMods = mods.filter((m) => !KEYBOARD_MODIFIERS.includes(m));
+    if (badMods.length > 0) {
+      console.error(`Error: unknown modifier ${badMods.map((m) => `"${m}"`).join(", ")} in chord "${token}"`);
+      // The names people actually reach for. Suggested, never silently
+      // accepted - a wrong modifier that "worked" would hide the typo.
+      const ALIASES: Record<string, string> = {
+        ctrl: "Control", cmd: "Meta", command: "Meta", win: "Meta",
+        super: "Meta", option: "Alt", opt: "Alt", altgr: "Alt", ctl: "Control",
+      };
+      const suggestions = badMods
+        .map((m) => ALIASES[m.toLowerCase()] ?? KEYBOARD_MODIFIERS.find((k) => k.toLowerCase().startsWith(m.toLowerCase())))
+        .filter(Boolean);
+      if (suggestions.length > 0) console.error(`  Did you mean: ${suggestions.join(", ")}?`);
+      console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+      console.error(`  To type this as literal text, use --text.`);
+      process.exit(1);
+    }
+
+    if (key.length !== 1 && !KEYBOARD_NAMED_KEYS.includes(key)) {
+      console.error(`Error: unknown key "${key}" in chord "${token}"`);
+      console.error(`  Modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+      console.error(`  Named keys: ${KEYBOARD_NAMED_KEYS.filter((k) => !KEYBOARD_MODIFIERS.includes(k)).join(", ")}`);
+      console.error(`  To type this as literal text, use --text.`);
+      process.exit(1);
+    }
+    return { kind: "chord", key: token };
+  }
+
+  if (KEYBOARD_NAMED_KEYS.includes(token)) return { kind: "key", key: token };
+
+  // Case-insensitive matches are intent, not typos: "enter" means Enter.
+  const cased = KEYBOARD_NAMED_KEYS.find((k) => k.toLowerCase() === token.toLowerCase());
+  if (cased) return { kind: "key", key: cased };
+
+  // A near-miss on a real key name is a typo worth rejecting ("Delet",
+  // "ArrowLef"). Distance is measured against the actual key list rather than
+  // guessed from shape, so ordinary words to be typed ("Hello", "Replaced")
+  // are nowhere near a key name and pass through as text.
+  const near = KEYBOARD_NAMED_KEYS.filter((k) => editDistance(k.toLowerCase(), token.toLowerCase()) <= 1);
+  if (near.length > 0) {
+    console.error(`Error: unknown key name "${token}"`);
+    console.error(`  Did you mean: ${near.join(", ")}?`);
+    console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+    process.exit(1);
+  }
+
+  return { kind: "text", text: token };
+}
+
+/** Flags `keyboard` understands. */
+const KEYBOARD_FLAGS = new Set([
+  "delay", "selector", "hold", "repeat", "text",
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose",
+]);
+
+/**
+ * Drive a keyboard sequence.
+ *
+ * Complements `press` (one key) and `type` (one string) rather than replacing
+ * them: this is for ordered sequences, chords, and modifiers held across
+ * several steps, which neither of those can express.
+ */
+async function runKeyboard(
+  browser: CBrowser,
+  args: string[],
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  const unknown = Object.keys(options).filter((f) => !KEYBOARD_FLAGS.has(f));
+  if (unknown.length > 0) {
+    console.error(`Error: 'keyboard' does not support ${unknown.map((f) => `--${f}`).join(", ")}`);
+    console.error(`  Supported: ${[...KEYBOARD_FLAGS].map((f) => `--${f}`).join(" ")}`);
+    process.exit(1);
+  }
+
+  if (args.length === 0) {
+    console.error('Usage: cbrowser keyboard "<key|chord|text>" ["<key|chord|text>" ...]');
+    console.error("  Run 'cbrowser help keyboard' for options");
+    process.exit(1);
+  }
+
+  const delay = options.delay !== undefined ? Number(options.delay) : 50;
+  if (!Number.isFinite(delay) || delay < 0) {
+    console.error(`Error: --delay must be a non-negative number (got "${String(options.delay)}")`);
+    process.exit(1);
+  }
+
+  const repeat = options.repeat !== undefined ? Number(options.repeat) : 1;
+  if (!Number.isInteger(repeat) || repeat < 1) {
+    console.error(`Error: --repeat must be a positive integer (got "${String(options.repeat)}")`);
+    process.exit(1);
+  }
+
+  const hold = typeof options.hold === "string"
+    ? options.hold.split("+").map((m) => m.trim()).filter(Boolean)
+    : [];
+  for (const modifier of hold) {
+    if (!KEYBOARD_MODIFIERS.includes(modifier)) {
+      console.error(`Error: unknown --hold modifier "${modifier}"`);
+      console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+      process.exit(1);
+    }
+  }
+
+  // Parsed up-front so a bad token fails before any key reaches the page and
+  // leaves the form half-filled.
+  const literal = options.text === true;
+  const steps = args.map((token) => parseKeyboardToken(token, literal));
+
+  if (options.url) await browser.navigate(options.url as string);
+  const page = await browser.getPage();
+
+  if (typeof options.selector === "string") {
+    const locator = await browser.resolveElementLocator(options.selector);
+    if (!locator) {
+      console.error(`✗ No element matched selector: ${options.selector}`);
+      process.exit(1);
+    }
+    await locator.focus();
+  }
+
+  for (const modifier of hold) await page.keyboard.down(modifier);
+  try {
+    for (let pass = 0; pass < repeat; pass++) {
+      for (const step of steps) {
+        if (step.kind === "text") {
+          await page.keyboard.type(step.text, { delay: Math.min(delay, 50) });
+        } else {
+          await page.keyboard.press(step.key);
+        }
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  } finally {
+    // Released even if a step throws: a stuck modifier would corrupt every
+    // later command in the same persistent session.
+    for (const modifier of [...hold].reverse()) await page.keyboard.up(modifier);
+  }
+
+  const summary = steps
+    .map((s) => (s.kind === "text" ? `"${s.text}"` : s.key))
+    .join(" → ");
+  console.log(`✓ Keyboard: ${summary}${repeat > 1 ? ` (x${repeat})` : ""}${hold.length > 0 ? ` holding ${hold.join("+")}` : ""}`);
 }
 
 function formatBytes(bytes: number): string {
@@ -1247,10 +2747,24 @@ async function main(): Promise<void> {
   setOutputOptions(outputOpts);
   installOutputWrappers();
 
-  if (command === "help" || options.help) {
+  // `--help`/`-h` are aliases for `help`, matching how `--version`/`-v` alias
+  // `version` below. `help <command>` and `<command> --help` both narrow to a
+  // single section rather than dumping the whole manual.
+  const isHelpCommand = command === "help" || command === "--help" || command === "-h";
+  if (isHelpCommand || options.help) {
+    const topic = isHelpCommand
+      ? args[0] ?? (typeof options.help === "string" ? options.help : undefined)
+      : command;
+
+    if (topic) {
+      process.exit(showCommandHelp(topic) ? 0 : 1);
+    }
     showHelp();
     process.exit(0);
   }
+
+  // One gate for every command in the registry, before anything executes.
+  validateCommandFlags(command, options);
 
   // Doctor command - environment health check (v18.54.0)
   if (command === "doctor") {
@@ -1502,7 +3016,17 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
 
   // Check if daemon is running and use it for supported commands
   const daemonRunning = await isDaemonRunning();
-  if (daemonRunning && ["navigate", "click", "fill", "hover", "screenshot", "extract", "run"].includes(command)) {
+
+  // Commands that drive the page. When a daemon holds the browser these MUST
+  // go through it: run locally and they open a second browser, drive a
+  // different page, and report success for work the user cannot see - which is
+  // exactly what `keyboard` did during a live capture.
+  const INTERACTION_COMMANDS = [
+    "navigate", "click", "fill", "hover", "screenshot", "extract", "run",
+    "keyboard", "press", "type", "evaluate", "eval",
+  ];
+
+  if (daemonRunning && INTERACTION_COMMANDS.includes(command)) {
     console.log("🔌 Connected to running daemon");
 
     const daemonCommand = command;
@@ -1521,6 +3045,54 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
       case "fill":
         daemonArgs = { selector: args[0], value: args[1] };
         break;
+      case "keyboard": {
+        validateCommandFlags("keyboard", options);
+        if (args.length === 0) {
+          console.error('Usage: cbrowser keyboard "<key|chord|text>" ["<key|chord|text>" ...]');
+          process.exit(1);
+        }
+        // Tokens are validated HERE, before the request leaves: an unknown key
+        // must never reach an execution path, daemon-side or not.
+        const literal = options.text === true;
+        const steps = args.map((token) => parseKeyboardToken(token, literal));
+        const hold = typeof options.hold === "string"
+          ? options.hold.split("+").map((m) => m.trim()).filter(Boolean)
+          : [];
+        for (const modifier of hold) {
+          if (!KEYBOARD_MODIFIERS.includes(modifier)) {
+            console.error(`Error: unknown --hold modifier "${modifier}"`);
+            console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+            process.exit(1);
+          }
+        }
+        daemonArgs = {
+          steps,
+          hold,
+          delay: options.delay !== undefined ? Number(options.delay) : 50,
+          repeat: options.repeat !== undefined ? Number(options.repeat) : 1,
+          selector: typeof options.selector === "string" ? options.selector : undefined,
+        };
+        break;
+      }
+      case "press":
+        daemonArgs = { key: args[0] };
+        break;
+      case "type":
+        daemonArgs = { text: args[0], delay: options.delay !== undefined ? Number(options.delay) : 50 };
+        break;
+      case "eval":
+      case "evaluate": {
+        validateCommandFlags(command, options);
+        const script = typeof options.file === "string"
+          ? readFileSync(resolve(options.file), "utf-8")
+          : args[0];
+        if (!script) {
+          console.error('Usage: cbrowser evaluate "<javascript>" | --file <path>');
+          process.exit(1);
+        }
+        daemonArgs = { body: `return (function(){ ${/\breturn\b/.test(script) ? script : `return (${script});`} })();`, args: [] };
+        break;
+      }
       case "screenshot": {
         let ssUrl: string | undefined;
         let ssPath: string | undefined = typeof options.output === "string" ? options.output : undefined;
@@ -1564,7 +3136,20 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
       console.error(`✗ Daemon error: ${result.error}`);
       process.exit(1);
     }
-    return;
+    // Every other command path ends with an explicit exit; this one returned,
+    // so a keep-alive socket to a busy daemon held the process open forever.
+    // That is what looked like `fill` deadlocking against a live capture: the
+    // command had already completed and printed its result.
+    process.exit(process.exitCode ?? 0);
+  }
+
+  // An interaction command that is NOT routed would drive a second browser.
+  if (daemonRunning && !INTERACTION_COMMANDS.includes(command) && DRIVES_THE_PAGE.includes(command)) {
+    console.error(`Error: '${command}' cannot run while the daemon holds the browser.`);
+    console.error(`  It would launch a second browser and drive a different page,`);
+    console.error(`  so its effects would not appear in a running capture.`);
+    console.error(`  Stop the daemon first: cbrowser daemon stop`);
+    process.exit(1);
   }
 
   // Parse browser type
@@ -1596,10 +3181,28 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
   // --no-restore: skip session URL restoration (preserves page state after interactions)
   const skipRestore = options.restore === false || options.restore === "false";
 
+  // Device presets are validated before the browser is built, since that is
+  // where the name is consumed - an unknown name is silently dropped there.
+  if (command === "capture" && typeof options.device === "string") {
+    options.device = resolveDevicePreset(options.device);
+  }
+
+  // --viewport WxH overrides the configured viewport for this invocation.
+  let viewportOverride: { width: number; height: number } | undefined;
+  if (typeof options.viewport === "string") {
+    try {
+      viewportOverride = parseViewportList(options.viewport)[0];
+    } catch (e) {
+      console.error(`Error: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
+
   const browser = new CBrowser({
     browser: browserType,
     headless,
     device: options.device as string,
+    ...(viewportOverride ? { viewportWidth: viewportOverride.width, viewportHeight: viewportOverride.height } : {}),
     geolocation,
     locale: options.locale as string,
     timezone: options.timezone as string,
@@ -1724,20 +3327,12 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
 
       case "eval":
       case "evaluate": {
-        const script = args[0];
-        if (!script) {
-          console.error("Usage: cbrowser eval \"<javascript>\"");
-          process.exit(1);
-        }
-        if (options.url) await browser.navigate(options.url as string);
-        const page = await browser.getPage();
-        try {
-          const evalResult = await page.evaluate(script);
-          console.log(typeof evalResult === "string" ? evalResult : JSON.stringify(evalResult, null, 2));
-        } catch (e) {
-          console.error(`✗ ${(e as Error).message}`);
-          process.exit(1);
-        }
+        await runEvaluate(browser, args, options);
+        break;
+      }
+
+      case "keyboard": {
+        await runKeyboard(browser, args, options);
         break;
       }
 
@@ -3859,6 +5454,31 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
       }
 
       // =========================================================================
+      // Screen Capture (video/GIF)
+      // =========================================================================
+
+      // Deliberately separate from `record` above: `record` captures user
+      // ACTIONS for test generation, `capture` captures PIXELS for video/GIF.
+      // They share nothing but a rough English synonym - do not unify them.
+      case "capture": {
+        switch (args[0]) {
+          case "start":
+            await runCaptureStart(browser, args[1] || (typeof options.url === "string" ? options.url : undefined), options);
+            break;
+          case "stop":
+            await runCaptureStop();
+            break;
+          case "status":
+            await runCaptureStatus();
+            break;
+          default:
+            console.error("Usage: cbrowser capture [start <url>|stop|status]");
+            process.exit(1);
+        }
+        break;
+      }
+
+      // =========================================================================
       // Test Export (Tier 2)
       // =========================================================================
 
@@ -4637,12 +6257,15 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           break;
         }
 
+        assertCaptureNamespaceFlags("test-suite", options);
+
         const suiteOptions: NLTestSuiteOptions = {
           stepTimeout: options.timeout ? parseInt(options.timeout as string) : 30000,
           continueOnFailure: options["continue-on-failure"] === true,
           screenshotOnFailure: options["screenshot-on-failure"] !== false,
           headless,
           fuzzyMatch: options["fuzzy-match"] === true,
+          capture: buildAutoCaptureSetting(options, `test-suite-${suite.name.replace(/[^a-zA-Z0-9-_]+/g, "-").toLowerCase()}-${Date.now()}`),
         };
 
         const result = await runNLTestSuite(suite, suiteOptions);
@@ -4650,6 +6273,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         // Print formatted report
         const report = formatNLTestReport(result);
         console.log(report);
+        reportAutoCapture(result.capture);
 
         // Save JSON output if requested
         if (options.output) {
@@ -5274,6 +6898,8 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         console.log("");
 
         try {
+          assertCaptureNamespaceFlags("cognitive-journey", options);
+
           const result = await runCognitiveJourney({
             persona: personaName,
             goal,
@@ -5285,12 +6911,14 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             vision,
             customTraits, // Pass custom traits from env var
             location: locationOverride, // Pass location override
+            capture: buildAutoCaptureSetting(options, `journey-${personaName.replace(/[^a-zA-Z0-9-_]+/g, "-").toLowerCase()}-${Date.now()}`),
             onStep: verbose ? undefined : (step) => {
               process.stdout.write(`\r   Step ${step.step}: ${step.phase} (${step.state.currentMood})`);
             },
           });
 
           console.log("\n");
+          reportAutoCapture(result.capture as AutoCaptureResult | undefined);
 
           if (result.goalAchieved) {
             console.log(`✅ GOAL ACHIEVED in ${result.stepCount} steps (${result.totalTime.toFixed(1)}s)`);
@@ -5992,8 +7620,11 @@ Examples:
   }
 
   // Explicitly exit after successful browser commands
-  // Persistent context may keep handles open that prevent natural exit
-  process.exit(0);
+  // Persistent context may keep handles open that prevent natural exit.
+  // Honour process.exitCode: a command that completed its work but had a part
+  // fail (a requested encoder missing, say) sets it, and a hardcoded exit(0)
+  // would report success for a run the caller can't detect as broken.
+  process.exit(process.exitCode ?? 0);
 }
 
 main().catch((error) => {
