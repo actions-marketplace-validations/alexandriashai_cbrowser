@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.72.4](https://github.com/alexandriashai/cbrowser/compare/v18.72.3...v18.72.4) (2026-07-20)
+
+### Fixed
+
+* **mcp-remote:** send X-Internal-Secret header on CMS credits/deduct ([106fdbe](https://github.com/alexandriashai/cbrowser/commit/106fdbe04eac43f343cd4097da402120843e6cec))
+
 ## [18.72.3](https://github.com/alexandriashai/cbrowser/compare/v18.72.2...v18.72.3) (2026-07-19)
 
 ### Fixed
