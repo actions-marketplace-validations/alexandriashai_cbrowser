@@ -1051,10 +1051,19 @@ async function handleMcpRequest(
           ...(targetUrl ? { target_url: targetUrl } : {}),
         });
         try {
-          const creditRes = await fetch(`${cmsUrl}/api/credits/deduct?${deductParams}`, { method: "POST" });
+          const creditRes = await fetch(`${cmsUrl}/api/credits/deduct?${deductParams}`, {
+            method: "POST",
+            // The CMS deduct endpoint is internal-only and 403s without this header.
+            // Omitting it made the CMS return 403 → parsed as {allowed: undefined} →
+            // every tool call denied ("Tool execution denied", reason undefined).
+            headers: { "X-Internal-Secret": process.env.CMS_INTERNAL_SECRET || "" },
+          });
           if (creditRes.ok || creditRes.status === 402 || creditRes.status === 403) {
             const data = await creditRes.json() as { allowed: boolean; reason?: string; message?: string; remaining?: number };
-            if (!data.allowed) {
+            // Only deny on an EXPLICIT allowed:false from the deduct endpoint.
+            // A missing `allowed` field means the response was not a real deduct
+            // result (e.g. an internal-auth 403) — fail open rather than blanket-deny.
+            if (data.allowed === false) {
               console.log(`[Credits] ${toolName}: DENIED (${data.reason})`);
               // Block tool execution — return JSON-RPC error to client
               res.writeHead(200, { "Content-Type": "application/json" });
