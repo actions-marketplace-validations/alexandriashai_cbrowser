@@ -3484,7 +3484,7 @@ export interface CBrowserConfigFile {
   performanceBudget?: PerformanceBudget;
   /** Anthropic API key for autonomous cognitive journeys */
   anthropicApiKey?: string;
-  /** Default Claude model for cognitive journeys (default: claude-sonnet-4-20250514) */
+  /** Default Claude model for cognitive journeys (default: claude-sonnet-5) */
   anthropicModel?: string;
 }
 

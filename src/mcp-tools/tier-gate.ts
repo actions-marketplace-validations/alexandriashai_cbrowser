@@ -49,15 +49,35 @@ export function getActiveKeyHash(): string | null {
   return currentKeyHash;
 }
 
-/** Log a tool call to the CMS usage endpoint (fire and forget) */
+/**
+ * Log a tool call to the CMS usage endpoint (fire and forget).
+ *
+ * `/api/accounts/log-usage` is an INTERNAL endpoint and rejects any request without
+ * `X-Internal-Secret`. This call omitted it, so every log POST 403'd and the failure
+ * was swallowed by a bare `.catch(() => {})`: `api_usage` recorded nothing between
+ * 2026-04-25 and 2026-07-20 while tool calls kept succeeding and billing kept working.
+ * Same defect class as the credits/deduct bug fixed 2026-07-19 — this was its sibling.
+ *
+ * Still fire-and-forget, because analytics must never fail a paid tool call. But a
+ * failure is now logged rather than discarded: the silent catch is what hid this.
+ */
 function logToolCall(toolName: string): void {
   if (!currentKeyHash) return;
   const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
   fetch(`${cmsUrl}/api/accounts/log-usage`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Internal-Secret": process.env.CMS_INTERNAL_SECRET || "",
+    },
     body: JSON.stringify({ keyHash: currentKeyHash, toolName }),
-  }).catch(() => {});
+  })
+    .then((res) => {
+      if (!res.ok) console.warn(`[tier-gate] usage log rejected for ${toolName}: HTTP ${res.status}`);
+    })
+    .catch((err) => {
+      console.warn(`[tier-gate] usage log failed for ${toolName}: ${String(err)}`);
+    });
 }
 
 /** Set the active pricing tier. null = self-hosted (no gating). */

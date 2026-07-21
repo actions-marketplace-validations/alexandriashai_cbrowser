@@ -576,9 +576,16 @@ const oauthCodes = new Map<string, { apiKey: string; redirectUri: string; codeCh
 /** Token → key hash map (for session tracking after OAuth) */
 const tokenToKeyHash = new Map<string, { keyHash: string; expiresAt: number }>();
 
-/** Cache resolved tiers by API key hash (5-min TTL) */
+/**
+ * Cache resolved tiers by API key hash.
+ *
+ * TTL was 5 minutes, which meant a customer who had just paid kept being served their
+ * OLD tier for up to five minutes after the upgrade landed — the worst possible moment
+ * to look broken. The lookup is a local HTTP call to the CMS on the same box, so the
+ * cache is a micro-optimisation and a short window costs almost nothing.
+ */
 const tierCache = new Map<string, { tier: PricingTier; expiresAt: number }>();
-const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
+const TIER_CACHE_TTL_MS = 30 * 1000;
 
 /**
  * Extract the raw API key from an incoming HTTP request.
@@ -589,6 +596,33 @@ function extractApiKey(req: IncomingMessage): string | null {
   if (authHeader?.startsWith("Bearer ")) return authHeader.slice(7);
   const xApiKey = req.headers["x-api-key"];
   if (typeof xApiKey === "string") return xApiKey;
+  return null;
+}
+
+/**
+ * Resolve the billing key hash for THIS request.
+ *
+ * The charge used to be attributed with `getActiveKeyHash()` — a module-level global
+ * assigned during transport setup and read back after several `await` boundaries. With
+ * one active account that is invisible; with two concurrent requests from different
+ * accounts it charges one customer for the other's call. Billing identity has to travel
+ * with the request, so it is derived here from the request's own credentials.
+ *
+ * Returns the full SHA-256 hex digest — the form `api_keys.key_hash` stores.
+ */
+async function resolveRequestKeyHash(req: IncomingMessage): Promise<string | null> {
+  const apiKey = extractApiKey(req);
+  if (!apiKey) return null;
+
+  if (apiKey.startsWith("cbk_")) {
+    const { createHash } = await import("crypto");
+    return createHash("sha256").update(apiKey).digest("hex");
+  }
+
+  // OAuth bearer tokens are not raw keys — map them back to the issuing key hash.
+  const mapped = tokenToKeyHash.get(apiKey);
+  if (mapped && mapped.expiresAt > Date.now()) return mapped.keyHash;
+
   return null;
 }
 
@@ -1042,7 +1076,8 @@ async function handleMcpRequest(
       const toolName = params.name as string;
       const toolArgs = params.arguments as Record<string, unknown> | undefined;
       const targetUrl = (toolArgs?.url || (Array.isArray(toolArgs?.sites) ? (toolArgs.sites as string[])[0] : "") || "") as string;
-      const keyHash = getActiveKeyHash();
+      // Derived from THIS request, not from the module global — see resolveRequestKeyHash.
+      const keyHash = await resolveRequestKeyHash(req);
       if (keyHash) {
         const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
         const deductParams = new URLSearchParams({
@@ -1086,8 +1121,12 @@ async function handleMcpRequest(
               return;
             }
           }
-        } catch {
-          // CMS unreachable — allow tool execution (fail open)
+        } catch (err) {
+          // CMS unreachable — allow tool execution (fail open). Deliberate: a CMS blip
+          // must not take the product down. But it IS an ungated, unbilled call, and it
+          // used to pass in complete silence, so an outage was indistinguishable from
+          // normal operation in every log and in the ledger. Make it loud.
+          console.warn(`[Credits] FAIL-OPEN: ${toolName} ran unbilled — CMS unreachable (${String(err)})`);
         }
       }
     }

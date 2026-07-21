@@ -110,7 +110,7 @@ export function getAnthropicModel(): string {
   return (
     process.env.ANTHROPIC_MODEL ||
     config?.anthropicModel ||
-    "claude-sonnet-4-20250514"
+    "claude-sonnet-5"
   );
 }
 

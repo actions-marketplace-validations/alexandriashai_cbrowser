@@ -779,7 +779,7 @@ API CONFIGURATION (v8.0.0)
   config set-api-key <key>    Set Anthropic API key for cognitive journeys
   config show-api-key         Show configured API key (masked)
   config remove-api-key       Remove stored API key
-  config set-model <model>    Set Claude model (default: claude-sonnet-4-20250514)
+  config set-model <model>    Set Claude model (default: claude-sonnet-5)
 
 LIGHTPANDA (v18.20.0) - High-Performance Headless Browser (OPT-IN ONLY)
   lightpanda-status           Check Lightpanda availability and configuration
@@ -2866,7 +2866,7 @@ async function main(): Promise<void> {
         const model = args[1];
         if (!model) {
           console.error("Usage: cbrowser config set-model <model>");
-          console.error("Examples: claude-sonnet-4-20250514, claude-3-5-sonnet-20241022");
+          console.error("Examples: claude-sonnet-5, claude-haiku-4-5-20251001");
           process.exit(1);
         }
         const configPath = path.join(getDataDir(), "config.json");
