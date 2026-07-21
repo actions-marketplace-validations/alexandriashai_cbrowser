@@ -524,7 +524,7 @@ All 125 MCP tools included with no rate limits.
 
 ### Research
 
-- [Research Methodology](https://cbrowser.ai/docs/Research-Methodology) — How 26 traits were selected and validated
+- [Research Methodology](https://cbrowser.ai/docs/Research-Methodology) — How the 25 traits were selected and validated
 - [Trait Index](https://cbrowser.ai/docs/Trait-Index) — All cognitive traits with citations
 - [Bibliography](https://cbrowser.ai/docs/Bibliography) — Academic references
 - [Persona Index](https://cbrowser.ai/docs/Persona-Index) — All 17 cognitive + 8 marketing personas
