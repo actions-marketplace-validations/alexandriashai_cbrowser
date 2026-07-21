@@ -1,11 +1,11 @@
 # CBrowser — Cognitive Browser Automation
 
-> **The browser automation that thinks like your users.** 120 MCP tools. 26 cognitive traits. 11 disability personas. The only framework that predicts when users give up.
+> **The browser automation that thinks like your users.** 122 MCP tools. 25 cognitive traits. 11 disability personas. The only framework that predicts when users give up.
 
 [![npm version](https://img.shields.io/npm/v/cbrowser.svg)](https://www.npmjs.com/package/cbrowser)
 [![Documentation](https://img.shields.io/badge/Docs-cbrowser.ai-blue.svg)](https://cbrowser.ai/docs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![MCP Ready](https://img.shields.io/badge/MCP-120%20Tools-blue)](https://modelcontextprotocol.io)
+[![MCP Ready](https://img.shields.io/badge/MCP-122%20Tools-blue)](https://modelcontextprotocol.io)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
 [![Node](https://img.shields.io/badge/Node-%3E%3D18-green.svg)](https://nodejs.org/)
 
@@ -152,7 +152,7 @@ npx cbrowser ai-benchmark "https://site-a.com,https://site-b.com"
 | **Social Proof** | Cialdini (2001) | Influence of reviews, ratings, popularity indicators |
 | **FOMO** | Przybylski et al. (2013) | Fear of missing out; urgency and scarcity responses |
 
-*See [Trait Index](https://cbrowser.ai/docs/Trait-Index) for all 26 traits including: Persistence, Resilience, Curiosity, Change Blindness, Anchoring Bias, Time Horizon, Attribution Style, Metacognitive Planning, Procedural Fluency, Transfer Learning, Authority Sensitivity, Emotional Contagion, Mental Model Rigidity, Interrupt Recovery, Reading Tendency, and Site Familiarity.*
+*See [Trait Index](https://cbrowser.ai/docs/Trait-Index) for all 25 traits including: Persistence, Resilience, Curiosity, Change Blindness, Anchoring Bias, Time Horizon, Attribution Style, Metacognitive Planning, Procedural Fluency, Transfer Learning, Authority Sensitivity, Emotional Contagion, Mental Model Rigidity, Interrupt Recovery, Reading Tendency, and Site Familiarity.*
 
 **Full documentation:** [Research Methodology](https://cbrowser.ai/docs/Research-Methodology) · [Trait Index](https://cbrowser.ai/docs/Trait-Index) · [Bibliography](https://cbrowser.ai/docs/Bibliography)
 
@@ -180,7 +180,7 @@ See [Values Framework](https://cbrowser.ai/docs/Values-Framework) for full docum
 # Interactive questionnaire (8 core traits)
 npx cbrowser persona-questionnaire start
 
-# Comprehensive questionnaire (all 26 traits)
+# Comprehensive questionnaire (all 25 traits)
 npx cbrowser persona-questionnaire start --comprehensive --name "my-tester"
 
 # From a description — AI generates trait values
@@ -360,7 +360,7 @@ The Claude Code Skill is a full CLI integration with workflow routing, TypeScrip
 }
 ```
 
-### 108 MCP Tools
+### 122 MCP Tools
 
 | Category | Tools | Count |
 |----------|-------|-------|
@@ -384,7 +384,7 @@ The Claude Code Skill is a full CLI integration with workflow routing, TypeScrip
 
 ### Token Cost & Selective Loading
 
-120 MCP tools consume ~45,000 tokens in LLM context. For cost-sensitive use, load selectively:
+122 MCP tools consume ~45,000 tokens in LLM context. For cost-sensitive use, load selectively:
 
 ```typescript
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -500,7 +500,7 @@ npx cbrowser config set-api-key  # Required for cognitive journeys
 | **Constitutional Stealth** | Full stealth measures for authorized penetration testing |
 | **Web Security Scan** | OWASP-based security scanning |
 
-All 120 MCP tools included with no rate limits.
+All 125 MCP tools included with no rate limits.
 
 ---
 
