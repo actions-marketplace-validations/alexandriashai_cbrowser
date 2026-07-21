@@ -53,7 +53,10 @@ import {
 } from "./stealth/index.js";
 
 // Modular MCP tools (v17.5.0)
-import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash, getActiveKeyHash } from "./mcp-tools/index.js";
+// getActiveKeyHash is deliberately no longer imported: billing identity is per-request
+// (see resolveRequestKeyHash). setActiveKeyHash stays for the usage-logging path, which
+// is per-session rather than per-charge.
+import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash } from "./mcp-tools/index.js";
 import type { PricingTier } from "./mcp-tools/tool-categories.js";
 import type { ToolRegistrationContext } from "./mcp-tools/types.js";
 
