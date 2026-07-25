@@ -1968,10 +1968,16 @@ async function evaluateScript(
       // Deciding by regex was wrong twice: `({a:1}).a` starts with "(" but is
       // not a function, and a statement body with no `return` silently produced
       // undefined. Letting the JS parser decide is the only reliable test.
-      const compile = (src: string): Function => {
+      // `new Function` is typed as the bare `Function`, which accepts any callable and
+      // gives no signature to check a call against - including a class, which would throw
+      // at runtime when invoked without `new`. Every function built below has the same
+      // shape, so state it once and cast to it.
+      type Compiled = (args: unknown[]) => unknown;
+
+      const compile = (src: string): Compiled => {
         // 1. A bare expression: implicit return.
         try {
-          return new Function("args", `return (${src});`);
+          return new Function("args", `return (${src});`) as Compiled;
         } catch { /* not an expression */ }
 
         // 2. Statements with no explicit return: return the final expression,
@@ -1984,7 +1990,7 @@ async function evaluateScript(
             const tail = trimmed.slice(split + 1).trim();
             if (tail) {
               try {
-                return new Function("args", `${head}\nreturn (${tail});`);
+                return new Function("args", `${head}\nreturn (${tail});`) as Compiled;
               } catch { /* the tail is not an expression either */ }
             }
           }
@@ -1992,7 +1998,7 @@ async function evaluateScript(
 
         // 3. Statements as written. Any syntax error surfaces from here, which
         //    is the error the user should actually see.
-        return new Function("args", src);
+        return new Function("args", src) as Compiled;
       };
 
       return compile(payload.src)(payload.a);

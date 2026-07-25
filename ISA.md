@@ -4,7 +4,7 @@ slug: cbrowser
 effort: advanced
 effort_source: explicit
 phase: observe
-progress: 5/12
+progress: 6/12
 mode: iterate
 started: 2026-07-13T20:39:10Z
 updated: 2026-07-25T09:35:00Z
@@ -18,7 +18,7 @@ source: hand-authored
 > npm package `cbrowser` (this repo). Behavioural ISCs below marked **(candidate)** are
 > drawn from documented capabilities but need the owner to confirm the exact probe/contract.
 > Suite green as of 2026-07-25 (570/0, 33 files, 257s); scoring engine regression-pinned (ISC-11).
-> Lint REGRESSED 2026-07-25: 1 error in `src/cli.ts:1971` (see ISC-3).
+> Lint green again 2026-07-25 (0 errors / 77 warnings) after the `Function`-as-a-type fix.
 
 ## Problem
 
@@ -58,7 +58,7 @@ cbrowser is a cognitive browser-automation package that simulates real user cogn
 
 - [x] ISC-1: `bun test` reports **0 failures** — **570 pass / 0 fail across 33 files in 257s as of 2026-07-25** (was 332 pass at 2026-07-14; root cause of the earlier 5 failures: module-scope console.log→stderr redirect in mcp-server.ts, fixed + released in v18.68.1). `bun-test`. *(The brain probe reported this FAILING on 2026-07-25; re-run by hand shows it green. The probe's verdict is a false refutation, most likely its own timeout against a 257s suite — the probe budget needs raising, not the suite fixing.)*
 - [x] ISC-2: `bun run build` (`tsc`) produces a clean build with no type errors. `bash`.
-- [ ] ISC-3: `bun run lint` (`eslint src/`) reports no errors — **REGRESSED: 1 error / 77 warnings as of 2026-07-25** (`src/cli.ts:1971:38`, `@typescript-eslint/ban-types`, "Don't use `Function` as a type"). Was 0 errors / 74 warnings at 2026-07-14. `bash`.
+- [x] ISC-3: `bun run lint` (`eslint src/`) reports no errors — **0 errors / 77 warnings as of 2026-07-25**, under the 150 cap. Regressed earlier the same day to 1 error at `src/cli.ts:1971` (`@typescript-eslint/ban-types`, `Function` as a return type); fixed by giving the compiled-function factory its real signature, `(args: unknown[]) => unknown`. `bash`.
 - [ ] ISC-4 (candidate): `cbrowser doctor` reports the environment is correctly set up (chromium installed, config valid). `bash`.
 - [ ] ISC-5 (candidate): `cbrowser cognitive-effort --url <site> --persona first-timer` returns a cognitive transport score in [0,1] **and** an abandonment-risk percentage. `bash` + JSON assert.
 - [ ] ISC-6 (candidate): the MCP server (`node dist/mcp-server.js`) advertises **120 tools** on `tools/list`. `bash` + count.
@@ -112,3 +112,5 @@ Mapped to real `src/` modules (satisfying ISCs the owner should refine):
 - **2026-07-13** — Behavioural ISCs (4–10) are marked **(candidate)**: grounded in documented capabilities but not yet wired to exact probes/contracts, which need the owner's knowledge of the CLI/MCP output shapes.
 - **2026-07-25** — Probe reconciliation. The Praxis brain reported `cbrowser::ISC-1` and `cbrowser::ISC-3` as failing + REFUTED. Re-run by hand: ISC-1 is GREEN (570 pass / 0 fail, 257s) so that refutation is FALSE, most likely the probe timing out on a suite that got 72% longer since the claim was written. ISC-3 is a TRUE refutation — one new eslint error in `src/cli.ts:1971`. Unchecked accordingly rather than left claiming green.
 - **2026-07-25** — Audit-worker preflight added at `cbrowser-web/cms/audit-preflight.ts` (sibling repo, not this package). It probes every Claude model ID reachable from THIS package's `src/` and `dist/` against the live Messages API, so a retired model can no longer 404 a paid cognitive journey undetected — the 2026-07-19 `claude-sonnet-4-20250514` incident. Consequence for this repo: adding a model ID to a new code path is automatically covered, but pinning one via the `ANTHROPIC_MODEL` env var or `config.json anthropicModel` bypasses a code scan, which is why the preflight resolves those two at runtime as well.
+
+- **2026-07-25** — ISC-3 closed. `src/cli.ts` typed its in-page compiled-function factory as the bare `Function`, which accepts any callable and checks no call site — including a class, which throws at runtime when invoked without `new`. Replaced with the real signature, `(args: unknown[]) => unknown`. Types erase, so `dist/cli.js` is byte-identical around the change; all three compile shapes were exercised live against the built CLI anyway (`({a:1}).a` → 1, `const x = 21; x * 2` → 42, `const y = 3; return y + 4;` → 7). Suite 570/0.
