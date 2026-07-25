@@ -19,6 +19,9 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    # Backstop. Without it a hung step blocks the release until GitHub's 6-hour job cap,
+    # and nothing in this job is legitimately slow enough to need more than half an hour.
+    timeout-minutes: 30
     # Skip release for commits that are just version bumps
     if: "!startsWith(github.event.head_commit.message, 'chore: release')"
 
@@ -46,8 +49,16 @@ jobs:
       - name: Build
         run: bun run build
 
+      # Advisory only — the Tests workflow is the real gate and runs the same suite with
+      # coverage on every push. `|| true` was already here to keep a test failure from
+      # blocking a release, but it does nothing about a HANG: on 2026-07-25 this step ran
+      # ~20 minutes against the same suite the Tests workflow finished in 5m45s, turning a
+      # release into a 26-minute job. The two settings below give the stated intent teeth
+      # in both directions — bounded, and non-blocking whether it fails OR times out.
       - name: Run tests
-        run: bun test || true  # Don't fail release on test issues
+        run: bun test || true
+        timeout-minutes: 10
+        continue-on-error: true
 
       - name: Configure Git
         run: |
