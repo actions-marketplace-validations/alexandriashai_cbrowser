@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.72.5](https://github.com/alexandriashai/cbrowser/compare/v18.72.4...v18.72.5) (2026-07-25)
+
+### Fixed
+
+* **billing:** request-scoped billing identity, usage-log auth, faster tier cache ([86dd2b0](https://github.com/alexandriashai/cbrowser/commit/86dd2b026d4f791af9fad1391026b71dc2eb4bf6))
+* **cli:** give the in-page compiled-function factory a real signature ([5a422d4](https://github.com/alexandriashai/cbrowser/commit/5a422d4f602b857b17e2b0fb2318a106684e89a1))
+
 ## [18.72.4](https://github.com/alexandriashai/cbrowser/compare/v18.72.3...v18.72.4) (2026-07-20)
 
 ### Fixed
