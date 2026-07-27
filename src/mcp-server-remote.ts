@@ -630,9 +630,145 @@ async function resolveRequestKeyHash(req: IncomingMessage): Promise<string | nul
 }
 
 /**
+ * Verdict for an account key. Separates IDENTITY ("is this a real key?") from
+ * PRICING ("what plan is it on?"). Those were the same question until 2026-07-26,
+ * and conflating them was a complete authentication bypass — see validateAccountKey.
+ */
+export type KeyVerdict =
+  | { valid: true; tier: PricingTier }
+  | { valid: false; reason: "unknown_key" | "backend_unreachable" | "not_an_account_key" };
+
+/**
+ * Validate an account key against the CMS and report BOTH validity and tier.
+ *
+ * Why this exists (2026-07-26): `validateAuth` used to authenticate with
+ *
+ *     const tier = await resolveApiKeyTier(rawKey);
+ *     if (tier) return { valid: true };
+ *
+ * and `resolveApiKeyTier` returns the string "free" on every failure path — CMS
+ * says the key is unknown, CMS returns non-2xx, CMS is unreachable. "free" is
+ * truthy, so EVERY `cbk_`-prefixed string authenticated, and the `valid: false`
+ * line below that call was unreachable code. Probed live on 2026-07-26:
+ * `Authorization: Bearer cbk_x` against enterprise.cbrowser.ai returned HTTP 200
+ * and performed a real browser navigation; non-`cbk_` tokens correctly 401'd.
+ * The prefix was the entire check.
+ *
+ * The failure branches are enumerated explicitly rather than collapsed into a
+ * catch-all, because a catch-all here is precisely what failed open:
+ *   - CMS answers, key unknown      -> unknown_key         (reject)
+ *   - CMS answers non-2xx           -> backend_unreachable (reject, do not guess)
+ *   - CMS unreachable / throws      -> backend_unreachable (reject; a CMS outage
+ *                                      must stop auth, not open it)
+ * Only an explicit `valid: true` from the CMS authenticates.
+ */
+/** How long to wait on the CMS before treating it as unreachable. */
+const AUTH_BACKEND_TIMEOUT_MS = 3_000;
+
+/**
+ * How long past its TTL a previously-validated key may be served when the CMS
+ * cannot be reached.
+ *
+ * Without this, failing closed turns a routine 40-second CMS redeploy into a
+ * total auth outage for every MCP user, because a cache entry can only be
+ * created by a live success. This does NOT reopen the bypass: the entry cannot
+ * exist unless the CMS once answered `valid: true` for that exact key in this
+ * process. It converts a hard outage into a bounded revocation delay, and an
+ * explicit "invalid" answer still evicts immediately.
+ */
+const AUTH_STALE_GRACE_MS = 5 * 60_000;
+
+/**
+ * Test seam — drop cached tier entries.
+ *
+ * Exists so the revocation-eviction path can be exercised without a 30-second
+ * sleep. Note the accepted consequence it makes visible: while a cache entry is
+ * fresh, `validateAccountKey` returns before asking the CMS, so a revoked key
+ * keeps working for up to TIER_CACHE_TTL_MS. That bounded delay is deliberate;
+ * the invariant that matters is that once the CMS SAYS invalid, the entry is
+ * evicted and the outage grace can never resurrect it.
+ */
+export function _clearTierCache(): void {
+  tierCache.clear();
+}
+
+/** Serve a previously-validated key during a backend outage, or reject. */
+function staleServe(keyHash: string): KeyVerdict {
+  const cached = tierCache.get(keyHash);
+  if (cached && cached.expiresAt + AUTH_STALE_GRACE_MS > Date.now()) {
+    return { valid: true, tier: cached.tier };
+  }
+  return { valid: false, reason: "backend_unreachable" };
+}
+
+export async function validateAccountKey(
+  apiKey: string,
+  deps: { fetch?: typeof fetch; cmsUrl?: string } = {},
+): Promise<KeyVerdict> {
+  if (!apiKey.startsWith("cbk_")) return { valid: false, reason: "not_an_account_key" };
+
+  const { createHash } = await import("crypto");
+  const keyHash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const cached = tierCache.get(keyHash);
+  if (cached && cached.expiresAt > Date.now()) return { valid: true, tier: cached.tier };
+
+  const doFetch = deps.fetch ?? fetch;
+  const cmsUrl = deps.cmsUrl ?? process.env.CMS_URL ?? "http://localhost:3200";
+  let res: Response;
+  try {
+    // A timeout is not optional here. Without one, a CMS whose event loop is
+    // blocked (a long SQLite write, a wedged worker) accepts the connection and
+    // never answers, so EVERY MCP request hangs at auth instead of returning a
+    // clean 401. A hang is worse than either the bypass or the rejection,
+    // because clients retry and pile up. (2026-07-26, cross-vendor audit.)
+    res = await doFetch(`${cmsUrl}/api/accounts/validate-key`, {
+      headers: { "X-API-Key": apiKey },
+      signal: AbortSignal.timeout(AUTH_BACKEND_TIMEOUT_MS),
+    });
+  } catch {
+    return staleServe(keyHash);
+  }
+  // The CMS answers an unknown or revoked key with 401 (and a missing one with
+  // 400) — NOT 200-with-valid:false. Verified against
+  // cbrowser-web/cms/routes/accounts.ts:403. Those are explicit answers, so they
+  // must evict and reject, never route to the outage grace: mapping a 401 to
+  // "backend unreachable" would let a key revoked seconds ago ride the 5-minute
+  // stale-serve window. Only 5xx and transport failures are genuine outages.
+  // (2026-07-26, caught by probing the live CMS after the deploy rather than
+  // trusting the shape the fix assumed.)
+  if (res.status === 400 || res.status === 401 || res.status === 403) {
+    tierCache.delete(keyHash);
+    return { valid: false, reason: "unknown_key" };
+  }
+  if (!res.ok) return staleServe(keyHash);
+
+  let data: { valid?: boolean; tier?: string };
+  try {
+    data = await res.json() as { valid?: boolean; tier?: string };
+  } catch {
+    return staleServe(keyHash);
+  }
+  // An explicit "this key is not valid" is a DIFFERENT answer from "I could not
+  // ask" — it must never fall through to the stale-serve grace, or a revoked key
+  // would keep working for the whole grace window.
+  if (data.valid !== true) {
+    tierCache.delete(keyHash);
+    return { valid: false, reason: "unknown_key" };
+  }
+
+  const tier = (data.tier as PricingTier) || "free";
+  tierCache.set(keyHash, { tier, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
+  return { valid: true, tier };
+}
+
+/**
  * Resolve the pricing tier for an API key by calling the CMS backend.
  * Returns null for non-cbk keys (server admin keys pass through as-is).
  * Caches results for 5 minutes.
+ *
+ * PRICING ONLY. This runs AFTER authentication has already succeeded, so its
+ * "free" fallback is a safe-by-default *billing* decision. It must never be used
+ * to decide whether a caller is authenticated — use validateAccountKey for that.
  */
 async function resolveApiKeyTier(apiKey: string): Promise<PricingTier | null> {
   // Only resolve cbk_ keys (user account keys)
@@ -786,9 +922,14 @@ async function validateAuth(
   // Try cbk_ account key (validates against CMS)
   const rawKey = extractApiKey(req);
   if (rawKey?.startsWith("cbk_")) {
-    const tier = await resolveApiKeyTier(rawKey);
-    if (tier) return { valid: true };
-    return { valid: false, reason: "Invalid or expired API key" };
+    const verdict = await validateAccountKey(rawKey);
+    if (verdict.valid) return { valid: true };
+    return {
+      valid: false,
+      reason: verdict.reason === "backend_unreachable"
+        ? "Authentication backend is unavailable — try again shortly."
+        : "Invalid or expired API key",
+    };
   }
 
   // Try Auth0 / OAuth token (includes tokens from our /authorize flow)
@@ -797,9 +938,14 @@ async function validateAuth(
     const token = authHeader.slice(7);
     // Check if it's a cbk_ key returned by our OAuth flow
     if (token.startsWith("cbk_")) {
-      const tier = await resolveApiKeyTier(token);
-      if (tier) return { valid: true };
-      return { valid: false, reason: "Invalid or expired API key" };
+      const verdict = await validateAccountKey(token);
+      if (verdict.valid) return { valid: true };
+      return {
+        valid: false,
+        reason: verdict.reason === "backend_unreachable"
+          ? "Authentication backend is unavailable — try again shortly."
+          : "Invalid or expired API key",
+      };
     }
     // Try Auth0 if enabled
     if (auth0Enabled) {
