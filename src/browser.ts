@@ -1154,12 +1154,19 @@ For more help: https://playwright.dev/docs/browsers
     // Plain Promise.race(close, setTimeout(r, 2000)) leaks the setTimeout if
     // close() wins — the timer keeps the event loop alive for 2s and accumulates
     // on every forceClose call.
-    const raceWithTimeout = async <T>(p: Promise<T>, ms: number): Promise<void> => {
+    // Resolves TRUE when the TIMEOUT won, so the caller can tell "closed" from
+    // "gave up waiting". The old signature returned void, which is why forceClose
+    // did not actually force anything: on timeout the race resolved, the handles
+    // were dropped, and nothing was ever signalled. A page with a hanging
+    // beforeunload handler or a JS busy-loop therefore left an orphaned chromium
+    // with no reference to it, and in the long-lived daemon those accumulate
+    // until memory is exhausted. (2026-07-26)
+    const raceWithTimeout = async <T>(p: Promise<T>, ms: number): Promise<boolean> => {
       let timer: NodeJS.Timeout | undefined;
       try {
-        await Promise.race([
-          p,
-          new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); }),
+        return await Promise.race([
+          p.then(() => false),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), ms); }),
         ]);
       } finally {
         if (timer) clearTimeout(timer);
@@ -1174,8 +1181,26 @@ For more help: https://playwright.dev/docs/browsers
 
     // Force close browser
     if (this.browser) {
-      try { await raceWithTimeout(this.browser.close(), 2000); } catch { /* may already be closed */ }
+      let timedOut = false;
+      try { timedOut = await raceWithTimeout(this.browser.close(), 2000); } catch { /* may already be closed */ }
       this.browser = null;
+
+      if (timedOut) {
+        // We cannot signal it, and saying so beats pretending to.
+        //
+        // Playwright's Browser does NOT expose the child process — verified
+        // 2026-07-26: `typeof browser.process === "function"` is false on a
+        // chromium.launch() handle; only launchServer()'s BrowserServer has
+        // process(). Which also means the session reaper in mcp-server-remote.ts
+        // (`browserInstance?.process?.()?.pid`) always resolves undefined and its
+        // force-kill branch never runs either — another guard that reads as
+        // working and does nothing.
+        //
+        // Until the launch path moves to launchServer (a real change, not a
+        // patch), the honest behaviour is to make the orphan LOUD so it can be
+        // reaped externally, instead of dropping the handle in silence.
+        console.warn("[CBrowser] forceClose: browser.close() timed out after 2000ms — the chromium process may be orphaned. Playwright exposes no process handle to signal it; reap externally if these accumulate.");
+      }
     }
   }
 
