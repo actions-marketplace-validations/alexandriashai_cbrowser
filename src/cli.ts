@@ -76,6 +76,7 @@ import {
   getOutputOptions,
   installOutputWrappers,
   emitJson,
+  emitJsonFallback,
   type JsonOutput,
 } from "./output.js";
 
@@ -824,7 +825,9 @@ OPTIONS
   --locale <locale>           Browser locale (e.g., en-US, fr-FR)
   --timezone <tz>             Timezone (e.g., America/New_York)
   --record-video              Enable video recording
-  --force                     Bypass red zone safety checks
+  --force                     Bypass red zone safety checks (CLI only; over MCP,
+                              zone enforcement is opt-in via CBROWSER_ENFORCE_RED_ZONE
+                              because MCP has no force affordance)
   --headless                  Run browser in headless mode
   --no-persistent             Disable persistent browser context (default: enabled)
   --no-restore                Skip session URL restoration (preserves page state after interactions)
@@ -2641,18 +2644,34 @@ async function runDoctor(outputOpts: import("./output.js").OutputOptions): Promi
     });
   }
 
-  // Check 2: Playwright chromium — verify binary exists without launching a full browser
+  // Check 2: Playwright chromium — the binary must actually be on disk.
+  //
+  // This used to shell out to `npx playwright install --dry-run chromium`, which
+  // only PRINTS the install plan and exits 0 whether or not the browser exists —
+  // so the check could not go red. Demonstrated 2026-07-26: with
+  // PLAYWRIGHT_BROWSERS_PATH=/nonexistent-browsers-xyz the dry-run still exited 0
+  // and doctor still reported "Playwright Chromium: Installed". A health check
+  // that cannot fail is worse than no health check, because it is believed.
+  // executablePath() resolves the path Playwright would actually launch, so an
+  // absent browser now fails the way a missing browser should.
   try {
-    execSync("npx playwright install --dry-run chromium 2>&1", {
-      encoding: "utf8",
-      timeout: 15000,
-    });
-    checks.push({ name: "Playwright Chromium", status: "pass", message: "Installed" });
-  } catch {
+    const { chromium } = await import("playwright");
+    const exe = chromium.executablePath();
+    if (exe && existsSync(exe)) {
+      checks.push({ name: "Playwright Chromium", status: "pass", message: `Installed (${exe})` });
+    } else {
+      checks.push({
+        name: "Playwright Chromium",
+        status: "fail",
+        message: exe ? `Not on disk at ${exe}` : "Playwright reports no chromium executable path",
+        fix: "Run: npx playwright install chromium",
+      });
+    }
+  } catch (err) {
     checks.push({
       name: "Playwright Chromium",
       status: "fail",
-      message: "Not installed or not launchable",
+      message: `Not installed or not resolvable (${err instanceof Error ? err.message : String(err)})`,
       fix: "Run: npx playwright install chromium",
     });
   }
@@ -2695,6 +2714,9 @@ async function runDoctor(outputOpts: import("./output.js").OutputOptions): Promi
       meta: { version: VERSION },
     };
     emitJson(jsonResult);
+    // Same rule as the human path below: a failed check must be visible to a
+    // shell, not only to a reader.
+    if (!jsonResult.success) process.exitCode = 1;
     return;
   }
 
@@ -2740,6 +2762,13 @@ async function runDoctor(outputOpts: import("./output.js").OutputOptions): Promi
     );
   }
   console.log("");
+
+  // A health command that reports failures and still exits 0 cannot gate
+  // anything — `cbrowser doctor && deploy` would proceed on a broken
+  // environment, and the project ISA's own probe for this criterion is
+  // "doctor exits 0", which was unfalsifiable as a result. Failures now exit 1;
+  // warnings still exit 0, since a warning is not a broken environment.
+  if (failCount > 0) process.exitCode = 1;
 }
 
 function parseGeoLocation(location: string): { latitude: number; longitude: number } | null {
@@ -2767,6 +2796,15 @@ async function main(): Promise<void> {
   setOutputOptions(outputOpts);
   installOutputWrappers();
 
+  // --json-output must never leave stdout empty. Only two commands in this file
+  // call emitJson, so without this every other command printed nothing at all and
+  // still exited 0 — a CI step piping to jq saw empty input beside a success code.
+  // An exit hook rather than a call after main(): the command paths below exit
+  // through ~20 separate process.exit() sites, and a hook covers all of them.
+  if (outputOpts.json) {
+    process.on("exit", () => emitJsonFallback(command ?? "unknown", VERSION));
+  }
+
   // `--help`/`-h` are aliases for `help`, matching how `--version`/`-v` alias
   // `version` below. `help <command>` and `<command> --help` both narrow to a
   // single section rather than dumping the whole manual.
@@ -2789,7 +2827,9 @@ async function main(): Promise<void> {
   // Doctor command - environment health check (v18.54.0)
   if (command === "doctor") {
     await runDoctor(outputOpts);
-    process.exit(0);
+    // Honour the exit code runDoctor set. A hard exit(0) here made the failure
+    // path unreachable from a shell no matter what the checks found.
+    process.exit(process.exitCode ?? 0);
   }
 
   // MCP Server mode - runs before browser instantiation

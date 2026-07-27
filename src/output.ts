@@ -10,6 +10,8 @@
  * Follows the NO_COLOR standard (https://no-color.org)
  */
 
+import { writeSync } from "node:fs";
+
 export interface OutputOptions {
   /** Suppress ANSI color codes */
   noColor: boolean;
@@ -127,11 +129,141 @@ export interface JsonOutput {
 }
 
 /**
+ * Lines a command wrote to console.log while --json-output was active.
+ *
+ * Before 2026-07-26 these were thrown away: the JSON branch of
+ * installOutputWrappers set `console.log = () => {}` under a comment claiming the
+ * output was "captured for JSON", and only two call sites in the whole CLI ever
+ * called emitJson against ~140 advertised commands. So `--json-output` — a
+ * documented accessibility contract ("for scripts and screen readers") — made
+ * essentially every command print NOTHING and exit 0. A CI step piping to jq got
+ * empty stdin next to a success exit code, which reads as a clean pass.
+ * Probed live: `cbrowser navigate <file-url> --json-output` -> 0 bytes, exit 0,
+ * against 294 bytes without the flag.
+ */
+let capturedLines: string[] = [];
+let jsonEmitted = false;
+
+/** Test seam — reset capture state between assertions. */
+export function _resetJsonCapture(): void {
+  capturedLines = [];
+  jsonEmitted = false;
+  capturedBytes = 0;
+  captureTruncated = false;
+}
+
+/** Test seam — whether the capture buffer hit its budget. */
+export function _captureTruncated(): boolean {
+  return captureTruncated;
+}
+
+/** Test seam — what the wrapper has captured so far. */
+export function _capturedJsonLines(): string[] {
+  return [...capturedLines];
+}
+
+/** Whether a command emitted a real JSON envelope in this process. */
+export function hasEmittedJson(): boolean {
+  return jsonEmitted;
+}
+
+/**
+ * Cap on captured output carried in the fallback envelope.
+ *
+ * Two reasons, both measured. (a) `capturedLines` accumulates every console.log
+ * for the process lifetime and is otherwise unbounded, so a long journey or a
+ * large nl-test run grows it without limit. (b) the envelope is written from a
+ * process-exit handler, and a pipe write past one buffer cannot be drained from
+ * there (see writeAllSync). Keeping the payload well under a pipe buffer means
+ * truncation is reached by design and reported, rather than silently.
+ * `help --json-output` measured 31,692 bytes, so 48KB leaves real headroom.
+ */
+const CAPTURE_BYTE_BUDGET = 48 * 1024;
+let capturedBytes = 0;
+let captureTruncated = false;
+
+/**
+ * Write text to stdout synchronously, all of it.
+ *
+ * `process.stdout.write` to a pipe is ASYNCHRONOUS in Node, and a
+ * `process.on("exit")` handler cannot await the drain, so everything past the
+ * first 65,536-byte pipe buffer is discarded. Measured 2026-07-26 on a
+ * 1,048,636-byte payload: 1,048,616 bytes reached a file, exactly 65,536 reached
+ * a pipe, and still exactly 65,536 with `| cat` actively reading. It does not
+ * deadlock, it silently truncates, which is the worse of the two failures and
+ * lands precisely on the pipe-to-jq case this whole fix exists for.
+ * `writeSync` on fd 1 is genuinely synchronous. The loop is required because a
+ * partial write is legal; the EAGAIN retry because Node may leave the fd
+ * non-blocking.
+ */
+function writeAllSync(text: string): void {
+  const buf = Buffer.from(text, "utf-8");
+  let off = 0;
+  while (off < buf.length) {
+    try {
+      off += writeSync(1, buf, off, buf.length - off);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EAGAIN") continue;
+      // A stdout we cannot write to is not worth crashing the command over.
+      try { process.stdout.write(buf.subarray(off)); } catch { /* nothing left to try */ }
+      return;
+    }
+  }
+}
+
+/**
+ * Where the JSON envelope is written. Overridable ONLY so tests can observe it:
+ * writeAllSync goes to fd 1 directly, which is the whole point of the fix and
+ * which a `process.stdout.write` spy therefore cannot see. Production never
+ * replaces this.
+ */
+let jsonSink: (text: string) => void = writeAllSync;
+
+/** Test seam — capture envelope output. Pass nothing to restore fd 1. */
+export function _setJsonSink(sink?: (text: string) => void): void {
+  jsonSink = sink ?? writeAllSync;
+}
+
+/**
  * Emit JSON output to stdout and exit.
  * All human-readable diagnostics go to stderr.
  */
 export function emitJson(output: JsonOutput): void {
-  process.stdout.write(JSON.stringify(output, null, 2) + "\n");
+  jsonEmitted = true;
+  jsonSink(JSON.stringify(output, null, 2) + "\n");
+}
+
+/**
+ * Emit the fallback envelope for a command that never called emitJson.
+ *
+ * The contract this restores is narrow and deliberate: in --json-output mode
+ * stdout is ALWAYS parseable JSON and never empty. It wraps whatever the command
+ * printed rather than inventing structure, so a command with no native JSON shape
+ * degrades to `{success, command, data.output[...]}` instead of degrading to
+ * silence. Commands that do call emitJson are untouched.
+ */
+export function emitJsonFallback(command: string, version: string): void {
+  if (jsonEmitted) return;
+  // `success` is READ from the exit code, never assumed. Hardcoding `true` here
+  // was the same defect as the auth bypass this release also fixes: a truthy
+  // default standing in for a decision nobody made. Measured before the fix:
+  // `cbrowser personas --json-output` exited 1 while the envelope said
+  // "success": true, so `... | jq -e .success` passed on a hard failure. That is
+  // worse than the empty stdout it replaced, because a lie beats silence at
+  // fooling a script. (2026-07-26, found by the cross-vendor audit of this fix.)
+  const failed = (process.exitCode ?? 0) !== 0;
+  const warnings = ["This command has no native --json-output shape; data.output is its captured text output."];
+  if (captureTruncated) {
+    warnings.push(`Captured output exceeded ${CAPTURE_BYTE_BUDGET} bytes and was truncated; data.output is incomplete.`);
+  }
+  emitJson({
+    success: !failed,
+    command,
+    data: { output: capturedLines, truncated: captureTruncated },
+    warnings,
+    meta: { version },
+  });
 }
 
 /**
@@ -148,10 +280,26 @@ export function installOutputWrappers(): void {
   }
 
   if (globalOptions.json) {
-    // In JSON mode, suppress console.log (data goes through emitJson)
-    // Keep console.error for diagnostics on stderr
+    // In JSON mode stdout is reserved for the JSON envelope, so console.log is
+    // diverted — CAPTURED, not discarded. Discarding it is what made ~140
+    // commands emit nothing at all under --json-output (see capturedLines).
+    // Diagnostics keep going to stderr.
     const origError = console.error.bind(console);
-    console.log = () => {};  // suppress stdout in JSON mode
+    console.log = (...args: unknown[]) => {
+      const line = args
+        .map((a) => (typeof a === "string" ? stripAnsi(stripDecorations(a)) : String(a)))
+        .join(" ")
+        .trim();
+      if (!line) return;
+      if (capturedBytes + line.length > CAPTURE_BYTE_BUDGET) {
+        // Drop rather than grow. The envelope must stay writable from an exit
+        // handler, and a reported truncation beats an unparseable payload.
+        captureTruncated = true;
+        return;
+      }
+      capturedBytes += line.length;
+      capturedLines.push(line);
+    };
     console.error = (...args: unknown[]) => {
       origError(...args.map(a => typeof a === "string" ? stripAnsi(stripDecorations(a)) : a));
     };
