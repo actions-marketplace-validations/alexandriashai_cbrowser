@@ -56,7 +56,7 @@ import {
 // getActiveKeyHash is deliberately no longer imported: billing identity is per-request
 // (see resolveRequestKeyHash). setActiveKeyHash stays for the usage-logging path, which
 // is per-session rather than per-charge.
-import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash } from "./mcp-tools/index.js";
+import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash, isToolAccessible, upgradePrompt } from "./mcp-tools/index.js";
 import type { PricingTier } from "./mcp-tools/tool-categories.js";
 import type { ToolRegistrationContext } from "./mcp-tools/types.js";
 
@@ -480,12 +480,35 @@ async function validateAuth0Token(token: string): Promise<JWTPayload | null> {
 
     return payload;
   } catch (jwtError) {
-    // If JWT validation fails, try opaque token validation via userinfo
+    // Opaque-token fallback via /userinfo — OFF by default since 2026-07-26.
+    //
+    // The JWT branch above validates `audience`. This one structurally cannot:
+    // /userinfo answers 200 for ANY access token the tenant issued, for any
+    // application in it, and returns no audience to check. So it authenticated
+    // tokens minted for a different app in the same tenant with zero CMS
+    // involvement — the one remaining route to valid:true that the account-key
+    // fix did not touch.
+    //
+    // Defaulting it off is reasoned, not cautious-by-reflex: Auth0 issues an
+    // OPAQUE token precisely when no audience was requested, which is exactly the
+    // case the audience check exists to reject. And cbrowser's own OAuth flow
+    // hands out `cbk_` keys as access tokens, so real customers take the
+    // account-key path and are unaffected. AUTH0_ALLOW_OPAQUE_TOKENS=true
+    // restores the old behaviour if some integration turns out to need it, and
+    // the rejection is logged either way so it is diagnosable, not mysterious.
+    if (process.env.AUTH0_ALLOW_OPAQUE_TOKENS !== "true") {
+      console.error("[Auth0] Rejected an opaque access token: /userinfo exposes no audience to verify. Set AUTH0_ALLOW_OPAQUE_TOKENS=true to permit it.");
+      return null;
+    }
+
     try {
       const userinfoResponse = await fetch(`https://${auth0.domain}/userinfo`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
+        // Attacker-triggered outbound request on a pre-auth path: it must not be
+        // able to hold the request open indefinitely.
+        signal: AbortSignal.timeout(AUTH_BACKEND_TIMEOUT_MS),
       });
 
       if (userinfoResponse.ok) {
@@ -496,10 +519,11 @@ async function validateAuth0Token(token: string): Promise<JWTPayload | null> {
           name: userinfo.name,
         };
 
-        // Cache opaque tokens for 30 minutes
+        // 5 minutes, not 30: an opaque token carries no readable expiry, so a
+        // long cache means a revoked token keeps working for that whole window.
         tokenCache.set(token, {
           payload,
-          expiry: Date.now() + 30 * 60 * 1000 - TOKEN_CACHE_MARGIN,
+          expiry: Date.now() + 5 * 60 * 1000 - TOKEN_CACHE_MARGIN,
         });
 
         return payload;
@@ -588,6 +612,12 @@ const tokenToKeyHash = new Map<string, { keyHash: string; expiresAt: number }>()
  * cache is a micro-optimisation and a short window costs almost nothing.
  */
 const tierCache = new Map<string, { tier: PricingTier; expiresAt: number }>();
+/** Pre-auth request bodies are capped; see the read loop in handleMcpRequest. */
+const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
+
+/** Bound the CMS deduct call; an unanswered one used to hang the whole request. */
+const CREDIT_DEDUCT_TIMEOUT_MS = 5_000;
+
 const TIER_CACHE_TTL_MS = 30 * 1000;
 
 /**
@@ -1189,9 +1219,24 @@ async function handleMcpRequest(
 
   // Parse body for POST requests
   if (req.method === "POST") {
+    // Cap the body. This read happens BEFORE authentication, so an unauthenticated
+    // POST to /mcp with a multi-gigabyte body was buffered into memory in full
+    // before anything looked at its size — and after the auth fix it is the path
+    // every REJECTED key walks down, which makes it the cheapest way to hurt the
+    // box. 4MB is far above any real JSON-RPC payload. (2026-07-26)
     const chunks: Buffer[] = [];
+    let received = 0;
+    let tooLarge = false;
     for await (const chunk of req) {
+      received += (chunk as Buffer).length;
+      if (received > MAX_REQUEST_BODY_BYTES) { tooLarge = true; break; }
       chunks.push(chunk);
+    }
+    if (tooLarge) {
+      req.destroy();
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Payload Too Large", message: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes.` }));
+      return;
     }
     const body = Buffer.concat(chunks).toString("utf-8");
 
@@ -1227,6 +1272,27 @@ async function handleMcpRequest(
       const targetUrl = (toolArgs?.url || (Array.isArray(toolArgs?.sites) ? (toolArgs.sites as string[])[0] : "") || "") as string;
       // Derived from THIS request, not from the module global — see resolveRequestKeyHash.
       const keyHash = await resolveRequestKeyHash(req);
+
+      // GATE BEFORE CHARGE. The CMS credit catalog and the package's tier catalog
+      // are two independent lists, and they disagree: CMS lists
+      // agent_ready_audit as a free-tier tool costing 5 credits, while the
+      // package gates it as "pro". A free account with credits was therefore
+      // debited 5 and then handed the upgrade prompt that createGatedServer had
+      // substituted for the handler — paying for an advertisement. Checking
+      // accessibility BEFORE the deduct fixes every present and future
+      // disagreement between the two lists, not just the one instance we found.
+      // (2026-07-26)
+      if (keyHash && !isToolAccessible(toolName)) {
+        console.log(`[Credits] ${toolName}: unavailable at this tier — upgrade prompt returned WITHOUT charging`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: parsedBody?.id ?? null,
+          result: upgradePrompt(toolName),
+        }));
+        return;
+      }
+
       if (keyHash) {
         const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
         const deductParams = new URLSearchParams({
@@ -1241,8 +1307,19 @@ async function handleMcpRequest(
             // Omitting it made the CMS return 403 → parsed as {allowed: undefined} →
             // every tool call denied ("Tool execution denied", reason undefined).
             headers: { "X-Internal-Secret": process.env.CMS_INTERNAL_SECRET || "" },
+            // Without this, a CMS that accepts the connection and never answers
+            // hangs the MCP request forever, before the handler is ever reached.
+            signal: AbortSignal.timeout(CREDIT_DEDUCT_TIMEOUT_MS),
           });
-          if (creditRes.ok || creditRes.status === 402 || creditRes.status === 403) {
+          // Every status must land in a branch. Previously anything outside
+          // {ok, 402, 403} — a 500, or an nginx 502 during a CMS restart — fell
+          // straight through to execution with NO LOG LINE AT ALL, because the
+          // deliberate loud fail-open message below only fires on a THROWN fetch.
+          // That is the most likely outage shape, and it was the one shape that
+          // stayed invisible, which defeats the point of the loud message.
+          if (!(creditRes.ok || creditRes.status === 402 || creditRes.status === 403)) {
+            console.warn(`[Credits] FAIL-OPEN: ${toolName} ran unbilled — CMS returned HTTP ${creditRes.status}`);
+          } else if (creditRes.ok || creditRes.status === 402 || creditRes.status === 403) {
             const data = await creditRes.json() as { allowed: boolean; reason?: string; message?: string; remaining?: number };
             // Only deny on an EXPLICIT allowed:false from the deduct endpoint.
             // A missing `allowed` field means the response was not a real deduct
@@ -2185,7 +2262,7 @@ ${VERSION}
     res.end(JSON.stringify({ error: "Not found" }));
   });
 
-  httpServer.listen(port, host, () => {
+  httpServer.listen(port, host, () => { void (async () => {
     console.log(`\nCognitive Browser Remote MCP Server running at http://${host}:${port}`);
     console.log(`\nEndpoints:`);
     console.log(`  MCP:      http://${host}:${port}/mcp`);
@@ -2217,21 +2294,53 @@ ${VERSION}
     try {
       const dummyContext: ToolRegistrationContext = { getBrowser: () => null as any };
       const tempServer = createMcpServer(options?.registerTools, "manifest-cache", null);
-      const toolMap = (tempServer as any)._registeredTools as Record<string, any> | undefined;
-      if (toolMap && typeof toolMap === "object") {
-        cachedToolManifest = Object.entries(toolMap)
-          .filter(([, tool]) => tool.enabled !== false)
-          .map(([name, tool]) => ({
-            name,
-            description: tool.description || "",
-            inputSchema: tool.inputSchema || { type: "object" as const },
-          }));
+
+      // Ask the server for its tool list the way a client does, rather than
+      // reading `_registeredTools` and publishing `tool.inputSchema` directly.
+      //
+      // That internal field holds the ZodRawShape/ZodObject, NOT JSON Schema —
+      // the SDK converts it only while serving tools/list. Publishing it raw put
+      // Zod internals (`_def`, `~standard`, `_cached`) on the wire for every tool
+      // whose schema is a ZodObject: measured 17 of 122 on demo and 14 of 125 on
+      // enterprise. Because this manifest serves the UNAUTHENTICATED tools/list,
+      // that was the first thing any prospective MCP client saw, while
+      // authenticated clients got correct schemas from the SDK's own path — two
+      // sources of truth for one contract, and the public one was the broken one.
+      //
+      // Driving the real handler means the public manifest cannot diverge from
+      // the authenticated one again, because it is now the same code path.
+      // (2026-07-26)
+      const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const manifestClient = new Client({ name: "manifest-cache", version: "1" });
+      await Promise.all([
+        (tempServer as unknown as { connect: (t: unknown) => Promise<void> }).connect(serverTransport),
+        manifestClient.connect(clientTransport),
+      ]);
+      const listed = await manifestClient.listTools();
+      await manifestClient.close();
+
+      if (listed?.tools?.length) {
+        cachedToolManifest = listed.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description || "",
+          inputSchema: tool.inputSchema || { type: "object" as const },
+        }));
+        const malformed = cachedToolManifest.filter(
+          (t) => !t.inputSchema || typeof t.inputSchema !== "object"
+            || (t.inputSchema as { type?: unknown }).type !== "object",
+        );
         console.log(`[tools/list] Public manifest cached: ${cachedToolManifest.length} tools`);
+        if (malformed.length) {
+          // Loud, because a silently malformed public contract is what this fix replaced.
+          console.error(`[tools/list] WARNING: ${malformed.length} tool(s) have a non-JSON-Schema inputSchema: ${malformed.map((t) => t.name).join(", ")}`);
+        }
       }
     } catch (err) {
       console.log(`[tools/list] Direct cache failed, will cache on first authenticated request`);
     }
-  });
+  })(); });
 
   // Graceful shutdown
   const shutdown = async () => {
