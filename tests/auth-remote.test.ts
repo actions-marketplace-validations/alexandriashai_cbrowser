@@ -17,7 +17,32 @@
 // These tests drive validateAccountKey with an injected fetch so they are
 // hermetic — no CMS, no network, no server.
 //
-// Run:  bun test tests/remote-auth.test.ts
+// Run:  bun test tests/auth-remote.test.ts
+//
+// ---------------------------------------------------------------------------
+// THIS FILENAME IS LOAD-BEARING, AND WE DO NOT FULLY KNOW WHY.
+//
+// It was `remote-auth.test.ts`, which sorts at position 25 — immediately after
+// the ten `recording-*.test.ts` browser-capture files. In that position it
+// reproduces 180s capture timeouts in OTHER files, 4 runs out of 4. Renamed to
+// sort before that cluster: 4 runs out of 4 clean, with byte-identical content.
+//
+//   file at position 25   571 pass / 2 fail / 707.64s
+//   same bytes, position 1   573 pass / 0 fail / 264.95s
+//
+// Ruled out by experiment, not by argument: the module import itself (an
+// import-only probe at position 1 was clean, 265.61s), a global console patch
+// (bisected clean, 264.03s), the AbortSignal.timeout in validateAccountKey
+// (removing it changed 707.64s to 713.25s), shared CBROWSER_DATA_DIR contention
+// (isolating it made things WORSE — 5 fails, 763s), orphaned Chrome
+// accumulation (measured mid-suite: 1 process, 42GB free), and Bun test
+// concurrency (`--max-concurrency=1` changed nothing).
+//
+// The real defect is upstream of this file: the recording-* tests do real
+// wall-clock captures against 180s budgets with no headroom, so anything added
+// near them tips them over. Renaming is a mitigation, not a cure — if you add a
+// test file and the capture suite starts timing out, this is why. (2026-07-27)
+// ---------------------------------------------------------------------------
 
 import { describe, test, expect } from "bun:test";
 import { validateAccountKey, _clearTierCache } from "../src/mcp-server-remote.js";
