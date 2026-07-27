@@ -106,7 +106,12 @@ export function matchesDomainPattern(url: string, pattern: string): boolean {
     // Wildcard match (*.example.com)
     if (patternLower.startsWith("*.")) {
       const suffix = patternLower.slice(2);
-      return hostname.endsWith(suffix) || hostname === suffix.slice(1);
+      // A bare endsWith has no label boundary, so "*.example.com" also
+      // authorised "evil-example.com" and "notexample.com" — stealth evasion
+      // running outside the authorisation the operator signed. The second
+      // clause (suffix.slice(1)) was nonsense and matched nothing intended.
+      // (2026-07-26)
+      return hostname === suffix || hostname.endsWith("." + suffix);
     }
 
     return false;

@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from "fs";
-import { join } from "path";
+import { join, resolve, sep } from "path";
 import type { Page, BrowserContext, Cookie } from "playwright";
 import type { SavedSession, LoadSessionResult, SessionMetadata } from "../types.js";
 
@@ -26,11 +26,47 @@ export interface SessionManagerConfig {
 /**
  * Manages browser session persistence - save, load, list, delete sessions.
  */
+/**
+ * A session name that is safe to turn into a filename.
+ *
+ * Session names arrive from MCP tool arguments (`save_session`, `load_session`,
+ * `delete_session`, export/import), whose schemas were a bare `z.string()`. Those
+ * tools are priced `free`, and the remote server registers them for every caller,
+ * so `{"name": "../../../../home/wyld-web/.../data/pwned"}` resolved straight out
+ * of the sessions directory — `join()` does not contain traversal. That is an
+ * arbitrary `.json` write on save and an arbitrary `.json` unlink on delete, by
+ * an unauthenticated-tier caller. (2026-07-26)
+ */
+const SAFE_SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
 export class SessionManager {
   private config: SessionManagerConfig;
 
   constructor(config: SessionManagerConfig) {
     this.config = config;
+  }
+
+  /**
+   * Resolve a session name to its file path, refusing anything that escapes.
+   *
+   * Two independent checks, because either alone has been enough to miss a
+   * bypass elsewhere: the name must match a conservative allowlist, AND the
+   * resolved path must still sit inside sessionsDir. Every path built from a
+   * caller-supplied name goes through here — the six call sites that each
+   * open-coded `join(sessionsDir, name + ".json")` are the class this closes.
+   */
+  private sessionPathFor(name: string): string {
+    if (!SAFE_SESSION_NAME.test(name)) {
+      throw new Error(
+        `Invalid session name ${JSON.stringify(name)} — use letters, digits, dot, dash or underscore (max 64 chars).`,
+      );
+    }
+    const dir = resolve(this.config.sessionsDir);
+    const path = resolve(join(dir, `${name}.json`));
+    if (path !== join(dir, `${name}.json`) || !path.startsWith(dir + sep)) {
+      throw new Error(`Invalid session name ${JSON.stringify(name)} — resolves outside the sessions directory.`);
+    }
+    return path;
   }
 
   /**
@@ -88,7 +124,7 @@ export class SessionManager {
       sessionStorage,
     };
 
-    const sessionPath = join(this.config.sessionsDir, `${name}.json`);
+    const sessionPath = this.sessionPathFor(name);
     writeFileSync(sessionPath, JSON.stringify(session, null, 2));
   }
 
@@ -100,7 +136,7 @@ export class SessionManager {
     page: Page,
     context: BrowserContext
   ): Promise<LoadSessionResult> {
-    const sessionPath = join(this.config.sessionsDir, `${name}.json`);
+    const sessionPath = this.sessionPathFor(name);
 
     if (!existsSync(sessionPath)) {
       return {
@@ -217,7 +253,7 @@ export class SessionManager {
    * Get detailed info for a single session.
    */
   getDetails(name: string): SavedSession | null {
-    const sessionPath = join(this.config.sessionsDir, `${name}.json`);
+    const sessionPath = this.sessionPathFor(name);
     if (!existsSync(sessionPath)) return null;
     try {
       return JSON.parse(readFileSync(sessionPath, "utf-8"));
@@ -233,7 +269,7 @@ export class SessionManager {
    * Delete a saved session.
    */
   delete(name: string): boolean {
-    const sessionPath = join(this.config.sessionsDir, `${name}.json`);
+    const sessionPath = this.sessionPathFor(name);
     if (existsSync(sessionPath)) {
       unlinkSync(sessionPath);
       return true;
@@ -276,7 +312,7 @@ export class SessionManager {
    * Export a session to a portable JSON file.
    */
   export(name: string, outputPath: string): boolean {
-    const sessionPath = join(this.config.sessionsDir, `${name}.json`);
+    const sessionPath = this.sessionPathFor(name);
     if (!existsSync(sessionPath)) return false;
     const data = readFileSync(sessionPath, "utf-8");
     writeFileSync(outputPath, data);
@@ -291,7 +327,7 @@ export class SessionManager {
     try {
       const data: SavedSession = JSON.parse(readFileSync(inputPath, "utf-8"));
       data.name = name;
-      const sessionPath = join(this.config.sessionsDir, `${name}.json`);
+      const sessionPath = this.sessionPathFor(name);
       writeFileSync(sessionPath, JSON.stringify(data, null, 2));
       return true;
     } catch (e) {

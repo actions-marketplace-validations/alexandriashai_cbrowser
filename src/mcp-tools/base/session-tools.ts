@@ -19,7 +19,7 @@ export function registerSessionTools(
     title: "Save Browser Session",
     description: "Save browser session (cookies, storage) for later use",
     inputSchema: {
-      name: z.string().describe("Name for the saved session"),
+      name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "letters, digits, dot, dash or underscore only (max 64)").describe("Name for the saved session"),
     },
     annotations: {
       title: "Save Browser Session",
@@ -46,7 +46,7 @@ export function registerSessionTools(
     title: "Load Browser Session",
     description: "Load a previously saved session",
     inputSchema: {
-      name: z.string().describe("Name of the session to load"),
+      name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "letters, digits, dot, dash or underscore only (max 64)").describe("Name of the session to load"),
     },
     annotations: {
       title: "Load Browser Session",
@@ -98,7 +98,7 @@ export function registerSessionTools(
     title: "Delete Saved Session",
     description: "Delete a saved session by name",
     inputSchema: {
-      name: z.string().describe("Name of the session to delete"),
+      name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "letters, digits, dot, dash or underscore only (max 64)").describe("Name of the session to delete"),
     },
     annotations: {
       title: "Delete Saved Session",
