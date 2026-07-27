@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.73.0](https://github.com/alexandriashai/cbrowser/compare/v18.72.6...v18.73.0) (2026-07-27)
+
+### Added
+
+* **security:** wire the security module to the tools that actually run ([4944e0e](https://github.com/alexandriashai/cbrowser/commit/4944e0e329b65835d6ed64893531748cfe41396e))
+
+### Fixed
+
+* **browser:** honest forceClose, durable selector cache, and a deploy-freshness probe ([01df7ac](https://github.com/alexandriashai/cbrowser/commit/01df7ac50de2a53b8e8aed888ec71e29110cc902))
+* **cli:** --json-output emitted zero bytes and exit 0; doctor could not go red ([55a7bc0](https://github.com/alexandriashai/cbrowser/commit/55a7bc0e4c4fd37a03e7631c81ef8e24d15329b2))
+* **mcp-remote:** don't start the session reaper at module import ([27b5331](https://github.com/alexandriashai/cbrowser/commit/27b5331678b01c37d9faa4fae07d0efb41d6ff85))
+* **mcp-remote:** public tool manifest served Zod internals; close the Auth0 opaque path ([6a230fe](https://github.com/alexandriashai/cbrowser/commit/6a230fe8a9dbaeb3c3d282379c5c79537e46086f))
+* **mcp:** stop four tools declaring arguments their handlers ignore ([ffde2f9](https://github.com/alexandriashai/cbrowser/commit/ffde2f96658f2f1a8d22d8bfc7c808e4ebc8da71))
+* **security:** constrain session names to a filename allowlist ([78553ef](https://github.com/alexandriashai/cbrowser/commit/78553efb2e4e229dee13e20fdb96390c2c2fe38c))
+* **security:** separate account-key identity from pricing tier ([4706308](https://github.com/alexandriashai/cbrowser/commit/470630828731f3bd01dfe907aea9bb07fc7843f9))
+* **site-model:** stop wiping learned data on the first record of a process ([356f60d](https://github.com/alexandriashai/cbrowser/commit/356f60d54f8a22f25847ee9dcf6e099b5dda97e8))
+
 ## [18.72.6](https://github.com/alexandriashai/cbrowser/compare/v18.72.5...v18.72.6) (2026-07-25)
 
 ## [18.72.5](https://github.com/alexandriashai/cbrowser/compare/v18.72.4...v18.72.5) (2026-07-25)
