@@ -49,16 +49,19 @@ jobs:
       - name: Build
         run: bun run build
 
-      # Advisory only — the Tests workflow is the real gate and runs the same suite with
-      # coverage on every push. `|| true` was already here to keep a test failure from
-      # blocking a release, but it does nothing about a HANG: on 2026-07-25 this step ran
-      # ~20 minutes against the same suite the Tests workflow finished in 5m45s, turning a
-      # release into a 26-minute job. The two settings below give the stated intent teeth
-      # in both directions — bounded, and non-blocking whether it fails OR times out.
-      - name: Run tests
-        run: bun test || true
-        timeout-minutes: 10
-        continue-on-error: true
+      # THIS IS THE GATE. It was advisory until 2026-07-26 (`bun test || true` plus
+      # `continue-on-error: true`) under a comment claiming "the Tests workflow is the real
+      # gate". That claim was false: test.yml runs on push, release.yml is
+      # workflow_dispatch and never depended on it, so nothing stopped a release on a red
+      # suite — v18.72.6 reached npm while this very step reported failure.
+      #
+      # A hang must block too, rather than be swallowed; that was the other half of the old
+      # problem. timeout-minutes bounds it, and without continue-on-error a timeout now
+      # fails the release instead of quietly costing 20 minutes. 20 minutes against a
+      # ~9-minute local suite leaves headroom for a slower runner without inviting a hang.
+      - name: Run tests (release gate)
+        run: bun test
+        timeout-minutes: 20
 
       - name: Configure Git
         run: |
