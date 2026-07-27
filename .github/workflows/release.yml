@@ -63,16 +63,18 @@ jobs:
         run: bun run test:gate
         timeout-minutes: 20
 
-      # Runs, reports, does not block. These two files hang intermittently only
-      # when the full set runs together (they pass 46/46 alone). Quarantined
-      # 2026-07-27 with the root cause unfound — see scripts/test-gate.sh for the
-      # seven mechanisms already refuted by measurement. This step exists so the
-      # quarantine stays VISIBLE: a silent exclusion becomes permanent, a failing
-      # step in every release log does not.
-      - name: Quarantined tests (advisory — does not block)
-        run: bun run test:quarantine
-        timeout-minutes: 10
-        continue-on-error: true
+      # The quarantined browser tests deliberately do NOT run here.
+      #
+      # They had an advisory step in this job for exactly one release attempt,
+      # which taught the lesson: `continue-on-error` covers a step that FAILS, not
+      # a step that HANGS. The quarantined set hung its full 10-minute timeout,
+      # the job then hit the runner's 30-minute ceiling, and the release was
+      # cancelled — so an "advisory, does not block" step blocked the release.
+      #
+      # Visibility was the reason for putting it here, and visibility is already
+      # covered: the Tests workflow runs `bun test --coverage` over the FULL suite
+      # on every push to main, browser tests included. Running them twice bought
+      # nothing and cost the release. (2026-07-27)
 
       - name: Configure Git
         run: |
