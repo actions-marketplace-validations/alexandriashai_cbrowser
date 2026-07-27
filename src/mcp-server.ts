@@ -28,6 +28,7 @@ import {
   CAPTURE_STOP_DESCRIPTION,
   CAPTURE_STATUS_DESCRIPTION,
 } from "./mcp-tools/base/capture-tools.js";
+import { applySecurityLayer } from "./mcp-tools/security-layer.js";
 
 // Visual module imports
 import {
@@ -664,6 +665,14 @@ async function registerCBrowserTools(): Promise<McpServer> {
     collectedTools.push({ name, description });
     return (originalTool as (...args: unknown[]) => unknown)(name, description, ...rest);
   };
+
+  // Security layer: audit logging, description scanning, zone checks. This server
+  // registers its own ~100 tools through the deprecated `server.tool(...)` rather
+  // than through registerAllPublicTools, so the layer is attached here directly.
+  // Wiring only the shared registration path left this entire surface unaudited —
+  // found by driving a real tools/call and finding no audit entry, which is the
+  // exact "wired but never fires" outcome this change exists to eliminate.
+  applySecurityLayer(server);
 
   // =========================================================================
   // Navigation Tools

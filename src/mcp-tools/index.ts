@@ -84,6 +84,7 @@ import { registerPersonaCreationTools } from "./persona-creation-tools.js";
 import { registerAskUserTool } from "./ask-user-tools.js";
 import { registerEnterpriseStubs } from "./enterprise-stubs.js";
 import { setActiveTier, createGatedServer } from "./tier-gate.js";
+import { applySecurityLayer } from "./security-layer.js";
 import type { PricingTier } from "./tool-categories.js";
 
 // Re-export tier gating
@@ -112,15 +113,24 @@ export function registerAllPublicTools(
   // Wrap server with tier gate proxy (intercepts registerTool calls)
   const gatedServer = createGatedServer(server) as McpServer;
 
+  // Security layer: audit logging, description scanning, zone checks. Applied
+  // OUTSIDE the tier gate deliberately — createGatedServer returns the server
+  // untouched when the tier is null, which is the live enterprise config, so
+  // nesting security inside it would inherit that hole. Until 2026-07-26 the
+  // entire security module had zero call sites while the README shipped a Zone
+  // table and SKILL.md claimed constitutional safety. (See security-layer.ts for
+  // what is enforced and why red-zone denial is opt-in.)
+  const securedServer = applySecurityLayer(gatedServer) as McpServer;
+
   // Base tools (78)
-  registerBaseTools(gatedServer, context);
+  registerBaseTools(securedServer, context);
 
   // Persona creation tools (7)
-  registerPersonaCreationTools(gatedServer);
+  registerPersonaCreationTools(securedServer);
 
   // Ask user tool (1)
-  registerAskUserTool(gatedServer);
+  registerAskUserTool(securedServer);
 
   // Enterprise stubs (18)
-  registerEnterpriseStubs(gatedServer);
+  registerEnterpriseStubs(securedServer);
 }
