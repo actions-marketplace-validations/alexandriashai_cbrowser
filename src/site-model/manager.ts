@@ -9,6 +9,7 @@
  */
 
 import * as fs from "fs/promises";
+import { readFileSync } from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
@@ -111,10 +112,32 @@ export class SiteModelManager {
     const normalized = this.normalizeDomain(domain);
     let model = this.models.get(normalized);
     if (!model) {
-      model = this.createEmptyModel(normalized);
+      // Read from disk SYNCHRONOUSLY, before caching anything.
+      //
+      // This used to cache an empty model first and then fire
+      // `this.loadModel(normalized).catch(() => {})` to "merge any existing
+      // data". It merged nothing: loadModel's own first lines are
+      // `const cached = this.models.get(normalized); if (cached) return cached`,
+      // and the empty model had just been placed in that cache — so the disk
+      // read was a guaranteed no-op. markDirty then scheduled a flush 1s later
+      // which wrote the near-empty model OVER the file, destroying every learned
+      // navigation edge, selector, goal path and failure pattern for that
+      // domain. Silently, because the .catch(() => {}) swallowed anything that
+      // might have hinted at it.
+      //
+      // Trigger: any fresh process whose first site-model operation is a
+      // record*/updateFingerprint call rather than an explicit loadModel — which
+      // is the normal path. (2026-07-26)
+      try {
+        const loaded = JSON.parse(readFileSync(this.modelFilePath(normalized), "utf-8")) as SiteModel;
+        loaded.domain = normalized;
+        this.pruneStaleData(normalized, loaded);
+        model = loaded;
+      } catch {
+        // No file yet, or unreadable/corrupt — an empty model is correct here.
+        model = this.createEmptyModel(normalized);
+      }
       this.models.set(normalized, model);
-      // Trigger async load from disk to merge any existing data
-      this.loadModel(normalized).catch(() => {});
     }
     return model;
   }
