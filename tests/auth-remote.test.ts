@@ -11,8 +11,10 @@
 // and resolveApiKeyTier returns the STRING "free" on every failure path (key
 // unknown, CMS non-2xx, CMS unreachable). "free" is truthy, so every string
 // starting with "cbk_" authenticated and the `valid: false` line under that
-// call was unreachable. Probed live: `Bearer cbk_x` -> HTTP 200 + a real browser
-// navigation; `Bearer x` -> 401. The prefix WAS the whole check.
+// call was unreachable. Verified live before the fix: an unrecognised but
+// well-formed account key authenticated and executed real work, while a token
+// without the prefix was correctly rejected. The prefix WAS the whole check.
+// (Reproduction detail withheld until the fix is published and adopted.)
 //
 // These tests drive validateAccountKey with an injected fetch so they are
 // hermetic — no CMS, no network, no server.

@@ -32,10 +32,9 @@ export interface SessionManagerConfig {
  * Session names arrive from MCP tool arguments (`save_session`, `load_session`,
  * `delete_session`, export/import), whose schemas were a bare `z.string()`. Those
  * tools are priced `free`, and the remote server registers them for every caller,
- * so `{"name": "../../../../home/wyld-web/.../data/pwned"}` resolved straight out
- * of the sessions directory — `join()` does not contain traversal. That is an
- * arbitrary `.json` write on save and an arbitrary `.json` unlink on delete, by
- * an unauthenticated-tier caller. (2026-07-26)
+ * and `join()` does not constrain its input, so a crafted name resolved outside
+ * the sessions directory entirely — an arbitrary `.json` write on save and an
+ * arbitrary `.json` unlink on delete, reachable by any caller. (2026-07-26)
  */
 const SAFE_SESSION_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 

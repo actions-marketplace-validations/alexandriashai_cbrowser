@@ -7,9 +7,8 @@
 //
 // 1. save_session / load_session / delete_session took a bare `z.string()` name
 //    and built `join(sessionsDir, name + ".json")`. join() does not contain
-//    traversal, so `{"name":"../../../../home/.../data/pwned"}` resolved clean
-//    out of the sessions directory — an arbitrary .json write on save and an
-//    arbitrary .json unlink on delete. These tools are priced `free` and the
+//    traversal, so a crafted name resolved outside the sessions directory —
+//    an arbitrary .json write on save and an arbitrary .json unlink on delete. These tools are priced `free` and the
 //    remote server registers them for every caller.
 // 2. stealth's authorized-domain wildcard used `hostname.endsWith(suffix)` with
 //    no label boundary, so `*.example.com` also authorised `evil-example.com`.
@@ -50,7 +49,7 @@ describe("session names cannot escape the sessions directory", () => {
     for (const evil of [
       "../pwned",
       "../../pwned",
-      "../../../../home/wyld-web/static/cbrowser-web/cms/data/pwned",
+      "../../../../etc/cron.d/payload",
       "..",
       "./../x",
       "sub/dir/x",

@@ -683,9 +683,10 @@ export type KeyVerdict =
  * says the key is unknown, CMS returns non-2xx, CMS is unreachable. "free" is
  * truthy, so EVERY `cbk_`-prefixed string authenticated, and the `valid: false`
  * line below that call was unreachable code. Probed live on 2026-07-26:
- * `Authorization: Bearer cbk_x` against enterprise.cbrowser.ai returned HTTP 200
- * and performed a real browser navigation; non-`cbk_` tokens correctly 401'd.
- * The prefix was the entire check.
+ * Verified live before the fix: a syntactically well-formed account key that the
+ * backend did not recognise was nonetheless authenticated, while tokens without
+ * the account-key prefix were correctly rejected. The prefix was the entire
+ * check. (Reproduction detail withheld until the fix is published and adopted.)
  *
  * The failure branches are enumerated explicitly rather than collapsed into a
  * catch-all, because a catch-all here is precisely what failed open:
