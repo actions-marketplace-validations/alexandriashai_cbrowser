@@ -2,7 +2,7 @@
   "name": "cbrowser",
   "version": "18.72.6",
   "type": "module",
-  "description": "Cognitive browser automation that thinks like your users—and helps AI agents navigate too. Simulate real user cognition with abandonment detection, constitutional safety, chaos engineering, and UX friction discovery. Sites that pass CBrowser's cognitive tests are easier for both humans and AI agents to navigate.",
+  "description": "Cognitive browser automation that thinks like your users\u2014and helps AI agents navigate too. Simulate real user cognition with abandonment detection, constitutional safety, chaos engineering, and UX friction discovery. Sites that pass CBrowser's cognitive tests are easier for both humans and AI agents to navigate.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -72,7 +72,9 @@
     "release": "release-it",
     "release:dry": "release-it --dry-run",
     "prepublishOnly": "npm run build",
-    "postinstall": "npx playwright install chromium || true"
+    "postinstall": "npx playwright install chromium || true",
+    "test:gate": "./scripts/test-gate.sh",
+    "test:quarantine": "bun test tests/recording-change-tiers.test.ts tests/cli-evaluate-keyboard.test.ts"
   },
   "keywords": [
     "browser-automation",

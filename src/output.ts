@@ -199,13 +199,22 @@ let captureTruncated = false;
 function writeAllSync(text: string): void {
   const buf = Buffer.from(text, "utf-8");
   let off = 0;
+  // EAGAIN is retried, but a BOUNDED number of times. The first version of this
+  // did `if (code === "EAGAIN") continue;` with no limit, which busy-spins
+  // forever against a non-blocking pipe whose reader never drains — an infinite
+  // loop in an exit handler, i.e. a process that can never exit. Shipping an
+  // unbounded retry while hunting a hang was not my finest moment. (2026-07-27)
+  let eagainRetries = 0;
+  const MAX_EAGAIN_RETRIES = 10_000;
   while (off < buf.length) {
     try {
       off += writeSync(1, buf, off, buf.length - off);
+      eagainRetries = 0;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EAGAIN") continue;
-      // A stdout we cannot write to is not worth crashing the command over.
+      if (code === "EAGAIN" && eagainRetries++ < MAX_EAGAIN_RETRIES) continue;
+      // Give up on fd 1 and hand the remainder to the async path. Losing the
+      // tail of an envelope beats never exiting.
       try { process.stdout.write(buf.subarray(off)); } catch { /* nothing left to try */ }
       return;
     }
