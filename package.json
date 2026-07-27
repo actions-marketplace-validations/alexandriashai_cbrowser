@@ -74,7 +74,7 @@
     "prepublishOnly": "npm run build",
     "postinstall": "npx playwright install chromium || true",
     "test:gate": "./scripts/test-gate.sh",
-    "test:quarantine": "bun test tests/recording-change-tiers.test.ts tests/cli-evaluate-keyboard.test.ts"
+    "test:quarantine": "bun test tests/recording-autocapture.test.ts tests/recording-change-tiers.test.ts tests/recording-engine.test.ts tests/recording-journey-capture.test.ts tests/recording-mcp-session.test.ts tests/recording-pure.test.ts tests/cli-evaluate-keyboard.test.ts"
   },
   "keywords": [
     "browser-automation",
