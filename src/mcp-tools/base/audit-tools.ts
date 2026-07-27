@@ -25,7 +25,6 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
     description: "Audit a website for AI-agent friendliness. Analyzes findability, stability, accessibility, and semantics. Returns score (0-100), grade (A-F), issues, and remediation recommendations.",
     inputSchema: {
       url: z.string().url().describe("URL to audit"),
-      userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US') — for content language validation"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15'. Tests mobile AI-friendliness (responsive selectors, touch targets, viewport-specific layouts)."),
     },
     annotations: {
@@ -105,8 +104,6 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
       maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
       maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
-      userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US')"),
-      userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US') — affects readability scoring"),
       scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to score: 'viewport' (first impression, above-the-fold only — default) or 'full_page' (scroll through entire page, all barriers). Use 'viewport' for landing page optimization; 'full_page' for WCAG compliance audits."),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15', 'Pixel 7'. Essential for mobile WCAG audits — touch targets, viewport sizing, and responsive barriers differ significantly on mobile."),
     },
@@ -338,7 +335,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, personas, threshold, userLocation, userTimezone, userLanguage, proxy, geoRegion, waitAfterLoad, waitForSelector, scope, _browserToken }) => {
+  }, async ({ url, personas, threshold, userLocation, userTimezone, userLanguage, proxy, geoRegion, device, waitAfterLoad, waitForSelector, scope, _browserToken }) => {
     const startTime = Date.now();
     const personaList = (personas || "first-timer,cognitive-adhd").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -399,6 +396,13 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         browser = new BrowserClass({
           headless: true,
           locale: expectedLocale,
+          // `device` was declared in this tool's inputSchema, described as
+          // "Essential for mobile WCAG audits", and then never destructured — so
+          // a caller asking for a mobile audit silently received a desktop one,
+          // with nothing in the response saying the argument was dropped. This is
+          // the only class in the package where a paying caller gets a confidently
+          // wrong number. (2026-07-26)
+          ...(device ? { device } : {}),
           ...(userTimezone ? { timezone: userTimezone } : {}),
           ...(proxyConfig ? { proxy: proxyConfig, timeout: 60000 } : {}),
         });

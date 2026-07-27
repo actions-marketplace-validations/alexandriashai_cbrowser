@@ -574,8 +574,6 @@ Begin with the first persona: ${personas[0]}
       userTimezone: z.string().optional().describe("User's timezone (e.g., 'America/Denver')"),
       userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US')"),
       proxy: z.string().optional().describe("Proxy server URL for geo-accurate testing"),
-      geoRegion: z.string().optional().describe("Route through a residential proxy in this region: us-west, us-east, us-central, uk, germany, japan"),
-      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
       useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values modulate saliency maps, decision costs, and frustration costs. Default: false (trait-only mode)."),
       waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
       waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
