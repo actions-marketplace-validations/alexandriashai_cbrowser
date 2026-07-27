@@ -367,7 +367,10 @@ async function killOrphanedChromeProcesses(): Promise<number> {
  * Periodic cleanup of idle sessions, memory hogs, expired session tracking,
  * and orphaned Chrome processes.
  */
-setInterval(async () => {
+let sessionCleanupTimer: NodeJS.Timeout | null = null;
+let rateLimitCleanupTimer: NodeJS.Timeout | null = null;
+
+const makeSessionCleanupTimer = () => setInterval(async () => {
   const now = Date.now();
 
   // Clean up expired session tracking (older than retention period)
@@ -929,7 +932,7 @@ function checkRateLimit(
 }
 
 // Cleanup old rate limit entries every 10 minutes
-setInterval(() => {
+const makeRateLimitCleanupTimer = () => setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of rateLimitStore.entries()) {
     entry.requests = entry.requests.filter(t => t > now - RATE_LIMIT_WINDOW_MS);
@@ -938,6 +941,33 @@ setInterval(() => {
     }
   }
 }, 10 * 60 * 1000);
+
+/**
+ * Start the server's background timers.
+ *
+ * Both of these used to run at MODULE SCOPE, so merely IMPORTING this file
+ * started them — including the session reaper, which closes browsers and
+ * SIGKILLs Chrome pids every 30 seconds. A unit test importing the module for a
+ * single exported function therefore got a Chrome-killing reaper running inside
+ * its own process for the rest of the suite. That is how a 267s test run became
+ * 438s with intermittent 180s browser timeouts: the reaper was reaping other
+ * tests' browsers, and whichever browser-heavy test was unlucky absorbed it.
+ * (Diagnosed 2026-07-27 by bisecting a clean 556-pass/0-fail baseline.)
+ *
+ * A library module must not start lifecycle timers on import. Both handles are
+ * unref'd so they can never hold the event loop open on their own, and the
+ * function is idempotent so repeated calls are harmless.
+ */
+export function startBackgroundTimers(): void {
+  if (!sessionCleanupTimer) {
+    sessionCleanupTimer = makeSessionCleanupTimer();
+    sessionCleanupTimer.unref();
+  }
+  if (!rateLimitCleanupTimer) {
+    rateLimitCleanupTimer = makeRateLimitCleanupTimer();
+    rateLimitCleanupTimer.unref();
+  }
+}
 
 async function validateAuth(
   req: IncomingMessage,
@@ -1455,6 +1485,11 @@ export type { ToolRegistrationContext };
 export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Promise<void> {
   // Auto-initialize all data directories on server start
   ensureDirectories();
+
+  // Session reaper + rate-limit sweeper. Started HERE rather than at module
+  // import, so loading this file no longer spins up a Chrome-killing reaper in
+  // whatever process happened to import it. See startBackgroundTimers.
+  startBackgroundTimers();
 
   // Enable remote mode for screenshot handling (returns base64 images instead of paths)
   setRemoteMode(true);
