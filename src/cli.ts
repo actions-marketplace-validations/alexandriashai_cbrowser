@@ -12,6 +12,7 @@
  */
 
 import { CBrowser } from "./browser.js";
+import { parseArgs } from "./cli-args.js";
 
 // Analysis module imports
 import { executeNaturalLanguage, executeNaturalLanguageScript, huntBugs, runChaosTest, comparePersonas, formatComparisonReport, findElementByIntent, runAgentReadyAudit, formatAgentReadyReport, generateAgentReadyHtmlReport, runCompetitiveBenchmark, formatCompetitiveBenchmarkReport, generateCompetitiveBenchmarkHtmlReport, runEmpathyAudit, formatEmpathyAuditReport, generateEmpathyAuditHtmlReport, runWebMCPReadyAudit, generateWebMCPReadyHtmlReport, runAIReadinessBenchmark } from "./analysis/index.js";
@@ -1004,29 +1005,7 @@ function showCommandHelp(command: string): boolean {
   return true;
 }
 
-function parseArgs(args: string[]): { command: string; args: string[]; options: Record<string, string | boolean> } {
-  const command = args[0] || "help";
-  const restArgs: string[] = [];
-  const options: Record<string, string | boolean> = {};
-
-  for (let i = 1; i < args.length; i++) {
-    if (args[i].startsWith("--")) {
-      const key = args[i].slice(2);
-      const next = args[i + 1];
-
-      if (next && !next.startsWith("--")) {
-        options[key] = next;
-        i++;
-      } else {
-        options[key] = true;
-      }
-    } else {
-      restArgs.push(args[i]);
-    }
-  }
-
-  return { command, args: restArgs, options };
-}
+// parseArgs moved to ./cli-args.ts so it can be unit-tested (cli.ts self-executes).
 
 
 // =========================================================================

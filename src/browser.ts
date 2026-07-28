@@ -67,6 +67,7 @@ import {
 } from "./cognitive/index.js";
 import { SessionManager } from "./browser/session-manager.js";
 import { SelectorCacheManager } from "./browser/selector-cache.js";
+import { extractExpected, extractSubject, UNPARSEABLE_MESSAGE } from "./browser/assertion-value.js";
 import { OverlayHandler } from "./browser/overlay-handler.js";
 import { getRemoteMode, MAX_RESPONSE_SIZE } from "./mcp-tools/screenshot-utils.js";
 import { clampRect } from "./recording/timing.js";
@@ -4586,8 +4587,8 @@ For more help: https://playwright.dev/docs/browsers
     // Page title assertions
     if (lowerAssertion.includes("title") && (lowerAssertion.includes("is") || lowerAssertion.includes("contains"))) {
       const title = await page.title();
-      const match = assertion.match(/["']([^"']+)["']/);
-      const expected = match?.[1] || "";
+      const expected = extractExpected(assertion);
+      if (expected === null) return { passed: false, assertion, actual: title, message: UNPARSEABLE_MESSAGE };
 
       if (lowerAssertion.includes("contains")) {
         const passed = title.toLowerCase().includes(expected.toLowerCase());
@@ -4601,8 +4602,8 @@ For more help: https://playwright.dev/docs/browsers
     // URL assertions
     if (lowerAssertion.includes("url") && (lowerAssertion.includes("is") || lowerAssertion.includes("contains"))) {
       const url = page.url();
-      const match = assertion.match(/["']([^"']+)["']/);
-      const expected = match?.[1] || "";
+      const expected = extractExpected(assertion);
+      if (expected === null) return { passed: false, assertion, actual: url, message: UNPARSEABLE_MESSAGE };
 
       if (lowerAssertion.includes("contains")) {
         const passed = url.includes(expected);
@@ -4616,8 +4617,8 @@ For more help: https://playwright.dev/docs/browsers
     // Text presence assertions
     // v14.3.0: Filter script/style content to avoid ad injection false negatives
     if (lowerAssertion.includes("page") && (lowerAssertion.includes("contains") || lowerAssertion.includes("has") || lowerAssertion.includes("shows"))) {
-      const match = assertion.match(/["']([^"']+)["']/);
-      const expected = match?.[1] || "";
+      const expected = extractExpected(assertion);
+      if (expected === null) return { passed: false, assertion, message: UNPARSEABLE_MESSAGE };
       // v14.3.0: Use filtered text extraction (excludes script/style content)
       const content = await page.evaluate(() => {
         const clone = document.body.cloneNode(true) as HTMLElement;
@@ -4633,8 +4634,8 @@ For more help: https://playwright.dev/docs/browsers
 
     // Element existence assertions
     if (lowerAssertion.includes("exists") || lowerAssertion.includes("visible") || lowerAssertion.includes("present")) {
-      const match = assertion.match(/["']([^"']+)["']/);
-      const selector = match?.[1] || "";
+      const selector = extractSubject(assertion);
+      if (selector === null) return { passed: false, assertion, message: UNPARSEABLE_MESSAGE };
       const element = await this.findElement(selector);
       const passed = element !== null;
 
