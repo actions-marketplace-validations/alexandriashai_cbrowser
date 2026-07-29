@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.74.0](https://github.com/alexandriashai/cbrowser/compare/v18.73.4...v18.74.0) (2026-07-29)
+
+### Added
+
+* **mcp-ui:** add ui resource seam and fix dead artifact urls ([beaaa8d](https://github.com/alexandriashai/cbrowser/commit/beaaa8d8562fc02d4b620fcd719b1f6ca02a4d57))
+* **mcp-ui:** draw the barriers on the page ([f0627db](https://github.com/alexandriashai/cbrowser/commit/f0627db50120cdae6cdc42e58c9b2b5de5620f9e))
+
+### Fixed
+
+* barrier rects mixed scroll positions and flagged every rect as off-image ([e405a89](https://github.com/alexandriashai/cbrowser/commit/e405a8944e5ede74c3ab0af136eb787ad0c7a608))
+* escape generated selectors, make cognitive_distance honest ([f32ab55](https://github.com/alexandriashai/cbrowser/commit/f32ab55203c832b51112f9e500ffdfb338146769)), closes [#id](https://github.com/alexandriashai/cbrowser/issues/id)
+* generated test script used a dialect the parser cannot read ([d84799b](https://github.com/alexandriashai/cbrowser/commit/d84799bad7b365ce23625cc951c5bc76a56b991a))
+* page fingerprints were counted but never written ([0b9fd87](https://github.com/alexandriashai/cbrowser/commit/0b9fd879414e00fe4aa0a94ff8bda43c580bfd30))
+* page type ordered by branch position rather than signal strength, and a 34KB persona response ([57a5413](https://github.com/alexandriashai/cbrowser/commit/57a5413a3ad60f58e42aeae7ed700276c35eac0d))
+* two severity paths, duplicated attention targets, and JSON-LD read as page text ([013ad8a](https://github.com/alexandriashai/cbrowser/commit/013ad8ac60f3399ba87cb308d541f9ad0afd83ba))
+
 ## [18.73.4](https://github.com/alexandriashai/cbrowser/compare/v18.73.3...v18.73.4) (2026-07-29)
 
 ### Fixed
