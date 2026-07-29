@@ -111,11 +111,26 @@ export function registerAnalysisTools(
             text: JSON.stringify({
               ...(token ? { _browserToken: token } : {}),
               testsGenerated: result.tests.length,
+              // `steps` used to be t.steps.length — a bare count. A caller got
+              // "3 steps" with no way to see or run them, so there was no handoff
+              // into nl_test_inline / nl_test_file and the tool could only be
+              // read, not used. The step text and a runnable script were both
+              // already computed and then discarded. (2026-07-29)
               tests: result.tests.map(t => ({
                 name: t.name,
                 description: t.description,
-                steps: t.steps.length,
+                stepCount: t.steps.length,
+                steps: t.steps.map(st => ({
+                  action: st.action,
+                  ...(st.target ? { target: st.target } : {}),
+                  ...(st.value !== undefined ? { value: st.value } : {}),
+                  description: st.description,
+                })),
+                assertions: t.assertions,
               })),
+              // Ready to paste straight into nl_test_inline.
+              cbrowserScript: result.cbrowserScript,
+              usage: "Pass cbrowserScript to nl_test_inline as `content`, or write it to a file and use nl_test_file.",
             }, null, 2),
           },
         ],
