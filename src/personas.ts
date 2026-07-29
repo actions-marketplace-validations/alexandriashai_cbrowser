@@ -60,7 +60,12 @@ export function loadCustomPersonas(): Record<string, Persona> {
         const content = readFileSync(join(PERSONAS_DIR, file), "utf-8");
         let persona: Persona;
         if (file.endsWith(".json")) {
-          persona = JSON.parse(content) as Persona;
+          // Bare `as Persona` trusted arbitrary user-authored JSON to be complete.
+          // The YAML branch below already defaults `behaviors`, so give the JSON
+          // branch the same floor rather than letting a partial file reach
+          // getCognitiveProfile half-formed. (2026-07-28)
+          const parsed = JSON.parse(content) as Persona;
+          persona = { ...parsed, behaviors: parsed.behaviors ?? {} } as Persona;
         } else {
           // Simple YAML parsing for persona files
           const nameMatch = content.match(/^name:\s*(.+)$/m);
@@ -738,6 +743,17 @@ export function createCognitivePersona(
     workingMemory: traits.workingMemory ?? basePersona.cognitiveTraits?.workingMemory ?? 0.5,
     readingTendency: traits.readingTendency ?? basePersona.cognitiveTraits?.readingTendency ?? 0.5,
     resilience: traits.resilience ?? basePersona.cognitiveTraits?.resilience ?? 0.5,
+    // These four were absent from this hand-written enumeration, so a caller who
+    // explicitly supplied them had them silently dropped and re-defaulted to 0.5:
+    // persona_create_submit_traits -> createCognitivePersona -> cognitive_journey_init
+    // returned selfEfficacy 0.2 as 0.5, satisficing 0.7 as 0.5, trustCalibration
+    // 0.4 as 0.5, interruptRecovery 0.35 as 0.5. The other 22 survived, which is
+    // what made it look like a defaulting rule rather than an omission.
+    // (2026-07-28)
+    selfEfficacy: traits.selfEfficacy ?? basePersona.cognitiveTraits?.selfEfficacy ?? 0.5,
+    satisficing: traits.satisficing ?? basePersona.cognitiveTraits?.satisficing ?? 0.5,
+    trustCalibration: traits.trustCalibration ?? basePersona.cognitiveTraits?.trustCalibration ?? 0.5,
+    interruptRecovery: traits.interruptRecovery ?? basePersona.cognitiveTraits?.interruptRecovery ?? 0.5,
     // New traits (v15.0.0)
     informationForaging: traits.informationForaging ?? basePersona.cognitiveTraits?.informationForaging ?? 0.5,
     changeBlindness: traits.changeBlindness ?? basePersona.cognitiveTraits?.changeBlindness ?? 0.3,
@@ -754,6 +770,18 @@ export function createCognitivePersona(
     mentalModelRigidity: traits.mentalModelRigidity ?? basePersona.cognitiveTraits?.mentalModelRigidity ?? 0.5,
     siteFamiliarity: traits.siteFamiliarity ?? basePersona.cognitiveTraits?.siteFamiliarity ?? 0.5,
   };
+
+  // Backstop for the failure mode above. The enumeration is kept because it
+  // documents each trait's fallback, but a hand-written list silently drops
+  // whatever it forgets — that is exactly how four traits went missing. Anything
+  // the caller supplied that the list does not name is carried through rather
+  // than discarded, so a future addition to CognitiveTraits degrades to
+  // "no documented default" instead of "silently reset". (2026-07-28)
+  for (const [key, value] of Object.entries(traits)) {
+    if (value !== undefined && !(key in cognitiveTraits)) {
+      (cognitiveTraits as unknown as Record<string, number>)[key] = value as number;
+    }
+  }
 
   // Update demographics if provided
   if (options.techLevel) {
@@ -800,7 +828,14 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     else if (pattern === "f-pattern") attentionPattern = "f-pattern";
     else if (pattern === "z-pattern") attentionPattern = "z-pattern";
   }
-  if (persona.behaviors.attentionPattern) {
+  // Optional-chained like humanBehavior above. loadCustomPersonas casts parsed
+  // JSON straight to Persona with no validation, so a persona file without a
+  // `behaviors` key threw here and took down every caller of this function —
+  // list_cognitive_personas returned "Cannot read properties of undefined
+  // (reading 'attentionPattern')" instead of listing anything. The loader's own
+  // try/catch intends to SKIP a bad file, but the throw happened later, outside
+  // it. (2026-07-28)
+  if (persona.behaviors?.attentionPattern) {
     attentionPattern = persona.behaviors.attentionPattern as AttentionPatternType;
   }
 
@@ -838,7 +873,7 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
       decisionStyle = "quick-tap";
     }
   }
-  if (persona.behaviors.decisionStyle) {
+  if (persona.behaviors?.decisionStyle) {
     decisionStyle = persona.behaviors.decisionStyle as DecisionStyleType;
   }
 
@@ -880,7 +915,7 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     traits: traits ? { ...defaultTraits, ...traits } : defaultTraits,
     attentionPattern,
     decisionStyle,
-    innerVoiceTemplate: persona.behaviors.innerVoiceTemplate as string | undefined,
+    innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,
   };
 }
 

@@ -625,6 +625,15 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       const builtTraits = buildTraitsFromAnswers(traits);
       const derivedResult = deriveValuesFromTraits(builtTraits);
 
+      // buildTraitsFromAnswers fills every unsupplied trait from research
+      // baselines, so a caller who names 3 traits gets back a complete 26-trait
+      // persona with no way to tell which 23 were invented. Report both lists.
+      // (2026-07-28)
+      const allTraitNames = Object.keys(builtTraits);
+      const providedTraits = allTraitNames.filter((k) => k in traits);
+      const defaultedTraits = allTraitNames.filter((k) => !(k in traits));
+      const unknownTraits = Object.keys(traits).filter((k) => !allTraitNames.includes(k));
+
       // Register the persona in the runtime so empathy_audit, cognitive_effort, etc. can find it
       const { createCognitivePersona, registerPersonas } = await import("../personas.js");
       const personaObj = createCognitivePersona(
@@ -718,6 +727,16 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             persona_name,
             description,
             traits: builtTraits,
+            providedTraits,
+            defaultedTraits,
+            traitCompleteness: `${providedTraits.length} of ${allTraitNames.length} supplied; ${defaultedTraits.length} filled from research baselines`,
+            // A misspelled trait name was previously accepted in silence and had
+            // no effect, since buildTraitsFromAnswers only applies keys already
+            // present in the trait table.
+            ...(unknownTraits.length > 0 ? {
+              unknownTraits,
+              warning: `Ignored ${unknownTraits.length} unrecognized trait name(s): ${unknownTraits.join(", ")}. These had no effect.`,
+            } : {}),
             values: derivedResult.values,
             derivations: derivedResult.derivations,
             accessibilityTraits: resolvedAccessibilityTraits || null,

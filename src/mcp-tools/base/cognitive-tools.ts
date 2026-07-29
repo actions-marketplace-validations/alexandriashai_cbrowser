@@ -873,7 +873,40 @@ Begin the simulation now. Narrate your thoughts as this persona.
         })() : undefined,
       }));
 
-      const allPersonas = [...builtinPersonas, ...accessibilityPersonas, ...localCustomPersonas, ...cmsCustomPersonas];
+      // Dedupe by name. listPersonas() returns built-ins UNION the on-disk custom
+      // personas, so each disk-custom persona was already emitted in the builtin
+      // loop above (mislabelled category "builtin"), then again as "custom", and a
+      // third time from the CMS when it had been synced there — 37 rows for ~23
+      // real personas.
+      //
+      // This MERGES rather than replaces. A plain last-write-wins would be lossy:
+      // the CMS record carries no demographics / attentionPattern / decisionStyle
+      // and holds raw DB traits, so it would silently drop fields the earlier
+      // record had, on a tool whose own description advertises "with their
+      // cognitive traits". Later records therefore fill in and refine, and the
+      // first-seen computed cognitive profile wins over raw CMS traits.
+      // (2026-07-28)
+      const rawPersonas = [...builtinPersonas, ...accessibilityPersonas, ...localCustomPersonas, ...cmsCustomPersonas]
+        .filter(Boolean) as Array<Record<string, unknown>>;
+
+      const byName = new Map<string, Record<string, unknown>>();
+      for (const p of rawPersonas) {
+        const name = p.name as string;
+        const existing = byName.get(name);
+        if (!existing) {
+          byName.set(name, { ...p });
+          continue;
+        }
+        for (const [key, value] of Object.entries(p)) {
+          if (value === undefined || value === null) continue;
+          // getCognitiveProfile() output beats the raw traits column.
+          if (key === "cognitiveTraits" && existing.cognitiveTraits) continue;
+          existing[key] = value;
+        }
+      }
+      const allPersonas = [...byName.values()];
+      const countByCategory = (category: string) =>
+        allPersonas.filter((p) => p.category === category).length;
 
       return {
         content: [
@@ -883,9 +916,9 @@ Begin the simulation now. Narrate your thoughts as this persona.
               personas: allPersonas,
               count: allPersonas.length,
               categories: {
-                builtin: builtinPersonas.length,
-                accessibility: accessibilityPersonas.length,
-                custom: localCustomPersonas.length + cmsCustomPersonas.length,
+                builtin: countByCategory("builtin"),
+                accessibility: countByCategory("accessibility"),
+                custom: countByCategory("custom"),
               },
             }, null, 2),
           },

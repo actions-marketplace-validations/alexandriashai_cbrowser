@@ -2545,6 +2545,19 @@ export async function runEmpathyAudit(
       // v18.35.0: Flag non-disability personas
       if (!isDisabilityPersona) {
         (result as any).isDisabilityPersona = false;
+        // getDisabilityType() derives labels like "Cognitive (ADHD/Memory)" from
+        // trait thresholds alone (workingMemory < 0.5), so a wrapped general
+        // persona such as first-timer (workingMemory 0.4) was reported as having
+        // a disability while this very flag said it did not. Overwrite only an
+        // actual disability label: personas already carrying a general one keep
+        // their existing wording, so report text does not churn for cases that
+        // were already correct. Kept a string rather than null because types.ts
+        // declares disabilityType: string and formatEmpathyAuditReport() reads
+        // .length on it. (2026-07-28)
+        const stamped = (result as any).disabilityType;
+        if (typeof stamped === "string" && !/^general\b/i.test(stamped)) {
+          (result as any).disabilityType = "General UX (not a disability persona)";
+        }
         (result as any).personaNote = `"${disability}" is not a disability persona. Barriers shown are general UX issues, not disability-specific. For disability testing, use: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia.`;
       }
 
