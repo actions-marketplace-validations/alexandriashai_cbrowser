@@ -165,6 +165,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
                 frictionDeduction: r.scoreContext.frictionDeduction,
                 goalDeduction: r.scoreContext.goalDeduction,
                 cognitiveOverloadPenalty: (r.scoreContext as any).cognitiveOverloadPenalty,
+                appliedBarrierWeights: (r.scoreContext as any).appliedBarrierWeights,
                 explainsScore: (r.scoreContext as any).explainsScore,
                 barrierOnlyScore: (r.scoreContext as any).barrierOnlyScore,
                 perceptualScore: (r.scoreContext as any).perceptualScore,

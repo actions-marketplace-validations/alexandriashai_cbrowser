@@ -526,6 +526,8 @@ export function calculatePerceptualScore(
   cognitiveLoad: number;
   motorCost: number;
   explanation: string;
+  /** Per-barrier-type susceptibility weight applied for this persona. */
+  appliedWeights: Record<string, number>;
   /** Points deducted for reading/processing friction. */
   frictionDeduction: number;
   /** Points deducted for failing the goal, capped at 25. */
@@ -537,6 +539,8 @@ export function calculatePerceptualScore(
   const filter = profile.visualFilter;
   let score = 100;
   const deductions: Record<string, number> = {};
+  /** Per-barrier-type susceptibility weight actually applied for this persona. */
+  const appliedWeights: Record<string, number> = {};
 
   // Group barriers by type
   const byType = new Map<string, Array<{ severity: string }>>();
@@ -575,6 +579,14 @@ export function calculatePerceptualScore(
 
     if (capped > 0) {
       deductions[type] = -Math.round(capped * 10) / 10;
+      // Barriers carry an affectedPersonas list naming a couple of exemplars,
+      // which reads as exclusive next to a deduction charged to some other
+      // persona. It is not a contradiction — susceptibility is applied here as a
+      // weight, not a filter (cognitive-adhd carries touch_target 0.5 against
+      // motor-impairment-tremor's 3.0). Recording the weight makes the payload
+      // explain its own arithmetic instead of looking self-contradictory.
+      // (2026-07-28)
+      appliedWeights[type] = weight;
       score -= capped;
     }
   }
@@ -633,6 +645,7 @@ export function calculatePerceptualScore(
     cognitiveLoad,
     motorCost,
     explanation,
+    appliedWeights,
     // These three were computed, subtracted from the score, written into the
     // explanation prose above, and then discarded. The caller therefore had no
     // way to read them, which is why scoreContext.frictionDeduction was

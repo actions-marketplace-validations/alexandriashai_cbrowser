@@ -1558,6 +1558,11 @@ async function simulateAccessibilityJourney(
     // The reading behind the prose above and behind cognitiveOverloadPenalty.
     // Named because two other numbers in this payload are also "cognitive load".
     visualComplexityCognitiveLoad: perceptualResult.cognitiveLoad,
+    // Susceptibility weight applied per barrier type for THIS persona. Barriers
+    // name a couple of exemplar affectedPersonas, which looks contradictory
+    // beside a deduction charged to a different persona; the weight is what
+    // actually differentiates them.
+    appliedBarrierWeights: perceptualResult.appliedWeights,
     finalScore: empathyScore,
     explanation: perceptualResult.explanation
       + (perceptualResult.informationLoss > 0.05 ? ` | Info loss: ${(perceptualResult.informationLoss * 100).toFixed(0)}%` : '')
