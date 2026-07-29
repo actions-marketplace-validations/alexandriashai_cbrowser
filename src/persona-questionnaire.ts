@@ -1893,13 +1893,28 @@ export function formatForAskUserQuestion(questions: QuestionnaireQuestion[]): Ar
  * - EMOTIONAL: Trait anxiety/confidence → specific values based on psychology
  * - GENERAL: No disability → research-based population defaults
  */
-export type PersonaCategory =
-  | "cognitive"   // ADHD, dyslexia, autism, processing speed
-  | "physical"    // Motor tremor, mobility, dexterity
-  | "sensory"     // Color blindness, hearing, visual acuity
-  | "emotional"   // Anxiety, depression, confidence
-  | "general"     // No specific disability
-  | "agent";      // AI agent personas (v17.0.0)
+/**
+ * The single source of truth for persona categories.
+ *
+ * There used to be three hand-maintained lists and they had drifted apart:
+ * CATEGORY_QUESTION offered "agent" but not "emotional", while the
+ * persona_questionnaire_build / persona_category_guidance z.enums accepted
+ * "emotional" but not "agent". Each side was missing exactly what the other
+ * had, so picking "AI Agent" from the question the tool itself offered was
+ * rejected by the tool it told you to call next — a dead end reachable only by
+ * following the instructions. Every consumer now derives from this array.
+ * (2026-07-29)
+ */
+export const PERSONA_CATEGORIES = [
+  "cognitive",   // ADHD, dyslexia, autism, processing speed
+  "physical",    // Motor tremor, mobility, dexterity
+  "sensory",     // Color blindness, hearing, visual acuity
+  "emotional",   // Anxiety, depression, confidence
+  "general",     // No specific disability
+  "agent",       // AI agent personas (v17.0.0)
+] as const;
+
+export type PersonaCategory = (typeof PERSONA_CATEGORIES)[number];
 
 /**
  * Category-specific value presets with research citations.
@@ -1935,6 +1950,37 @@ export interface CategoryValuePreset {
  * Research-grounded value presets for each category.
  */
 export const CATEGORY_VALUE_PRESETS: CategoryValuePreset[] = [
+  {
+    // Added 2026-07-29. "agent" was offered by CATEGORY_QUESTION and accepted by
+    // the build enum, but had no preset — so getCategoryValuePreset fell through
+    // to "general" and an AI-agent persona was silently assigned GENERAL HUMAN
+    // motivational values. That is worse than rejecting the category: it
+    // produces a confident, research-cited profile that models the wrong kind of
+    // entity. Found by checking that every offered category resolves to its OWN
+    // preset rather than trusting that the enum widening was sufficient.
+    category: "agent",
+    description: "AI-powered automation agent (crawler, retrieval, task completion) — not a human user",
+    valueStrategy: "trait_based",
+    researchBasis: [
+      "Schwartz, S.H. (2012). An Overview of the Schwartz Theory of Basic Values. ORPC 2(1). — the theory is defined over HUMAN motivational goals and does not extend to software agents.",
+      "Deci, E.L. & Ryan, R.M. (2000). Self-Determination Theory. Psychological Inquiry 11(4). — autonomy/competence/relatedness are human psychological needs.",
+    ],
+    defaultValues: {
+      // Deliberately neutral on every human motivational dimension. An agent has
+      // capabilities and constraints, not needs; assigning it a security drive or
+      // a belonging need is a category error dressed as data. What differentiates
+      // agent personas belongs in cognitiveTraits (parsing, retrieval, tool use),
+      // which is why the strategy is trait_based.
+      stimulation: 0.5,
+      security: 0.5,
+      conformity: 0.5,
+      autonomyNeed: 0.5,
+      competenceNeed: 0.5,
+      relatednessNeed: 0.5,
+      maslowLevel: "physiological",
+    },
+    guidance: "Agent personas are not human. Schwartz values and SDT needs are defined over human motivation and do not transfer, so every motivational dimension stays neutral (0.5) and differentiation comes from cognitive traits — parsing ability, retrieval strategy, tool use, error recovery. Do NOT project human needs like security or belonging onto an agent; a confidently-wrong profile is worse than no profile.",
+  },
   {
     category: "cognitive",
     description: "Disabilities affecting brain function, attention, or processing",
@@ -2507,6 +2553,15 @@ export const CATEGORY_QUESTION: {
       label: "AI Agent",
       description: "AI-powered automation agent (crawler, retrieval, task completion)",
       category: "agent",
+    },
+    {
+      // Was absent while the build tool accepted it — the other half of the
+      // drift described on PERSONA_CATEGORIES. A category with value presets and
+      // guidance that no question ever offers is unreachable by a caller
+      // following the documented flow.
+      label: "Emotional / Confidence",
+      description: "Anxiety, low confidence, or fear of making mistakes shapes how they navigate",
+      category: "emotional",
     },
     // Note: "Other" option always available via AskUserQuestion
   ],

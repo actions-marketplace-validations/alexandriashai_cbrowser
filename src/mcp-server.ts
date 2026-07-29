@@ -14,6 +14,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { PERSONA_CATEGORIES } from "./persona-questionnaire.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { CBrowser } from "./browser.js";
@@ -364,6 +365,32 @@ interface QuestionnaireSession {
 }
 
 const questionnaireSessionsMap = new Map<string, QuestionnaireSession>();
+
+/**
+ * Group a flat Schwartz/SDT value record into the nested schema every other
+ * values-returning path uses (schwartz / higherOrder / sdt / maslowLevel).
+ *
+ * persona_questionnaire_build emitted `values` FLAT, with Schwartz and SDT
+ * merged and no higherOrder grouping — so the C4b nested-schema fix never
+ * reached the creation path, and a persona built through the questionnaire had
+ * a different value shape from the same persona loaded back. Three sites
+ * already hand-write this grouping; this is the shared one. (2026-07-29)
+ */
+function nestPersonaValues(values: Record<string, unknown> | undefined) {
+  if (!values) return undefined;
+  const pick = (...keys: string[]) => {
+    const out: Record<string, unknown> = {};
+    for (const k of keys) if (values[k] !== undefined) out[k] = values[k];
+    return out;
+  };
+  return {
+    schwartz: pick("selfDirection", "stimulation", "hedonism", "achievement", "power",
+                   "security", "conformity", "tradition", "benevolence", "universalism"),
+    higherOrder: pick("openness", "selfEnhancement", "conservation", "selfTranscendence"),
+    sdt: pick("autonomyNeed", "competenceNeed", "relatednessNeed"),
+    maslowLevel: values.maslowLevel,
+  };
+}
 
 function getQuestionnaireSession(sessionId: string): QuestionnaireSession | undefined {
   return questionnaireSessionsMap.get(sessionId);
@@ -2430,7 +2457,7 @@ This ensures personas are grounded in research, not stereotypes.
     "persona_category_guidance",
     "Get research-based guidance for a specific persona category. Explains what values are appropriate and why, with citations. Use before building a persona to understand category constraints.",
     {
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).describe("Persona category to get guidance for"),
+      category: z.enum(PERSONA_CATEGORIES).describe("Persona category to get guidance for"),
     },
     async ({ category }) => {
       const {
@@ -2467,7 +2494,12 @@ This ensures personas are grounded in research, not stereotypes.
                 sensory: "Use neutral (0.5) values. Sensory perception ≠ motivational psychology. Color-blindness doesn't make someone more/less achievement-oriented.",
                 emotional: "Apply trait-based values from personality psychology (e.g., anxiety = high security-seeking).",
                 general: "Use population baselines. Specific characteristics come from cognitive traits, not disability-based value shifts.",
-              }[category],
+                // Added 2026-07-29: this table covered five of the six
+                // categories, and TypeScript flagged it the moment the enum
+                // stopped silently excluding "agent". An unlisted key would have
+                // yielded `undefined` guidance beside a populated preset.
+                agent: "Agent personas are not human — motivational values do not apply. Use trait-based capability values (parsing, retrieval, tool use) and do NOT project human needs like security or belonging onto them.",
+              }[category as (typeof PERSONA_CATEGORIES)[number]],
             }, null, 2),
           },
         ],
@@ -2482,7 +2514,7 @@ This ensures personas are grounded in research, not stereotypes.
       name: z.string().describe("Name for the new persona"),
       description: z.string().describe("Description of the persona"),
       answers: z.record(z.string(), z.number()).describe("Map of trait names to values (0-1), e.g. {patience: 0.25, riskTolerance: 0.75}"),
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).optional().describe("Persona category for value safeguards. Auto-detected from name/description if not provided."),
+      category: z.enum(PERSONA_CATEGORIES).optional().describe("Persona category for value safeguards. Auto-detected from name/description if not provided."),
       valueOverrides: z.record(z.string(), z.number()).optional().describe("Override specific Schwartz values (0-1), e.g. {security: 0.8, stimulation: 0.3}"),
       save: z.boolean().optional().default(true).describe("Save the persona to disk for future use"),
     },
@@ -2556,7 +2588,10 @@ This ensures personas are grounded in research, not stereotypes.
                 strategy: categoryResult.valueStrategy,
                 guidance: categoryResult.guidance,
               },
+              // Flat shape retained for callers that already read it; the nested
+              // grouping is what every other values-returning path emits.
               values: categoryResult.values,
+              valuesNested: nestPersonaValues(categoryResult.values as unknown as Record<string, unknown>),
               researchBasis: subtypeValues
                 ? [...categoryResult.researchBasis, subtypeValues.researchBasis]
                 : categoryResult.researchBasis,

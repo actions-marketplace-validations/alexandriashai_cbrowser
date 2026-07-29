@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import { PERSONA_CATEGORIES } from "../../persona-questionnaire.js";
 import type { McpServer } from "../types.js";
 import {
   getPersonaValues,
@@ -266,7 +267,7 @@ export function registerValuesTools(server: McpServer): void {
       name: z.string().describe("Name for the new persona"),
       description: z.string().describe("Description of the persona"),
       answers: z.record(z.string(), z.number()).describe("Map of trait names to values (0-1), e.g. {patience: 0.25, riskTolerance: 0.75}"),
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).optional().describe("Persona category for value safeguards (v16.12.0)"),
+      category: z.enum(PERSONA_CATEGORIES).optional().describe("Persona category for value safeguards (v16.12.0)"),
       valueOverrides: z.record(z.string(), z.number()).optional().describe("Override specific values (0-1) if different from category defaults"),
       save: z.boolean().optional().default(true).describe("Save the persona to disk for future use"),
     },
@@ -410,7 +411,7 @@ export function registerValuesTools(server: McpServer): void {
     title: "Persona Category Guidance",
     description: "Get guidance for value assignment based on persona category. (v16.12.0) Explains research basis for why cognitive, physical, sensory, and emotional disability categories require different value handling approaches.",
     inputSchema: {
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).describe("Persona category to get guidance for"),
+      category: z.enum(PERSONA_CATEGORIES).describe("Persona category to get guidance for"),
     },
     annotations: {
       title: "Persona Category Guidance",
