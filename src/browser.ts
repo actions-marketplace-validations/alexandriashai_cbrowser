@@ -3917,7 +3917,11 @@ For more help: https://playwright.dev/docs/browsers
         if (el.id) return `#${el.id}`;
         if (el.getAttribute("data-testid")) return `[data-testid="${el.getAttribute("data-testid")}"]`;
         if (el.getAttribute("name")) return `[name="${el.getAttribute("name")}"]`;
-        const text = el.textContent?.trim().substring(0, 30);
+        // Was substring(0, 30) — the same truncation removed from aria-label and
+        // visible text elsewhere, still cutting the SELECTOR here, so a generated
+        // step said text="Sign up for Pro and get 500 bo" and matched nothing.
+        // A selector has to be the whole string to resolve. (2026-07-29)
+        const text = el.textContent?.trim().substring(0, 200);
         if (text) return `text="${text}"`;
         return el.tagName.toLowerCase();
       };
@@ -4184,28 +4188,41 @@ For more help: https://playwright.dev/docs/browsers
       script += `# ${test.name}\n`;
       script += `# ${test.description}\n`;
 
+      // This must be the dialect src/testing/nl-test-suite.ts PARSES, because the
+      // MCP tool tells callers to paste it straight into nl_test_inline. It used
+      // to emit a `verb "quoted-arg"` form of its own invention, and every line
+      // came back action:"unknown" — `navigate "url"` is not a rule (the rule is
+      // `go to <url>`), and wrapping a selector in quotes leaves literal quote
+      // characters inside the target, which then nests against selectors like
+      // [data-testid="x"]. (2026-07-29)
       for (const step of test.steps) {
         switch (step.action) {
           case "navigate":
-            script += `navigate "${step.target}"\n`;
+            script += `go to ${step.target}\n`;
             break;
           case "click":
-            script += `click "${step.target}"\n`;
+            // Unquoted: the parser takes the rest of the line as the target.
+            script += `click ${step.target}\n`;
             break;
           case "fill":
-            script += `fill "${step.target}" "${step.value}"\n`;
+            // The parser wants the VALUE quoted and the field bare.
+            script += `fill ${step.target} with "${step.value}"\n`;
             break;
           case "assert":
-            script += `assert "${step.target}"\n`;
+            // step.target is already a predicate, e.g. url contains '/docs/'.
+            script += `assert ${step.target}\n`;
             break;
           case "wait":
-            script += `# wait ${step.value}ms\n`;
+            script += `wait ${Math.max(1, Math.round(Number(step.value ?? 1000) / 1000))} seconds\n`;
             break;
         }
       }
 
+      // test.assertions are intentions, not executable steps — "no console
+      // errors" has no rule, and the grammar has no OR. Emitting them as steps
+      // produced unparseable lines, so they ship as comments.
       for (const assertion of test.assertions) {
-        script += `assert "${assertion}"\n`;
+        script += `# expected: ${assertion}\n`;
       }
 
       script += "\n";
