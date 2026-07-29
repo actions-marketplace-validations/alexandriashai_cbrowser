@@ -250,6 +250,21 @@ const PATCH_TEMPLATES: Record<string, (issue: AgentReadyIssue) => RemediationPat
 /**
  * Default patch template for unknown issue types
  */
+/**
+ * ROI impact for a patch: how much is fixing this worth, not how bad it is.
+ * Severity says how bad; effort says how expensive; impact ranks the trade.
+ */
+function deriveImpact(
+  severity: AgentReadyIssue["severity"],
+  effort: RemediationPatch["effort"],
+): RemediationPatch["impact"] {
+  if (severity === "critical" || severity === "high") return "high";
+  // A cheap fix is worth doing even for a middling issue.
+  if (effort === "trivial" && severity === "medium") return "high";
+  if (severity === "medium") return "medium";
+  return effort === "trivial" ? "medium" : "low";
+}
+
 function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
   // Classify effort based on issue category — single-attribute additions are trivial
   const effort: RemediationPatch["effort"] =
@@ -285,7 +300,18 @@ function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
     after,
     explanation: issue.recommendation || "Review the element and apply accessibility best practices.",
     effort,
-    impact: issue.category === "findability" ? "high" : "medium",
+    // `impact` is deliberately NOT a restatement of the audit's `severity` — it
+    // is the ROI axis the dashboard sorts by, "highest impact / lowest effort
+    // first" (see AGENTS.md). That design is fine. The bug was this line: a
+    // constant per category, so every findability finding came back "high" and
+    // the sort had nothing to sort on. With 26 detection methods in the audit
+    // and 9 templates here, most findings reach this default, which is why a
+    // single audit returned 12 patches all rated high. (2026-07-29)
+    //
+    // Now derived from the issue's own severity, keeping the documented case
+    // where a trivial fix is high ROI even for a minor issue ("changing one
+    // aria-label is trivial+high").
+    impact: deriveImpact(issue.severity, effort),
   };
 }
 
