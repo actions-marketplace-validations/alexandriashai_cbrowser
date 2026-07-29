@@ -597,29 +597,16 @@ Begin the simulation now. Narrate your thoughts as this persona.
         if (actionResult.progressMade) {
           // Achievement-driven personas get bigger confidence boost from progress
           newConfidenceLevel = Math.min(1, newConfidenceLevel + 0.1 * achievementMod);
-          if (newMood === "confused" || newMood === "frustrated") {
-            newMood = "hopeful";
-          }
         }
       } else {
         // Failure — security-focused personas accumulate MORE frustration on failure
         newFrustrationLevel = Math.min(1, newFrustrationLevel + 0.2 * securityMod);
 
-        if (newFrustrationLevel > 0.7) {
-          newMood = "frustrated";
-        }
-        if (newFrustrationLevel > 0.8 && personaTraits.persistence < 0.5) {
-          newMood = "defeated";
-        }
       }
 
       if (actionResult.wasConfusing) {
         // Confusion — conformity-seeking personas get more confused without clear guidance
         newConfusionLevel = Math.min(1, newConfusionLevel + (1 - personaTraits.comprehension) * 0.15 * conformityMod);
-
-        if (newConfusionLevel > 0.5 && newMood !== "frustrated") {
-          newMood = "confused";
-        }
       }
 
       if (actionResult.wentBack) {
@@ -627,7 +614,31 @@ Begin the simulation now. Narrate your thoughts as this persona.
         newConfidenceLevel = Math.max(0, newConfidenceLevel - 0.15 * securityMod);
       }
 
+      // Mood resolved from the FINAL levels, by whichever dimension actually
+      // dominates. It used to be assigned inside whichever branch happened to
+      // run: frustration only set the mood on a FAILED action, while confusion
+      // set it on any action guarded only by `newMood !== "frustrated"`. So a
+      // persona carrying frustration 0.85 into a successful-but-confusing step
+      // came out "confused" while frustration outranked confusion 0.85 to 0.65.
+      // (2026-07-29)
+      if (newFrustrationLevel > 0.8 && personaTraits.persistence < 0.5) {
+        newMood = "defeated";
+      } else if (newFrustrationLevel > 0.7 || newConfusionLevel > 0.5) {
+        newMood = newFrustrationLevel >= newConfusionLevel ? "frustrated" : "confused";
+      } else if (actionResult.success && actionResult.progressMade) {
+        newMood = "hopeful";
+      }
+
+      // 6.18: goalProgress is a REQUIRED input that nothing read and nothing
+      // returned, so every loop the caller supplied it and got nothing back —
+      // state threading dropped it. progressMade already means "the goal moved",
+      // so advance it there and echo it otherwise.
+      const newGoalProgress = actionResult.progressMade
+        ? Math.min(1, currentState.goalProgress + 0.1)
+        : currentState.goalProgress;
+
       const newState: Partial<CognitiveState> = {
+        goalProgress: newGoalProgress,
         patienceRemaining: Math.max(0, newPatienceRemaining),
         confusionLevel: newConfusionLevel,
         frustrationLevel: newFrustrationLevel,
@@ -648,22 +659,50 @@ Begin the simulation now. Narrate your thoughts as this persona.
       const frustrationThreshold = 0.85 / securityMod;  // Lower threshold for high-security personas
       const confusionThreshold = 0.8 / conformityMod;   // Lower threshold for high-conformity personas
 
+      // Precedence used to be an implicit if/else chain — patience, then
+      // frustration, then confusion — so when two dimensions breached at once
+      // the reported reason depended on source order and nothing said which had
+      // actually driven the abandonment. Score each breach by how far PAST its
+      // own threshold it went, report the worst, and name the others. Margins
+      // are relative so thresholds of different scales stay comparable.
+      // (2026-07-29)
+      const breaches: Array<{ reason: string; margin: number; message: string }> = [];
+
       if (newState.patienceRemaining! < patienceThreshold) {
+        breaches.push({
+          reason: "patience",
+          margin: (patienceThreshold - newState.patienceRemaining!) / Math.max(patienceThreshold, 1e-6),
+          message: "This is taking too long. I give up.",
+        });
+      }
+      if (newState.frustrationLevel! > frustrationThreshold) {
+        breaches.push({
+          reason: "frustration",
+          margin: (newState.frustrationLevel! - frustrationThreshold) / Math.max(frustrationThreshold, 1e-6),
+          message: (v.security ?? 0.5) > 0.7
+            ? "This doesn't feel safe or reliable. I'm leaving."
+            : "This is so frustrating! I'm done.",
+        });
+      }
+      // Confusion still requires two consecutive breaching steps: a single
+      // confusing moment is not grounds to give up.
+      if (newState.confusionLevel! > confusionThreshold && currentState.confusionLevel > confusionThreshold) {
+        breaches.push({
+          reason: "confusion",
+          margin: (newState.confusionLevel! - confusionThreshold) / Math.max(confusionThreshold, 1e-6),
+          message: (v.conformity ?? 0.5) > 0.7
+            ? "I can't tell what most people would do here. I'll try something else."
+            : "I have no idea what I'm supposed to do here.",
+        });
+      }
+
+      let alsoBreached: string[] | undefined;
+      if (breaches.length > 0) {
+        breaches.sort((a, b) => b.margin - a.margin);
         shouldAbandon = true;
-        abandonmentReason = "patience";
-        abandonmentMessage = "This is taking too long. I give up.";
-      } else if (newState.frustrationLevel! > frustrationThreshold) {
-        shouldAbandon = true;
-        abandonmentReason = "frustration";
-        abandonmentMessage = (v.security ?? 0.5) > 0.7
-          ? "This doesn't feel safe or reliable. I'm leaving."
-          : "This is so frustrating! I'm done.";
-      } else if (newState.confusionLevel! > confusionThreshold && currentState.confusionLevel > confusionThreshold) {
-        shouldAbandon = true;
-        abandonmentReason = "confusion";
-        abandonmentMessage = (v.conformity ?? 0.5) > 0.7
-          ? "I can't tell what most people would do here. I'll try something else."
-          : "I have no idea what I'm supposed to do here.";
+        abandonmentReason = breaches[0].reason;
+        abandonmentMessage = breaches[0].message;
+        if (breaches.length > 1) alsoBreached = breaches.slice(1).map((b) => b.reason);
       }
 
       return {
@@ -675,6 +714,9 @@ Begin the simulation now. Narrate your thoughts as this persona.
               shouldAbandon,
               abandonmentReason,
               abandonmentMessage,
+              // Named so a caller can see the reason was a choice between
+              // simultaneous breaches, not the only one that fired.
+              ...(alsoBreached ? { alsoBreached } : {}),
               stateChange: {
                 patienceDelta: newState.patienceRemaining! - currentState.patienceRemaining,
                 confusionDelta: newState.confusionLevel! - currentState.confusionLevel,
