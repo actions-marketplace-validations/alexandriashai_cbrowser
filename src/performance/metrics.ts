@@ -157,6 +157,37 @@ export interface PerformanceRegressionOptions {
 /**
  * Capture a performance baseline for a URL
  */
+/**
+ * Force every measurement to be a cold load.
+ *
+ * capturePerformanceBaseline reused one browser across its `runs` navigations,
+ * so sample 1 was a cold-cache load and samples 2..N were warm, and the stored
+ * baseline was the mean of the two. detectPerformanceRegression then measured a
+ * single COLD load against that blended number, so transferSize was reported as
+ * a large regression on a completely unchanged page — measured at +179.41% on
+ * two independent baseline/comparison pairs, agreeing to four decimal places,
+ * which is the signature of a deterministic bug rather than noise.
+ *
+ * Disabling the HTTP cache makes both sides measure the same thing. Failing
+ * softly matters: on a non-Chromium engine or if CDP is unavailable we keep the
+ * old behaviour rather than aborting a perf run. (2026-07-29)
+ */
+async function disableHttpCache(page: unknown): Promise<boolean> {
+  try {
+    const p = page as { context: () => { newCDPSession: (pg: unknown) => Promise<{ send: (m: string, a?: unknown) => Promise<unknown> }> } };
+    const session = await p.context().newCDPSession(page);
+    // Network.enable FIRST. setCacheDisabled silently does nothing without it —
+    // the call resolves, so it reports success while the cache stays on.
+    // Measured: without enable, three runs gave [71400, 0, 0]; with it,
+    // [71400, 71400, 71400]. (2026-07-29)
+    await session.send("Network.enable");
+    await session.send("Network.setCacheDisabled", { cacheDisabled: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function capturePerformanceBaseline(
   url: string,
   options: PerformanceBaselineOptions = {}
@@ -169,6 +200,10 @@ export async function capturePerformanceBaseline(
   const allMetrics: PerformanceMetrics[] = [];
 
   try {
+    // Cache off BEFORE the first navigation, so run 1 and run N are alike.
+    await browser.navigate("about:blank");
+    await disableHttpCache(await browser.getPage());
+
     for (let i = 0; i < runs; i++) {
       await browser.navigate(url);
       // Wait for page to stabilize
@@ -366,6 +401,11 @@ export async function detectPerformanceRegression(
   let currentMetrics: PerformanceMetrics;
 
   try {
+    // Same cold-load conditions the baseline is now captured under. Without
+    // this the comparison measured a cold load against a warm-blended baseline.
+    await browser.navigate("about:blank");
+    await disableHttpCache(await browser.getPage());
+
     await browser.navigate(url);
     await new Promise((r) => setTimeout(r, 2000));
     currentMetrics = await browser.getPerformanceMetrics();
