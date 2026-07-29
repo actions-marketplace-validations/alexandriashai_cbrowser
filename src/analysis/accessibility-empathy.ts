@@ -244,8 +244,13 @@ async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
           selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
           width: rect.width,
           height: rect.height,
-          x: rect.left,
-          y: rect.top,
+          // DOCUMENT coordinates. getBoundingClientRect is viewport-relative, and
+          // in scope:"full_page" the audit scrolls, so rects captured at different
+          // scroll positions landed in one list with no common frame: a single
+          // response held y:-274 and y:3951 while claiming a 393x852 viewport
+          // space, which no scroll position can satisfy. (2026-07-29)
+          x: rect.left + window.scrollX,
+          y: rect.top + window.scrollY,
           text,
           area: rect.width * rect.height,
           inViewport: rect.bottom > 0 && rect.top < vh,
@@ -413,8 +418,9 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
             isLargeText,
             color: styles.color,
             bgColor: styles.backgroundColor,
-            x: Math.round(rect.left),
-            y: Math.round(rect.top),
+            // Document coordinates, as above.
+            x: Math.round(rect.left + window.scrollX),
+            y: Math.round(rect.top + window.scrollY),
             width: Math.round(rect.width),
             height: Math.round(rect.height),
           });
@@ -1582,11 +1588,19 @@ async function simulateAccessibilityJourney(
   // Capture page screenshot for WCAG overlay visualization
   let pageScreenshotBase64: string | undefined;
   let viewportSize: { width: number; height: number } | undefined;
+  // Full document height, so a consumer can tell whether a rect in document
+  // coordinates actually falls inside the captured image. Comparing document
+  // coordinates against the VIEWPORT height flagged every rect as outside.
+  // (2026-07-29)
+  let documentHeight: number | undefined;
   try {
     const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: false });
     pageScreenshotBase64 = Buffer.from(screenshotBuffer).toString('base64');
     const vp = page.viewportSize();
     if (vp) viewportSize = { width: vp.width, height: vp.height };
+    documentHeight = await page.evaluate(() =>
+      Math.max(document.body?.scrollHeight ?? 0, document.documentElement?.scrollHeight ?? 0)
+    );
   } catch {}
 
   return {
@@ -1616,6 +1630,7 @@ async function simulateAccessibilityJourney(
     journeyValidation, // v18.29.0
     pageScreenshot: pageScreenshotBase64, // v18.60.0: For WCAG overlay visualization
     viewportSize, // v18.60.0
+    documentHeight,
   } as any;
 }
 

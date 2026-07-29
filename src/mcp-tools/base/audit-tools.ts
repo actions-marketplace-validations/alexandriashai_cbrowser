@@ -251,12 +251,23 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             // carries a negative y and would render off-canvas. Say which space
             // these are in and flag the ones that fall outside the image rather
             // than emitting silent negatives. (2026-07-28)
-            coordinateSpace: "viewport",
+            // Rects are now DOCUMENT coordinates (scroll offset added at capture),
+            // so they are stable across the scrolling that scope:"full_page" does.
+            // They were previously labelled "viewport" while holding values from
+            // several scroll positions at once — y:-274 and y:3951 in one list.
+            coordinateSpace: "document",
+            // Height of the captured image in document space. A viewport capture
+            // covers only the scroll position it was taken at; a full_page capture
+            // covers the document. Without this the bounds test compared document
+            // coordinates against a viewport height and flagged EVERY rect,
+            // including ones plainly inside the image. (2026-07-29)
+            captureHeight: (scope === "full_page" ? (r.documentHeight ?? undefined) : r.viewportSize?.height),
             barrierRects: r.barriers?.filter((b: any) => b.rect).map((b: any) => {
               const vp = r.viewportSize;
-              const outside = !!vp && !!b.rect && (
+              const bound = scope === "full_page" ? (r.documentHeight ?? Infinity) : (vp?.height ?? Infinity);
+              const outside = !!b.rect && (
                 b.rect.y + b.rect.height < 0 || b.rect.x + b.rect.width < 0 ||
-                b.rect.y > vp.height || b.rect.x > vp.width
+                b.rect.y > bound || (!!vp && b.rect.x > vp.width)
               );
               return {
                 type: b.type, severity: b.severity, element: b.element,
