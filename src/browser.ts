@@ -1521,7 +1521,7 @@ For more help: https://playwright.dev/docs/browsers
   async getPerformanceMetrics(): Promise<PerformanceMetrics> {
     const page = await this.getPage();
 
-    const metrics = await page.evaluate(() => {
+    const metrics = await page.evaluate(async () => {
       const result: Record<string, number | undefined> = {};
 
       // Navigation timing
@@ -1540,20 +1540,42 @@ For more help: https://playwright.dev/docs/browsers
         }
       }
 
-      // LCP from PerformanceObserver (if available)
-      const lcpEntries = performance.getEntriesByType("largest-contentful-paint");
-      if (lcpEntries.length > 0) {
-        result.lcp = (lcpEntries[lcpEntries.length - 1] as any).startTime;
-      }
-
-      // CLS from layout-shift entries
-      const clsEntries = performance.getEntriesByType("layout-shift");
+      // LCP and CLS are delivered ONLY to a PerformanceObserver. Chromium never
+      // adds largest-contentful-paint or layout-shift entries to the performance
+      // timeline, so the previous getEntriesByType() calls returned [] on every
+      // page. LCP was therefore always undefined, and CLS was always exactly 0 —
+      // which looked like a real measurement of a perfectly stable page rather
+      // than no measurement at all. `buffered: true` replays the entries that
+      // already fired before this observer existed. (2026-07-29)
       let clsScore = 0;
-      for (const entry of clsEntries) {
-        if (!(entry as any).hadRecentInput) {
-          clsScore += (entry as any).value || 0;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => { if (!settled) { settled = true; resolve(); } };
+        try {
+          const lcpObs = new PerformanceObserver((list) => {
+            const entries = list.getEntries();
+            if (entries.length > 0) {
+              result.lcp = (entries[entries.length - 1] as any).startTime;
+            }
+          });
+          lcpObs.observe({ type: "largest-contentful-paint", buffered: true });
+
+          const clsObs = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              if (!(entry as any).hadRecentInput) {
+                clsScore += (entry as any).value || 0;
+              }
+            }
+          });
+          clsObs.observe({ type: "layout-shift", buffered: true });
+        } catch {
+          // Older engines without these entry types: leave lcp undefined rather
+          // than reporting a fabricated value.
+          finish();
         }
-      }
+        // Buffered entries arrive on the next task; give late shifts a moment too.
+        setTimeout(finish, 300);
+      });
       result.cls = clsScore;
 
       // Resource counts
