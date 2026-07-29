@@ -148,6 +148,8 @@ interface RawRegion {
   className: string;
   nthOfType: number;
   childCount: number;
+  /** Most children share one tag — looks like a result/feed list, not distinct sections. */
+  repeatedChildTag?: boolean;
 }
 
 interface RawDOMExtraction {
@@ -220,8 +222,8 @@ export class PageUnderstandingEngine {
     }
 
     const raw = await this.extractDOM(page);
-    const type = classifyPageType(raw);
-    const affordances = computeAffordances(raw);
+    const type = classifyPageType(raw, url);
+    const affordances = computeAffordances(raw, url);
     const structure = buildStructure(raw);
     const relationships = computeRelationships(raw, structure);
 
@@ -612,6 +614,21 @@ export class PageUnderstandingEngine {
           className: el.className?.toString()?.slice(0, 120) || "",
           nthOfType: getNthOfType(el),
           childCount: el.children.length,
+          // True when most children share one tag, i.e. this region looks like a
+          // list of like items (search results, a feed) rather than a set of
+          // distinct page sections. Used to tell a results page from a landing
+          // page that merely has a search box. (2026-07-29)
+          repeatedChildTag: (() => {
+            const kids = Array.from(el.children);
+            if (kids.length < 5) return false;
+            const counts = new Map();
+            for (const k of kids) {
+              const t = k.tagName.toLowerCase();
+              counts.set(t, (counts.get(t) || 0) + 1);
+            }
+            const top = Math.max(...counts.values());
+            return top / kids.length >= 0.7;
+          })(),
         });
       });
 
@@ -635,7 +652,7 @@ export class PageUnderstandingEngine {
 // Page type classification
 // ============================================================================
 
-function classifyPageType(raw: RawDOMExtraction): PageType {
+function classifyPageType(raw: RawDOMExtraction, pageUrl?: string): PageType {
   const { interactiveElements, headings, forms, navs, regions, title } = raw;
   const titleLower = title.toLowerCase();
 
@@ -676,9 +693,31 @@ function classifyPageType(raw: RawDOMExtraction): PageType {
       el.ariaLabel.toLowerCase().includes("search") ||
       el.role === "search"
   );
-  // Presence of repeated structures near search suggests search results page
+  // A search RESULTS page, not merely a page with a search box in its header.
+  // `childCount >= 5` on <main> is satisfied by almost any marketing homepage
+  // with a few sections, so a site whose nav carries a search field was typed
+  // "search". Require the search field to be the page's own subject: repeated
+  // sibling structure that looks like a result list, and no competing landing
+  // signal. (2026-07-29)
+  // Kept for the "list" heuristic below, which legitimately wants the loose test.
   const hasRepeatedContent = regions.some((r) => r.childCount >= 5 && (r.tag === "main" || r.role === "main"));
-  if (hasSearchInput && hasRepeatedContent) return "search";
+  const hasResultList = regions.some(
+    (r) => (r.tag === "main" || r.role === "main") && r.childCount >= 5 && r.repeatedChildTag === true
+  );
+  // A search box in the site nav does not make a page a search page — that is
+  // how a marketing homepage got typed "search". The thing that actually
+  // distinguishes a results page is that it is SERVING a query: /search in the
+  // path, or a query parameter. Require that as well as the DOM signals.
+  let looksLikeSearchUrl = false;
+  if (pageUrl) {
+    try {
+      const u = new URL(pageUrl);
+      const qKeys = ["q", "query", "s", "search", "keyword", "term"];
+      looksLikeSearchUrl =
+        /\/search\b/i.test(u.pathname) || qKeys.some((k) => u.searchParams.has(k));
+    } catch { looksLikeSearchUrl = false; }
+  }
+  if (hasSearchInput && hasResultList && looksLikeSearchUrl) return "search";
 
   // Settings: many toggles/selects/checkboxes with settings keywords
   const toggleCount = interactiveElements.filter(
@@ -749,14 +788,14 @@ function classifyPageTypeFromSkeleton(data: RawSkeletonData): PageType {
 // Affordance computation
 // ============================================================================
 
-function computeAffordances(raw: RawDOMExtraction): Affordance[] {
+function computeAffordances(raw: RawDOMExtraction, pageUrl?: string): Affordance[] {
   const affordances: Affordance[] = [];
 
   for (const el of raw.interactiveElements) {
     if (el.disabled) continue;
 
     const action = determineAction(el);
-    const expectedOutcome = predictOutcome(el, action);
+    const expectedOutcome = predictOutcome(el, action, pageUrl);
     const confidence = computeConfidence(el);
     const reversible = determineReversibility(el, action);
     const selector = buildSelector(el);
@@ -778,8 +817,18 @@ function computeAffordances(raw: RawDOMExtraction): Affordance[] {
 function determineAction(el: RawInteractiveElement): Affordance["action"] {
   const { tag, type, role } = el;
 
-  // Submit buttons
-  if (type === "submit" || (tag === "button" && el.formIndex >= 0 && !type)) return "submit";
+  // Submit buttons.
+  // HTMLButtonElement.type has an IDL default of "submit", so `type === "submit"`
+  // was true for EVERY bare <button> even on a page with no <form> at all, and the
+  // `el.formIndex >= 0` guard below it was unreachable dead code. A button outside
+  // a form submits nothing, and mislabelling it matters because "submit" is what
+  // marks the affordance irreversible (see isReversible), which feeds risk and
+  // safety reasoning. Require an actual owning form. (2026-07-29)
+  if (tag === "button" || tag === "input") {
+    if (type === "submit" && el.formIndex >= 0) return "submit";
+  } else if (type === "submit") {
+    return "submit";
+  }
 
   // Toggle elements
   if (role === "switch" || role === "checkbox" || type === "checkbox" || type === "radio") return "toggle";
@@ -795,7 +844,7 @@ function determineAction(el: RawInteractiveElement): Affordance["action"] {
   return "click";
 }
 
-function predictOutcome(el: RawInteractiveElement, action: Affordance["action"]): string {
+function predictOutcome(el: RawInteractiveElement, action: Affordance["action"], pageUrl?: string): string {
   const text = el.text.toLowerCase().trim();
   const href = el.href;
 
@@ -819,8 +868,17 @@ function predictOutcome(el: RawInteractiveElement, action: Affordance["action"])
         if (href.startsWith("mailto:")) return `Open email to ${href.replace("mailto:", "")}`;
         if (href.startsWith("tel:")) return `Initiate phone call`;
         if (href.includes("#")) return "Scroll to page section";
-        if (href.startsWith("http") && !href.includes(globalThis?.location?.hostname || "__no_match__")) {
-          return "Navigate to external site";
+        // This engine runs in NODE, where globalThis.location is undefined, so the
+        // old test collapsed to `!href.includes("__no_match__")` — always true.
+        // Every absolute link was labelled external, same-origin ones included.
+        // It only compiled because tsconfig pulls in the DOM lib. Compare against
+        // the page's real origin instead. (2026-07-29)
+        if (href.startsWith("http")) {
+          let sameOrigin = false;
+          if (pageUrl) {
+            try { sameOrigin = new URL(href).origin === new URL(pageUrl).origin; } catch { sameOrigin = false; }
+          }
+          if (!sameOrigin) return "Navigate to external site";
         }
         return `Navigate to ${text || "linked page"}`;
       }

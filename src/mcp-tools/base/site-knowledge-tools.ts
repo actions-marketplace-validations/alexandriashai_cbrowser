@@ -70,7 +70,14 @@ export function registerSiteKnowledgeTools(
                   formCount: understanding.structure.forms.length,
                   ctaCount: understanding.structure.ctas.length,
                   navigationGroups: understanding.structure.navigation.length,
-                  headingDepth: understanding.structure.headingHierarchy.length,
+                  // Was headingHierarchy.length, which counts ROOT headings, not
+                  // depth: a page with h1 > h2 > h3 reported 1, and a page with
+                  // five sibling h2s and no h1 reported 5. Measure the actual
+                  // nesting depth of the tree. (2026-07-29)
+                  headingDepth: (function depth(nodes: Array<{ children?: unknown[] }>): number {
+                    if (!nodes || nodes.length === 0) return 0;
+                    return 1 + Math.max(...nodes.map((n) => depth((n.children as Array<{ children?: unknown[] }>) || [])));
+                  })(understanding.structure.headingHierarchy),
                   relationshipCount: understanding.relationships.length,
                   computeTimeMs: understanding.computeTimeMs,
                   topAffordances: understanding.affordances.slice(0, 20).map((a) => ({
