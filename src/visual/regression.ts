@@ -601,8 +601,77 @@ export async function runRegressionWithTransportMap(
     await browser.close();
   }
 
-  // Run Wasserstein analysis
-  const analysis = await performWassersteinAnalysis(baselineScreenshot, currentPath, options);
+  // The pass line, resolved once and used for both the status bands below and the
+  // final verdict, so they cannot disagree.
+  const effectiveThreshold = options.threshold || smartBaseline?.adaptiveThreshold || 0.85;
+
+  // `similarity` used to mean two different things depending on transportMap.
+  //
+  // Without the flag: runSmartRegression -> compareAgainstSmartBaseline, a
+  // barycenter-histogram plus spatial-Wasserstein score, no byte term.
+  // With the flag: performWassersteinAnalysis -> computeCombinedDistance with
+  // weights {byteDiff: 0.2, wasserstein: 0.8}. That byte term compares COMPRESSED
+  // PNG bytes, and two independent encodings of the same page share almost none of
+  // them, so it measures ~0.007 instead of ~1. The combined score therefore
+  // collapses to 0.2*~0 + 0.8*~1 = ~0.801, which rounds to exactly 0.80 — the
+  // round number is the wasserstein weight showing through a dead term, not a
+  // constant. Measured on one unchanged page: 0.8 with the flag, 0.9994 without.
+  //
+  // Against a 0.98 adaptive threshold that made an unchanged page fail every time
+  // the flag was passed. When a smart baseline exists, score it the same way the
+  // no-flag path does. (2026-07-28)
+  let analysis: AIVisualAnalysis;
+  if (smartBaseline) {
+    const smart = await compareAgainstSmartBaseline(currentPath, smartBaseline, options.wassersteinConfig);
+    const score = smart.normalizedScore;
+    // Mirrors runSmartRegression's bands and diagnostics exactly (see the
+    // `if (!passed)` block in that function) so the two paths agree on status and
+    // emit the same VisualChange entries, rather than this branch inventing its
+    // own thresholds and returning an empty changes array.
+    const smartPassed = score >= effectiveThreshold;
+    const changes: VisualChange[] = [];
+    let status: "pass" | "warning" | "fail" = "pass";
+    if (!smartPassed) {
+      if (score < effectiveThreshold - 0.15) {
+        status = "fail";
+        changes.push({
+          type: "layout",
+          severity: "breaking",
+          region: { x: 0, y: 0, width: 1920, height: 1080 },
+          description: `Visual change exceeds smart baseline variance (score: ${score.toFixed(3)}, threshold: ${effectiveThreshold.toFixed(3)}, variance ratio: ${smart.varianceRatio.toFixed(1)}σ)`,
+          reasoning: smart.withinVariance
+            ? "Change is within observed render variance but below threshold"
+            : "Change exceeds the natural variance observed during baseline creation",
+          confidence: 0.92,
+          suggestion: "This appears to be a real visual change, not rendering noise",
+        });
+      } else {
+        status = "warning";
+        changes.push({
+          type: "content",
+          severity: "warning",
+          region: { x: 0, y: 0, width: 1920, height: 1080 },
+          description: `Marginal visual change near smart baseline threshold (score: ${score.toFixed(3)}, threshold: ${effectiveThreshold.toFixed(3)})`,
+          reasoning: "Change is close to the boundary of expected variance",
+          confidence: 0.8,
+          suggestion: "May be a real change or an unusually noisy render — consider re-running",
+        });
+      }
+    }
+    analysis = {
+      overallStatus: status,
+      summary: smartPassed
+        ? `Visual regression passed (score: ${score.toFixed(3)} ≥ adaptive threshold: ${effectiveThreshold.toFixed(3)}, within ${smart.varianceRatio.toFixed(1)}σ of baseline variance)`
+        : `Visual regression ${status}: score ${score.toFixed(3)} < threshold ${effectiveThreshold.toFixed(3)}`,
+      changes,
+      similarityScore: score,
+      productionReady: smartPassed,
+      confidence: 0.92,
+      rawAnalysis: `Smart baseline barycenter comparison (${smartBaseline.numCaptures} captures, adaptive threshold ${smartBaseline.adaptiveThreshold.toFixed(3)})`,
+    };
+  } else {
+    analysis = await performWassersteinAnalysis(baselineScreenshot, currentPath, options);
+  }
 
   // Generate transport map
   const transportMap = await computeTransportMap(baselineScreenshot, currentPath, options.transportMapConfig);
@@ -620,7 +689,10 @@ export async function runRegressionWithTransportMap(
     ? ` | Hotspots: ${transportMap.hotspots.map(h => h.description).join('; ')}`
     : '';
 
-  const threshold = options.threshold || 0.85;
+  // Was `options.threshold || 0.85`, while the MCP payload printed the smart
+  // baseline's adaptiveThreshold (0.98) as though that were the pass line, so
+  // pass/fail was decided against a number the caller was never shown.
+  const threshold = effectiveThreshold;
   const passed = analysis.similarityScore >= threshold;
 
   return {
