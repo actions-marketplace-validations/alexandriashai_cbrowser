@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { randomBytes } from "crypto";
 import { htmlUiResource, attachUiResource, uiResourcesEnabled, type ToolContentBlock } from "../../mcp-ui-resources.js";
 import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
@@ -29,18 +30,35 @@ import { homedir } from "os";
  * through the transport. Returns undefined rather than throwing if the write
  * fails — a screenshot is not worth failing an audit over. (2026-07-29)
  */
-function writeAuditScreenshot(base64: string | undefined, persona: string): string | undefined {
-  if (!base64) return undefined;
+function writeAuditScreenshot(
+  base64: string | undefined,
+  persona: string,
+): { path?: string; url?: string } {
+  if (!base64) return {};
+  const safe = String(persona || "persona").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+  const out: { path?: string; url?: string } = {};
+
+  // Local copy, as before — the CLI and anything on this box reads this.
   try {
     const dir = join(process.env.CBROWSER_DATA_DIR || join(homedir(), ".cbrowser"), "audit-screenshots");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const safe = String(persona || "persona").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
     const path = join(dir, `empathy-${safe}-${Date.now()}.png`);
     writeFileSync(path, Buffer.from(base64, "base64"));
-    return path;
-  } catch {
-    return undefined;
-  }
+    out.path = path;
+  } catch { /* a screenshot is not worth failing an audit over */ }
+
+  // Served copy, so the barrier overlay has an image an MCP host can fetch.
+  // The name carries 12 random hex chars rather than only a timestamp: these
+  // are captures of a CUSTOMER'S page served from a public path, and a
+  // timestamped name is guessable by anyone who knows roughly when an audit
+  // ran. Unguessability is the only access control this path has. (2026-07-29)
+  try {
+    const nonce = randomBytes(6).toString("hex");
+    const written = writeArtifact(Buffer.from(base64, "base64"), `empathy-${safe}-${nonce}.png`);
+    if (written) out.url = written.url;
+  } catch { /* overlay is optional; the audit is not */ }
+
+  return out;
 }
 
 /**
@@ -248,10 +266,14 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             persona: r.persona,
             ...(includeScreenshots
               ? { screenshot: r.pageScreenshot }
-              : {
-                  screenshotPath: writeAuditScreenshot(r.pageScreenshot, r.persona),
-                  screenshotNote: "Pass includeScreenshots:true to inline the base64 instead.",
-                }),
+              : (() => {
+                  const shot = writeAuditScreenshot(r.pageScreenshot, r.persona);
+                  return {
+                    screenshotPath: shot.path,
+                    screenshotUrl: shot.url,
+                    screenshotNote: "Pass includeScreenshots:true to inline the base64 instead.",
+                  };
+                })()),
             viewportSize: r.viewportSize,
             // Rects come from getBoundingClientRect with no scroll compensation,
             // so they are VIEWPORT coordinates — which is correct here, because
@@ -316,6 +338,33 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           { type: "text", text: JSON.stringify(response, null, 2) },
         ];
         if (uiResourcesEnabled(uiResource)) {
+          // The overlay goes FIRST. It is the thing that makes a score
+          // falsifiable by eye — barriers drawn on the page at their real
+          // positions — and the text report is the detail behind it.
+          try {
+            const { buildBarrierOverlayHtml } = await import("../../visual/barrier-overlay-html.js");
+            const shots = (response.pageScreenshots ?? []) as Array<Record<string, any>>;
+            for (const shot of shots) {
+              const overlayHtml = buildBarrierOverlayHtml({
+                imageUrl: shot.screenshotUrl,
+                imageWidth: shot.viewportSize?.width,
+                captureHeight: shot.captureHeight ?? shot.viewportSize?.height,
+                barrierRects: shot.barrierRects ?? [],
+                persona: String(shot.persona ?? testedPersona),
+                pageUrl: String(result.url),
+                score: result.overallScore,
+              });
+              attachUiResource(
+                content,
+                htmlUiResource(
+                  `ui://cbrowser/barrier-overlay/${encodeURIComponent(String(shot.persona ?? testedPersona))}`,
+                  overlayHtml ?? undefined,
+                  { frameSize: ["100%", "820px"] },
+                ),
+              );
+            }
+          } catch { /* overlay is additive; never fail the audit for it */ }
+
           let reportHtml: string | undefined;
           try {
             const { generateEmpathyAuditHtmlReport } = await import("../../analysis/accessibility-empathy.js");
