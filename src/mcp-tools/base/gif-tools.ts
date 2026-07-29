@@ -9,6 +9,7 @@
  */
 
 import { z } from "zod";
+import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 
 /** Frame geometry of the heatmap GIF. Pinned — changing these changes output. */
@@ -199,14 +200,13 @@ export function registerGifTools(
       // the pipeline is unchanged, only lifted out so it can be regression-pinned)
       const animatedGif = await encodeJourneyHeatmapGif(frames, frameDelay);
 
-      // Save to public heatmaps directory
-      const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";
-      if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
+      // Save through the served artifact store. This used to write to
+      // cbrowser-web/out/heatmaps and return a cbrowser.ai/heatmaps URL — two
+      // different directories, so the URL 404'd. See src/artifact-store.ts.
       const gifId = `journey-${persona}-${Date.now()}`;
-      const gifPath = join(webDir, `${gifId}.gif`);
-      writeFileSync(gifPath, animatedGif);
-
-      const gifUrl = `https://cbrowser.ai/heatmaps/${gifId}.gif`;
+      const written = writeArtifact(animatedGif, `${gifId}.gif`);
+      const gifPath = written?.path ?? "";
+      const gifUrl = written?.url ?? "";
       const elapsed = Date.now() - startTime;
 
       // Clean up temp dir

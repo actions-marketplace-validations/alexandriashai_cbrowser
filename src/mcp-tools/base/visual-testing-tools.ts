@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer } from "../types.js";
 import {
   runVisualRegression,
@@ -541,28 +542,23 @@ export function registerVisualTestingTools(server: McpServer): void {
             const { homedir } = await import("os");
             const heatmapId = `attn-${persona}-${Date.now()}`;
 
-            // Save to the DEPLOYED web directory (survives builds)
-            // and also to ~/.cbrowser/heatmaps as fallback
-            const deployedPaths = [
-              "/var/www/cbrowser-web/heatmaps",
-              "/home/wyld-web/static/cbrowser-web/out/heatmaps",
-            ];
+            // Both entries of the old deployedPaths list were wrong: nginx
+            // serves /heatmaps/ from /var/www/cbrowser-data/heatmaps, and this
+            // picked whichever candidate's PARENT existed — /var/www exists, so
+            // it wrote to /var/www/cbrowser-web/heatmaps and returned a
+            // cbrowser.ai URL for a file no one could fetch. One store now owns
+            // the directory and the URL together. (2026-07-29)
             const cbrowserDir = join(homedir(), ".cbrowser", "heatmaps");
-
             let savedPath = "";
             let publicUrl = "";
 
-            const deployDir = deployedPaths.find(p => {
-              const parent = p.replace("/heatmaps", "");
-              return existsSync(parent);
-            });
-
-            if (deployDir) {
-              if (!existsSync(deployDir)) mkdirSync(deployDir, { recursive: true });
-              savedPath = join(deployDir, `${heatmapId}.png`);
-              writeFileSync(savedPath, Buffer.from(heatmapBase64, "base64"));
-              publicUrl = `https://cbrowser.ai/heatmaps/${heatmapId}.png`;
+            const written = writeArtifact(Buffer.from(heatmapBase64, "base64"), `${heatmapId}.png`);
+            if (written) {
+              savedPath = written.path;
+              publicUrl = written.url;
             } else {
+              // Served store unavailable — keep the local copy, and return the
+              // local path rather than a URL that would not resolve.
               if (!existsSync(cbrowserDir)) mkdirSync(cbrowserDir, { recursive: true });
               savedPath = join(cbrowserDir, `${heatmapId}.png`);
               writeFileSync(savedPath, Buffer.from(heatmapBase64, "base64"));
@@ -696,13 +692,12 @@ export function registerVisualTestingTools(server: McpServer): void {
             );
 
             // Save to public URL
-            const { writeFileSync, mkdirSync, existsSync } = await import("fs");
             const heatmapId = `cmp-${personaA}-${personaB}-${Date.now()}`;
-            const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";
-            if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
-            const savedPath = join(webDir, `${heatmapId}.png`);
-            writeFileSync(savedPath, Buffer.from(compBase64, "base64"));
-            responseData.comparisonHeatmapUrl = `https://cbrowser.ai/heatmaps/${heatmapId}.png`;
+            const written = writeArtifact(Buffer.from(compBase64, "base64"), `${heatmapId}.png`);
+            // Only advertise a URL when the artifact actually landed in the
+            // served directory. A URL for a file that was not written is the
+            // defect the artifact store exists to end.
+            if (written) responseData.comparisonHeatmapUrl = written.url;
             responseData.heatmapNote = `Blue = ${personaA} looks here more. Red = ${personaB} looks here more. Transparent = similar attention.`;
 
             content.push({ type: "image" as const, data: compBase64, mimeType: "image/png" });

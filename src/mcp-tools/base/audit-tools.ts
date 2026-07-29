@@ -6,6 +6,8 @@
  */
 
 import { z } from "zod";
+import { htmlUiResource, attachUiResource, uiResourcesEnabled, type ToolContentBlock } from "../../mcp-ui-resources.js";
+import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import {
   runAgentReadyAudit,
@@ -137,6 +139,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       includeScreenshots: z.boolean().optional().default(false).describe("Inline base64 page screenshots in the response. Off by default because they are large enough to overflow an MCP client's context; when off, screenshots are written to disk and screenshotPath is returned instead."),
       scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to score: 'viewport' (first impression, above-the-fold only — default) or 'full_page' (scroll through entire page, all barriers). Use 'viewport' for landing page optimization; 'full_page' for WCAG compliance audits."),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15', 'Pixel 7'. Essential for mobile WCAG audits — touch targets, viewport sizing, and responsive barriers differ significantly on mobile."),
+      uiResource: z.boolean().optional().default(true).describe("Return an interactive HTML report as an MCP UI resource alongside the JSON. Hosts that support MCP Apps render it inline; others ignore it. Set false for scripted callers that diff whole responses."),
     },
     annotations: {
       title: "Empathy Accessibility Audit",
@@ -145,7 +148,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope, device, includeScreenshots }) => {
+  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope, device, includeScreenshots, uiResource }) => {
       try {
         // Auto-limit to 1 persona to avoid MCP client timeout on Claude.ai (~60s limit)
         const allPersonas = listAccessibilityPersonas();
@@ -300,15 +303,36 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           response.remainingPersonas = remainingPersonas;
         }
 
-        // Auto-save handled by tier-gate wrapper
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(response, null, 2),
-            },
-          ],
-        };
+        // Auto-save handled by tier-gate wrapper.
+        //
+        // The UI resource is APPENDED to the text block, never substituted for
+        // it: content[0] stays the same JSON every CLI and CI caller already
+        // parses. `generateEmpathyAuditHtmlReport` is the report the --html flag
+        // has always produced — self-contained, no remote refs — so this is a
+        // transport seam rather than new UI. If it cannot be produced safely,
+        // htmlUiResource returns null and the response is exactly as before.
+        // (2026-07-29)
+        const content: ToolContentBlock[] = [
+          { type: "text", text: JSON.stringify(response, null, 2) },
+        ];
+        if (uiResourcesEnabled(uiResource)) {
+          let reportHtml: string | undefined;
+          try {
+            const { generateEmpathyAuditHtmlReport } = await import("../../analysis/accessibility-empathy.js");
+            reportHtml = generateEmpathyAuditHtmlReport(result);
+          } catch {
+            reportHtml = undefined;
+          }
+          attachUiResource(
+            content,
+            htmlUiResource(
+              `ui://cbrowser/empathy-audit/${encodeURIComponent(testedPersona)}`,
+              reportHtml,
+              { frameSize: ["100%", "760px"] },
+            ),
+          );
+        }
+        return { content };
       } catch (error) {
         // Categorize the error for better user feedback
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -885,8 +909,11 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const ssPath = join(tmpdir(), `story-${Date.now()}.png`);
         await page.screenshot({ path: ssPath, fullPage: false });
 
-        const webDir = "/var/www/cbrowser-web/heatmaps";
-        if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
+        // webDir removed: this pointed at /var/www/cbrowser-web/heatmaps, a
+        // FIFTH directory nginx does not serve (it serves /heatmaps/ from
+        // /var/www/cbrowser-data/heatmaps). All four story overlays below wrote
+        // there and returned cbrowser.ai URLs that 404'd. (2026-07-29)
+        // (directory creation is the artifact store's job now)
         const ts = Date.now();
 
         const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
@@ -908,8 +935,8 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             const { generateHeatmapOverlay } = await import("../../visual/heatmap-overlay.js");
             const heatB64 = await generateHeatmapOverlay(ssPath, attnResult.saliencyMap.cells, attnResult.saliencyMap.rows, attnResult.saliencyMap.cols, `${persona} Attention`);
             const heatId = `story-attn-${persona}-${ts}`;
-            writeFileSync(join(webDir, `${heatId}.png`), Buffer.from(heatB64, "base64"));
-            urls.attention = `https://cbrowser.ai/heatmaps/${heatId}.png`;
+            const w_attention = writeArtifact(Buffer.from(heatB64, "base64"), `${heatId}.png`);
+            if (w_attention) urls.attention = w_attention.url;
             images.push({ type: "image", data: heatB64, mimeType: "image/png" });
             // Auto-save to gallery
             try {
@@ -956,8 +983,8 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           const cssVW = await page.evaluate(() => window.innerWidth).catch(() => 1920);
           const motorB64 = await generateMotorOverlay(ssPath, motorElements, persona, cssVW);
           const motorId = `story-motor-${persona}-${ts}`;
-          writeFileSync(join(webDir, `${motorId}.png`), Buffer.from(motorB64, "base64"));
-          urls.motor = `https://cbrowser.ai/heatmaps/${motorId}.png`;
+          const w_motor = writeArtifact(Buffer.from(motorB64, "base64"), `${motorId}.png`);
+          if (w_motor) urls.motor = w_motor.url;
           images.push({ type: "image", data: motorB64, mimeType: "image/png" });
           try { const { saveVisualReport } = await import("../visual-report-saver.js"); const { getSessionApiKey } = await import("./cognitive-tools.js"); saveVisualReport({ apiKey: getSessionApiKey(), imageUrl: urls.motor, toolName: "visual_cognitive_story_motor", targetUrl: url, persona }); } catch {}
         } catch (e) { console.debug(`[story] Motor failed: ${(e as Error).message}`); }
@@ -1031,8 +1058,8 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               const cssVW2 = await page.evaluate(() => window.innerWidth).catch(() => 1920);
               const qualB64 = await generateAttentionQualityOverlay(ssPath, overlayTargets, persona, cssVW2);
               const qualId = `story-quality-${persona}-${ts}`;
-              writeFileSync(join(webDir, `${qualId}.png`), Buffer.from(qualB64, "base64"));
-              urls.quality = `https://cbrowser.ai/heatmaps/${qualId}.png`;
+              const w_quality = writeArtifact(Buffer.from(qualB64, "base64"), `${qualId}.png`);
+              if (w_quality) urls.quality = w_quality.url;
               images.push({ type: "image", data: qualB64, mimeType: "image/png" });
               try { const { saveVisualReport } = await import("../visual-report-saver.js"); const { getSessionApiKey } = await import("./cognitive-tools.js"); saveVisualReport({ apiKey: getSessionApiKey(), imageUrl: urls.quality, toolName: "visual_cognitive_story_quality", targetUrl: url, persona }); } catch {}
             }
@@ -1106,8 +1133,8 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             cssVW3,
           );
           const combId = `story-combined-${persona}-${ts}`;
-          writeFileSync(join(webDir, `${combId}.png`), Buffer.from(combinedB64, "base64"));
-          urls.combined = `https://cbrowser.ai/heatmaps/${combId}.png`;
+          const w_combined = writeArtifact(Buffer.from(combinedB64, "base64"), `${combId}.png`);
+          if (w_combined) urls.combined = w_combined.url;
           images.push({ type: "image", data: combinedB64, mimeType: "image/png" });
           try { const { saveVisualReport } = await import("../visual-report-saver.js"); const { getSessionApiKey } = await import("./cognitive-tools.js"); saveVisualReport({ apiKey: getSessionApiKey(), imageUrl: urls.combined, toolName: "visual_cognitive_story_combined", targetUrl: url, persona }); } catch {}
         } catch (e) { console.debug(`[story] Combined overlay failed: ${(e as Error).message}`); }

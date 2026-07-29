@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { comparePersonas } from "../../analysis/index.js";
 import { isApiKeyConfigured } from "../../cognitive/index.js";
@@ -1032,10 +1033,8 @@ Begin with the first persona: ${personas[0]}
           const motorBase64 = await generateMotorOverlay(ssPath, motorOverlayElements, personaName);
 
           const heatmapId = `motor-${personaName}-${Date.now()}`;
-          const webDir = "/home/wyld-web/static/cbrowser-web/out/heatmaps";
-          if (!existsSync(webDir)) mkdirSync(webDir, { recursive: true });
-          writeFileSync(joinPath(webDir, `${heatmapId}.png`), Buffer.from(motorBase64, "base64"));
-          response.motorOverlayUrl = `https://cbrowser.ai/heatmaps/${heatmapId}.png`;
+          const written = writeArtifact(Buffer.from(motorBase64, "base64"), `${heatmapId}.png`);
+          if (written) response.motorOverlayUrl = written.url;
           response.motorOverlayNote = "Green = easy to click. Yellow = moderate difficulty. Red = motor barrier for this persona.";
 
           content.push({ type: "image" as const, data: motorBase64, mimeType: "image/png" });
