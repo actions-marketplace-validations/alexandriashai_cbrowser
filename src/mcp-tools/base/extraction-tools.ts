@@ -8,6 +8,7 @@
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { buildContentWithScreenshots } from "../screenshot-utils.js";
+import { refuseUnboundSession } from "../session-policy.js";
 
 /**
  * Register extraction tools (2 tools: screenshot, extract)
@@ -62,6 +63,11 @@ export function registerExtractionTools(
       openWorldHint: false,
     },
   }, async ({ what, _browserToken }) => {
+      // Extracting from a blank page returns an empty list, which reads as "this
+      // page has no links" rather than "I looked at the wrong page".
+      const unbound = refuseUnboundSession("extract", { getBrowserByToken }, _browserToken);
+      if (unbound) return unbound;
+
       let b: Awaited<ReturnType<typeof getBrowser>>;
       if (getBrowserByToken) {
         const result = await getBrowserByToken(_browserToken);

@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
+import { refuseUnboundSession } from "../session-policy.js";
 
 /**
  * Register assertion tools (1 tool: assert)
@@ -35,6 +36,12 @@ export function registerAssertionTools(
       openWorldHint: false,
     },
   }, async ({ assertion, _browserToken }) => {
+      // Adding the token was only half the fix: omitting it entirely still
+      // asserted against a blank page and returned a confident verdict, with a
+      // fresh _browserToken attached that made it look session-backed.
+      const unbound = refuseUnboundSession("assert", { getBrowserByToken }, _browserToken);
+      if (unbound) return unbound;
+
       let b;
       let token: string | undefined;
       if (getBrowserByToken) {

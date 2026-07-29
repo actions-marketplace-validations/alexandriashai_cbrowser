@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
+import { refuseUnboundSession } from "../session-policy.js";
 
 /**
  * Register site knowledge tools (7 tools: page_understand, site_model_status, site_model_query,
@@ -37,6 +38,11 @@ export function registerSiteKnowledgeTools(
     },
   }, async ({ _browserToken }) => {
       try {
+        // Classifies "the current page". Unbound it classifies about:blank and
+        // still returns a confident page type and affordance list.
+        const unbound = refuseUnboundSession("page_understand", { getBrowserByToken }, _browserToken);
+        if (unbound) return unbound;
+
         let b: Awaited<ReturnType<typeof getBrowser>>;
         let token: string | undefined;
         if (getBrowserByToken) {

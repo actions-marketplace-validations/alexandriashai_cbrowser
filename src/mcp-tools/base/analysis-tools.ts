@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
+import { refuseUnboundSession } from "../session-policy.js";
 import { findElementByIntent, runAIReadinessBenchmark } from "../../analysis/index.js";
 
 /**
@@ -33,6 +34,11 @@ export function registerAnalysisTools(
       openWorldHint: false,
     },
   }, async ({ _browserToken }) => {
+      // Reports on page structure, so a blank-page answer (0 forms, 0 buttons,
+      // 0 links) reads as a real finding rather than an error.
+      const unbound = refuseUnboundSession("analyze_page", { getBrowserByToken }, _browserToken);
+      if (unbound) return unbound;
+
       let b;
       let token: string | undefined;
       if (getBrowserByToken) {
@@ -81,6 +87,13 @@ export function registerAnalysisTools(
       openWorldHint: false,
     },
   }, async ({ url, _browserToken }) => {
+      // Only when it is being asked about "the current page". With an explicit
+      // url it navigates itself and needs no session.
+      if (!url) {
+        const unbound = refuseUnboundSession("generate_tests", { getBrowserByToken }, _browserToken);
+        if (unbound) return unbound;
+      }
+
       let b;
       let token: string | undefined;
       if (getBrowserByToken) {
@@ -130,6 +143,11 @@ export function registerAnalysisTools(
       openWorldHint: false,
     },
   }, async ({ intent, verbose, _browserToken }) => {
+      // Searches the page, so a blank-browser search returns "no match found"
+      // with confidence 0 — indistinguishable from a genuine miss.
+      const unbound = refuseUnboundSession("find_element_by_intent", { getBrowserByToken }, _browserToken);
+      if (unbound) return unbound;
+
       let b;
       if (getBrowserByToken) {
         b = (await getBrowserByToken(_browserToken)).browser;
