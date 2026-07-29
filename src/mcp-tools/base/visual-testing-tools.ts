@@ -485,10 +485,31 @@ export function registerVisualTestingTools(server: McpServer): void {
             transportCost: result.transportCost,
             topAttentionAreas: result.attentionCompetitors,
             ...(attentionQuality ? { attentionQuality } : {}),
+            // These two lines used to read as a contradiction — "Scattered
+            // attention (overwhelmed)" printed directly above "Attention
+            // concentrated on few areas". The numbers were never wrong; the
+            // prose was. They answer different questions:
+            //   entropy       = normalized Shannon entropy, 1 = evenly spread
+            //                   across every cell that gets any attention
+            //   concentration = share of total saliency in the top 20% of cells,
+            //                   whose floor is 0.2 for a perfectly uniform page,
+            //                   NOT 0
+            // Saliency spread evenly within a small region scores high on both
+            // (measured: entropy 0.692 with concentration 1.0), and both
+            // readings are correct. Each string now names its own basis, and
+            // `pattern` gives the single combined verdict a caller actually
+            // wants. (2026-07-28)
             interpretation: {
               alignment: result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design",
-              entropy: result.entropy > 0.8 ? "Scattered attention (overwhelmed)" : result.entropy > 0.5 ? "Moderate attention spread" : "Focused attention",
-              concentration: result.concentration > 0.6 ? "Attention concentrated on few areas" : "Attention distributed across page",
+              entropy: `Evenness of attention across the areas that draw it: ${result.entropy > 0.8 ? "very even" : result.entropy > 0.5 ? "moderately even" : "sharply peaked"} (${result.entropy.toFixed(2)} of 1.0)`,
+              concentration: `Share of attention landing in the top 20% of the page: ${(result.concentration * 100).toFixed(0)}% (a perfectly uniform page scores 20%)`,
+              pattern: result.concentration > 0.6
+                ? (result.entropy > 0.5
+                  ? "Attention pools into a small part of the page, and spreads evenly once there — a dense hotspot rather than a single focal point."
+                  : "Attention locks onto one or two focal points and ignores the rest of the page.")
+                : (result.entropy > 0.5
+                  ? "Attention is spread broadly across the page with no dominant focal point."
+                  : "Attention is split between a few separate areas, with the rest of the page largely unseen."),
             },
             computeTimeMs: Math.round(result.computeTimeMs),
             hasHeatmap: heatmap !== false,
