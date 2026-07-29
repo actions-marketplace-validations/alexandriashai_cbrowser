@@ -19,9 +19,16 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    # Backstop. Without it a hung step blocks the release until GitHub's 6-hour job cap,
-    # and nothing in this job is legitimately slow enough to need more than half an hour.
-    timeout-minutes: 30
+    # Last-resort backstop, and it must sit ABOVE the sum of the step ceilings.
+    #
+    # It was 30, which was under gate(20) + release(8) + setup. That ordering is
+    # the wrong way round: when a step runs long the JOB cap fires first and the
+    # run is CANCELLED, which names no culprit — exactly what happened on
+    # bbd2743, where it read as "the release is broken" rather than "one step
+    # hung". Step timeouts are the diagnostic layer; this is only the net beneath
+    # them, so it is set high enough that a step always fails first, by name.
+    # (2026-07-29)
+    timeout-minutes: 40
     # Skip release for commits that are just version bumps
     if: "!startsWith(github.event.head_commit.message, 'chore: release')"
 
@@ -81,14 +88,37 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # BOUNDED, because this step is where an unbounded hook can hide.
+      #
+      # release-it runs its own `before:init` hooks from .release-it.json, and
+      # those run INSIDE this step — outside the careful timeout accounting
+      # above. That is not hypothetical: `before:init` used to include
+      # `bun test || true`, a THIRD test invocation which
+      #   - ran the full suite in ONE process, the exact configuration
+      #     scripts/test-split.sh exists to avoid,
+      #   - was unbounded, so no step timeout applied to it, and
+      #   - discarded its own result via `|| true`, so it could never prevent a
+      #     bad release — only cost time.
+      # On 2026-07-29 (bbd2743) the gate step passed and THIS step then ate the
+      # remaining budget until the job hit the 30-minute ceiling and was
+      # CANCELLED. A cancelled job is worse than a failed one: it names no
+      # culprit, and it looked like the release itself was broken.
+      #
+      # The hook is now `bun run build` only. The timeout below is the structural
+      # half of the fix: whatever a future hook does, a hang fails THIS step by
+      # name in a few minutes instead of silently consuming the job. release-it's
+      # real work — bump, changelog, commit, tag, push, npm publish, GitHub
+      # release — is minutes at most. (2026-07-29)
       - name: Release (dry run)
         if: github.event.inputs.dry_run == 'true'
+        timeout-minutes: 8
         run: npx release-it --ci --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release
         if: github.event.inputs.dry_run != 'true'
+        timeout-minutes: 8
         run: npx release-it --ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
