@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.75.3](https://github.com/alexandriashai/cbrowser/compare/v18.75.2...v18.75.3) (2026-07-29)
+
+### Fixed
+
+* verdicts that shipped without the evidence behind them ([9238cb8](https://github.com/alexandriashai/cbrowser/commit/9238cb87ef7624f51dada98b9e5cd43eb01e1af7))
+
 ## [18.75.2](https://github.com/alexandriashai/cbrowser/compare/v18.75.1...v18.75.2) (2026-07-29)
 
 ### Fixed
