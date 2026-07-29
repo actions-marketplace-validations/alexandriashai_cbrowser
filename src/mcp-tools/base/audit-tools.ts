@@ -180,6 +180,10 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               empathyScoreBarrierOnly: (r as any).empathyScoreBarrierOnly || undefined,
               // v18.27.0: Cognitive load estimation (optimal transport)
               cognitiveLoad: (r as any).cognitiveLoad || undefined,
+              // Names the three different "cognitive load" numbers in this
+              // payload and what each measures. Same whitelist caveat as
+              // scoreContext above: set upstream, invisible unless named here.
+              cognitiveLoadReadings: (r as any).cognitiveLoadReadings || undefined,
               // v18.28.0: Attention transport analysis (W₂ saliency)
               attentionAnalysis: (r as any).attentionAnalysis || undefined,
               // v18.29.0: Journey validation — evidence, path, forensics
@@ -198,11 +202,32 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             persona: r.persona,
             screenshot: r.pageScreenshot,
             viewportSize: r.viewportSize,
-            barrierRects: r.barriers?.filter((b: any) => b.rect).map((b: any) => ({
-              type: b.type, severity: b.severity, element: b.element,
-              description: b.description, rect: b.rect,
-              wcag: b.wcagCriteria,
-            })),
+            // Rects come from getBoundingClientRect with no scroll compensation,
+            // so they are VIEWPORT coordinates — which is correct here, because
+            // the screenshot above is captured with fullPage: false and these are
+            // meant to overlay it. Converting them to document coordinates would
+            // break that alignment.
+            //
+            // The real hazard is scope: "full_page", where the audit scrolls and
+            // rects captured at different offsets land in one list against a
+            // single viewport image; anything above the captured viewport then
+            // carries a negative y and would render off-canvas. Say which space
+            // these are in and flag the ones that fall outside the image rather
+            // than emitting silent negatives. (2026-07-28)
+            coordinateSpace: "viewport",
+            barrierRects: r.barriers?.filter((b: any) => b.rect).map((b: any) => {
+              const vp = r.viewportSize;
+              const outside = !!vp && !!b.rect && (
+                b.rect.y + b.rect.height < 0 || b.rect.x + b.rect.width < 0 ||
+                b.rect.y > vp.height || b.rect.x > vp.width
+              );
+              return {
+                type: b.type, severity: b.severity, element: b.element,
+                description: b.description, rect: b.rect,
+                wcag: b.wcagCriteria,
+                ...(outside ? { outsideScreenshot: true } : {}),
+              };
+            }),
           })).filter((s: any) => s.screenshot),
         };
 

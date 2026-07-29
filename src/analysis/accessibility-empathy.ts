@@ -1555,11 +1555,20 @@ async function simulateAccessibilityJourney(
     frictionDeduction: perceptualResult.frictionDeduction,
     goalDeduction: perceptualResult.goalDeduction,
     cognitiveOverloadPenalty: perceptualResult.cognitiveOverloadPenalty,
+    // The reading behind the prose above and behind cognitiveOverloadPenalty.
+    // Named because two other numbers in this payload are also "cognitive load".
+    visualComplexityCognitiveLoad: perceptualResult.cognitiveLoad,
     finalScore: empathyScore,
     explanation: perceptualResult.explanation
       + (perceptualResult.informationLoss > 0.05 ? ` | Info loss: ${(perceptualResult.informationLoss * 100).toFixed(0)}%` : '')
       + (perceptualResult.motorCost > 0.1 ? ` | Motor cost: ${(perceptualResult.motorCost * 100).toFixed(0)}%` : '')
-      + (perceptualResult.cognitiveLoad > 0.3 ? ` | Cog load: ${(perceptualResult.cognitiveLoad * 100).toFixed(0)}%` : ''),
+      // Labelled by source. Three different numbers in one payload all called
+      // "cognitive load" — this one (visual-complexity model), the screenshot
+      // Wasserstein figure in perceptualTransport.cognitiveLoad, and the optimal
+      // transport figure in cognitiveLoad.totalLoad. On one example.com audit
+      // they read 70%, 34% and 4% respectively. See cognitiveLoadReadings.
+      // (2026-07-28)
+      + (perceptualResult.cognitiveLoad > 0.3 ? ` | Visual-complexity cog load: ${(perceptualResult.cognitiveLoad * 100).toFixed(0)}%` : ''),
   };
 
   // Generate remediation priorities
@@ -2545,6 +2554,32 @@ export async function runEmpathyAudit(
         const pageMetrics = await extractPageMetrics(page);
         const otProfile = buildOTCognitiveProfile(personaName, resolvedPersona.cognitiveTraits as unknown as Record<string, number> || {});
         const cogLoad = estimateCognitiveLoad(otProfile, pageMetrics);
+
+        // Three separate models each produce a number called "cognitive load",
+        // and all three ship in the same response with nothing to distinguish
+        // them: one example.com audit returned 70%, 34% and 4% for the same
+        // persona on the same page. They are not redundant — they measure
+        // different things — so name them and their sources rather than picking
+        // an arbitrary winner. (2026-07-28)
+        (result as any).cognitiveLoadReadings = {
+          note: "Three models, three scales. These are not expected to agree; use the one matching your question.",
+          visualComplexity: {
+            value: (result as any).scoreContext?.visualComplexityCognitiveLoad,
+            source: "computePerceptualScore",
+            measures: "visual complexity vs the persona's noise tolerance; this is the figure that deducts from the empathy score",
+          },
+          perceptualTransport: {
+            value: (result as any).perceptualTransport?.cognitiveLoad,
+            source: "computePerceptualAnalysis (screenshot Wasserstein)",
+            measures: "how much visual information this persona loses versus a typical viewer",
+          },
+          opticalTransport: {
+            value: Math.round(cogLoad.totalLoad * 100) / 100,
+            source: "estimateCognitiveLoad (optimal transport over page metrics)",
+            measures: "modelled working-memory demand of the page for this persona's traits",
+          },
+        };
+
         (result as any).cognitiveLoad = {
           totalLoad: Math.round(cogLoad.totalLoad * 100) / 100,
           overloaded: cogLoad.overloaded,
