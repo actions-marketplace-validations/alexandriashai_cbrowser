@@ -128,23 +128,50 @@ interface ElementBounds {
  */
 /**
  * Collapse per-cell attention entries into one entry per element.
+ *
  * cellCount is kept so a caller can tell a broad element from a sharp one.
+ *
+ * The dedupe originally summed saliency into the `saliency` field, which put a
+ * value of 9.943 on a field every sibling reads as 0-1 (`topAttentionAreas`
+ * reports 1 and 0.99 on that scale). Summing was not wrong — total attention
+ * mass is the right way to RANK targets — but publishing a sum under a name
+ * that means a normalized score is, and it is the same defect shape as several
+ * others in this codebase: two quantities sharing one name.
+ *
+ * So both are reported and each says what it is: `saliency` is the mean, on the
+ * documented scale, and `saliencySum` is the total mass the ranking uses.
+ * (2026-07-29)
  */
 function dedupeTargetsByElement(
   targets: AttentionQualityResult["topAttentionTargets"],
 ): AttentionQualityResult["topAttentionTargets"] {
-  const byElement = new Map<string, AttentionQualityResult["topAttentionTargets"][number] & { cellCount?: number }>();
+  const byElement = new Map<
+    string,
+    AttentionQualityResult["topAttentionTargets"][number] & { cellCount?: number; saliencySum?: number }
+  >();
   for (const t of targets) {
     const key = `${t.type}::${t.element}`;
     const existing = byElement.get(key);
     if (existing) {
-      existing.saliency = Math.round((existing.saliency + t.saliency) * 1000) / 1000;
+      existing.saliencySum = (existing.saliencySum ?? existing.saliency) + t.saliency;
       existing.cellCount = (existing.cellCount ?? 1) + 1;
     } else {
-      byElement.set(key, { ...t, cellCount: 1 });
+      byElement.set(key, { ...t, cellCount: 1, saliencySum: t.saliency });
     }
   }
-  return [...byElement.values()].sort((a, b) => b.saliency - a.saliency);
+  const round3 = (n: number) => Math.round(n * 1000) / 1000;
+  for (const entry of byElement.values()) {
+    const sum = entry.saliencySum ?? entry.saliency;
+    const count = entry.cellCount ?? 1;
+    entry.saliencySum = round3(sum);
+    entry.saliency = round3(sum / count);
+  }
+  // Ranked by total attention captured, not by mean: an element spanning ten
+  // hot cells genuinely draws more attention than one spanning a single cell of
+  // the same intensity.
+  return [...byElement.values()].sort(
+    (a, b) => (b.saliencySum ?? b.saliency) - (a.saliencySum ?? a.saliency),
+  );
 }
 
 export function computeAttentionQuality(

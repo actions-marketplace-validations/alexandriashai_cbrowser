@@ -34,6 +34,7 @@
  */
 
 import { type Page } from "playwright";
+import { VERSION } from "../version.js";
 import { CBrowser } from "../browser.js";
 import type {
   EmpathyAuditResult,
@@ -411,7 +412,7 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
 
         if (ratio < aaaThreshold) {
           (results as any[]).push({
-            selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : el.className ? `.${el.className.split(' ')[0]}` : ''),
+            selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : el.className ? `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}` : ''),
             text: text.slice(0, 30),
             fontSize,
             ratio: Math.round(ratio * 10) / 10,
@@ -586,7 +587,7 @@ async function detectTimingIssues(ctx: BarrierContext): Promise<void> {
         return {
           isTimingRelevant,
           selector: el.tagName.toLowerCase() + (el.className && typeof (el as HTMLElement).className === "string"
-            ? `.${(el as HTMLElement).className.split(" ")[0]}` : ""),
+            ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(" ")[0]}` : ""),
           text,
         };
       })
@@ -629,7 +630,7 @@ async function detectColorOnlyInfo(ctx: BarrierContext): Promise<void> {
       const hasIcon = el.querySelector('svg, i, [class*="icon"]') !== null;
       const hasText = (el.textContent?.trim() || '').length > 0;
       return {
-        selector: el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''),
+        selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
         hasIcon,
         hasText,
         color: styles.color,
@@ -680,9 +681,9 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
       const isLikelyDecorative =
         imgEl.width < 20 || imgEl.height < 20 ||
         rect.width < 50 || rect.height < 50 ||
-        imgEl.className.includes('icon') ||
-        imgEl.className.includes('decoration') ||
-        imgEl.className.includes('separator') ||
+        String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('icon') ||
+        String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('decoration') ||
+        String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('separator') ||
         imgEl.getAttribute('role') === 'presentation';
       return {
         selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
@@ -875,7 +876,7 @@ async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
                          el.querySelector('a, button') !== null;
 
         results.push({
-          selector: el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''),
+          selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
           hasClickAlternative: hasClick,
           text: el.textContent?.trim().slice(0, 30) || '',
         });
@@ -1069,7 +1070,7 @@ async function detectCognitiveBarriers(ctx: BarrierContext): Promise<void> {
       // Flag blocks with 200+ words AND tight line spacing
       if (wordCount > 200) {
         results.push({
-          selector: el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''),
+          selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
           wordCount,
           lineHeight: styles.lineHeight,
           fontSize: styles.fontSize,
@@ -1107,7 +1108,7 @@ async function detectCognitiveBarriers(ctx: BarrierContext): Promise<void> {
     for (const el of elements.slice(0, 50)) {
       const styles = window.getComputedStyle(el);
       if (styles.textAlign === 'justify') {
-        results.push(el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''));
+        results.push(el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''));
       }
     }
 
@@ -1153,7 +1154,7 @@ async function detectVisionBarriers(ctx: BarrierContext): Promise<void> {
       // Flag fonts smaller than 14px as problematic for low vision
       if (fontSize > 0 && fontSize < 14) {
         results.push({
-          selector: el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''),
+          selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
           fontSize: styles.fontSize,
           fontSizeNum: fontSize,
         });
@@ -1309,6 +1310,8 @@ async function simulateAccessibilityJourney(
   };
 
   let goalAchieved = false;
+  /** Set when the navigation simulation threw — see the catch block below. */
+  let navigationError: string | undefined;
   let journeyValidation: Record<string, unknown> | undefined;
 
   // Emotional state captured from cognitive journey (v13.1.0)
@@ -1531,10 +1534,21 @@ async function simulateAccessibilityJourney(
     }
 
   } catch (e) {
+    // This block is why the SVG className crash was invisible for so long. The
+    // throw skipped the `goalAchieved = blockingBarriers.length === 0` line
+    // above, leaving goalAchieved at its initialised `false`, and the scorer
+    // then charged a 15-point goal deduction. The number measured OUR crash and
+    // was reported to the customer as their site failing the goal — while the
+    // error itself appeared only in the HTML report, never in the JSON.
+    //
+    // Two things follow: record the error where the JSON can see it, and do not
+    // charge a goal deduction for a traversal that never ran. An unmeasured goal
+    // is unknown, not failed. (2026-07-29)
+    navigationError = (e as Error).message;
     ctx.frictionPoints.push({
       step: 0,
       type: "error",
-      description: `Navigation error: ${(e as Error).message}`,
+      description: `Navigation error: ${navigationError}`,
       impact: "high",
     });
   }
@@ -1545,7 +1559,11 @@ async function simulateAccessibilityJourney(
   const perceptualResult = calculatePerceptualScore(
     ctx.barriers,
     ctx.frictionPoints,
-    goalAchieved,
+    // When navigation threw, the goal was never attempted. Passing `false` here
+    // charges the customer for our failure; passing `true` would invent a
+    // success. Treat it as not-failed and mark the result degraded instead, so
+    // the score reflects only what was actually measured (the barriers).
+    navigationError ? true : goalAchieved,
     persona.name,
     (persona as any).accessibilityTraits,
   );
@@ -1570,6 +1588,13 @@ async function simulateAccessibilityJourney(
     // actually differentiates them.
     appliedBarrierWeights: perceptualResult.appliedWeights,
     finalScore: empathyScore,
+    // A caller must be able to tell a measured score from a partial one.
+    ...(navigationError
+      ? {
+          degraded: true,
+          degradedReason: `navigation error — goal traversal did not run, so no goal deduction was applied: ${navigationError}`,
+        }
+      : {}),
     explanation: perceptualResult.explanation
       + (perceptualResult.informationLoss > 0.05 ? ` | Info loss: ${(perceptualResult.informationLoss * 100).toFixed(0)}%` : '')
       + (perceptualResult.motorCost > 0.1 ? ` | Motor cost: ${(perceptualResult.motorCost * 100).toFixed(0)}%` : '')
@@ -1912,7 +1937,7 @@ TOP REMEDIATION PRIORITIES
 * Methodology and research sources: docs/METHODOLOGY.md
   Key sources: WCAG 2.1, WebAIM Screen Reader Survey (2024), Baymard Institute
 
-Generated by CBrowser v8.0.0 - Accessibility Empathy Audit
+Generated by CBrowser v${VERSION} - Accessibility Empathy Audit
 `;
 
   return report;
@@ -2220,7 +2245,7 @@ export function generateEmpathyAuditHtmlReport(result: EmpathyAuditResult): stri
   </div>
 
   <p style="color: #64748b; text-align: center; margin-top: 2rem;">
-    Generated by CBrowser v8.0.0 - Accessibility Empathy Audit
+    Generated by CBrowser v${VERSION} - Accessibility Empathy Audit
   </p>
 </body>
 </html>`;

@@ -395,7 +395,7 @@ export async function findElementByIntent(
       elements.push({
         tag: el.tagName.toLowerCase(),
         text,
-        classes: el.className?.toString().slice(0, 100) || "",
+        classes: String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").slice(0, 100),
         id: el.id || "",
         role: el.getAttribute("role") || "",
         type: inputEl.type || "",

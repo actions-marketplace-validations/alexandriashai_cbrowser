@@ -2566,7 +2566,7 @@ For more help: https://playwright.dev/docs/browsers
         if (topElement.id) {
           selector = `#${topElement.id}`;
         } else if (topElement.className && typeof topElement.className === 'string') {
-          selector += `.${topElement.className.split(' ')[0]}`;
+          selector += `.${String((topElement.className as unknown as { baseVal?: string })?.baseVal ?? topElement.className ?? "").split(' ')[0]}`;
         }
 
         // Check if it's a sticky/fixed element (those are the problematic ones)
@@ -2625,7 +2625,7 @@ For more help: https://playwright.dev/docs/browsers
           if (rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none') {
             let selector = el.tagName.toLowerCase();
             if (el.id) selector += `#${el.id}`;
-            else if (el.className && typeof el.className === 'string') selector += `.${el.className.split(' ')[0]}`;
+            else if (el.className && typeof el.className === 'string') selector += `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}`;
 
             results.push({
               selector,
@@ -2819,7 +2819,7 @@ For more help: https://playwright.dev/docs/browsers
             if (hasClickIndicator || hasRole || isButton || hasDropdownClass) {
               // Return a selector for this element
               if (sibling.id) return `#${sibling.id}`;
-              if (sibling.className) return `.${sibling.className.split(' ')[0]}`;
+              if (sibling.className) return `.${String((sibling.className as unknown as { baseVal?: string })?.baseVal ?? sibling.className ?? "").split(' ')[0]}`;
               return null;
             }
           }
@@ -2867,13 +2867,13 @@ For more help: https://playwright.dev/docs/browsers
                 const clickableStyle = getComputedStyle(clickable);
                 if (clickableStyle.display !== 'none') {
                   if ((clickable as HTMLElement).id) return `#${(clickable as HTMLElement).id}`;
-                  if (clickable.className) return `.${clickable.className.split(' ')[0]}`;
+                  if (clickable.className) return `.${String((clickable.className as unknown as { baseVal?: string })?.baseVal ?? clickable.className ?? "").split(' ')[0]}`;
                 }
               }
 
               // If parent itself looks clickable
               if (parent.id) return `#${parent.id}`;
-              if (parent.className) return `.${parent.className.split(' ')[0]}`;
+              if (parent.className) return `.${String((parent.className as unknown as { baseVal?: string })?.baseVal ?? parent.className ?? "").split(' ')[0]}`;
             }
           }
           parent = parent.parentElement;
@@ -2909,7 +2909,7 @@ For more help: https://playwright.dev/docs/browsers
               const style = getComputedStyle(el);
               if (style.display !== 'none' && style.visibility !== 'hidden') {
                 if (el.id) return `#${el.id}`;
-                if (el.className) return `.${el.className.split(' ')[0]}`;
+                if (el.className) return `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}`;
               }
             }
           }
@@ -4144,11 +4144,23 @@ For more help: https://playwright.dev/docs/browsers
         tests.push({
           name: "Navigation Links",
           description: "Test main navigation links work",
-          steps: navLinks.slice(0, 5).flatMap(link => [
-            { action: "navigate" as const, target: analysis.url, description: "Start from home" },
-            { action: "click" as const, target: link.selector, description: `Click ${link.text || "link"}` },
-            { action: "assert" as const, target: `url contains '${new URL(link.href || "").pathname}'`, description: "Verify navigation" },
-          ]),
+          // A same-page link has pathname "/", and `assert url contains '/'` is
+          // true of every URL ever produced — a step that always passes is worse
+          // than no step, because it reads in the report as verified navigation.
+          // Emit the assertion only when the path can actually distinguish the
+          // destination from the origin. (2026-07-29)
+          steps: navLinks.slice(0, 5).flatMap(link => {
+            let path = "";
+            try { path = new URL(link.href || "", analysis.url).pathname; } catch { path = ""; }
+            const discriminating = path.length > 1 && path !== new URL(analysis.url).pathname;
+            return [
+              { action: "navigate" as const, target: analysis.url, description: "Start from home" },
+              { action: "click" as const, target: link.selector, description: `Click ${link.text || "link"}` },
+              ...(discriminating
+                ? [{ action: "assert" as const, target: `url contains '${path}'`, description: "Verify navigation" }]
+                : []),
+            ];
+          }),
           assertions: ["no console errors"],
         });
       }

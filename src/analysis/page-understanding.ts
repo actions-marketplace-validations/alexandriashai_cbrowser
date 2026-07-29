@@ -500,7 +500,7 @@ export class PageUnderstandingEngine {
           href: (el as HTMLAnchorElement).href || "",
           name: inputEl.name || "",
           id: el.id || "",
-          className: el.className?.toString()?.slice(0, 120) || "",
+          className: String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").slice(0, 120),
           role: el.getAttribute("role") || "",
           ariaLabel: el.getAttribute("aria-label") || "",
           disabled: inputEl.disabled || el.getAttribute("aria-disabled") === "true",
@@ -574,7 +574,7 @@ export class PageUnderstandingEngine {
             tag: submitEl.tagName.toLowerCase(),
             text: getVisibleText(submitEl) || (submitEl as HTMLInputElement).value || "Submit",
             id: submitEl.id || "",
-            className: submitEl.className?.toString()?.slice(0, 120) || "",
+            className: String((submitEl.className as unknown as { baseVal?: string })?.baseVal ?? submitEl.className ?? "").slice(0, 120),
             nthOfType: getNthOfType(submitEl),
           };
         }
@@ -583,7 +583,7 @@ export class PageUnderstandingEngine {
           action: (form as HTMLFormElement).action || "",
           method: ((form as HTMLFormElement).method || "GET").toUpperCase(),
           id: form.id || "",
-          className: form.className?.toString()?.slice(0, 120) || "",
+          className: String((form.className as unknown as { baseVal?: string })?.baseVal ?? form.className ?? "").slice(0, 120),
           fields,
           submitButton,
         });
@@ -600,7 +600,7 @@ export class PageUnderstandingEngine {
             text: getVisibleText(a),
             href: (a as HTMLAnchorElement).href || "",
             id: a.id || "",
-            className: a.className?.toString()?.slice(0, 120) || "",
+            className: String((a.className as unknown as { baseVal?: string })?.baseVal ?? a.className ?? "").slice(0, 120),
             nthOfType: getNthOfType(a),
           });
         });
@@ -608,7 +608,7 @@ export class PageUnderstandingEngine {
         navs.push({
           ariaLabel: nav.getAttribute("aria-label") || "",
           id: nav.id || "",
-          className: nav.className?.toString()?.slice(0, 120) || "",
+          className: String((nav.className as unknown as { baseVal?: string })?.baseVal ?? nav.className ?? "").slice(0, 120),
           links,
           nthOfType: getNthOfType(nav),
         });
@@ -624,7 +624,7 @@ export class PageUnderstandingEngine {
           role: el.getAttribute("role") || "",
           ariaLabel: el.getAttribute("aria-label") || "",
           id: el.id || "",
-          className: el.className?.toString()?.slice(0, 120) || "",
+          className: String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").slice(0, 120),
           nthOfType: getNthOfType(el),
           childCount: el.children.length,
           // True when most children share one tag, i.e. this region looks like a
@@ -1080,12 +1080,12 @@ function detectCTAs(raw: RawDOMExtraction): CTAElement[] {
     let prominence: CTAElement["prominence"] = "tertiary";
     if (el.rect.top < 600) {
       // Above the fold
-      if (el.rect.width > 120 || el.className.toLowerCase().match(/\b(primary|cta|hero|main)\b/)) {
+      if (el.rect.width > 120 || String(el.className ?? "").toLowerCase().match(/\b(primary|cta|hero|main)\b/)) {
         prominence = "primary";
       } else {
         prominence = "secondary";
       }
-    } else if (el.className.toLowerCase().match(/\b(primary|cta)\b/)) {
+    } else if (String(el.className ?? "").toLowerCase().match(/\b(primary|cta)\b/)) {
       prominence = "secondary";
     }
 

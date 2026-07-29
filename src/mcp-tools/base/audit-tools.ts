@@ -223,6 +223,13 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
                 perceptualScore: (r.scoreContext as any).perceptualScore,
                 blendWeights: (r.scoreContext as any).blendWeights,
                 finalScore: (r.scoreContext as any).finalScore,
+                // A partial score must be distinguishable from a measured one.
+                // Set when the navigation simulation threw: the goal traversal
+                // did not run, so no goal deduction was charged and the score
+                // reflects barriers only. Without these two names the whitelist
+                // above would drop the flag and the score would read as clean.
+                degraded: (r.scoreContext as any).degraded,
+                degradedReason: (r.scoreContext as any).degradedReason,
               } : undefined,
               barrierTypeCount: uniqueTypes.size,
               barrierTypes: Array.from(uniqueTypes),
@@ -261,6 +268,15 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           },
           topRemediation: result.combinedRemediation.slice(0, 5),
           duration: result.duration,
+          // Errors caught during the run, promoted out of the HTML report. The
+          // SVG className crash changed goalAchieved and the goal deduction while
+          // being visible ONLY in the HTML, so the JSON reported a confident
+          // wrong number. Anything that moves a scored field is surfaced here.
+          errors: result.results.flatMap((r) =>
+            (r.frictionPoints ?? [])
+              .filter((fp: any) => fp.type === "error")
+              .map((fp: any) => ({ persona: r.persona, message: fp.description })),
+          ),
           // v18.60.0: Include per-result screenshots and element rects for WCAG overlay
           pageScreenshots: result.results?.map((r: any) => ({
             persona: r.persona,
