@@ -827,6 +827,23 @@ export interface TransportFlow {
 export interface TransportMapResult {
   /** Grid dimensions used */
   gridSize: { rows: number; cols: number };
+  /**
+   * Set when the two captures are not the same shape.
+   *
+   * The analysis grid is derived from the BASELINE alone and then applied to
+   * the comparison image unchanged, so a 393x11114 mobile full-page capture
+   * measured against a 1920x1080 desktop baseline is sampled on a 1920x1080
+   * grid — cell (r,c) in one image covers a completely different part of the
+   * page than cell (r,c) in the other. Every number downstream is then a
+   * comparison of unrelated regions, computed confidently and reported without
+   * qualification. (2026-07-29)
+   */
+  dimensionMismatch?: {
+    baseline: { width: number; height: number };
+    comparison: { width: number; height: number };
+    aspectRatioDelta: number;
+    warning: string;
+  };
   /** All transport flows (filtered to significant ones) */
   flows: TransportFlow[];
   /** Per-cell change magnitude (heatmap data) */
@@ -898,6 +915,22 @@ export async function computeTransportMap(
   const scaledCellSize = Math.max(4, Math.round(cellSize * downscale));
   const rows = Math.ceil(imgA.height / scaledCellSize);
   const cols = Math.ceil(imgA.width / scaledCellSize);
+
+  // The grid above comes from imgA only and is applied to imgB unchanged. When
+  // the two captures differ in shape that makes every cell comparison a
+  // comparison of unrelated regions — silently, because nothing here fails.
+  const arA = imgA.width / Math.max(1, imgA.height);
+  const arB = imgB.width / Math.max(1, imgB.height);
+  const aspectRatioDelta = Math.abs(arA - arB);
+  const sameShape = imgA.width === imgB.width && imgA.height === imgB.height;
+  const dimensionMismatch = sameShape ? undefined : {
+    baseline: { width: imgA.width, height: imgA.height },
+    comparison: { width: imgB.width, height: imgB.height },
+    aspectRatioDelta: Math.round(aspectRatioDelta * 1000) / 1000,
+    warning: aspectRatioDelta > 0.1
+      ? `Captures differ in shape (${imgA.width}x${imgA.height} vs ${imgB.width}x${imgB.height}, aspect-ratio delta ${aspectRatioDelta.toFixed(2)}). The analysis grid is derived from the baseline and applied to the comparison unchanged, so cells do not cover the same page regions and these results are NOT meaningful. Re-capture both at the same viewport and scope.`
+      : `Captures differ in size (${imgA.width}x${imgA.height} vs ${imgB.width}x${imgB.height}) but have a similar aspect ratio, so the grid still lands on roughly corresponding regions. Treat magnitudes as approximate.`,
+  };
   const numCells = rows * cols;
 
   // Compute per-cell color distributions
@@ -1021,6 +1054,7 @@ export async function computeTransportMap(
     hotspots,
     svg,
     dimensions: { width: origWidth, height: origHeight },
+    ...(dimensionMismatch ? { dimensionMismatch } : {}),
     computeTimeMs: performance.now() - startTime,
   };
 }

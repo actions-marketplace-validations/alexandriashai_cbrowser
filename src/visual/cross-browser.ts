@@ -385,8 +385,16 @@ export async function runCrossBrowserTest(
       : "consistent";
 
   // v11.10.0: Improved messaging for cross-browser expected differences (issue #93)
+  // "all tested browsers" overclaimed twice: the set is the browsers that
+  // successfully CAPTURED (a launch-probe pass that then fails mid-capture is
+  // dropped silently), and the comparison is above-the-fold pixels at one
+  // viewport — page text is never examined here, which is why
+  // cross_browser_diff can report a content difference on the same input
+  // without either tool being wrong. Name the browsers and the scope so the
+  // claim is checkable. (2026-07-29)
+  const comparedBrowsers = screenshots.map((s) => s.browser).join(", ");
   const summary = overallStatus === "consistent"
-    ? "Page renders consistently across all tested browsers"
+    ? `Above-the-fold pixels match across ${comparedBrowsers}. Page text was not compared — use cross_browser_diff for content differences.`
     : overallStatus === "minor_differences"
       ? "Minor rendering differences detected (font/anti-aliasing variations are expected between browser engines)"
       : "Significant layout or content differences detected between browsers (review recommended)";

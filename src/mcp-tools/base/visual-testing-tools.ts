@@ -184,6 +184,37 @@ export function registerVisualTestingTools(server: McpServer): void {
               url: result.url,
               overallStatus: result.overallStatus,
               summary: result.summary,
+              // The evidence used to be collapsed to two integers —
+              // screenshotCount / comparisonCount — while `result` carried every
+              // screenshot path, every pairwise similarity score, and
+              // problematicBrowsers. So the caller received an absolute verdict
+              // ("renders consistently across all tested browsers") with every
+              // number that could falsify it removed, and no way to open the
+              // screenshots it said it had taken.
+              //
+              // It also explains the contradiction with cross_browser_diff: this
+              // tool compares ABOVE-THE-FOLD PIXELS at a forced 1920x1080, while
+              // the diff compares FULL-PAGE TEXT at 1280x720. Two different
+              // measurements reported in language that claims to settle the same
+              // question. `scope` now says which one you are reading.
+              // (2026-07-29)
+              scope: "above-the-fold pixels at 1920x1080; page TEXT is not compared — use cross_browser_diff for content",
+              screenshots: result.screenshots.map((s) => ({
+                browser: s.browser,
+                path: (s as unknown as { screenshotPath?: string }).screenshotPath,
+                viewport: (s as unknown as { viewport?: unknown }).viewport,
+              })),
+              comparisons: result.comparisons.map((c) => ({
+                browserA: c.browserA,
+                browserB: c.browserB,
+                status: c.analysis?.overallStatus,
+                similarity: c.analysis?.similarityScore,
+                changes: (c.analysis?.changes ?? []).map((ch) => ({
+                  severity: ch.severity,
+                  description: ch.description,
+                })),
+              })),
+              ...(result.problematicBrowsers?.length ? { problematicBrowsers: result.problematicBrowsers } : {}),
               screenshotCount: result.screenshots.length,
               comparisonCount: result.comparisons.length,
               ...(result.missingBrowsers?.length ? { missingBrowsers: result.missingBrowsers } : {}),
@@ -255,6 +286,24 @@ export function registerVisualTestingTools(server: McpServer): void {
               url: result.url,
               overallStatus: result.overallStatus,
               summary: result.summary,
+              // `result.issues` and `problematicViewports` were both computed and
+              // then dropped here, so the caller got "13 issues: 7 overflow, 2
+              // unreadable text..." with no way to learn WHICH viewport or WHICH
+              // element — a count they could not act on. Same computed-then-
+              // discarded shape as the cross-browser handler above. (2026-07-29)
+              issues: (result.issues ?? []).map((i) => ({
+                type: i.type,
+                severity: i.severity,
+                description: i.description,
+                affectedViewports: i.affectedViewports,
+                ...(i.breakpointRange ? { breakpointRange: i.breakpointRange } : {}),
+              })),
+              ...(result.problematicViewports?.length ? { problematicViewports: result.problematicViewports } : {}),
+              viewports: result.screenshots.map((s) => ({
+                name: (s as unknown as { viewport?: string; name?: string }).viewport
+                  ?? (s as unknown as { name?: string }).name,
+                path: (s as unknown as { screenshotPath?: string }).screenshotPath,
+              })),
               viewportsCount: result.screenshots.length,
             }, null, 2),
           },
