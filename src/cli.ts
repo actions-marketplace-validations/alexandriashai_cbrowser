@@ -2030,6 +2030,18 @@ async function runEvaluate(
     script = readFileSync(path, "utf-8");
   } else if (args[0]) {
     script = args[0];
+    // The URL goes in --url, not positionally, and getting that wrong used to
+    // produce a baffling error instead of a useful one: "https://example.com"
+    // compiles as the label `https:` followed by `//example.com` as a comment,
+    // which swallows the rest of the generated line and reports
+    // `SyntaxError: Unexpected token '}'` from deep inside the page. Nothing in
+    // that message points at the real mistake. (2026-07-29)
+    if (/^https?:\/\/\S+$/i.test(script.trim())) {
+      console.error(`Error: that looks like a URL, not JavaScript: ${script.trim()}`);
+      console.error(`  The script is the positional argument; the page goes in --url:`);
+      console.error(`    cbrowser evaluate "document.title" --url "${script.trim()}"`);
+      process.exit(1);
+    }
   } else {
     console.error('Usage: cbrowser evaluate "<javascript>" | --file <path>');
     console.error("  Run 'cbrowser help evaluate' for options");
