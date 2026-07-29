@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.77.0](https://github.com/alexandriashai/cbrowser/compare/v18.76.0...v18.77.0) (2026-07-29)
+
+### Added
+
+* **attention:** opt-in AI layer, reported beside the numbers not inside them ([58c13b1](https://github.com/alexandriashai/cbrowser/commit/58c13b1f3833cb598d19f1c51af51261e7eddeab))
+
 ## [18.76.0](https://github.com/alexandriashai/cbrowser/compare/v18.75.4...v18.76.0) (2026-07-29)
 
 ### Added
