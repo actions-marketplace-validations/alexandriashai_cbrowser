@@ -796,22 +796,39 @@ function generateRankings(results: SiteBenchmarkResult[]): SiteRanking[] {
   });
 }
 
+/**
+ * Winner on one metric, or a tie.
+ *
+ * Array.prototype.sort is STABLE, so on tied values `sorted[0]` is simply
+ * whichever site came first in the input — and every metric then names that
+ * same site. With two sites both scoring 42, one was returned simultaneously as
+ * fastestSite, leastFriction AND highestAbandonmentRisk, which reads as three
+ * independent findings and is really one array order. A comparison that cannot
+ * discriminate should say so rather than pick. (2026-07-29)
+ */
+function metricLeader(
+  results: SiteBenchmarkResult[],
+  value: (r: SiteBenchmarkResult) => number,
+  direction: "lowest" | "highest",
+): string {
+  if (results.length === 0) return "N/A";
+  if (results.length === 1) return "N/A (single site — nothing to compare against)";
+  const ranked = [...results].sort((a, b) =>
+    direction === "lowest" ? value(a) - value(b) : value(b) - value(a),
+  );
+  if (value(ranked[0]) === value(ranked[1])) {
+    const tied = ranked.filter((r) => value(r) === value(ranked[0]));
+    return `tie (${tied.map((r) => r.siteName).join(", ")})`;
+  }
+  return ranked[0].siteName;
+}
+
 function generateComparison(results: SiteBenchmarkResult[]): BenchmarkComparison {
-  const sorted = [...results];
-
-  // Find fastest/slowest
-  sorted.sort((a, b) => a.totalTime - b.totalTime);
-  const fastestSite = sorted[0].siteName;
-  const slowestSite = sorted[sorted.length - 1].siteName;
-
-  // Find most/least friction
-  sorted.sort((a, b) => a.frictionPoints.length - b.frictionPoints.length);
-  const leastFriction = sorted[0].siteName;
-  const mostFriction = sorted[sorted.length - 1].siteName;
-
-  // Find highest abandonment risk
-  sorted.sort((a, b) => b.abandonmentRisk - a.abandonmentRisk);
-  const highestAbandonmentRisk = sorted[0].siteName;
+  const fastestSite = metricLeader(results, (r) => r.totalTime, "lowest");
+  const slowestSite = metricLeader(results, (r) => r.totalTime, "highest");
+  const leastFriction = metricLeader(results, (r) => r.frictionPoints.length, "lowest");
+  const mostFriction = metricLeader(results, (r) => r.frictionPoints.length, "highest");
+  const highestAbandonmentRisk = metricLeader(results, (r) => r.abandonmentRisk, "highest");
 
   // Find common friction points
   const frictionCounts = new Map<string, number>();

@@ -1215,12 +1215,25 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const _nu = new URL(url);
         let narrative = `## ${persona} on ${_nu.hostname.replace(/^www\d*\./, '')}${_nu.pathname !== '/' ? _nu.pathname.replace(/\/$/, '') : ''}\n\n`;
         narrative += `### The Eye: Where Attention Goes\n`;
-        narrative += concentration > 0.5
-          ? `Attention is focused (concentration: ${(concentration * 100).toFixed(0)}%). This persona quickly identifies a visual anchor and locks onto it.\n`
-          : `Attention is scattered (concentration: ${(concentration * 100).toFixed(0)}%). This persona's eye wanders across the page without finding a clear focal point.\n`;
-        narrative += entropy > 0.8
-          ? `High visual entropy means too many competing elements fight for attention.\n\n`
-          : `Visual hierarchy is working — the page guides the eye effectively.\n\n`;
+        // Concentration and entropy were emitted as two independent sentences, so
+        // a page could be told "Attention is focused (91%)" and immediately
+        // "High visual entropy means too many competing elements" — which reads
+        // as the report contradicting itself one line later. It is not a
+        // contradiction, it is a real and specific combination: one dominant
+        // anchor plus a crowded field behind it. Say that, rather than two
+        // half-truths in sequence. (2026-07-29)
+        const focused = concentration > 0.5;
+        const crowded = entropy > 0.8;
+        const pct = (concentration * 100).toFixed(0);
+        if (focused && crowded) {
+          narrative += `Attention concentrates on one anchor (${pct}%), but the field behind it is crowded (entropy ${entropy.toFixed(2)}). This persona locks onto a single element and the rest of the page competes for whatever attention is left — strong focus, weak hierarchy.\n\n`;
+        } else if (focused) {
+          narrative += `Attention is focused (concentration: ${pct}%) and the hierarchy supports it. This persona quickly identifies a visual anchor and locks onto it.\n\n`;
+        } else if (crowded) {
+          narrative += `Attention is scattered (concentration: ${pct}%) across a crowded page (entropy ${entropy.toFixed(2)}). Too many elements compete and none wins — the eye wanders without finding a focal point.\n\n`;
+        } else {
+          narrative += `Attention is spread evenly (concentration: ${pct}%) without a dominant anchor, though the page is not visually noisy. Nothing is fighting for attention; nothing is claiming it either.\n\n`;
+        }
 
         narrative += `### The Effort: How Hard It Is\n`;
         narrative += `Total cognitive transport cost: ${ctc.toFixed(2)}. `;
@@ -1244,8 +1257,20 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         }
 
         narrative += `\n### The Verdict\n`;
-        if (ctc < 0.5 && (qualityData?.ctaCaptureRate ?? 0) > 0.2) {
+        // The verdict branched on ctc and ctaCaptureRate ONLY, ignoring the
+        // distractor ratio and quality score printed directly above it. So a
+        // page scoring 31/100 with 70% of attention on non-actionable elements
+        // was told "**Strong.** Easy to use AND attention lands on CTAs" — the
+        // verdict contradicting its own evidence one line later. A summary that
+        // reads less of the data than the section above it is worse than no
+        // summary, because it is the line people quote. (2026-07-29)
+        const distractRatio = qualityData?.distractorRatio ?? 0;
+        const qScore = qualityData?.qualityScore ?? 0;
+        const leaking = distractRatio > 0.4 || (qualityData !== undefined && qScore < 50);
+        if (ctc < 0.5 && (qualityData?.ctaCaptureRate ?? 0) > 0.2 && !leaking) {
           narrative += `**Strong.** Easy to use AND attention lands on CTAs. This page works for ${persona}.`;
+        } else if (ctc < 0.5 && (qualityData?.ctaCaptureRate ?? 0) > 0.2 && leaking) {
+          narrative += `**Mixed.** Low cognitive effort and the CTAs do get seen, but attention quality is ${qScore}/100 with ${(distractRatio * 100).toFixed(0)}% going to non-actionable elements. ${persona} can use this page; the design is spending most of their attention on things that do not convert.`;
         } else if (ctc < 0.5 && (qualityData?.ctaCaptureRate ?? 0) < 0.1) {
           narrative += `**Easy but unfocused.** Low cognitive effort, but attention misses the CTAs. The page needs stronger visual hierarchy to guide ${persona} toward conversion.`;
         } else if (ctc > 1.0 && (qualityData?.ctaCaptureRate ?? 0) > 0.2) {

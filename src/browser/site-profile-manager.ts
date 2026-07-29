@@ -57,6 +57,17 @@ export interface SiteProfileSummary {
   authStatus: string;
   sizeBytes: number;
   healthy: boolean;
+  /**
+   * Whether a profile exists at all.
+   *
+   * Without this, a domain that was never profiled returned exactly what a
+   * CORRUPTED profile returns — zeros, "unknown", healthy: false — so "you
+   * have not created this yet" and "this is broken, investigate" were the same
+   * response. They call for opposite actions. (2026-07-29)
+   */
+  exists: boolean;
+  /** Why `healthy` is what it is, so a caller does not have to guess. */
+  status: "missing" | "healthy" | "expired" | "incomplete" | "unreadable";
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +312,10 @@ export class SiteProfileManager {
           authStatus: "unknown",
           sizeBytes: 0,
           healthy: false,
+          // The directory IS there — it just could not be read. That is a real
+          // profile in trouble, not an absent one.
+          exists: true,
+          status: "unreadable",
         });
       }
     }
@@ -420,10 +435,12 @@ export class SiteProfileManager {
       authStatus: "unknown",
       sizeBytes: 0,
       healthy: false,
+      exists: false,
+      status: "unreadable",
     };
 
     if (!existsSync(metaPath)) {
-      return defaultSummary;
+      return { ...defaultSummary, status: "missing" };
     }
 
     try {
@@ -442,6 +459,11 @@ export class SiteProfileManager {
       const hasState = existsSync(join(domainDir, "state.json"));
 
       const healthy = !isExpired && hasCookies && hasState;
+      const status: SiteProfileSummary["status"] = healthy
+        ? "healthy"
+        : isExpired
+          ? "expired"
+          : "incomplete";
 
       return {
         domain: meta.domain,
@@ -450,9 +472,12 @@ export class SiteProfileManager {
         authStatus: isExpired ? "expired" : meta.authStatus,
         sizeBytes: totalSize,
         healthy,
+        exists: true,
+        status,
       };
     } catch {
-      return defaultSummary;
+      // meta.json is present but unparseable — the profile exists and is broken.
+      return { ...defaultSummary, exists: true, status: "unreadable" };
     }
   }
 

@@ -970,24 +970,46 @@ export async function compareAttention(
     divergence += Math.abs(salA[i] / totalA - salB[i] / totalB);
   }
 
-  // Find most divergent regions
-  const divergentRegions: AttentionComparisonResult['divergentRegions'] = [];
+  // Find the most divergent regions.
+  //
+  // The aggregate above is computed on NORMALIZED saliency (salA/totalA vs
+  // salB/totalB); this loop used RAW values against a fixed 0.3 threshold. Two
+  // different scales for one concept, so on any page whose per-cell saliency is
+  // individually small — most pages, since the map is normalized across many
+  // cells — nothing cleared 0.3 and the list came back EMPTY while
+  // attentionDivergence read 0.2606 and the interpretation said "substantially
+  // different attention patterns". The report was describing a difference it
+  // then declined to locate.
+  //
+  // Ranking now uses the same normalized quantity the aggregate sums, so the
+  // regions are literally the largest contributors to the number reported
+  // beside them, and a non-zero divergence can no longer yield an empty list.
+  // (2026-07-29)
+  const contributions: Array<{ i: number; div: number }> = [];
   for (let i = 0; i < n; i++) {
-    const div = Math.abs(salA[i] - salB[i]);
-    if (div > 0.3) { // Only significant divergences
-      const row = Math.floor(i / analysisA.saliencyMap.cols);
-      const col = i % analysisA.saliencyMap.cols;
-      divergentRegions.push({
-        row, col,
-        x: col * analysisA.saliencyMap.cellSize,
-        y: row * analysisA.saliencyMap.cellSize,
-        saliencyA: Math.round(salA[i] * 100) / 100,
-        saliencyB: Math.round(salB[i] * 100) / 100,
-        divergence: Math.round(div * 100) / 100,
-      });
-    }
+    contributions.push({ i, div: Math.abs(salA[i] / totalA - salB[i] / totalB) });
   }
-  divergentRegions.sort((a, b) => b.divergence - a.divergence);
+  contributions.sort((a, b) => b.div - a.div);
+
+  // Keep cells carrying a real share of the total divergence, but never return
+  // nothing when there IS divergence: at minimum the top contributors.
+  const shareFloor = divergence > 0 ? divergence * 0.01 : Infinity;
+  const significant = contributions.filter((c) => c.div > shareFloor);
+  const selected = significant.length > 0 ? significant : contributions.filter((c) => c.div > 0);
+
+  const divergentRegions: AttentionComparisonResult['divergentRegions'] = selected.map(({ i, div }) => {
+    const row = Math.floor(i / analysisA.saliencyMap.cols);
+    const col = i % analysisA.saliencyMap.cols;
+    return {
+      row, col,
+      x: col * analysisA.saliencyMap.cellSize,
+      y: row * analysisA.saliencyMap.cellSize,
+      saliencyA: Math.round(salA[i] * 100) / 100,
+      saliencyB: Math.round(salB[i] * 100) / 100,
+      // Share of the reported attentionDivergence this cell accounts for.
+      divergence: Math.round(div * 10000) / 10000,
+    };
+  });
 
   return {
     personaA: analysisA,
