@@ -14,6 +14,9 @@ import {
   getCognitiveProfile,
   createCognitivePersona,
   isAgentPersonaObject,
+  BUILTIN_PERSONAS,
+  ACCESSIBILITY_PERSONAS,
+  EMOTIONAL_PERSONAS,
 } from "../../personas.js";
 import type { Persona, AccessibilityPersona, CognitiveState } from "../../types.js";
 import {
@@ -27,6 +30,83 @@ import {
   estimateCognitiveLoad,
   type OTCognitiveProfile,
 } from "../../visual/cognitive-transport.js";
+
+/**
+ * Reference distribution of cognitive distances across the built-in persona set.
+ *
+ * cognitive_distance returns three numbers — w1, w2 and sliced — that look like
+ * peers but are not on one scale: w1 is an L1 sum over 26 traits, w2 is an L2
+ * norm, and sliced is a mean random projection. Measured across all 210 built-in
+ * persona pairs, their means are 0.296 / 0.128 / 0.016 — roughly 20x apart end to
+ * end. A reader comparing them directly draws a false conclusion.
+ *
+ * The verdict was worse. Its bands (0.01 / 0.03 / 0.06) were calibrated for a
+ * scale w1 does not occupy: w1 actually spans 0.055 to 0.684, so 209 of those 210
+ * pairs returned "Substantially different cognitive profiles" — the same sentence
+ * for nearly every possible question, which is no answer at all.
+ *
+ * The fix for both is one idea: express each metric as its percentile within this
+ * population. Percentiles ARE comparable across metrics, and they are grounded in
+ * the real spread rather than a guessed threshold.
+ *
+ * Only the built-in personas are used, deliberately. Including user-created ones
+ * would make the same two personas score differently depending on what else the
+ * caller happened to have saved. Computed once, on first use. (2026-07-29)
+ */
+interface DistanceReference {
+  w1: number[];
+  w2: number[];
+  sliced: number[];
+  pairCount: number;
+}
+
+let distanceReference: DistanceReference | null = null;
+
+function getDistanceReference(): DistanceReference {
+  if (distanceReference) return distanceReference;
+
+  const builtins: Record<string, unknown> = {
+    ...BUILTIN_PERSONAS,
+    ...ACCESSIBILITY_PERSONAS,
+    ...EMOTIONAL_PERSONAS,
+  };
+  const profiles = Object.entries(builtins).map(([name, p]) => {
+    const profile = getCognitiveProfile(p as Persona | AccessibilityPersona);
+    return buildOTProfile(name, (profile.traits as unknown as Record<string, number>) || {});
+  });
+
+  const w1: number[] = [], w2: number[] = [], sliced: number[] = [];
+  for (let i = 0; i < profiles.length; i++) {
+    for (let j = i + 1; j < profiles.length; j++) {
+      const d = cognitiveDistance(profiles[i], profiles[j]);
+      w1.push(d.w1); w2.push(d.w2); sliced.push(d.sliced);
+    }
+  }
+  const asc = (v: number[]) => v.sort((a, b) => a - b);
+  distanceReference = { w1: asc(w1), w2: asc(w2), sliced: asc(sliced), pairCount: w1.length };
+  return distanceReference;
+}
+
+/** Fraction of reference pairs this value meets or exceeds, as a 0-100 percentile. */
+function percentileOf(value: number, sortedReference: number[]): number {
+  if (sortedReference.length === 0) return 0;
+  let below = 0;
+  while (below < sortedReference.length && sortedReference[below] < value) below++;
+  return Math.round((below / sortedReference.length) * 1000) / 10;
+}
+
+/** Describes a metric relative to the population rather than an absolute threshold. */
+function describeMetric(value: number, sortedReference: number[]) {
+  return {
+    value: Math.round(value * 10000) / 10000,
+    percentile: percentileOf(value, sortedReference),
+    populationRange: {
+      min: Math.round(sortedReference[0] * 10000) / 10000,
+      median: Math.round(sortedReference[Math.floor(sortedReference.length / 2)] * 10000) / 10000,
+      max: Math.round(sortedReference[sortedReference.length - 1] * 10000) / 10000,
+    },
+  };
+}
 
 /**
  * Register persona comparison tools (3 tools: compare_personas, compare_personas_init, compare_personas_complete)
@@ -396,18 +476,46 @@ Begin with the first persona: ${personas[0]}
         .slice(0, 5)
         .map(([trait, contrib]) => ({ trait, contribution: Math.round(contrib * 10000) / 10000 }));
 
+      const ref = getDistanceReference();
+      const w1Pct = percentileOf(dist.w1, ref.w1);
+
       return {
         content: [{
           type: "text" as const,
           text: JSON.stringify({
             personaA, personaB,
+
+            // Raw values kept for callers who track them over time. Do NOT compare
+            // these three to each other — see `scaleNote`.
             w1Distance: Math.round(dist.w1 * 10000) / 10000,
             w2Distance: Math.round(dist.w2 * 10000) / 10000,
             slicedWasserstein: Math.round(dist.sliced * 10000) / 10000,
-            interpretation: dist.w1 < 0.01 ? "Nearly identical cognitive profiles"
-              : dist.w1 < 0.03 ? "Similar cognitive profiles with minor differences"
-              : dist.w1 < 0.06 ? "Moderately different cognitive profiles"
-              : "Substantially different cognitive profiles",
+
+            // The comparable view: where this pair sits within all built-in
+            // persona pairs, per metric. 0 = closest pair seen, 100 = farthest.
+            metrics: {
+              w1: describeMetric(dist.w1, ref.w1),
+              w2: describeMetric(dist.w2, ref.w2),
+              sliced: describeMetric(dist.sliced, ref.sliced),
+            },
+            referencePopulation: {
+              pairs: ref.pairCount,
+              basis: "all pairs of built-in personas",
+            },
+            scaleNote:
+              "w1 (L1 sum over 26 traits), w2 (L2 norm) and sliced (mean random projection) " +
+              "are different quantities on different scales — w1 typically runs ~20x larger " +
+              "than sliced. Compare the percentiles, not the raw values.",
+
+            // Verdict is a percentile band, not an absolute threshold. The former
+            // absolute bands put 209 of 210 built-in pairs in one bucket.
+            interpretation: w1Pct < 10 ? "Nearly identical cognitive profiles (closer than 90% of persona pairs)"
+              : w1Pct < 30 ? "Similar cognitive profiles with minor differences"
+              : w1Pct < 70 ? "Moderately different cognitive profiles"
+              : w1Pct < 90 ? "Substantially different cognitive profiles"
+              : "Extremely different cognitive profiles (farther apart than 90% of persona pairs)",
+            interpretationBasis: `w1 is at the ${w1Pct}th percentile of ${ref.pairCount} built-in persona pairs`,
+
             topDifferentiatingTraits: topTraits,
           }, null, 2),
         }],

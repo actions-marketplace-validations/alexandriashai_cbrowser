@@ -233,6 +233,25 @@ export function buildOTCognitiveProfile(name: string, traits: Record<string, num
  *
  * This is the "true cognitive distance" — how different two minds are.
  */
+/**
+ * Fixed seed for the sliced-Wasserstein projection set. Any constant works; what
+ * matters is that it never changes, so the same pair of profiles always yields
+ * the same sliced distance across processes and releases.
+ */
+const SLICED_PROJECTION_SEED = 0x5f3759df;
+
+/** mulberry32 — small, fast, well-distributed 32-bit PRNG. */
+function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export function cognitiveDistance(profileA: OTCognitiveProfile, profileB: OTCognitiveProfile): CognitiveDistance {
   const d = COGNITIVE_TRAITS.length;
   const a = profileA.distribution;
@@ -269,15 +288,23 @@ export function cognitiveDistance(profileA: OTCognitiveProfile, profileB: OTCogn
   }
   const w2 = Math.sqrt(Math.max(0, w2sq));
 
-  // Sliced Wasserstein (fast approximation for validation)
+  // Sliced Wasserstein (fast approximation for validation).
+  //
+  // The projections are drawn from a SEEDED generator, not Math.random(). Two
+  // identical calls used to return different sliced values (measured: 0.031568
+  // vs 0.029943 for the same persona pair, a ~5% swing) while the MCP tool that
+  // exposes this declares idempotentHint: true. A metric a caller cannot
+  // reproduce is not a metric they can act on or diff against a baseline, so the
+  // projection set is now fixed. (2026-07-29)
   const numProjections = 100;
   let slicedSum = 0;
+  const rand = seededRandom(SLICED_PROJECTION_SEED);
   for (let p = 0; p < numProjections; p++) {
-    // Random projection
+    // Deterministic pseudo-random projection
     const dir = new Float64Array(d);
     let norm = 0;
     for (let i = 0; i < d; i++) {
-      dir[i] = Math.random() * 2 - 1;
+      dir[i] = rand() * 2 - 1;
       norm += dir[i] * dir[i];
     }
     norm = Math.sqrt(norm);

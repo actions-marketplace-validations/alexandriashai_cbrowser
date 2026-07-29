@@ -3913,10 +3913,20 @@ For more help: https://playwright.dev/docs/browsers
     const page = await this.getPage();
 
     const analysis = await page.evaluate(() => {
+      // Values are escaped before they enter a selector. Raw interpolation broke
+      // on ids a framework generated rather than a human wrote: `#:r0:` (React 18
+      // useId) and `#2fa-code` throw DOMException, and `#a.b` silently matches
+      // nothing at all. Priority is ARIA-first to match find_element_by_intent
+      // and the documented behaviour; an explicit test hook outranks a generated
+      // id, and aria-label outranks both. (2026-07-29)
+      const q = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
       const getSelector = (el: Element): string => {
-        if (el.id) return `#${el.id}`;
-        if (el.getAttribute("data-testid")) return `[data-testid="${el.getAttribute("data-testid")}"]`;
-        if (el.getAttribute("name")) return `[name="${el.getAttribute("name")}"]`;
+        const ariaLabel = el.getAttribute("aria-label");
+        if (ariaLabel) return `[aria-label="${q(ariaLabel)}"]`;
+        const testId = el.getAttribute("data-testid");
+        if (testId) return `[data-testid="${q(testId)}"]`;
+        if (el.id) return `#${CSS.escape(el.id)}`;
+        if (el.getAttribute("name")) return `[name="${q(el.getAttribute("name")!)}"]`;
         // Was substring(0, 30) — the same truncation removed from aria-label and
         // visible text elsewhere, still cutting the SELECTOR here, so a generated
         // step said text="Sign up for Pro and get 500 bo" and matched nothing.
@@ -4430,7 +4440,11 @@ For more help: https://playwright.dev/docs/browsers
               return {
                 tag: el.tagName.toLowerCase(),
                 text: (el as HTMLElement).innerText?.trim().substring(0, 80) || el.getAttribute("aria-label") || el.getAttribute("value") || "",
-                selector: el.id ? `#${el.id}` : el.getAttribute("data-testid") ? `[data-testid="${el.getAttribute("data-testid")}"]` : `${el.tagName.toLowerCase()}:nth-of-type(${i + 1})`,
+                selector: el.getAttribute("data-testid")
+                  ? `[data-testid="${el.getAttribute("data-testid")!.replace(/"/g, '\\"')}"]`
+                  : el.id
+                    ? `#${CSS.escape(el.id)}`
+                    : `${el.tagName.toLowerCase()}:nth-of-type(${i + 1})`,
                 role: el.getAttribute("role") || undefined,
                 aboveFold,
                 region: classifyRegion(el, r.top, r.bottom),
@@ -4934,11 +4948,15 @@ For more help: https://playwright.dev/docs/browsers
         // Convert ElementHandle back to Locator isn't directly possible,
         // but we can get a selector from it
         const generatedSelector = await page.evaluate((el) => {
-          if (el.id) return `#${el.id}`;
-          const name = el.getAttribute("name");
-          if (name) return `[name="${name}"]`;
+          // Escaped, and ARIA-first — see the note on analyzePage's getSelector.
+          const q = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          const ariaLabel = el.getAttribute("aria-label");
+          if (ariaLabel) return `[aria-label="${q(ariaLabel)}"]`;
           const testId = el.getAttribute("data-testid");
-          if (testId) return `[data-testid="${testId}"]`;
+          if (testId) return `[data-testid="${q(testId)}"]`;
+          if (el.id) return `#${CSS.escape(el.id)}`;
+          const name = el.getAttribute("name");
+          if (name) return `[name="${q(name)}"]`;
           return null;
         }, element);
 
@@ -5087,11 +5105,15 @@ For more help: https://playwright.dev/docs/browsers
       const element = fuzzyHandle.asElement();
       if (element) {
         const generatedSelector = await page.evaluate((el) => {
-          if (el.id) return `#${el.id}`;
-          const name = el.getAttribute("name");
-          if (name) return `[name="${name}"]`;
+          // Escaped, and ARIA-first — see the note on analyzePage's getSelector.
+          const q = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          const ariaLabel = el.getAttribute("aria-label");
+          if (ariaLabel) return `[aria-label="${q(ariaLabel)}"]`;
           const testId = el.getAttribute("data-testid");
-          if (testId) return `[data-testid="${testId}"]`;
+          if (testId) return `[data-testid="${q(testId)}"]`;
+          if (el.id) return `#${CSS.escape(el.id)}`;
+          const name = el.getAttribute("name");
+          if (name) return `[name="${q(name)}"]`;
           return null;
         }, element);
 

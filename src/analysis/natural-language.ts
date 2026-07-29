@@ -13,6 +13,7 @@
  */
 
 import type { CBrowser } from "../browser.js";
+import { idSelector, attrSelector, escapeAttrValue, escapeCssIdent } from "../selector-escape.js";
 
 /**
  * Natural language command patterns.
@@ -195,19 +196,19 @@ const SELECTOR_PRIORITY: Array<{
   {
     name: "aria-label",
     extract: (el) => el.ariaLabel || null,
-    toSelector: (v) => `[aria-label="${v}"]`,
+    toSelector: (v) => attrSelector("aria-label", v),
     confidence: 0.95,
   },
   {
     name: "aria-labelledby",
     extract: (el) => el.ariaLabelledby || null,
-    toSelector: (v) => `[aria-labelledby="${v}"]`,
+    toSelector: (v) => attrSelector("aria-labelledby", v),
     confidence: 0.93,
   },
   {
     name: "role",
     extract: (el) => el.role || null,
-    toSelector: (v, el) => el.text ? `${el.tag}[role="${v}"]` : `[role="${v}"]`,
+    toSelector: (v, el) => el.text ? `${el.tag}${attrSelector("role", v)}` : attrSelector("role", v),
     confidence: 0.90,
   },
   {
@@ -219,25 +220,25 @@ const SELECTOR_PRIORITY: Array<{
   {
     name: "input-type",
     extract: (el) => el.tag === "input" && el.type ? el.type : null,
-    toSelector: (v) => `input[type="${v}"]`,
+    toSelector: (v) => `input${attrSelector("type", v)}`,
     confidence: 0.80,
   },
   {
     name: "id",
     extract: (el) => el.id || null,
-    toSelector: (v) => `#${v}`,
+    toSelector: (v) => idSelector(v),
     confidence: 0.85,
   },
   {
     name: "data-testid",
     extract: (el) => el.dataTestId || null,
-    toSelector: (v) => `[data-testid="${v}"]`,
+    toSelector: (v) => attrSelector("data-testid", v),
     confidence: 0.82,
   },
   {
     name: "name",
     extract: (el) => el.name || null,
-    toSelector: (v) => `[name="${v}"]`,
+    toSelector: (v) => attrSelector("name", v),
     confidence: 0.80,
   },
   {
@@ -246,7 +247,7 @@ const SELECTOR_PRIORITY: Array<{
       const cls = el.classes.split(" ").find((c: string) => c.length > 3 && !c.includes("_") && !/^[a-z]{1,2}\d/.test(c));
       return cls || null;
     },
-    toSelector: (v) => `.${v}`,
+    toSelector: (v) => `.${escapeCssIdent(v)}`,
     confidence: 0.60,
   },
 ];

@@ -683,6 +683,19 @@ export interface BrowserDiffResult {
     type: "visual" | "timing" | "content" | "error";
     description: string;
     browsers: string[];
+    /**
+     * Per-browser specifics for a content difference. The report used to say only
+     * "Page content differs between browsers", which named no browser, no size
+     * and no location — nothing a reader could act on. (2026-07-29)
+     */
+    detail?: Array<{
+      browser: string;
+      lengthChars: number;
+      vsBaselineChars: number;
+      firstDivergenceIndex: number;
+      baselineExcerpt: string;
+      browserExcerpt: string;
+    }>;
   }>;
   screenshots: Record<string, string>;
   metrics: Record<string, { loadTime: number; resourceCount: number }>;
@@ -785,14 +798,42 @@ export async function crossBrowserDiff(
       });
     }
 
-    // Compare content
-    const contentValues = Object.values(contents);
+    // Compare content.
+    // This used to report the bare sentence "Page content differs between
+    // browsers" with nothing to act on — no indication of which browsers, how
+    // much, or where. The comparison already has every string in hand, so say
+    // what actually differs. (2026-07-29)
+    const contentEntries = Object.entries(contents);
+    const contentValues = contentEntries.map(([, c]) => c);
     const contentMismatch = contentValues.some(c => c !== contentValues[0]);
     if (contentMismatch) {
+      const [baseBrowser, baseContent] = contentEntries[0];
+      const differing = contentEntries.filter(([, c]) => c !== baseContent);
+
+      // First index where a browser's text stops matching the baseline, with a
+      // short window either side so the divergence is readable.
+      const detail = differing.map(([browser, c]) => {
+        let i = 0;
+        while (i < c.length && i < baseContent.length && c[i] === baseContent[i]) i++;
+        const window = 60;
+        const from = Math.max(0, i - 20);
+        return {
+          browser,
+          lengthChars: c.length,
+          vsBaselineChars: c.length - baseContent.length,
+          firstDivergenceIndex: i,
+          baselineExcerpt: baseContent.slice(from, from + window),
+          browserExcerpt: c.slice(from, from + window),
+        };
+      });
+
       differences.push({
         type: "content",
-        description: "Page content differs between browsers",
+        description:
+          `Page text differs from ${baseBrowser} (${baseContent.length} chars) in: ` +
+          detail.map(d => `${d.browser} (${d.lengthChars} chars, ${d.vsBaselineChars >= 0 ? "+" : ""}${d.vsBaselineChars}, first differs at char ${d.firstDivergenceIndex})`).join("; "),
         browsers: available,
+        detail,
       });
     }
   }
