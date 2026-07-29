@@ -14,6 +14,32 @@ import {
   runWebMCPReadyAudit,
 } from "../../analysis/index.js";
 import { listAccessibilityPersonas } from "../../personas.js";
+import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
+
+/**
+ * Persist an audit screenshot and return its path.
+ *
+ * empathy_audit inlined base64 page screenshots, which routinely overflowed an
+ * MCP client's context and made the tool untestable through a normal client.
+ * Writing them out keeps the overlay data usable without carrying megabytes
+ * through the transport. Returns undefined rather than throwing if the write
+ * fails — a screenshot is not worth failing an audit over. (2026-07-29)
+ */
+function writeAuditScreenshot(base64: string | undefined, persona: string): string | undefined {
+  if (!base64) return undefined;
+  try {
+    const dir = join(process.env.CBROWSER_DATA_DIR || join(homedir(), ".cbrowser"), "audit-screenshots");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const safe = String(persona || "persona").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+    const path = join(dir, `empathy-${safe}-${Date.now()}.png`);
+    writeFileSync(path, Buffer.from(base64, "base64"));
+    return path;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Register audit tools (4 tools + site_cognitive_assessment + visual_cognitive_story)
@@ -104,6 +130,11 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
       maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
       maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
+      // Base64 page screenshots are large enough to blow an MCP client's context
+      // on a single call — every empathy_audit in the 18.73.3 test pass had to be
+      // read off disk instead. Off by default; images go to disk and their paths
+      // are returned. (2026-07-29)
+      includeScreenshots: z.boolean().optional().default(false).describe("Inline base64 page screenshots in the response. Off by default because they are large enough to overflow an MCP client's context; when off, screenshots are written to disk and screenshotPath is returned instead."),
       scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to score: 'viewport' (first impression, above-the-fold only — default) or 'full_page' (scroll through entire page, all barriers). Use 'viewport' for landing page optimization; 'full_page' for WCAG compliance audits."),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15', 'Pixel 7'. Essential for mobile WCAG audits — touch targets, viewport sizing, and responsive barriers differ significantly on mobile."),
     },
@@ -114,7 +145,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope, device }) => {
+  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope, device, includeScreenshots }) => {
       try {
         // Auto-limit to 1 persona to avoid MCP client timeout on Claude.ai (~60s limit)
         const allPersonas = listAccessibilityPersonas();
@@ -201,7 +232,12 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           // v18.60.0: Include per-result screenshots and element rects for WCAG overlay
           pageScreenshots: result.results?.map((r: any) => ({
             persona: r.persona,
-            screenshot: r.pageScreenshot,
+            ...(includeScreenshots
+              ? { screenshot: r.pageScreenshot }
+              : {
+                  screenshotPath: writeAuditScreenshot(r.pageScreenshot, r.persona),
+                  screenshotNote: "Pass includeScreenshots:true to inline the base64 instead.",
+                }),
             viewportSize: r.viewportSize,
             // Rects come from getBoundingClientRect with no scroll compensation,
             // so they are VIEWPORT coordinates — which is correct here, because
@@ -229,7 +265,11 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
                 ...(outside ? { outsideScreenshot: true } : {}),
               };
             }),
-          })).filter((s: any) => s.screenshot),
+          // Keep entries that carry EITHER the inline image or a path to it.
+          // Filtering on `screenshot` alone silently dropped every entry once
+          // the default stopped inlining base64, taking the barrierRects with
+          // them. (2026-07-29)
+          })).filter((s: any) => s.screenshot || s.screenshotPath),
         };
 
         // Add guidance if we limited the request
