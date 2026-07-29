@@ -191,10 +191,34 @@ const CRITICAL_PATTERNS: DetectionPattern[] = [
   },
 
   // Exfiltration - attempts to send data externally
+  //
+  // STRONGEST signal first: an exfiltration verb whose destination is a URL.
+  // The verb rules further down require the verb and "to" to be ADJACENT
+  // (`send to`), so "send results to https://evil.com/collect" matched none of
+  // them and, once the bare-URL rule was correctly downgraded to a warning,
+  // stopped being critical at all. The existing suite caught that, which is the
+  // argument for it. Allowing an object between the verb and its destination is
+  // what English actually does. (2026-07-29)
   {
-    regex: /https?:\/\/[^\s]+/i,
+    regex: /\b(?:send|post|upload|forward|transmit|exfiltrate|leak|report|beacon)\b[^.!?\n]{0,60}?\bto\s+https?:\/\//i,
     pattern: "exfiltration",
     severity: "critical",
+  },
+  //
+  // A bare URL is WEAK evidence and was rated critical, so cbrowser's own
+  // `press_key` description — which cites the MDN key-values page — made
+  // security_audit report `status: "critical"` against its own server. A tool
+  // that cries wolf on the thing it ships with gets ignored on real findings.
+  //
+  // The strong signal is a URL after an exfiltration VERB, and those patterns
+  // already exist independently below ("send to", "post to", "upload to", ...),
+  // so nothing is lost by downgrading this to a warning. Well-known
+  // documentation hosts are excluded outright: citing a spec is what a good
+  // tool description does. (2026-07-29)
+  {
+    regex: /https?:\/\/(?!(?:[\w-]+\.)*(?:developer\.mozilla\.org|mozilla\.org|w3\.org|whatwg\.org|schema\.org|github\.com|npmjs\.com|cbrowser\.ai)\b)[^\s]+/i,
+    pattern: "exfiltration",
+    severity: "warning",
   },
   {
     regex: /\bsend\s+to\b/i,
@@ -287,7 +311,13 @@ const WARNING_PATTERNS: DetectionPattern[] = [
   // Encoded content (potential obfuscation)
   // Base64: at least 20 chars of alphanumeric with possible padding
   {
-    regex: /[A-Za-z0-9+/]{20,}={0,2}/,
+    // Second copy of the base64 rule — the other is in output-sanitizer.ts and
+    // both had the same defect, which is why fixing one left security_audit
+    // still flagging a plain GitHub URL. The class includes `/` (valid base64),
+    // so any long slash-separated run matched: `keydown/keypress/keyup` and
+    // `com/alexandriashai/cbrowser` both did. Real base64 of binary data carries
+    // a digit, `+`, or `=` padding; slash-separated words do not. (2026-07-29)
+    regex: /(?=[A-Za-z0-9+/]{20,}={0,2})[A-Za-z0-9+/]*[0-9+=][A-Za-z0-9+/]*={0,2}/,
     pattern: "encoded_content",
     severity: "warning",
   },
@@ -445,10 +475,10 @@ interface McpConfig {
  */
 export function scanMcpConfig(configPath: string): ScanSummary {
   const servers: ServerScanResult[] = [];
-  let total = 0;
-  let clean = 0;
-  let warning = 0;
-  let critical = 0;
+  const total = 0;
+  const clean = 0;
+  const warning = 0;
+  const critical = 0;
 
   // Check if config file exists
   if (!existsSync(configPath)) {

@@ -112,6 +112,12 @@ function describeMetric(value: number, sortedReference: number[]) {
 /**
  * Register persona comparison tools (3 tools: compare_personas, compare_personas_init, compare_personas_complete)
  */
+/** An end of a ranking, but only when there IS a ranking (>= 2 entries). */
+function contrastiveEnd(ranked: Array<{ persona: string }>, end: 0 | -1): string {
+  if (ranked.length < 2) return "N/A";
+  return (end === 0 ? ranked[0] : ranked[ranked.length - 1]).persona;
+}
+
 export function registerPersonaComparisonTools(
   server: McpServer,
   { getBrowser, getBrowserByToken }: ToolRegistrationContext
@@ -337,7 +343,9 @@ Begin with the first persona: ${personas[0]}
       const failedResults = journeyResults.filter((r) => !r.goalAchieved);
 
       const sortedByTime = [...successfulResults].sort((a, b) => a.totalTime - b.totalTime);
-      const sortedByFriction = [...journeyResults].sort((a, b) => b.frictionPoints.length - a.frictionPoints.length);
+      // Successes only — ranking failed journeys by the friction they accrued
+      // before dying produced a leastFriction persona out of nothing.
+      const sortedByFriction = [...successfulResults].sort((a, b) => b.frictionPoints.length - a.frictionPoints.length);
 
       const allFrictionPoints = journeyResults.flatMap((r) => r.frictionPoints);
       const frictionCounts = allFrictionPoints.reduce((acc, fp) => {
@@ -422,10 +430,13 @@ Begin with the first persona: ${personas[0]}
           totalPersonas: journeyResults.length,
           successCount: successfulResults.length,
           failureCount: failedResults.length,
-          fastestPersona: sortedByTime[0]?.persona || "N/A",
-          slowestPersona: sortedByTime[sortedByTime.length - 1]?.persona || "N/A",
-          mostFriction: sortedByFriction[0]?.persona || "N/A",
-          leastFriction: sortedByFriction[sortedByFriction.length - 1]?.persona || "N/A",
+          // Contrastive fields need two points to compare. With one successful
+          // journey these all named the same persona, which reads as a finding
+          // and is not one. Mirrors analysis/persona-comparison.ts. (2026-07-29)
+          fastestPersona: contrastiveEnd(sortedByTime, 0),
+          slowestPersona: contrastiveEnd(sortedByTime, -1),
+          mostFriction: contrastiveEnd(sortedByFriction, 0),
+          leastFriction: contrastiveEnd(sortedByFriction, -1),
           avgCompletionTime: Math.round(avgTime * 1000),
           commonFrictionPoints: commonFriction,
         },
@@ -597,8 +608,17 @@ Begin with the first persona: ${personas[0]}
       const point = geodesic[closestIdx];
 
       // Identify which traits changed most from A
+      // `fromA` computed A - value, while its name reads as the change FROM A.
+      // With value 0.97 and fromA -0.77 a reader back-solves A = 1.74, which is
+      // impossible on a 0-1 scale — so the field looked like corrupt data rather
+      // than an inverted sign. It is now value - A: positive means the
+      // interpolated persona scores HIGHER than A on that trait. (2026-07-29)
       const traitDiffs = Object.entries(point.traits)
-        .map(([trait, val]) => ({ trait, value: Math.round(val * 100) / 100, fromA: Math.round(((otA.traits[trait] ?? 0.5) - val) * 100) / 100 }))
+        .map(([trait, val]) => ({
+          trait,
+          value: Math.round(val * 100) / 100,
+          fromA: Math.round((val - (otA.traits[trait] ?? 0.5)) * 100) / 100,
+        }))
         .sort((a, b) => Math.abs(b.fromA) - Math.abs(a.fromA))
         .slice(0, 8);
 

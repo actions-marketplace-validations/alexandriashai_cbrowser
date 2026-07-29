@@ -32,6 +32,13 @@ export interface OTCognitiveProfile {
   traits: Record<string, number>;
   /** Normalized trait distribution (sums to 1) — probability measure */
   distribution: Float64Array;
+  /**
+   * Total mass that `distribution` was divided by, i.e. the sum of the (floored)
+   * trait values. The simplex throws this away, so without it a distribution
+   * cannot be mapped back to trait scale at all — which is exactly how
+   * interpolated personas ended up normalized. See distributionToTraits.
+   */
+  traitScale: number;
   /** Trait covariance matrix (25×25) for Gaussian model */
   covariance: Float64Array[];
 }
@@ -188,6 +195,12 @@ function traitGroundDistance(a: string, b: string): number {
  * This is the fundamental operation: traits → distribution.
  */
 export function traitsToDistribution(traits: Record<string, number>): Float64Array {
+  // The 0.01 floor is load-bearing, not defensive: optimal transport needs a
+  // measure with no zero atoms. It is also the one place the mapping is LOSSY —
+  // a trait of exactly 0 (first-timer's siteFamiliarity is the only one across
+  // all built-in personas) round-trips back as 0.01, not 0. That bound is
+  // asserted in tests/cognitive-interpolate.test.ts rather than left for someone
+  // to rediscover as a mystery 0.01 discrepancy.
   const values = COGNITIVE_TRAITS.map(t => Math.max(0.01, traits[t] ?? 0.5));
   const sum = values.reduce((a, b) => a + b, 0);
   return new Float64Array(values.map(v => v / sum));
@@ -196,9 +209,30 @@ export function traitsToDistribution(traits: Record<string, number>): Float64Arr
 /**
  * Convert distribution back to trait values (scaled to 0-1 range).
  */
-export function distributionToTraits(dist: Float64Array): Record<string, number> {
-  const maxVal = Math.max(...Array.from(dist));
+export function distributionToTraits(
+  dist: Float64Array,
+  traitScale?: number,
+): Record<string, number> {
+  // WITH a scale this is the exact inverse of traitsToDistribution: that
+  // function divides every trait by their sum, so multiplying by the same sum
+  // returns the original values. Round-tripping a persona reproduces it.
+  //
+  // WITHOUT one it can only return relative SHAPE — every trait over the
+  // largest trait — because the simplex discarded the absolute scale. That
+  // fallback used to be the only behaviour, and its output was handed back as
+  // if it were trait values: interpolating to position 1.0 returned
+  // elderly-low-vision with every trait multiplied by 1/0.9 (its own maximum),
+  // so attributionStyle 0.9 came back as 1.0 and the persona did not reproduce
+  // itself. Callers that want trait values MUST pass the scale. (2026-07-29)
   const traits: Record<string, number> = {};
+  if (traitScale !== undefined && traitScale > 0) {
+    for (let i = 0; i < COGNITIVE_TRAITS.length; i++) {
+      // Clamp: interpolated mass can round a hair outside the trait range.
+      traits[COGNITIVE_TRAITS[i]] = Math.min(1, Math.max(0, dist[i] * traitScale));
+    }
+    return traits;
+  }
+  const maxVal = Math.max(...Array.from(dist));
   for (let i = 0; i < COGNITIVE_TRAITS.length; i++) {
     traits[COGNITIVE_TRAITS[i]] = maxVal > 0 ? dist[i] / maxVal : 0.5;
   }
@@ -210,6 +244,11 @@ export function distributionToTraits(dist: Float64Array): Record<string, number>
  */
 export function buildOTCognitiveProfile(name: string, traits: Record<string, number>): OTCognitiveProfile {
   const distribution = traitsToDistribution(traits);
+  // Same flooring traitsToDistribution applies, or the inverse would not be one.
+  const traitScale = COGNITIVE_TRAITS.reduce(
+    (sum, t) => sum + Math.max(0.01, traits[t] ?? 0.5),
+    0,
+  );
 
   // Build simple diagonal covariance (variance proportional to trait value uncertainty)
   const d = COGNITIVE_TRAITS.length;
@@ -222,7 +261,7 @@ export function buildOTCognitiveProfile(name: string, traits: Record<string, num
     covariance.push(row);
   }
 
-  return { name, traits, distribution, covariance };
+  return { name, traits, distribution, traitScale, covariance };
 }
 
 // ── Cognitive Distance ──
@@ -357,7 +396,11 @@ export function cognitiveBarycenter(
   const barySum = baryDist.reduce((a, b) => a + b, 0);
   for (let i = 0; i < d; i++) baryDist[i] /= barySum;
 
-  const baryTraits = distributionToTraits(baryDist);
+  // Same reason as the geodesic: the barycenter of a set of simplex points is
+  // still a simplex point, so it needs the weighted trait scale to come back as
+  // trait values rather than as shape-over-its-own-maximum.
+  const baryScale = profiles.reduce((sum, p, i) => sum + normalizedW[i] * p.traitScale, 0);
+  const baryTraits = distributionToTraits(baryDist, baryScale);
 
   // Compute distances from each profile to barycenter
   const baryProfile = buildOTCognitiveProfile('barycenter', baryTraits);
@@ -414,9 +457,13 @@ export function cognitiveGeodesic(
     const sum = dist.reduce((a, b) => a + b, 0);
     for (let i = 0; i < d; i++) dist[i] /= sum;
 
+    // The scale travels with the point. Without it every interpolated persona —
+    // including the endpoints — comes back divided by its own largest trait.
+    const scaleT = (1 - t) * profileA.traitScale + t * profileB.traitScale;
+
     points.push({
       t,
-      traits: distributionToTraits(dist),
+      traits: distributionToTraits(dist, scaleT),
       distribution: dist,
     });
   }

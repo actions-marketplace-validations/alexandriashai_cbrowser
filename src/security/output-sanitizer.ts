@@ -192,10 +192,19 @@ const ENCODED_PATTERNS: InjectionPattern[] = [
     regex: /\\u[0-9a-fA-F]{4}(?:\\u[0-9a-fA-F]{4}){3,}/g,
     name: "unicode_escaped",
   },
-  // Base64 patterns (long alphanumeric sequences with potential padding)
-  // Only flag if it's suspiciously long (20+ chars)
+  // Base64 patterns (long alphanumeric sequences with potential padding).
+  //
+  // The character class includes `/`, which is valid base64 — and also makes
+  // any long slash-separated identifier list match. `keydown/keypress/keyup`
+  // from the `type_text` description is 22 chars of exactly that shape and was
+  // reported as encoded content.
+  //
+  // Real base64 of binary data essentially always carries a digit, a `+`, or
+  // `=` padding; runs of lowercase English words separated by slashes do not.
+  // Requiring one of those keeps genuine payloads and drops the identifier
+  // lists. (2026-07-29)
   {
-    regex: /[A-Za-z0-9+/]{20,}={0,2}/g,
+    regex: /(?=[A-Za-z0-9+/]{20,}={0,2})[A-Za-z0-9+/]*[0-9+=][A-Za-z0-9+/]*={0,2}/g,
     name: "base64_encoded",
   },
 ];
