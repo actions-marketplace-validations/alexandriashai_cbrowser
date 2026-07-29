@@ -995,7 +995,14 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         let attentionData: { entropy: number; concentration: number; hotspots: Array<{ x: number; y: number; saliency: number; row: number; col: number }>; saliencyMap?: { cells: Float64Array; rows: number; cols: number } } | null = null;
         try {
           const { analyzeAttention } = await import("../../visual/attention-transport.js");
-          const attnResult = await analyzeAttention(ssPath, persona, 4);
+          // Feed the DOM in. Without it analyzeAttention falls back to the
+          // bottom-up layer alone — colour-contrast pop-out — and this tool then
+          // narrates it as where the persona's attention goes. The blend is 65%
+          // semantic, so the fallback was not a minor degradation; it was a
+          // different model wearing the same name. (2026-07-29)
+          const { collectDomAttentionElements } = await import("../../visual/attention-quality.js");
+          const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
+          const attnResult = await analyzeAttention(ssPath, persona, 4, undefined, domAttentionElements);
           attentionData = {
             entropy: attnResult.entropy,
             concentration: attnResult.concentration,

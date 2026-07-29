@@ -118,6 +118,7 @@ export function registerGifTools(
       // Import heatmap tools
       const { analyzeAttention } = await import("../../visual/attention-transport.js");
       const { generateHeatmapOverlay } = await import("../../visual/heatmap-overlay.js");
+      const { collectDomAttentionElements } = await import("../../visual/attention-quality.js");
 
       // Step 0: initial page
       for (let step = 0; step < maxSteps; step++) {
@@ -126,8 +127,19 @@ export function registerGifTools(
           const ssPath = join(tmpDir, `step-${step}.png`);
           await page.screenshot({ path: ssPath, fullPage: false });
 
-          // Generate attention heatmap
-          const attnResult = await analyzeAttention(ssPath, persona, 8);
+          // Generate attention heatmap.
+          //
+          // DOM is collected PER STEP, not once: the journey navigates, so the
+          // elements behind frame N are not the elements behind frame N+1. Reusing
+          // a single collection would pin the semantic layer to the first page and
+          // make later frames a blend of this page's pixels with the FIRST page's
+          // structure — worse than the visual-only fallback it replaces.
+          //
+          // Without any DOM, analyzeAttention silently drops to bottom-up colour
+          // contrast, and this tool animates that as a persona's attention shifting
+          // across a task. (2026-07-29)
+          const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
+          const attnResult = await analyzeAttention(ssPath, persona, 8, undefined, domAttentionElements, goal);
 
           if (attnResult.saliencyMap) {
             const heatmapB64 = await generateHeatmapOverlay(

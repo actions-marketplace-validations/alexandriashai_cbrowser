@@ -459,8 +459,12 @@ export function registerVisualTestingTools(server: McpServer): void {
         const screenshotPath = join(tmpdir(), `attn-${Date.now()}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: false });
 
-        // Extract DOM elements BEFORE saliency computation so they feed into the attention model
-        const { computeAttentionQuality, extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
+        // Extract DOM elements BEFORE saliency computation so they feed into the
+        // attention model. This was the only inline copy of the collect+DPR-scale
+        // dance; it now shares one implementation with visual_cognitive_story and
+        // journey_heatmap_gif, so the scaling cannot drift between the three.
+        const { computeAttentionQuality, extractPageElementsForAttention, collectDomAttentionElements } =
+          await import("../../visual/attention-quality.js");
         const rawElements = await extractPageElementsForAttention(page);
         const dpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
         const pageElements = rawElements.map(el => ({
@@ -473,18 +477,7 @@ export function registerVisualTestingTools(server: McpServer): void {
 
         // Run attention analysis with DOM semantic layer (visual + semantic blend)
         const { analyzeAttention } = await import("../../visual/attention-transport.js");
-        const domAttentionElements = pageElements.map(el => ({
-          type: el.type,
-          x: el.x,
-          y: el.y,
-          width: el.width,
-          height: el.height,
-          text: el.text,
-          isCTA: el.isCTA,
-          isHeading: el.isHeading,
-          isNav: el.isNav,
-          isDecorative: el.isDecorative,
-        }));
+        const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
         const result = await analyzeAttention(screenshotPath, persona, cellSize, undefined, domAttentionElements, goal);
 
         // Compute attention quality — cross-reference hotspots with classified elements

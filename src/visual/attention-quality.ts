@@ -344,6 +344,53 @@ export function computeAttentionQuality(
  * Extract element metadata from a Playwright page for attention quality analysis.
  * Returns elements with bounding boxes and type classifications.
  */
+/**
+ * Collect DOM elements ready for the attention model's semantic layer.
+ *
+ * `analyzeAttention` blends 35% bottom-up saliency with 65% DOM semantics — but
+ * ONLY when it is given elements. Passed nothing, it silently falls back to the
+ * visual layer alone, which is colour-contrast pop-out and not a model of where
+ * a person looks. Two of the three production callers were doing exactly that.
+ *
+ * The devicePixelRatio scaling is the part that is easy to get wrong and fails
+ * quietly: `getBoundingClientRect` returns CSS pixels while the screenshot is in
+ * device pixels, so on any HiDPI capture an unscaled rect lands on the wrong
+ * cells and the semantic layer degrades the map instead of improving it — with
+ * no error. One implementation, so the scaling cannot drift between callers.
+ *
+ * Callers must screenshot with `fullPage: false`; these rects are
+ * viewport-relative. (2026-07-29)
+ */
+export async function collectDomAttentionElements(page: unknown): Promise<Array<{
+  type: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text?: string;
+  isCTA?: boolean;
+  isHeading?: boolean;
+  isNav?: boolean;
+  isDecorative?: boolean;
+}>> {
+  const raw = await extractPageElementsForAttention(page);
+  const dpr: number = await (page as { evaluate: (fn: () => number) => Promise<number> })
+    .evaluate(() => window.devicePixelRatio)
+    .catch(() => 1);
+  return raw.map((el) => ({
+    type: el.type,
+    x: el.x * dpr,
+    y: el.y * dpr,
+    width: el.width * dpr,
+    height: el.height * dpr,
+    text: el.text,
+    isCTA: el.isCTA,
+    isHeading: el.isHeading,
+    isNav: el.isNav,
+    isDecorative: el.isDecorative,
+  }));
+}
+
 export async function extractPageElementsForAttention(page: unknown): Promise<Array<{
   selector: string;
   text: string;
