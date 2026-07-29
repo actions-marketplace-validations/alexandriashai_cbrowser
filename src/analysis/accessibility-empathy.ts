@@ -1596,7 +1596,17 @@ async function simulateAccessibilityJourney(
     goalAchieved,
     barriers: ctx.barriers,
     frictionPoints: ctx.frictionPoints,
-    wcagViolations: Array.from(ctx.wcagViolations),
+    // Filtered to the audit's conformance level, exactly as the top-level
+    // allWcagViolations is (see the filter near the end of runEmpathyAudit).
+    // Without this the per-persona list kept AAA criteria that the aggregate
+    // had dropped at AA, so wcagViolationCount read 2 beside an
+    // allWcagViolations of ["2.2.2"] — the same finding counted under two
+    // different rules. (2026-07-29)
+    wcagViolations: Array.from(ctx.wcagViolations).filter((v) => {
+      const criteria = WCAG_CRITERIA[v];
+      const order: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
+      return !criteria || order[criteria.level] <= order[wcagLevel];
+    }),
     remediationPriority,
     empathyScore,
     scoreContext, // v18.22.0: Added score breakdown
