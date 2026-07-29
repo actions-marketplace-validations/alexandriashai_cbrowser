@@ -532,6 +532,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     inputSchema: {
       persona_name: z.string().describe("Name for the new persona"),
       description: z.string().describe("Text description of the persona (e.g., 'An impatient power user who skims content')"),
+      includeTraitReference: z.boolean().optional().default(false).describe("Return the full trait reference matrix with per-level behaviours (~7k tokens, same content as persona_traits_list). Off by default; a compact name+meaning reference is always included."),
     },
     annotations: {
       title: "Create Persona from Description",
@@ -540,16 +541,26 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       idempotentHint: false,
       openWorldHint: false,
     },
-  }, async ({ persona_name, description }) => {
-      const traitInfo = TRAIT_REFERENCE_MATRIX.map(trait => ({
-        name: trait.name,
-        description: trait.description,
-        levels: trait.levels.map(l => ({
-          value: l.value,
-          label: l.label,
-          behaviors: l.behaviors.slice(0, 2),
-        })),
-      }));
+  }, async ({ persona_name, description, includeTraitReference }) => {
+      // The full matrix is every trait crossed with every level and its
+      // behaviours — roughly 7k tokens, duplicating persona_traits_list, and it
+      // shipped on every call. The instruction below genuinely needs something
+      // to infer against, so the default is the compact form (name + meaning)
+      // rather than nothing, with the full matrix behind a flag. (2026-07-29)
+      const traitInfo = includeTraitReference
+        ? TRAIT_REFERENCE_MATRIX.map(trait => ({
+            name: trait.name,
+            description: trait.description,
+            levels: trait.levels.map(l => ({
+              value: l.value,
+              label: l.label,
+              behaviors: l.behaviors.slice(0, 2),
+            })),
+          }))
+        : TRAIT_REFERENCE_MATRIX.map(trait => ({
+            name: trait.name,
+            description: trait.description,
+          }));
 
       return {
         content: [{
@@ -560,6 +571,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             user_description: description,
             instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. Use the trait reference matrix below to guide your inference. If the description mentions ANY physical or sensory disability (vision loss, motor impairment, color blindness, hearing loss, tremor, etc.), you MUST also include accessibilityTraits. Without accessibilityTraits, the persona gets cognitive-only modeling and the perceptual transport layer will report near-perfect perception — which is wrong for someone with a disability. Return the traits via persona_create_submit_traits.`,
             trait_reference: traitInfo,
+            ...(includeTraitReference ? {} : { trait_reference_note: "Compact form: trait names and meanings. For per-level behaviours call persona_traits_list, or pass includeTraitReference:true." }),
             accessibility_traits_reference: {
               visionLevel: "0=blind, 0.3=legally blind, 0.5=low vision (needs magnification), 0.7=mild vision loss, 1.0=sighted",
               contrastSensitivity: "0=needs very high contrast (7:1+), 0.5=needs elevated contrast, 1.0=normal",

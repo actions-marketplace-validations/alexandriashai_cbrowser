@@ -760,7 +760,14 @@ function classifyPageType(raw: RawDOMExtraction, pageUrl?: string): PageType {
   const hasMultipleSections = regions.filter(
     (r) => r.tag === "section" || r.role === "region"
   ).length >= 3;
-  if ((hasSidebar || hasMultipleNavs) && hasMultipleSections) return "dashboard";
+  // hasMultipleNavs alone cannot carry this: a header nav plus a footer nav
+  // satisfies it on essentially every marketing site, so any homepage with three
+  // sections classified as a dashboard. (That is what my earlier "search" fix
+  // exposed — the page stopped being typed "search" and fell straight into this
+  // branch instead.) A sidebar is the signal that actually distinguishes an
+  // application shell from a content page; multiple navs only strengthen it.
+  // (2026-07-29)
+  if (hasSidebar && hasMultipleSections) return "dashboard";
 
   // Form: 3+ input fields with a submit button
   if (totalFormFields >= 3 && forms.some((f) => f.submitButton)) return "form";
@@ -768,6 +775,25 @@ function classifyPageType(raw: RawDOMExtraction, pageUrl?: string): PageType {
   // Article: long text content with heading hierarchy, few forms
   const hasDeepHeadings = headings.some((h) => h.level >= 3);
   const manyHeadings = headings.length >= 3;
+  // A hero CTA cluster means marketing, not long-form content. Without this the
+  // article branch swallowed every content-rich homepage — three headings and no
+  // form is true of essentially any marketing page — and it sits ABOVE the
+  // landing branch, so landing was unreachable for them. One short link near the
+  // top is ordinary navigation; several is a hero. (2026-07-29)
+  const topCtaCount = interactiveElements.filter(
+    (el) => el.tag === "a" && el.rect.top < 600 && el.text.length > 0 && el.text.length < 30
+  ).length;
+
+  // Decided here rather than at the bottom. A hero CTA cluster is a STRONG and
+  // specific signal, and it used to sit below two weak general ones — "three
+  // headings and no form" (article) and "ten links and repeated sections"
+  // (list), both true of essentially every marketing homepage. Landing was
+  // therefore unreachable for the pages it describes best: cbrowser.ai fell
+  // through to article, and once that was tightened it fell to list. Order the
+  // checks by how specific they are, not by how they were written.
+  // (2026-07-29)
+  if (topCtaCount >= 3) return "landing";
+
   // Article heuristic: multiple headings, deep hierarchy, few interactive elements relative to headings
   if (manyHeadings && hasDeepHeadings && totalFormFields <= 2) return "article";
 
