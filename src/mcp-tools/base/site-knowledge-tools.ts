@@ -58,6 +58,45 @@ export function registerSiteKnowledgeTools(
         const engine = new PageUnderstandingEngine();
         const understanding = await engine.analyze(page);
 
+        // Record a structural fingerprint. SiteModelManager.updateFingerprint was
+        // fully implemented and had ZERO callers anywhere, so model.fingerprints
+        // was never written and the pageFingerprints stat could only ever report
+        // 0 — which is exactly what it did after any number of journeys and
+        // audits. page_understand is the natural writer: it already computes the
+        // heading structure, form count, nav groups, CTA count and page type that
+        // a fingerprint is made of. (2026-07-29)
+        try {
+          const u = new URL(understanding.url);
+          // Collapse numeric and uuid-ish path segments so /post/1 and /post/2
+          // share a fingerprint, which is the point of a URL pattern.
+          const urlPattern = u.pathname
+            .split("/")
+            .map((seg) => (/^\d+$/.test(seg) || /^[0-9a-f-]{16,}$/i.test(seg) ? ":id" : seg))
+            .join("/") || "/";
+          const headingLabels = (function walk(nodes: Array<{ level?: number; children?: unknown[] }>): string[] {
+            if (!nodes || nodes.length === 0) return [];
+            return nodes.flatMap((n) => [
+              `h${n.level ?? "?"}`,
+              ...walk((n.children as Array<{ level?: number; children?: unknown[] }>) || []),
+            ]);
+          })(understanding.structure.headingHierarchy);
+          // Cheap stable hash — this only needs to change when the structure does.
+          let headingHash = 0;
+          for (const ch of headingLabels.join(">")) {
+            headingHash = ((headingHash << 5) - headingHash + ch.charCodeAt(0)) | 0;
+          }
+          const { SiteModelManager } = await import("../../site-model/manager.js");
+          SiteModelManager.getInstance().updateFingerprint(
+            u.hostname,
+            urlPattern,
+            String(headingHash),
+            understanding.structure.forms.length,
+            understanding.structure.navigation.length,
+            understanding.structure.ctas.length,
+            understanding.type,
+          );
+        } catch { /* a fingerprint is not worth failing the analysis over */ }
+
         return {
           content: [
             {
