@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.78.0](https://github.com/alexandriashai/cbrowser/compare/v18.77.0...v18.78.0) (2026-07-29)
+
+### Added
+
+* **research:** score saliency against fixation corpora from shipped code ([2930a84](https://github.com/alexandriashai/cbrowser/commit/2930a84002a226ffa1a63c7694f4e6329c11a3a6))
+
 ## [18.77.0](https://github.com/alexandriashai/cbrowser/compare/v18.76.0...v18.77.0) (2026-07-29)
 
 ### Added
