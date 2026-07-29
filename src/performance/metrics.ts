@@ -450,7 +450,14 @@ export async function detectPerformanceRegression(
     } else if (exceedsPercent && !exceedsAbsolute) {
       // Large percentage but small absolute change — noise
       status = "stable";
-      const unit = isClsMetric ? "" : "ms";
+      // Was `isClsMetric ? "" : "ms"`, which labelled every other metric as
+      // milliseconds — including transferSize, a byte count, so the note read
+      // "only 47000ms absolute" for 47000 bytes. (2026-07-29)
+      const unit =
+        isClsMetric ? "" :
+        metric === "transferSize" ? " bytes" :
+        metric === "resourceCount" ? "" :
+        "ms";
       note = `${changePercent.toFixed(1)}% change but only ${absoluteChange.toFixed(isClsMetric ? 3 : 0)}${unit} absolute — within noise threshold (min: ${dualThreshold.minAbsolute}${unit})`;
       notes.push({ metric, message: note });
     } else if (exceedsThreshold) {

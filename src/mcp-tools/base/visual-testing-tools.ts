@@ -89,29 +89,37 @@ export function registerVisualTestingTools(server: McpServer): void {
       const { getSmartBaseline, runSmartRegression, runRegressionWithTransportMap } = await import("../../visual/index.js");
       const smartBaseline = getSmartBaseline(baselineName);
 
-      if (smartBaseline) {
-        if (wantMap) {
-          const result = await runRegressionWithTransportMap(url, baselineName, { threshold });
-          return {
-            content: [
-              {
-                type: "text" as const,
-                text: JSON.stringify({
-                  mode: "smart+transport",
-                  passed: result.passed,
-                  similarity: result.analysis.similarityScore,
-                  status: result.analysis.overallStatus,
-                  summary: result.analysis.summary,
-                  adaptiveThreshold: smartBaseline.adaptiveThreshold,
-                  hotspots: result.transportMap?.hotspots,
-                  flows: result.transportMap?.flows.length,
-                  svgPath: result.transportMapSvgPath,
-                }, null, 2),
-              },
-            ],
-          };
-        }
+      // transportMap used to be handled ONLY inside this smart-baseline branch,
+      // so asking for a map against a traditional baseline fell through to the
+      // plain path below and the flag was silently ignored — no map, no error,
+      // no explanation. runRegressionWithTransportMap handles both kinds (it
+      // falls back to regularBaseline.screenshotPath), so honour the flag first
+      // and report which kind of baseline answered. (2026-07-29)
+      if (wantMap) {
+        const result = await runRegressionWithTransportMap(url, baselineName, { threshold });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                mode: smartBaseline ? "smart+transport" : "traditional+transport",
+                passed: result.passed,
+                similarity: result.analysis.similarityScore,
+                status: result.analysis.overallStatus,
+                summary: result.analysis.summary,
+                ...(smartBaseline
+                  ? { adaptiveThreshold: smartBaseline.adaptiveThreshold }
+                  : { note: "Traditional baseline: scored by combined Wasserstein distance, not against an adaptive threshold. Capture with visual_baseline captures=5 for smart regression." }),
+                hotspots: result.transportMap?.hotspots,
+                flows: result.transportMap?.flows.length,
+                svgPath: result.transportMapSvgPath,
+              }, null, 2),
+            },
+          ],
+        };
+      }
 
+      if (smartBaseline) {
         const result = await runSmartRegression(url, baselineName, { threshold });
         return {
           content: [
