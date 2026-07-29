@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.75.0](https://github.com/alexandriashai/cbrowser/compare/v18.74.3...v18.75.0) (2026-07-29)
+
+### Added
+
+* **site-model:** record goal paths where the server already knows them ([1629ec4](https://github.com/alexandriashai/cbrowser/commit/1629ec4b085898a006d399a70b22f7004cec1117))
+
 ## [18.74.3](https://github.com/alexandriashai/cbrowser/compare/v18.74.2...v18.74.3) (2026-07-29)
 
 ### Fixed
