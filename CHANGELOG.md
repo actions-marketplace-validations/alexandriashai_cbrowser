@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.75.1](https://github.com/alexandriashai/cbrowser/compare/v18.75.0...v18.75.1) (2026-07-29)
+
+### Fixed
+
+* six interaction tools had no error handling at all ([4f74054](https://github.com/alexandriashai/cbrowser/commit/4f74054dd63d6939c4057c7f966be80412396c75))
+
 ## [18.75.0](https://github.com/alexandriashai/cbrowser/compare/v18.74.3...v18.75.0) (2026-07-29)
 
 ### Added
