@@ -7,6 +7,7 @@
  * @license MIT
  */
 
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import type {
   WebMCPReadyResult,
   WebMCPReadyOptions,
@@ -283,7 +284,7 @@ async function runTier1ServerImplementation(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: "2024-11-05",
+          protocolVersion: LATEST_PROTOCOL_VERSION,
           capabilities: {},
           clientInfo: { name: "cbrowser-audit", version: "1.0.0" },
         },
@@ -354,7 +355,7 @@ async function runTier1ServerImplementation(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: "2024-11-05",
+          protocolVersion: LATEST_PROTOCOL_VERSION,
           capabilities: {},
           clientInfo: { name: "cbrowser-audit", version: "1.0.0" },
         },
@@ -364,7 +365,17 @@ async function runTier1ServerImplementation(
     if (response.ok) {
       const data = await parseMcpResponse(response) as { result?: { protocolVersion?: string } };
       const serverVersion = data?.result?.protocolVersion;
-      const isLatest = serverVersion === "2024-11-05";
+      // This was `serverVersion === "2024-11-05"` — strict equality against a
+      // frozen literal that had been the latest version back in 2024. Any server
+      // on a genuinely newer protocol was graded "older" and told to "Upgrade to
+      // protocol version 2024-11-05", an eight-month downgrade. cbrowser's own
+      // remote MCP answers "2025-03-26", so auditing ourselves produced exactly
+      // that recommendation, on a graded report shown to prospects.
+      //
+      // MCP protocol versions are ISO-8601 dates, so lexicographic order is
+      // chronological order. At or beyond the newest version we know about
+      // counts as current. (2026-07-28)
+      const isLatest = !!serverVersion && serverVersion >= LATEST_PROTOCOL_VERSION;
 
       checks.push({
         id: "protocol_version",
@@ -373,13 +384,13 @@ async function runTier1ServerImplementation(
         score: isLatest ? 1 : 0.5,
         maxScore: 1,
         details: isLatest
-          ? "Using latest protocol version 2024-11-05"
-          : `Using older protocol version: ${serverVersion || "unknown"}`,
+          ? `Using current protocol version ${serverVersion}`
+          : `Using older protocol version: ${serverVersion || "unknown"} (current: ${LATEST_PROTOCOL_VERSION})`,
         evidence: serverVersion || "unknown",
       });
 
       if (!isLatest && serverVersion) {
-        addIssue(1, "medium", `Protocol version ${serverVersion} is not the latest`, "Upgrade to protocol version 2024-11-05", "moderate");
+        addIssue(1, "medium", `Protocol version ${serverVersion} is not the latest`, `Upgrade to protocol version ${LATEST_PROTOCOL_VERSION}`, "moderate");
       }
     } else {
       checks.push({
@@ -517,7 +528,7 @@ async function runTier2ToolDiscoverability(
         id: 1,
         method: "initialize",
         params: {
-          protocolVersion: "2024-11-05",
+          protocolVersion: LATEST_PROTOCOL_VERSION,
           capabilities: {},
           clientInfo: { name: "cbrowser-audit", version: "1.0.0" },
         },
