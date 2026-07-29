@@ -400,7 +400,10 @@ async function detectBadLinks(ctx: DetectionContext): Promise<void> {
     'a:not([href]), a[href=""], a[href="#"], a[href^="javascript:"]',
     (elements) => elements.map(el => ({
       selector: `a${el.id ? `#${el.id}` : ''}`,
+      // Display copy only. fullText is what the code example must use, or the
+      // suggested markup silently shortens the link's visible label.
       text: el.textContent?.trim().slice(0, 30) || '',
+      fullText: el.textContent?.trim().slice(0, 200) || '',
       href: el.getAttribute('href') || '',
     }))
   );
@@ -413,7 +416,7 @@ async function detectBadLinks(ctx: DetectionContext): Promise<void> {
       description: `Link with ${link.href ? 'javascript:' : 'no'} href acts as button`,
       detectionMethod: "link-href-check",
       recommendation: "Use <button> for actions, <a href> for navigation",
-      codeExample: `<!-- For actions, use button: -->\n<button onclick="...">${link.text || 'Action'}</button>\n\n<!-- For navigation, use proper href: -->\n<a href="/path">${link.text || 'Link'}</a>`,
+      codeExample: `<!-- For actions, use button: -->\n<button onclick="...">${link.fullText || 'Action'}</button>\n\n<!-- For navigation, use proper href: -->\n<a href="/path">${link.fullText || 'Link'}</a>`,
     });
   }
 }
@@ -447,7 +450,12 @@ async function detectLowFindabilityElements(ctx: DetectionContext): Promise<void
 
       return {
         selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+        // Truncated copy, for human-readable descriptions ONLY. Never build
+        // suggested markup from this — see fullText. (2026-07-29)
         text: text.slice(0, 30),
+        // The real text, for code examples. Capped generously to bound payload
+        // size without amputating a normal link label.
+        fullText: text.slice(0, 200),
         findabilityScore,
         suggestions: {
           needsId: !hasId,
@@ -470,11 +478,23 @@ async function detectLowFindabilityElements(ctx: DetectionContext): Promise<void
         : el.suggestions.needsAriaLabel
           ? "Add aria-label for accessibility and findability"
           : "Add unique id or data-testid",
+      // Built from fullText, not the 30-char display copy. Using the truncated
+      // text here produced a patch that REWROTE the element's visible content:
+      //   <a data-testid="sign-up-for-pro-and-get-500-bo"
+      //      aria-label="Sign up for Pro and get 500 bo">Sign up for Pro and get 500 bo</a>
+      // Applying that silently amputates the link label on the live page. The
+      // recommendation is "add a data-testid / aria-label", so the example must
+      // leave the text exactly as it is. (2026-07-29)
       codeExample: (() => {
         const tag = el.selector.split('#')[0].split('.')[0] || 'button';
-        const testId = (el.text || tag).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 30) || tag;
-        const label = el.text || `${tag} action`;
-        return `<${tag} data-testid="${testId}" aria-label="${label}">${el.text || '...'}</${tag}>`;
+        const full = el.fullText || '';
+        // A testid is a slug, so truncating THIS is correct and expected.
+        const testId = (full || tag).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 40) || tag;
+        const label = full || `${tag} action`;
+        // Attribute values are quoted, so any quote or angle bracket in the page
+        // text would otherwise emit malformed HTML.
+        const attr = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<${tag} data-testid="${attr(testId)}" aria-label="${attr(label)}">${full || '...'}</${tag}>`;
       })(),
     });
   }
