@@ -15,8 +15,21 @@ import { VERSION } from "../../version.js";
  */
 export function registerBrowserManagementTools(
   server: McpServer,
-  { getBrowser, getToolCount }: ToolRegistrationContext
+  { getBrowser, getToolCount, getBrowserByToken }: ToolRegistrationContext
 ): void {
+  // This whole file predated session tokens: every tool below called getBrowser()
+  // directly, so on the HTTP transport they answered about a fresh blank browser
+  // rather than the caller's. That is worst for the tools whose entire purpose is
+  // to report on or repair the caller's session. (2026-07-28)
+  const resolve = async (_browserToken?: string) => {
+    if (getBrowserByToken) {
+      const r = await getBrowserByToken(_browserToken);
+      return { b: r.browser, token: r.token as string | undefined };
+    }
+    return { b: await getBrowser(), token: undefined };
+  };
+  /** True when we are multi-session (HTTP) and the caller named no session. */
+  const unbound = (_browserToken?: string) => Boolean(getBrowserByToken) && !_browserToken;
   server.registerTool("status", {
     title: "Browser Status",
     description: "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, self-healing cache statistics, and MCP tool count",
@@ -44,8 +57,10 @@ export function registerBrowserManagementTools(
 
   server.registerTool("browser_health", {
     title: "Browser Health Check",
-    description: "Check if the browser is healthy and responsive. Use this before operations if you suspect the browser may have crashed.",
-    inputSchema: {},
+    description: "Check if the browser is healthy and responsive. Use this before operations if you suspect the browser may have crashed. Pass _browserToken to check YOUR session — without it, a fresh session is checked and will always look healthy.",
+    inputSchema: {
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
+    },
     annotations: {
       title: "Browser Health Check",
       readOnlyHint: true,
@@ -53,14 +68,20 @@ export function registerBrowserManagementTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async () => {
-      const b = await getBrowser();
+  }, async ({ _browserToken }) => {
+      const { b, token } = await resolve(_browserToken);
       const result = await b.isBrowserHealthy();
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify({
+              ...result,
+              // Without this the caller cannot tell whose browser was reported on,
+              // and a crashed session reads as healthy.
+              checkedSession: _browserToken ?? (unbound(_browserToken) ? "a new blank session (no _browserToken supplied)" : "the single local session"),
+              ...(token ? { _browserToken: token } : {}),
+            }, null, 2),
           },
         ],
       };
@@ -73,6 +94,7 @@ export function registerBrowserManagementTools(
     inputSchema: {
       restoreUrl: z.string().url().optional().describe("URL to restore after recovery (uses last known URL if not provided)"),
       maxAttempts: z.number().optional().default(3).describe("Maximum recovery attempts"),
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call — the session to recover"),
     },
     annotations: {
       title: "Recover Browser",
@@ -81,14 +103,18 @@ export function registerBrowserManagementTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async ({ restoreUrl, maxAttempts }) => {
-      const b = await getBrowser();
+  }, async ({ restoreUrl, maxAttempts, _browserToken }) => {
+      const { b, token } = await resolve(_browserToken);
       const result = await b.recoverBrowser({ restoreUrl, maxAttempts });
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify({
+              ...result,
+              recoveredSession: _browserToken ?? (unbound(_browserToken) ? "a new blank session (no _browserToken supplied — your crashed session was NOT recovered)" : "the single local session"),
+              ...(token ? { _browserToken: token } : {}),
+            }, null, 2),
           },
         ],
       };
@@ -97,8 +123,10 @@ export function registerBrowserManagementTools(
 
   server.registerTool("reset_browser", {
     title: "Reset Browser",
-    description: "Reset the browser to a clean state. Clears all cookies, localStorage, sessionStorage, and browser state. Use this when you need a fresh browser environment.",
-    inputSchema: {},
+    description: "Reset the browser to a clean state. Clears all cookies, localStorage, sessionStorage, and browser state. Requires _browserToken on the HTTP transport so the correct session is cleared.",
+    inputSchema: {
+      _browserToken: z.string().optional().describe("Browser session token identifying the session to reset (required on the HTTP transport)"),
+    },
     annotations: {
       title: "Reset Browser",
       readOnlyHint: false,
@@ -106,8 +134,25 @@ export function registerBrowserManagementTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async () => {
-      const b = await getBrowser();
+  }, async ({ _browserToken }) => {
+      // Refuse rather than resolve. Every other tool here degrades to a fresh
+      // session; for this one that silently reported "cookies cleared" while the
+      // caller's real cookies survived. A false success on a privacy operation is
+      // worse than an error, so this is the one tool that fails closed.
+      if (unbound(_browserToken)) {
+        return {
+          isError: true,
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              success: false,
+              error: "no_session",
+              message: "reset_browser needs a _browserToken. Without one it would create and clear a new blank session, leaving your actual cookies, localStorage and sessionStorage intact while reporting success. Pass the _browserToken returned by navigate().",
+            }, null, 2),
+          }],
+        };
+      }
+      const { b, token } = await resolve(_browserToken);
       await b.reset();
       await b.launch();
       return {
@@ -117,6 +162,8 @@ export function registerBrowserManagementTools(
             text: JSON.stringify({
               success: true,
               message: "Browser reset to clean state and relaunched",
+              resetSession: _browserToken ?? "the single local session",
+              ...(token ? { _browserToken: token } : {}),
             }, null, 2),
           },
         ],
@@ -132,10 +179,14 @@ export function registerBrowserManagementTools(
       action: z.enum(["list", "create", "switch", "close"]).describe("Action: list (show all tabs), create (new tab), switch (focus tab), close (close tab)"),
       url: z.string().optional().describe("URL for new tab (create action)"),
       index: z.number().optional().describe("Tab index to switch to or close (0-based)"),
+      // Tabs belong to a browser context, so without the token this listed the tabs
+      // of a blank session — reporting one about:blank tab regardless of how many
+      // the caller actually had open. (2026-07-28)
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
     annotations: { title: "Manage Tabs", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  }, async ({ action, url, index }) => {
-    const b = await getBrowser();
+  }, async ({ action, url, index, _browserToken }) => {
+    const { b } = await resolve(_browserToken);
     const context = (b as any).context;
     if (!context) {
       return { content: [{ type: "text" as const, text: JSON.stringify({ error: "No browser context. Navigate to a URL first." }) }] };

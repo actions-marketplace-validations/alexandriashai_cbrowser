@@ -88,9 +88,29 @@ export function generateBrowserToken(sessionId: string): string {
   return token;
 }
 
+/** Thrown when a caller supplies a browser token that no longer resolves. */
+export class BrowserSessionExpiredError extends Error {
+  constructor(token: string) {
+    super(`Browser session '${token}' has expired or does not exist. Call navigate() to start a new session and pass the _browserToken it returns.`);
+    this.name = "BrowserSessionExpiredError";
+  }
+}
+
 /**
  * Resolve a browser token to a session's browser.
- * Falls back to creating a new session if token is invalid/expired.
+ *
+ * A SUPPLIED-BUT-UNRESOLVABLE token throws. This used to fall through to minting
+ * a fresh session: the caller passed `cb_abc`, got back a DIFFERENT token and a
+ * blank about:blank page, and every downstream tool then reported confidently on
+ * nothing. `assert` returned `passed:false, actual:""` — so a negative assertion
+ * like "page does not contain 'error'" FALSELY PASSED — `find_element_by_intent`
+ * returned `confidence:0`, and `save_session` persisted an empty context while
+ * reporting `success:true`.
+ *
+ * A wrong answer is worse than an error, and that fallback manufactured wrong
+ * answers by design. Minting is now reserved for callers who supplied NO token,
+ * which is the only case where "start me a session" is what they meant.
+ * (2026-07-28)
  */
 export async function getBrowserByToken(token?: string): Promise<{ browser: CBrowser; token: string }> {
   // Clean expired tokens
@@ -108,12 +128,12 @@ export async function getBrowserByToken(token?: string): Promise<{ browser: CBro
         session.lastActivity = now;
         return { browser: session.browser, token };
       }
-      // Session expired but token exists — create new session with same ID
       browserTokens.delete(token);
     }
+    throw new BrowserSessionExpiredError(token);
   }
 
-  // No valid token — create new session
+  // No token supplied — create new session
   const sessionId = randomUUID();
   const proxyConfig = stealthConfig?.proxy;
   const sessionBrowser = new CBrowser({

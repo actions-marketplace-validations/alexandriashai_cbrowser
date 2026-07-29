@@ -81,6 +81,11 @@ export function registerInteractionTools(
       selector: z.string().describe("Element to click"),
       maxRetries: z.number().optional().default(3).describe("Maximum retry attempts"),
       dismissOverlays: z.boolean().optional().default(false).describe("Dismiss overlays before clicking"),
+      // Its sibling `click` (above) already took this; smart_click did not, so on
+      // the HTTP transport it retried against a blank page and reported a clean
+      // "element not found" — and self-healing then cached heals derived from
+      // nothing. (2026-07-28)
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
     annotations: {
       title: "Smart Click with Self-Healing",
@@ -89,8 +94,16 @@ export function registerInteractionTools(
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ selector, maxRetries, dismissOverlays }) => {
-      const b = await getBrowser();
+  }, async ({ selector, maxRetries, dismissOverlays, _browserToken }) => {
+      let b;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const resolved = await getBrowserByToken(_browserToken);
+        b = resolved.browser;
+        token = resolved.token;
+      } else {
+        b = await getBrowser();
+      }
       const result = await b.smartClick(selector, { maxRetries, dismissOverlays });
       return {
         content: [
@@ -105,6 +118,7 @@ export function registerInteractionTools(
               confidence: result.confidence,
               healed: result.healed,
               healReason: result.healReason,
+              ...(token ? { _browserToken: token } : {}),
             }, null, 2),
           },
         ],
@@ -118,6 +132,10 @@ export function registerInteractionTools(
     inputSchema: {
       type: z.enum(["auto", "cookie", "age-verify", "newsletter", "custom"]).optional().default("auto").describe("Overlay type to detect"),
       customSelector: z.string().optional().describe("Custom CSS selector for overlay close button"),
+      // Without the token this dismissed overlays on a blank page and reported
+      // `overlaysFound: 0` — so the caller's actual cookie banner stayed up while
+      // the response said there was nothing to dismiss. (2026-07-28)
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
     annotations: {
       title: "Dismiss Overlay",
@@ -126,8 +144,16 @@ export function registerInteractionTools(
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ type, customSelector }) => {
-      const b = await getBrowser();
+  }, async ({ type, customSelector, _browserToken }) => {
+      let b;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const resolved = await getBrowserByToken(_browserToken);
+        b = resolved.browser;
+        token = resolved.token;
+      } else {
+        b = await getBrowser();
+      }
       const result = await b.dismissOverlay({ type, customSelector });
       return {
         content: [
@@ -139,6 +165,7 @@ export function registerInteractionTools(
               overlaysDismissed: result.overlaysDismissed,
               details: result.details,
               suggestion: result.suggestion,
+              ...(token ? { _browserToken: token } : {}),
             }, null, 2),
           },
         ],
@@ -217,9 +244,14 @@ export function registerInteractionTools(
     },
   }, async ({ direction, amount, _browserToken }) => {
       let b: Awaited<ReturnType<typeof getBrowser>>;
+      let token: string | undefined;
       if (getBrowserByToken) {
         const result = await getBrowserByToken(_browserToken);
         b = result.browser;
+        // The resolved token was being discarded here, so scroll was the one
+        // bound tool that never echoed it and a caller chaining off it lost the
+        // session. (2026-07-28)
+        token = result.token;
       } else {
         b = await getBrowser();
       }
@@ -246,14 +278,38 @@ export function registerInteractionTools(
             break;
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        // Smooth scrolling is asynchronous. The previous fixed 300ms wait read
+        // the position mid-animation, so a long page reported atBottom:false for
+        // a scroll that did in fact reach the bottom. Poll until the position
+        // stops moving instead of guessing how long it takes.
+        //
+        // maxScroll also read document.body.scrollHeight alone; on standards-mode
+        // pages the scrolling element is usually documentElement, and the two
+        // disagree, which by itself made atBottom wrong. (2026-07-28)
+        const readPos = () => page.evaluate(() => {
+          const doc = document.documentElement;
+          const scrollHeight = Math.max(document.body?.scrollHeight ?? 0, doc?.scrollHeight ?? 0);
+          return {
+            scrollY: window.scrollY || doc?.scrollTop || 0,
+            maxScroll: Math.max(0, scrollHeight - window.innerHeight),
+          };
+        });
 
-        const scrollInfo = await page.evaluate(() => ({
-          scrollY: window.scrollY,
-          maxScroll: document.body.scrollHeight - window.innerHeight,
-        }));
-        scrollPosition = scrollInfo.scrollY;
-        maxScroll = scrollInfo.maxScroll;
+        const SETTLE_DEADLINE_MS = 2000;
+        const SETTLE_POLL_MS = 60;
+        const deadline = Date.now() + SETTLE_DEADLINE_MS;
+        let pos = await readPos();
+        let stableReads = 0;
+        let settled = false;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS));
+          const next = await readPos();
+          stableReads = next.scrollY === pos.scrollY ? stableReads + 1 : 0;
+          pos = next;
+          if (stableReads >= 2) { settled = true; break; }
+        }
+        scrollPosition = pos.scrollY;
+        maxScroll = pos.maxScroll;
 
         return {
           content: [
@@ -266,6 +322,10 @@ export function registerInteractionTools(
                 maxScroll,
                 atTop: scrollPosition <= 0,
                 atBottom: scrollPosition >= maxScroll - 10,
+                // False means the page was still moving when we gave up, so the
+                // position above is a snapshot rather than a resting place.
+                settled,
+                ...(token ? { _browserToken: token } : {}),
               }, null, 2),
             },
           ],

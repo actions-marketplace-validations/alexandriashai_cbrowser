@@ -14,12 +14,17 @@ import { findElementByIntent, runAIReadinessBenchmark } from "../../analysis/ind
  */
 export function registerAnalysisTools(
   server: McpServer,
-  { getBrowser }: ToolRegistrationContext
+  { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
   server.registerTool("analyze_page", {
     title: "Analyze Page Structure",
-    description: "Analyze page structure for forms, buttons, links",
-    inputSchema: {},
+    description: "Analyze page structure for forms, buttons, links. MUST pass _browserToken from a previous tool call to analyze the same page — without it a blank page is analyzed and every count comes back zero.",
+    inputSchema: {
+      // Took no arguments at all, so on the HTTP transport it always analysed a
+      // fresh blank page: 0 forms, 0 buttons, 0 links, hasLogin false. Reads as a
+      // real analysis of a sparse page rather than as an error. (2026-07-28)
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
+    },
     annotations: {
       title: "Analyze Page Structure",
       readOnlyHint: true,
@@ -27,14 +32,23 @@ export function registerAnalysisTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async () => {
-      const b = await getBrowser();
+  }, async ({ _browserToken }) => {
+      let b;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const resolved = await getBrowserByToken(_browserToken);
+        b = resolved.browser;
+        token = resolved.token;
+      } else {
+        b = await getBrowser();
+      }
       const analysis = await b.analyzePage();
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify({
+              ...(token ? { _browserToken: token } : {}),
               title: analysis.title,
               forms: analysis.forms.length,
               buttons: analysis.buttons.length,
@@ -54,6 +68,10 @@ export function registerAnalysisTools(
     description: "Generate test scenarios for a page",
     inputSchema: {
       url: z.string().url().optional().describe("URL to analyze (uses current page if not provided)"),
+      // "uses current page if not provided" was unreachable on the HTTP transport:
+      // omitting url fell back to a blank page, so the no-url branch generated
+      // tests for about:blank. (2026-07-28)
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call — required when url is omitted"),
     },
     annotations: {
       title: "Generate Test Cases",
@@ -62,14 +80,23 @@ export function registerAnalysisTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async ({ url }) => {
-      const b = await getBrowser();
+  }, async ({ url, _browserToken }) => {
+      let b;
+      let token: string | undefined;
+      if (getBrowserByToken) {
+        const resolved = await getBrowserByToken(_browserToken);
+        b = resolved.browser;
+        token = resolved.token;
+      } else {
+        b = await getBrowser();
+      }
       const result = await b.generateTests(url);
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify({
+              ...(token ? { _browserToken: token } : {}),
               testsGenerated: result.tests.length,
               tests: result.tests.map(t => ({
                 name: t.name,
@@ -89,6 +116,11 @@ export function registerAnalysisTools(
     inputSchema: {
       intent: z.string().describe("Natural language description like 'the cheapest product' or 'login form'"),
       verbose: z.boolean().optional().describe("Include alternative matches with confidence scores and AI suggestions"),
+      // Without this, the tool searched a blank browser on the HTTP transport and
+      // returned `confidence: 0, "No match found"` with empty alternatives — a
+      // plausible "nothing here" that is indistinguishable from a real miss.
+      // (2026-07-28)
+      _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
     annotations: {
       title: "Find Element by Intent",
@@ -97,8 +129,13 @@ export function registerAnalysisTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async ({ intent, verbose }) => {
-      const b = await getBrowser();
+  }, async ({ intent, verbose, _browserToken }) => {
+      let b;
+      if (getBrowserByToken) {
+        b = (await getBrowserByToken(_browserToken)).browser;
+      } else {
+        b = await getBrowser();
+      }
       const result = await findElementByIntent(b, intent, { verbose });
       if (result && result.confidence > 0) {
         return {
