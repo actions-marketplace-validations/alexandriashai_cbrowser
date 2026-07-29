@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.76.0](https://github.com/alexandriashai/cbrowser/compare/v18.75.4...v18.76.0) (2026-07-29)
+
+### Added
+
+* **attention:** feed the DOM to the two tools that were shipping contrast ([bbc728e](https://github.com/alexandriashai/cbrowser/commit/bbc728ebd6b1698c95199647a5c4e9f9fc39de65))
+
 ## [18.75.4](https://github.com/alexandriashai/cbrowser/compare/v18.75.3...v18.75.4) (2026-07-29)
 
 ### Fixed
