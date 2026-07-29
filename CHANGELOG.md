@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.73.4](https://github.com/alexandriashai/cbrowser/compare/v18.73.3...v18.73.4) (2026-07-29)
+
+### Fixed
+
+* a failed click dumped its whole Playwright retry log ([d79dded](https://github.com/alexandriashai/cbrowser/commit/d79dded7ca69482022de58b80ea03085c92f6716))
+* empathy_audit inlined a 600KB screenshot into every response ([2864ebf](https://github.com/alexandriashai/cbrowser/commit/2864ebfa69b9024cc0d9961160f8840df7ba43c2))
+* every perf_regression reported a large transferSize regression on an unchanged page ([300a4ad](https://github.com/alexandriashai/cbrowser/commit/300a4add814af069da033a674e202f0645ad0ef1))
+* generate_tests returned step counts instead of steps ([faa9139](https://github.com/alexandriashai/cbrowser/commit/faa9139a59b74789d414f90531fdd1fabb8fab83))
+* journey state dropped goalProgress, misreported mood, and hid tied abandonments ([7fa5e19](https://github.com/alexandriashai/cbrowser/commit/7fa5e19542b26844e3da358c64a9b9f9d4873db7))
+* json-ld breadcrumbs were invisible to the breadcrumb check ([5757b92](https://github.com/alexandriashai/cbrowser/commit/5757b923eb00470f87543baf8989101d0ff242fb))
+* largest contentful paint was never collected and CLS was always zero ([fbd58b9](https://github.com/alexandriashai/cbrowser/commit/fbd58b93701a152ccdaa17458095d2a5946c4f3d))
+* page_understand got four facts wrong about every page ([f6205a9](https://github.com/alexandriashai/cbrowser/commit/f6205a9e9ef9d0c36778dd7e3d2dedbbb0a8060e))
+* passing a URL to evaluate produced a baffling syntax error ([1eb72ce](https://github.com/alexandriashai/cbrowser/commit/1eb72ceb26fe09a1ab8fe4b7c374109507184160))
+* read and assert tools answered from a blank session when the token was omitted ([f24d307](https://github.com/alexandriashai/cbrowser/commit/f24d307a6999ad7c170fc50b36de1d212968f51b))
+* remediation patch impact was a constant, so ROI sorting had no signal ([0adb8d5](https://github.com/alexandriashai/cbrowser/commit/0adb8d5133f2d7d7eb6a3f2027b671dee100eb0e))
+* remediation patches showed a tag name where the current markup belongs ([6af780d](https://github.com/alexandriashai/cbrowser/commit/6af780d35dd1a6fd17ee0b8c4b20a7d834c6417d))
+* suggested patches silently shortened the element's visible text ([4d3abce](https://github.com/alexandriashai/cbrowser/commit/4d3abcefd2e8c77137d8223d95fc426f36de170b))
+* transportMap ignored on traditional baselines, and byte counts labelled ms ([7ea5892](https://github.com/alexandriashai/cbrowser/commit/7ea5892332c6db17a91f4461eb3c63e5a5a2ffd2))
+* transportMap silently changed the score and flipped the verdict ([65abdff](https://github.com/alexandriashai/cbrowser/commit/65abdffafe02fca928bdb8db782a812c583780fb))
+* wcagViolationCount counted violations the audit had already excluded ([d2b136e](https://github.com/alexandriashai/cbrowser/commit/d2b136e51dffb3d7072a8b17ec9ae8e9b9566e15))
+
 ## [18.73.3](https://github.com/alexandriashai/cbrowser/compare/v18.73.2...v18.73.3) (2026-07-29)
 
 ### Fixed
