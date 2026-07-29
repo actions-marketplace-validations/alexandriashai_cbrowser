@@ -296,7 +296,16 @@ function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
     issueId: `issue-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     category: issue.category,
     description: issue.description,
-    before: issue.element || "<!-- Current implementation -->",
+    // Real markup when the audit captured it, so the patch is a genuine diff
+    // rather than "a" versus a suggested element. Falls back to the selector
+    // for detections that do not carry an element. (2026-07-29)
+    // Real markup when the audit captured it. Otherwise say so explicitly rather
+    // than emitting a bare selector like "nav", which reads as broken markup: a
+    // great many findings are about an element being ABSENT, where there is
+    // genuinely nothing to replace and a diff is the wrong shape entirely.
+    before: issue.elementHtml
+      || (issue.element ? `<!-- no markup captured for "${issue.element}" — this finding is about what is missing, not what to replace -->` : "<!-- Current implementation -->"),
+    ...(issue.elementHtmlTruncated ? { beforeTruncated: true } : {}),
     after,
     explanation: issue.recommendation || "Review the element and apply accessibility best practices.",
     effort,

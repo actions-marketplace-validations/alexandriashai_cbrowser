@@ -4641,6 +4641,21 @@ export interface AgentReadyIssue {
   recommendation: string;
   /** Code example for fix */
   codeExample?: string;
+  /**
+   * The element's actual outerHTML, captured at detection time.
+   *
+   * remediation_patches previously emitted `before: issue.element` — a SELECTOR
+   * like "a", not markup — so the patch had nothing real to diff against. It
+   * could not capture the DOM itself: patch templates are pure
+   * `(issue) => patch` functions with no I/O or DOM access (AGENTS.md), and the
+   * Page is closed before generation. Capturing it here, where the audit is
+   * already inside page.$$eval, keeps the templates pure and gives them the
+   * real markup. Capped for payload size; see elementHtmlTruncated.
+   * (2026-07-29)
+   */
+  elementHtml?: string;
+  /** True when elementHtml was cut to the cap — it is descriptive, never apply it. */
+  elementHtmlTruncated?: boolean;
 }
 
 /** Prioritized recommendation for agent-ready improvements */

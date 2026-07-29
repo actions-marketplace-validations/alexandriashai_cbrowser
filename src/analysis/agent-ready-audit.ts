@@ -404,6 +404,10 @@ async function detectBadLinks(ctx: DetectionContext): Promise<void> {
       // suggested markup silently shortens the link's visible label.
       text: el.textContent?.trim().slice(0, 30) || '',
       fullText: el.textContent?.trim().slice(0, 200) || '',
+      // Real markup for the patch's `before`. Captured here because this is
+      // where DOM access legitimately happens; patch templates are pure.
+      outerHTML: (el.outerHTML || '').slice(0, 600),
+      outerHTMLTruncated: (el.outerHTML || '').length > 600,
       href: el.getAttribute('href') || '',
     }))
   );
@@ -414,6 +418,8 @@ async function detectBadLinks(ctx: DetectionContext): Promise<void> {
       severity: "low",
       element: link.selector,
       description: `Link with ${link.href ? 'javascript:' : 'no'} href acts as button`,
+      elementHtml: link.outerHTML,
+      elementHtmlTruncated: link.outerHTMLTruncated,
       detectionMethod: "link-href-check",
       recommendation: "Use <button> for actions, <a href> for navigation",
       codeExample: `<!-- For actions, use button: -->\n<button onclick="...">${link.fullText || 'Action'}</button>\n\n<!-- For navigation, use proper href: -->\n<a href="/path">${link.fullText || 'Link'}</a>`,
@@ -456,6 +462,8 @@ async function detectLowFindabilityElements(ctx: DetectionContext): Promise<void
         // The real text, for code examples. Capped generously to bound payload
         // size without amputating a normal link label.
         fullText: text.slice(0, 200),
+        outerHTML: (el.outerHTML || '').slice(0, 600),
+        outerHTMLTruncated: (el.outerHTML || '').length > 600,
         findabilityScore,
         suggestions: {
           needsId: !hasId,
@@ -472,6 +480,8 @@ async function detectLowFindabilityElements(ctx: DetectionContext): Promise<void
       severity: "low",
       element: el.selector,
       description: `Element lacks stable selectors (score: ${el.findabilityScore}/10)`,
+      elementHtml: el.outerHTML,
+      elementHtmlTruncated: el.outerHTMLTruncated,
       detectionMethod: "findability-score-check",
       recommendation: el.suggestions.needsTestId
         ? "Add data-testid for stable automation selectors"
