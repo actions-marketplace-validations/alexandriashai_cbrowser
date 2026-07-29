@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.74.1](https://github.com/alexandriashai/cbrowser/compare/v18.74.0...v18.74.1) (2026-07-29)
+
+### Fixed
+
+* **ci:** release hook ran a third test suite that gated nothing ([9be87a4](https://github.com/alexandriashai/cbrowser/commit/9be87a4eb52fc14672cc8c19a760c1ddf945f36d))
+* svg className crash charged customers for our TypeError ([bbd2743](https://github.com/alexandriashai/cbrowser/commit/bbd27434fe861faa39cb4be976b8d8eae9ca0df0))
+
 ## [18.74.0](https://github.com/alexandriashai/cbrowser/compare/v18.73.4...v18.74.0) (2026-07-29)
 
 ### Added
