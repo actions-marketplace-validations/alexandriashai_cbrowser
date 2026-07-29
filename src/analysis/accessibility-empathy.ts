@@ -1549,8 +1549,12 @@ async function simulateAccessibilityJourney(
     baseScore: 100,
     deductionsByType: perceptualResult.deductions,
     totalBarrierDeduction: totalDeduction,
-    frictionDeduction: 0,
-    goalDeduction: goalAchieved ? 0 : 15,
+    // Were a hardcoded 0 and a locally re-derived guess. Both now come from the
+    // same computation that actually moved the score, so the numbered fields and
+    // the explanation prose can no longer disagree. (2026-07-28)
+    frictionDeduction: perceptualResult.frictionDeduction,
+    goalDeduction: perceptualResult.goalDeduction,
+    cognitiveOverloadPenalty: perceptualResult.cognitiveOverloadPenalty,
     finalScore: empathyScore,
     explanation: perceptualResult.explanation
       + (perceptualResult.informationLoss > 0.05 ? ` | Info loss: ${(perceptualResult.informationLoss * 100).toFixed(0)}%` : '')
@@ -2509,6 +2513,26 @@ export async function runEmpathyAudit(
         );
         (result as any).empathyScoreBarrierOnly = result.empathyScore;
         result.empathyScore = blendedScore;
+
+        // scoreContext.explanation was built for the pre-blend score and then
+        // left attached to the blended one, so its deductions summed to
+        // empathyScoreBarrierOnly while sitting beside a different headline
+        // (observed: deductions of 11 explaining 89, printed next to
+        // empathyScore 91). Record the blend so the arithmetic reconciles
+        // end to end, and say which number the deductions explain. (2026-07-28)
+        const ctxToUpdate = (result as any).scoreContext;
+        if (ctxToUpdate) {
+          ctxToUpdate.explainsScore = "empathyScoreBarrierOnly";
+          ctxToUpdate.barrierOnlyScore = (result as any).empathyScoreBarrierOnly;
+          ctxToUpdate.perceptualScore = perceptualAnalysis.perceptualScore;
+          ctxToUpdate.blendWeights = { barrier: 0.7, perceptual: 0.3 };
+          ctxToUpdate.finalScore = blendedScore;
+          ctxToUpdate.explanation =
+            `${ctxToUpdate.explanation} || Headline empathyScore ${blendedScore} = ` +
+            `barrier-only ${(result as any).empathyScoreBarrierOnly} x 0.7 + ` +
+            `perceptual ${perceptualAnalysis.perceptualScore} x 0.3. ` +
+            `The deductions above explain the barrier-only score, not the headline.`;
+        }
 
         try { unlinkSync(screenshotPath); } catch {}
       } catch (e) {

@@ -526,6 +526,12 @@ export function calculatePerceptualScore(
   cognitiveLoad: number;
   motorCost: number;
   explanation: string;
+  /** Points deducted for reading/processing friction. */
+  frictionDeduction: number;
+  /** Points deducted for failing the goal, capped at 25. */
+  goalDeduction: number;
+  /** Points deducted for cognitive overload. */
+  cognitiveOverloadPenalty: number;
 } {
   const profile = getPerceptualProfile(personaName, accessibilityTraits as any);
   const filter = profile.visualFilter;
@@ -627,6 +633,14 @@ export function calculatePerceptualScore(
     cognitiveLoad,
     motorCost,
     explanation,
+    // These three were computed, subtracted from the score, written into the
+    // explanation prose above, and then discarded. The caller therefore had no
+    // way to read them, which is why scoreContext.frictionDeduction was
+    // hardcoded to 0 while the prose beside it reported a real friction figure.
+    // (2026-07-28)
+    frictionDeduction,
+    goalDeduction: Math.min(25, goalDeduction),
+    cognitiveOverloadPenalty,
   };
 }
 

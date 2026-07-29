@@ -154,11 +154,22 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               goalAchieved: r.goalAchieved,
               empathyScore: r.empathyScore,
               // v18.22.0: Added score context for transparency
+              // Whitelist projection: anything added to scoreContext upstream is
+              // invisible to the caller unless named here. The blend breakdown
+              // below is what lets the deductions reconcile to a score the
+              // caller can actually see. (2026-07-28)
               scoreContext: r.scoreContext ? {
                 explanation: r.scoreContext.explanation,
                 deductionsByType: r.scoreContext.deductionsByType,
+                totalBarrierDeduction: (r.scoreContext as any).totalBarrierDeduction,
                 frictionDeduction: r.scoreContext.frictionDeduction,
                 goalDeduction: r.scoreContext.goalDeduction,
+                cognitiveOverloadPenalty: (r.scoreContext as any).cognitiveOverloadPenalty,
+                explainsScore: (r.scoreContext as any).explainsScore,
+                barrierOnlyScore: (r.scoreContext as any).barrierOnlyScore,
+                perceptualScore: (r.scoreContext as any).perceptualScore,
+                blendWeights: (r.scoreContext as any).blendWeights,
+                finalScore: (r.scoreContext as any).finalScore,
               } : undefined,
               barrierTypeCount: uniqueTypes.size,
               barrierTypes: Array.from(uniqueTypes),
