@@ -436,7 +436,20 @@ export class PageUnderstandingEngine {
       }
 
       function getVisibleText(el: Element): string {
-        return (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
+        // textContent includes the text of descendant <script> and <style>
+        // elements, which is not visible text at all. A container matched via
+        // [tabindex] that happened to wrap a JSON-LD block therefore reported
+        // `Activate {"@context":"https://schema.org","@type":"breadcrumblist"…`
+        // as its label and expectedOutcome. Strip non-rendered subtrees first,
+        // and only pay for the clone when there is something to strip.
+        // (2026-07-29)
+        let source: Element = el;
+        if (el.querySelector("script, style, noscript, template")) {
+          const clone = el.cloneNode(true) as Element;
+          clone.querySelectorAll("script, style, noscript, template").forEach((n) => n.remove());
+          source = clone;
+        }
+        return (source.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
       }
 
       function getNthOfType(el: Element): number {

@@ -126,6 +126,27 @@ interface ElementBounds {
  * @param pageUnderstanding - Page structure from page_understand
  * @param cellSize - Saliency grid cell size
  */
+/**
+ * Collapse per-cell attention entries into one entry per element.
+ * cellCount is kept so a caller can tell a broad element from a sharp one.
+ */
+function dedupeTargetsByElement(
+  targets: AttentionQualityResult["topAttentionTargets"],
+): AttentionQualityResult["topAttentionTargets"] {
+  const byElement = new Map<string, AttentionQualityResult["topAttentionTargets"][number] & { cellCount?: number }>();
+  for (const t of targets) {
+    const key = `${t.type}::${t.element}`;
+    const existing = byElement.get(key);
+    if (existing) {
+      existing.saliency = Math.round((existing.saliency + t.saliency) * 1000) / 1000;
+      existing.cellCount = (existing.cellCount ?? 1) + 1;
+    } else {
+      byElement.set(key, { ...t, cellCount: 1 });
+    }
+  }
+  return [...byElement.values()].sort((a, b) => b.saliency - a.saliency);
+}
+
 export function computeAttentionQuality(
   hotspots: SaliencyHotspot[],
   pageElements: Array<{
@@ -279,7 +300,15 @@ export function computeAttentionQuality(
     distractorRatio: Math.round(distractorRatio * 1000) / 1000,
     qualityScore,
     valueRelevanceScore,
-    topAttentionTargets: targets.slice(0, 10),
+    // Deduplicated by element. The loop above walks HOTSPOTS — grid cells — and
+    // pushes one entry per cell that overlaps an element, so a large CTA
+    // spanning ten cells appeared ten times ("Try Free — 5 Tests" at 1.0, 0.998,
+    // 0.997 …). That filled all ten slots with one element, which made
+    // ctaCaptureRate 1 and distractorRatio 0 trivially true and hid everything
+    // else competing for attention. Saliency is SUMMED per element, which is the
+    // meaningful figure: total attention the element drew across its cells.
+    // (2026-07-29)
+    topAttentionTargets: dedupeTargetsByElement(targets).slice(0, 10),
     interpretation,
   };
 }

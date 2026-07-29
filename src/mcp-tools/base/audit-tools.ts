@@ -227,6 +227,17 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           }),
           allWcagViolations: result.allWcagViolations,
           topBarriers: result.topBarriers.slice(0, 5),
+          // A barrier's affectedPersonas names the personas it hits HARDEST. It
+          // is not an exclusion list, which is why a persona absent from it can
+          // still take a deduction — susceptibility is applied as a weight, not
+          // a gate (see scoreContext.appliedBarrierWeights). Stating it here
+          // because the pairing otherwise reads as a contradiction: a
+          // touch_target barrier listing motor and elderly personas, scored
+          // against cognitive-adhd. (2026-07-29)
+          barrierFieldNotes: {
+            affectedPersonas: "Exemplars — the personas this barrier affects most. NOT an exclusion list; every tested persona is scored against every barrier, weighted by susceptibility.",
+            severity: "On topBarriers entries this is the group maximum across all elements of that type (severityIsGroupMax), not one element's severity.",
+          },
           topRemediation: result.combinedRemediation.slice(0, 5),
           duration: result.duration,
           // v18.60.0: Include per-result screenshots and element rects for WCAG overlay

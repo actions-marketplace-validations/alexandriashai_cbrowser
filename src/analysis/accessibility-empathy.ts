@@ -2301,7 +2301,15 @@ function deduplicateBarriers(
       description: aggregatedDescription,
       affectedPersonas: Array.from(data.personas),
       wcagCriteria: representative.wcagCriteria,
+      // This is the WORST severity across every element grouped under this
+      // barrier type, not one element's severity — but it shipped under the same
+      // field name `severity` that individual rects use, so the same 152x20
+      // target read "major" in barrierRects and "critical" in topBarriers and
+      // looked like a contradiction. Both numbers were right; only the naming
+      // hid that one is an aggregate. (2026-07-29)
       severity: data.highestSeverity,
+      severityIsGroupMax: true,
+      affectedElementCount: data.elements.size,
       remediation: representative.remediation,
     });
   }

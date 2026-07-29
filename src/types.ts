@@ -5077,6 +5077,15 @@ export interface AccessibilityBarrier {
   wcagCriteria: string[];
   /** Severity of the barrier */
   severity: AccessibilityBarrierSeverity;
+  /**
+   * Set on DEDUPLICATED entries (topBarriers), where `severity` is the worst
+   * across every element in the group rather than one element's own. Without
+   * it the same target read "major" in barrierRects and "critical" in
+   * topBarriers and looked like a contradiction. (2026-07-29)
+   */
+  severityIsGroupMax?: boolean;
+  /** Number of distinct elements grouped under this barrier type. */
+  affectedElementCount?: number;
   /** How to remediate */
   remediation: string;
 }
