@@ -82,27 +82,38 @@ export interface AdversarialPersona {
   perturbedTraits: Array<{ trait: string; delta: number }>;
 }
 
-// ── Standard 25 Cognitive Traits ──
-
+// ── The 26 Cognitive Traits ──
+//
+// These names MUST match the `CognitiveTraits` interface in ../types.ts, because
+// `traitsToDistribution` reads them off the object produced by
+// `getCognitiveProfile()`. A name absent from that schema silently resolves to
+// the `?? 0.5` default on line ~168 and still takes a full share of the
+// normalized distribution.
+//
+// The previous list was hand-written and had drifted badly: 17 of its 25 names
+// (frustrationResponse, decisionStyle, impulsivity, motorPrecision,
+// processingSpeed, contrastSensitivity, …) exist in no schema in either repo, so
+// they were constant 0.5 for every persona — pure dilution carrying no signal —
+// while 18 of the 26 real traits were never looked at at all. Two personas
+// differing only in curiosity, selfEfficacy or siteFamiliarity measured as
+// identical on those axes. Only 8 of 25 names were real. (2026-07-28)
 export const COGNITIVE_TRAITS = [
-  // Core (3)
-  'patience', 'riskTolerance', 'comprehension',
-  // Emotional (3)
-  'frustrationResponse', 'resilience', 'confidenceLevel',
-  // Decision (3)
-  'decisionStyle', 'satisficing', 'impulsivity',
-  // Planning (3)
-  'goalPersistence', 'taskSwitching', 'planningHorizon',
+  // Core (4) — the required traits in the schema
+  'patience', 'riskTolerance', 'comprehension', 'persistence',
+  // Emotional (4)
+  'resilience', 'selfEfficacy', 'emotionalContagion', 'attributionStyle',
+  // Decision (4)
+  'satisficing', 'anchoringBias', 'timeHorizon', 'fearOfMissingOut',
+  // Planning (4)
+  'interruptRecovery', 'metacognitivePlanning', 'proceduralFluency', 'transferLearning',
   // Perception (3)
-  'attentionPattern', 'visualProcessing', 'informationFiltering',
+  'informationForaging', 'changeBlindness', 'mentalModelRigidity',
   // Social (3)
-  'trustCalibration', 'socialProofSensitivity', 'authorityResponse',
-  // Motor (2)
-  'motorPrecision', 'reactionTime',
-  // Cognitive (2)
-  'workingMemory', 'processingSpeed',
-  // Accessibility (3)
-  'contrastSensitivity', 'colorPerception', 'textProcessing',
+  'trustCalibration', 'socialProofSensitivity', 'authoritySensitivity',
+  // Cognitive (3)
+  'workingMemory', 'readingTendency', 'curiosity',
+  // Experience (1)
+  'siteFamiliarity',
 ] as const;
 
 export type CognitiveTrait = typeof COGNITIVE_TRAITS[number];
@@ -123,16 +134,21 @@ export type CognitiveTrait = typeof COGNITIVE_TRAITS[number];
 function traitGroundDistance(a: string, b: string): number {
   if (a === b) return 0;
 
+  // Partitions COGNITIVE_TRAITS above; every one of the 26 appears exactly once.
+  // The old map described the old phantom vocabulary, and its `motor` and
+  // `accessibility` domains named traits that exist in no schema. (2026-07-28)
   const domains: Record<string, string[]> = {
-    core: ['patience', 'riskTolerance', 'comprehension'],
-    emotional: ['frustrationResponse', 'resilience', 'confidenceLevel'],
-    decision: ['decisionStyle', 'satisficing', 'impulsivity'],
-    planning: ['goalPersistence', 'taskSwitching', 'planningHorizon'],
-    perception: ['attentionPattern', 'visualProcessing', 'informationFiltering'],
-    social: ['trustCalibration', 'socialProofSensitivity', 'authorityResponse'],
-    motor: ['motorPrecision', 'reactionTime'],
-    cognitive: ['workingMemory', 'processingSpeed'],
-    accessibility: ['contrastSensitivity', 'colorPerception', 'textProcessing'],
+    core: ['patience', 'riskTolerance', 'comprehension', 'persistence'],
+    emotional: ['resilience', 'selfEfficacy', 'emotionalContagion', 'attributionStyle'],
+    decision: ['satisficing', 'anchoringBias', 'timeHorizon', 'fearOfMissingOut'],
+    planning: ['interruptRecovery', 'metacognitivePlanning', 'proceduralFluency', 'transferLearning'],
+    perception: ['informationForaging', 'changeBlindness', 'mentalModelRigidity'],
+    social: ['trustCalibration', 'socialProofSensitivity', 'authoritySensitivity'],
+    cognitive: ['workingMemory', 'readingTendency', 'curiosity'],
+    // Deliberately a singleton: prior familiarity with a site is not a facet of
+    // any other trait group. It therefore never earns the 0.2 same-domain
+    // distance, which is correct rather than an oversight.
+    experience: ['siteFamiliarity'],
   };
 
   // Related domain pairs (closer than unrelated)
@@ -140,11 +156,12 @@ function traitGroundDistance(a: string, b: string): number {
     'core-emotional', 'emotional-core',
     'core-decision', 'decision-core',
     'emotional-decision', 'decision-emotional',
-    'perception-accessibility', 'accessibility-perception',
     'perception-cognitive', 'cognitive-perception',
-    'motor-accessibility', 'accessibility-motor',
     'planning-decision', 'decision-planning',
     'cognitive-planning', 'planning-cognitive',
+    // Familiarity is built from memory and shapes how a page is foraged.
+    'experience-cognitive', 'cognitive-experience',
+    'experience-perception', 'perception-experience',
   ]);
 
   let domainA = '', domainB = '';
@@ -153,6 +170,12 @@ function traitGroundDistance(a: string, b: string): number {
     if (traits.includes(b)) domainB = domain;
   }
 
+  // An unrecognized trait leaves its domain as "", and two unrecognized traits
+  // would then satisfy domainA === domainB and be scored 0.2, i.e. "same
+  // subdomain" — the closest possible relationship, awarded for being unknown.
+  // That is how the phantom vocabulary above stayed invisible for so long.
+  // Treat unknown as maximally distant instead. (2026-07-28)
+  if (!domainA || !domainB) return 0.8;
   if (domainA === domainB) return 0.2; // Same subdomain
   if (related.has(`${domainA}-${domainB}`)) return 0.5; // Related
   return 0.8; // Unrelated
@@ -580,16 +603,41 @@ export function estimateCognitiveLoad(
 
 /**
  * Given a set of personas, find the N most different ones for maximum
- * test coverage. Uses greedy farthest-point sampling in Wasserstein space.
+ * test coverage. Uses greedy farthest-point sampling in Wasserstein space,
+ * seeded with the two farthest-apart profiles.
+ *
+ * The seed used to be `profiles[0]` — whichever persona happened to be first in
+ * the caller's array. Farthest-point traversal is seed-sensitive, so the same
+ * persona set in a different order produced a different "maximum coverage"
+ * answer. Seeding with the diameter pair removes that order dependence and buys
+ * a property worth having: because the selected set contains the two most
+ * distant profiles, no unselected pair can be farther apart than the selected
+ * set's own maximum.
+ *
+ * Honest about what this is NOT: exact max-diversity selection is NP-hard, and
+ * greedy k-center remains a 2-approximation for the general objective. This
+ * fixes determinism and the diameter property, not optimality. (2026-07-28)
  */
 export function selectMaxCoveragePersonas(
   profiles: OTCognitiveProfile[],
   n: number,
 ): OTCognitiveProfile[] {
   if (profiles.length <= n) return profiles;
+  if (n <= 0) return [];
 
-  const selected: OTCognitiveProfile[] = [profiles[0]];
-  const remaining = new Set(profiles.slice(1));
+  // Diameter pair: the two profiles with the greatest pairwise distance.
+  let seedA = 0, seedB = 1, diameter = -1;
+  for (let i = 0; i < profiles.length; i++) {
+    for (let j = i + 1; j < profiles.length; j++) {
+      const d = cognitiveDistance(profiles[i], profiles[j]).w1;
+      if (d > diameter) { diameter = d; seedA = i; seedB = j; }
+    }
+  }
+
+  if (n === 1) return [profiles[seedA]];
+
+  const selected: OTCognitiveProfile[] = [profiles[seedA], profiles[seedB]];
+  const remaining = new Set(profiles.filter((_, i) => i !== seedA && i !== seedB));
 
   while (selected.length < n && remaining.size > 0) {
     // Find the remaining profile farthest from all selected
