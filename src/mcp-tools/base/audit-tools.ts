@@ -939,6 +939,14 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       persona: z.string().optional().default("cognitive-adhd").describe("Persona name"),
       device: z.string().optional().describe("Device to emulate: 'mobile', 'tablet', 'desktop', or a specific device like 'iPhone 15', 'Pixel 7', 'iPad Pro'. Default: desktop (1920x1080)."),
       useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on saliency map generation, attention scoring, and narrative. Default: false."),
+      // Goal-directed attention is the largest single lever in the semantic
+      // layer: computeGoalRelevance boosts any element whose text matches the
+      // goal's keywords, which is what separates "where the eye lands on this
+      // page" from "where the eye lands while trying to DO something". The tool
+      // narrates a persona pursuing a task, so it had the concept and not the
+      // input. (2026-07-29)
+      goal: z.string().optional().describe("What the persona is trying to accomplish (e.g. 'find pricing', 'sign up'). Elements matching the goal are weighted far higher in the attention model — without it the map shows undirected browsing rather than task-driven attention."),
+      aiLayer: z.boolean().optional().default(false).describe("Add a third attention layer: a vision model reads the rendered page AS this persona and reports where they look and why. Sees what the DOM cannot — what the copy MEANS to them, text inside images, compositional hierarchy, and what they deliberately skip. Costs one Anthropic call (~12s, cached per image+persona+goal so repeats are free) and requires an API key. Returned as a SEPARATE labelled layer, never silently blended into the deterministic saliency numbers."),
       _browserToken: z.string().optional().describe("Reuse an existing browser session. Useful for testing translated or state-dependent pages."),
     },
     annotations: {
@@ -948,7 +956,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, persona, device, useValues, _browserToken }) => {
+  }, async ({ url, persona, device, useValues, goal, aiLayer, _browserToken }) => {
     const startTime = Date.now();
     const { join } = await import("path");
     const { tmpdir } = await import("os");
@@ -1002,7 +1010,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           // different model wearing the same name. (2026-07-29)
           const { collectDomAttentionElements } = await import("../../visual/attention-quality.js");
           const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
-          const attnResult = await analyzeAttention(ssPath, persona, 4, undefined, domAttentionElements);
+          const attnResult = await analyzeAttention(ssPath, persona, 4, undefined, domAttentionElements, goal);
           attentionData = {
             entropy: attnResult.entropy,
             concentration: attnResult.concentration,
@@ -1294,10 +1302,33 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         }
 
         // ── Assemble response ──
+        // Third layer, opt-in. Runs AFTER the deterministic layers and is
+        // reported beside them rather than folded in: layers 1 and 2 are
+        // reproducible and visual baselines depend on that, while this one is a
+        // model's judgement. Naming which is which is the whole point.
+        let aiAttention: unknown = undefined;
+        if (aiLayer) {
+          try {
+            const { analyzeAttentionWithAI } = await import("../../visual/attention-ai-layer.js");
+            const vp = page.viewportSize();
+            const { getAnyPersona } = await import("../../personas.js");
+            const pObj = getAnyPersona(persona) as
+              { values?: Record<string, number>; description?: string } | undefined;
+            aiAttention = await analyzeAttentionWithAI(ssPath, persona, {
+              goal,
+              values: pObj?.values,
+              personaDescription: pObj?.description,
+              imageWidth: vp?.width,
+              imageHeight: vp?.height,
+            });
+          } catch { /* additive layer; never fails the story */ }
+        }
+
         const storyResponse = {
           url,
           persona,
           narrative,
+          ...(aiAttention ? { aiAttention } : {}),
           images: urls,
           effort: effortData,
           attention: {
