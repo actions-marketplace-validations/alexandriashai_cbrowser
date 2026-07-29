@@ -25,6 +25,16 @@ import { getPerceptualProfile, type PerceptualFilter } from './perceptual-transp
 // ── Types ──
 
 export interface SaliencyMap {
+  /**
+   * Which model produced `cells`.
+   *
+   * "visual+semantic" — 35% centre-surround CIE-Lab saliency blended with 65%
+   * DOM-semantic attention (element type x persona priority).
+   * "visual-only" — the bottom-up layer alone: local colour-contrast pop-out.
+   * Useful, but NOT a model of where a person looks. The fallback was silent
+   * until 2026-07-29 and two of three production callers take it.
+   */
+  attentionModel?: "visual+semantic" | "visual-only";
   /** Saliency values per grid cell (0-1, higher = more salient) */
   cells: Float64Array;
   /** Grid dimensions */
@@ -852,9 +862,24 @@ export async function analyzeAttention(
     // Blend: 35% visual (what pops) + 65% semantic (what matters)
     combinedSaliency = blendSaliencyMaps(baseSaliency.cells, semanticMap, 0.35, 0.65);
   } else {
-    // No DOM data — fall back to visual-only
+    // No DOM data — fall back to visual-only.
+    //
+    // This fallback changes what the heatmap MEANS, and said so nowhere. With
+    // DOM elements the map is 35% bottom-up saliency + 65% semantic (element
+    // type x persona priority) — a model of attention. Without them it is the
+    // bottom-up layer alone: centre-surround colour contrast in CIE-Lab. Those
+    // are different quantities under one name, and two of the three production
+    // callers take this branch (visual_cognitive_story and journey_heatmap_gif
+    // both call analyzeAttention with three arguments), so most heatmaps this
+    // product has shipped are contrast maps presented as attention maps.
+    //
+    // Not changing the fallback here — collecting DOM elements in those callers
+    // is their change to make. But the caller must be able to tell which model
+    // produced the number. (2026-07-29)
     combinedSaliency = baseSaliency.cells;
   }
+  const attentionModel: "visual+semantic" | "visual-only" =
+    domElements && domElements.length > 0 ? "visual+semantic" : "visual-only";
 
   // Apply persona perceptual filter + value-driven attention modulation
   const filtered = applyPersonaFilter(
@@ -876,6 +901,15 @@ export async function analyzeAttention(
 
   const saliencyMap: SaliencyMap = {
     cells: filtered,
+    /**
+     * Which model produced `cells`.
+     *
+     * "visual+semantic" — 35% centre-surround CIE-Lab saliency blended with 65%
+     * DOM-semantic attention (element type x persona priority).
+     * "visual-only" — the bottom-up layer alone, i.e. local colour-contrast
+     * pop-out. Useful, but NOT a model of where a person looks.
+     */
+    attentionModel,
     rows: baseSaliency.rows,
     cols: baseSaliency.cols,
     width: baseSaliency.width,
