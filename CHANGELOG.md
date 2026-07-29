@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.73.3](https://github.com/alexandriashai/cbrowser/compare/v18.73.2...v18.73.3) (2026-07-29)
+
+### Fixed
+
+* attention_analysis printed scattered and concentrated as competing verdicts ([c312133](https://github.com/alexandriashai/cbrowser/commit/c31213354bbcd519930c370e1bca8fdf2598e04a))
+* cognitive distance measured almost nothing ([0124d8f](https://github.com/alexandriashai/cbrowser/commit/0124d8f06647f870b3da59e2e82ccfdd247efae2))
+* empathy score explanation described a different number than the headline ([bccd211](https://github.com/alexandriashai/cbrowser/commit/bccd211de02ad64b4666b719234f7f30eb8df403))
+* expose the per-persona barrier weight behind each deduction ([25162ad](https://github.com/alexandriashai/cbrowser/commit/25162ad9e4ff1152eacae4469b130aeec164633e))
+* persona traits dropped on save, and a crash on any partial persona file ([218e421](https://github.com/alexandriashai/cbrowser/commit/218e421aac2c7ace1b4121e950e064244cedff5a))
+* three tools reported invented numbers instead of erroring ([fbce108](https://github.com/alexandriashai/cbrowser/commit/fbce108623b3f5af7871d0e9305a7415f87db344))
+* three unlabelled cognitive-load numbers, and undeclared rect coordinates ([31f8be4](https://github.com/alexandriashai/cbrowser/commit/31f8be4c8b0d6e181cb187863924852d8022db4c))
+* tools bound to a blank browser on the HTTP transport ([91f109d](https://github.com/alexandriashai/cbrowser/commit/91f109dbf8cf90a7246fa474a161c67e7766d5b1))
+* webmcp audit graded every current server as out of date ([4578e98](https://github.com/alexandriashai/cbrowser/commit/4578e9862a2735c1ec6d68a04dac63a9710b8d2d))
+
 ## [18.73.2](https://github.com/alexandriashai/cbrowser/compare/v18.73.1...v18.73.2) (2026-07-28)
 
 ### Fixed
