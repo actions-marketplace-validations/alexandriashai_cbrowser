@@ -2413,8 +2413,12 @@ This ensures personas are grounded in research, not stereotypes.
 `.trim(),
               categoryInfo,
               questionCount: questions.length,
+              // `questions` (formatted) and `rawQuestions` (unformatted) were
+              // both returned, so every question shipped twice and roughly
+              // doubled the payload. The formatted set is what a caller asks
+              // these with; the raw set carried no field the formatted one
+              // lacks. (2026-07-29)
               questions: formatted,
-              rawQuestions: questions,
             }, null, 2),
           },
         ],

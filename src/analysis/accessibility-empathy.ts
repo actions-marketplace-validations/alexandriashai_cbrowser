@@ -1455,6 +1455,49 @@ async function simulateAccessibilityJourney(
             goalProgress: s.goalProgress,
           })),
         };
+
+        // ── Record the goal path to the site model (6.23) ──
+        //
+        // `goalPaths` had been 0 forever. The only route to recordGoalPath was
+        // GoalDecomposer.recordOutcome, and GoalDecomposer is exported but never
+        // constructed anywhere in src/ — so the write was unreachable, not
+        // merely unused.
+        //
+        // The decision was where to wire it. A journey session store was the
+        // obvious answer and the wrong one: the hosted server is deliberately
+        // stateless per request, and an optional actionsTaken parameter on
+        // cognitive_journey_update_state would depend on the caller remembering
+        // to send it, leaving the field at 0 in practice while looking fixed.
+        //
+        // Here the server drove the journey itself, so it already holds both
+        // halves — the outcome AND the traversal — and was discarding them for
+        // this purpose. Same shape as updateFingerprint, wired the same way, at
+        // the layer that knows what happened. Failures are recorded too:
+        // recordGoalPath tracks successRate, and a path that keeps failing is
+        // exactly what a planner needs to know. (2026-07-29)
+        try {
+          const { SiteModelManager } = await import("../site-model/manager.js");
+          const goalActions = (journey.journeyLog || [])
+            .filter((step) => step.action)
+            .map((step) => ({
+              type: normalizeGoalActionType(String(step.action)),
+              target: String(step.focusedElement || step.url || ""),
+              expectedOutcome: `step ${step.step}: goalProgress ${step.goalProgress ?? 0}`,
+            }));
+          if (goalActions.length > 0) {
+            SiteModelManager.getInstance().recordGoalPath(
+              new URL(url).hostname,
+              goal,
+              inferGoalType(goal),
+              goalActions,
+              journey.goalAchieved,
+              journey.stepCount,
+              persona.name,
+            );
+          }
+        } catch {
+          // Never fail an audit over a site-model write.
+        }
       } catch {
         // Fall back to barrier-based estimation
         ctx.stepCount = Math.max(3, ctx.barriers.length + 2);
@@ -2345,6 +2388,33 @@ function deduplicateBarriers(
 // ============================================================================
 // Main Empathy Audit Function
 // ============================================================================
+
+/**
+ * Map a journey step's action word onto the site model's GoalAction type.
+ * Unknown verbs become "click" rather than being dropped: a step that happened
+ * is better recorded imprecisely than not at all.
+ */
+function normalizeGoalActionType(action: string): "navigate" | "click" | "fill" | "select" | "scroll" | "wait" {
+  const a = action.toLowerCase();
+  if (a.includes("navigat") || a.includes("goto") || a.includes("go to")) return "navigate";
+  if (a.includes("fill") || a.includes("type") || a.includes("enter")) return "fill";
+  if (a.includes("select") || a.includes("choose")) return "select";
+  if (a.includes("scroll")) return "scroll";
+  if (a.includes("wait")) return "wait";
+  return "click";
+}
+
+/** Classify a goal sentence into the site model's GoalType. */
+function inferGoalType(goal: string): import("../site-model/types.js").GoalType {
+  const g = goal.toLowerCase();
+  if (/\b(find|locate|look up|search for|read|learn)\b/.test(g)) return "find_information";
+  if (/\b(fill|submit|register|sign up|apply|checkout|complete the form)\b/.test(g)) return "fill_form";
+  if (/\b(compare|versus|vs\.?)\b/.test(g)) return "compare";
+  if (/\b(explore|browse|look around)\b/.test(g)) return "explore";
+  if (/\b(extract|scrape|collect|gather)\b/.test(g)) return "extract_data";
+  if (/\b(go to|navigate|reach|open)\b/.test(g)) return "navigate_to";
+  return "complete_action";
+}
 
 export async function runEmpathyAudit(
   url: string,

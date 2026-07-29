@@ -150,8 +150,19 @@ export function registerLlmsTxtTools(
                 recommendation: result.upToDate
                   ? "llms.txt is up to date with site structure"
                   : `Update llms.txt: ${result.summary.additions} additions, ${result.summary.removals} removals, ${result.summary.changes} changes`,
+                // This field used to contain the sentence "See suggestedUpdate
+                // field for updated llms.txt content" — pointing at itself, so
+                // the one thing a caller runs this tool to GET was the one thing
+                // it never returned. (llms_txt_generate returns real content, so
+                // the omission was specific to diff.) The content is returned
+                // now, with an explicit marker if it had to be trimmed, because
+                // a truncation a caller cannot see is the same defect wearing a
+                // different hat. (2026-07-29)
                 suggestedUpdate: result.suggestedUpdate
-                  ? "See suggestedUpdate field for updated llms.txt content"
+                  ? (result.suggestedUpdate.length > 60_000
+                      ? result.suggestedUpdate.slice(0, 60_000) +
+                        `\n\n<!-- truncated: ${result.suggestedUpdate.length - 60_000} more characters. Run llms_txt_generate for the full document. -->`
+                      : result.suggestedUpdate)
                   : undefined,
               },
               null,
