@@ -24,6 +24,17 @@ import type {
 } from "../types.js";
 
 /**
+ * Test file paths that do not exist on disk.
+ *
+ * parseTestFilesForCoverage skips unreadable files in silence, so without this
+ * the caller cannot tell "your site is 0% covered" from "I could not read any
+ * of the tests you named". Both produced the same confident 0.0%. (2026-07-28)
+ */
+export function findMissingTestFiles(testFiles: string[]): string[] {
+  return testFiles.filter((f) => !existsSync(f));
+}
+
+/**
  * Parse test files to extract tested URLs and actions
  */
 export function parseTestFilesForCoverage(testFiles: string[]): TestedPage[] {
@@ -488,6 +499,7 @@ export async function generateCoverageMap(
   const startTime = Date.now();
 
   // Parse test files
+  const missingTestFiles = findMissingTestFiles(testFiles);
   const testedPages = parseTestFilesForCoverage(testFiles);
 
   // Get site pages
@@ -538,6 +550,7 @@ export async function generateCoverageMap(
     timestamp: new Date().toISOString(),
     duration: Date.now() - startTime,
     testFiles,
+    missingTestFiles,
     sitePages,
     testedPages,
     gaps,

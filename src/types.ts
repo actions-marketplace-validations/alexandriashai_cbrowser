@@ -3339,6 +3339,18 @@ export interface NetworkRequest {
   postData?: string;
   resourceType: string;
   timestamp: string;
+  /**
+   * Response status, filled in when the response arrives. Optional because a
+   * request may still be in flight, or may never complete.
+   *
+   * get_network_requests documented "status codes and timing" but returned
+   * neither: the response handler built a NetworkResponse with the status and
+   * then dropped it on the floor. (2026-07-28)
+   */
+  status?: number;
+  statusText?: string;
+  /** Milliseconds from request start to response, when known. */
+  durationMs?: number;
 }
 
 export interface NetworkResponse {
@@ -3958,6 +3970,12 @@ export interface CoverageMapResult {
   duration: number;
   /** Test files analyzed */
   testFiles: string[];
+  /**
+   * Test file paths that could not be read and so contributed nothing.
+   * These were previously skipped in silence, which meant a wholly bad path
+   * set produced a confident "0.0% coverage" rather than an error. (2026-07-28)
+   */
+  missingTestFiles: string[];
   /** All pages found on site */
   sitePages: SitePage[];
   /** Pages with test coverage */

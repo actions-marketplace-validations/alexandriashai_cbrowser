@@ -254,6 +254,22 @@ export function registerTestingTools(server: McpServer): void {
     },
   }, async ({ baseUrl, testFiles, maxPages }) => {
       const result = await generateCoverageMap(baseUrl, testFiles, { maxPages });
+      // Unreadable test files are skipped silently by the coverage engine. If
+      // none of them could be read, "0.0%" is not a measurement of the site, it
+      // is a measurement of nothing, and reporting it as coverage is wrong.
+      if (result.missingTestFiles.length === testFiles.length && testFiles.length > 0) {
+        return {
+          isError: true,
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "no_readable_test_files",
+              message: `None of the ${testFiles.length} test file path(s) could be read, so there is no coverage to report. Previously this returned 0.0% coverage, which was indistinguishable from a genuinely untested site.`,
+              missingTestFiles: result.missingTestFiles,
+            }, null, 2),
+          }],
+        };
+      }
       return {
         content: [
           {
@@ -263,6 +279,10 @@ export function registerTestingTools(server: McpServer): void {
               testedPages: result.testedPages.length,
               untestedPages: result.analysis.untestedPages,
               overallCoverage: `${result.analysis.coveragePercent.toFixed(1)}%`,
+              ...(result.missingTestFiles.length > 0 ? {
+                missingTestFiles: result.missingTestFiles,
+                warning: `${result.missingTestFiles.length} of ${testFiles.length} test files could not be read and contributed no coverage.`,
+              } : {}),
               gaps: result.gaps.slice(0, 10).map(g => ({
                 url: g.page.url,
                 priority: g.priority,

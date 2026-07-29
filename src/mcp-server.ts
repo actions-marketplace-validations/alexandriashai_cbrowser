@@ -1611,6 +1611,22 @@ async function registerCBrowserTools(): Promise<McpServer> {
     },
     async ({ baseUrl, testFiles, maxPages }) => {
       const result = await generateCoverageMap(baseUrl, testFiles, { maxPages });
+      // Mirrors the guard in mcp-tools/base/testing-tools.ts. This file is the
+      // local stdio server's independent registration of the same tool, so a fix
+      // applied to only one of the two surfaces leaves the bug live on the other.
+      if (result.missingTestFiles.length === testFiles.length && testFiles.length > 0) {
+        return {
+          isError: true,
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "no_readable_test_files",
+              message: `None of the ${testFiles.length} test file path(s) could be read, so there is no coverage to report.`,
+              missingTestFiles: result.missingTestFiles,
+            }, null, 2),
+          }],
+        };
+      }
       return {
         content: [
           {
@@ -1620,6 +1636,10 @@ async function registerCBrowserTools(): Promise<McpServer> {
               testedPages: result.testedPages.length,
               untestedPages: result.analysis.untestedPages,
               overallCoverage: `${result.analysis.coveragePercent.toFixed(1)}%`,
+              ...(result.missingTestFiles.length > 0 ? {
+                missingTestFiles: result.missingTestFiles,
+                warning: `${result.missingTestFiles.length} of ${testFiles.length} test files could not be read and contributed no coverage.`,
+              } : {}),
               gaps: result.gaps.slice(0, 10).map(g => ({
                 url: g.page.url,
                 priority: g.priority,

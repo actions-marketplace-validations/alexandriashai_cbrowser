@@ -109,11 +109,16 @@ export function registerBrowserStateTools(
       filtered = requests.filter(r => r.resourceType === filter);
     }
 
-    // Summarize for MCP output (avoid overwhelming Claude with raw data)
+    // Summarize for MCP output (avoid overwhelming Claude with raw data).
+    // status/durationMs are the fields the description has always promised;
+    // they are omitted per-row only while a request is still in flight.
     const summary = filtered.slice(0, 50).map(r => ({
       url: r.url.length > 120 ? r.url.substring(0, 120) + "..." : r.url,
       method: r.method,
       resourceType: r.resourceType,
+      ...(r.status !== undefined ? { status: r.status, statusText: r.statusText } : {}),
+      ...(r.durationMs !== undefined ? { durationMs: r.durationMs } : {}),
+      ...(r.status === undefined ? { pending: true } : {}),
     }));
 
     if (clear) {

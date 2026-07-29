@@ -261,6 +261,14 @@ export class CBrowser {
   private currentPersona: Persona | null = null;
   private networkRequests: NetworkRequest[] = [];
   private networkResponses: Map<string, NetworkResponse> = new Map();
+  /**
+   * In-flight requests awaiting a response, so the response handler can attach
+   * status and duration to the originating record. Keyed by url+method, capped
+   * so a page that fires requests which never resolve cannot grow it without
+   * bound. (2026-07-28)
+   */
+  private pendingRequests: Map<string, { req: NetworkRequest; startedAt: number }> = new Map();
+  private static readonly MAX_PENDING_REQUESTS = 2000;
   private harEntries: HAREntry[] = [];
   private isRecordingHar = false;
   private skipSessionRestore: boolean;
@@ -1372,6 +1380,17 @@ For more help: https://playwright.dev/docs/browsers
       };
       this.networkRequests.push(networkRequest);
 
+      // Track it so the response handler can complete the record. Evict the
+      // oldest entry rather than growing forever when responses never arrive.
+      if (this.pendingRequests.size >= CBrowser.MAX_PENDING_REQUESTS) {
+        const oldest = this.pendingRequests.keys().next();
+        if (!oldest.done) this.pendingRequests.delete(oldest.value);
+      }
+      this.pendingRequests.set(request.url() + request.method(), {
+        req: networkRequest,
+        startedAt: Date.now(),
+      });
+
       if (this.isRecordingHar) {
         // Start HAR entry
         const harEntry: Partial<HAREntry> = {
@@ -1392,12 +1411,18 @@ For more help: https://playwright.dev/docs/browsers
 
     this.page.on("response", async (response) => {
       const key = response.url() + response.request().method();
-      const _networkResponse: NetworkResponse = {
-        url: response.url(),
-        status: response.status(),
-        statusText: response.statusText(),
-        headers: response.headers(),
-      };
+
+      // This status was already being computed here and then discarded into an
+      // unused local, which is why get_network_requests could never report the
+      // status codes and timing its description promised. Attach it to the
+      // originating request record instead. (2026-07-28)
+      const pending = this.pendingRequests.get(key);
+      if (pending) {
+        pending.req.status = response.status();
+        pending.req.statusText = response.statusText();
+        pending.req.durationMs = Date.now() - pending.startedAt;
+        this.pendingRequests.delete(key);
+      }
 
       if (this.isRecordingHar && this.networkResponses.has(key)) {
         const partial = this.networkResponses.get(key) as Partial<HAREntry>;
@@ -1483,6 +1508,7 @@ For more help: https://playwright.dev/docs/browsers
   clearNetworkHistory(): void {
     this.networkRequests = [];
     this.harEntries = [];
+    this.pendingRequests.clear();
   }
 
   // =========================================================================
