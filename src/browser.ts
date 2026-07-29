@@ -261,7 +261,7 @@ export async function launchBrowserWithFallback(
  * middle is the same line repeated. Keep both ends, drop the middle, and say how
  * much was dropped so nobody wonders what they are not seeing. (2026-07-29)
  */
-function summarizePlaywrightError(message: string, headLines = 6, tailLines = 4): string {
+export function summarizePlaywrightError(message: string, headLines = 6, tailLines = 4): string {
   const lines = message.split("\n");
   if (lines.length <= headLines + tailLines + 2) return message;
   const dropped = lines.length - headLines - tailLines;

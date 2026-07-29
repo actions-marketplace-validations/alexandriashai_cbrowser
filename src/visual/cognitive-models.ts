@@ -502,7 +502,11 @@ export function computeReadingDifficulty(
   const avgWordLength = words.reduce((sum, w) => sum + w.length, 0) / wordCount;
   const vocabPenalty = (1 - profile.vocabulary) * Math.max(0, avgWordLength - 5) * 30;
   if (vocabPenalty > 5) {
-    penalties.push(`vocabulary: +${Math.round(vocabPenalty)}ms (avg word length ${avgWordLength.toFixed(1)})`);
+    // "chars" is load-bearing: pageMetrics.avgWordLength is a 0-1 NORMALIZED
+    // score, and this one is raw characters. Same name, two scales — a reader
+    // seeing 11.4 next to a field documented 0-1 has no way to tell which they
+    // are looking at. (2026-07-29)
+    penalties.push(`vocabulary: +${Math.round(vocabPenalty)}ms (avg word length ${avgWordLength.toFixed(1)} chars)`);
   }
 
   // 5. Crowding: small or dense text increases lateral masking

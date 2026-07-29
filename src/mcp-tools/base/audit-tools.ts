@@ -872,6 +872,13 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           longWordRatio: Math.round(pageMetrics.longWordRatio * 1000) / 1000,
           technicalDensity: Math.round(pageMetrics.technicalDensity * 1000) / 1000,
           scriptFamily: pageMetrics.scriptFamily || "alphabetic",
+          // Every ratio above is 0-1 NORMALIZED, not a raw measurement.
+          // cognitive_effort's readability penalties report avg word length in
+          // raw CHARACTERS (e.g. 11.4), so the same name carried two scales
+          // across tools with nothing in either payload to distinguish them.
+          // Naming the scale here is the same remedy already used for
+          // barrierFieldNotes and cognitiveLoadReadings. (2026-07-29)
+          metricScaleNote: "All ratios in pageMetrics are normalized 0-1, including avgWordLength. cognitive_effort reports avg word length in raw characters instead — the two are not comparable.",
         };
 
         if (pageUnderstanding) response.pageUnderstanding = pageUnderstanding;

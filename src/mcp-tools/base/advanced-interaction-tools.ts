@@ -9,6 +9,32 @@
 
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
+import { summarizePlaywrightError } from "../../browser.js";
+
+/**
+ * Standard error response for an interaction tool.
+ *
+ * Every tool in this file used to have NO try/catch, so a Playwright failure
+ * propagated raw: `drag` on a missing selector returned a 30-second timeout
+ * dump complete with stack frames and the full "waiting for locator" log. The
+ * 6.17 fix that summarises these was applied to `click` and never propagated
+ * here — six tools, one missing helper. (2026-07-29)
+ */
+function interactionError(tool: string, err: unknown, token?: string) {
+  const raw = err instanceof Error ? err.message : String(err);
+  return {
+    isError: true as const,
+    content: [{
+      type: "text" as const,
+      text: JSON.stringify({
+        success: false,
+        tool,
+        error: summarizePlaywrightError(raw),
+        _browserToken: token,
+      }, null, 2),
+    }],
+  };
+}
 
 /**
  * Register advanced interaction tools (6 tools)
@@ -29,10 +55,14 @@ export function registerAdvancedInteractionTools(
     annotations: { title: "Hover", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ selector, _browserToken }) => {
     let b, token;
+    try {
     if (getBrowserByToken) { const r = await getBrowserByToken(_browserToken); b = r.browser; token = r.token; }
     else { b = await getBrowser(); }
     const result = await b.hover(selector);
     return { content: [{ type: "text" as const, text: JSON.stringify({ ...result, _browserToken: token }, null, 2) }] };
+  } catch (err) {
+      return interactionError("hover", err, token);
+    }
   });
 
   // ── type_text ──
@@ -47,11 +77,15 @@ export function registerAdvancedInteractionTools(
     annotations: { title: "Type Text", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ text, delay, _browserToken }) => {
     let b, token;
+    try {
     if (getBrowserByToken) { const r = await getBrowserByToken(_browserToken); b = r.browser; token = r.token; }
     else { b = await getBrowser(); }
     const page = await b.getPage();
     await page.keyboard.type(text, { delay: delay || 50 });
     return { content: [{ type: "text" as const, text: JSON.stringify({ typed: text, characters: text.length, _browserToken: token }, null, 2) }] };
+  } catch (err) {
+      return interactionError("type_text", err, token);
+    }
   });
 
   // ── press_key ──
@@ -65,17 +99,21 @@ export function registerAdvancedInteractionTools(
     annotations: { title: "Press Key", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ key, _browserToken }) => {
     let b, token;
+    try {
     if (getBrowserByToken) { const r = await getBrowserByToken(_browserToken); b = r.browser; token = r.token; }
     else { b = await getBrowser(); }
     const page = await b.getPage();
     await page.keyboard.press(key);
     return { content: [{ type: "text" as const, text: JSON.stringify({ pressed: key, _browserToken: token }, null, 2) }] };
+  } catch (err) {
+      return interactionError("press_key", err, token);
+    }
   });
 
   // ── handle_dialog ──
   server.registerTool("handle_dialog", {
     title: "Handle JavaScript Dialog",
-    description: "Set how to handle the next JavaScript dialog (alert, confirm, prompt). Call BEFORE the action that triggers the dialog. For prompts, provide the text to enter.",
+    description: "ARM a handler for the next JavaScript dialog (alert, confirm, prompt), then trigger the dialog with a separate call. Returns immediately once armed — the handler persists until a dialog fires, so it does NOT need to observe one to have worked. For prompts, provide the text to enter.",
     inputSchema: {
       action: z.enum(["accept", "dismiss"]).describe("Accept or dismiss the dialog"),
       promptText: z.string().optional().describe("Text to enter for prompt() dialogs"),
@@ -101,14 +139,40 @@ export function registerAdvancedInteractionTools(
       });
     });
 
-    // Wait briefly for the dialog (it may already be pending)
-    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000));
-    const result = await Promise.race([dialogPromise, timeout]);
+    // This tool ARMS a handler; it does not observe one.
+    //
+    // It used to race the handler against a 5-second timeout and, when the
+    // timeout won, return `handled: false` with "No dialog appeared within 5
+    // seconds" — while the handler it had just registered was still armed and
+    // went on to handle the next dialog. So the tool reported failure for the
+    // one thing it actually did, blocked five seconds to do it, and its own
+    // advice ("call BEFORE the triggering action") was impossible to satisfy
+    // AND observe in the same call, because with serial MCP calls the dialog
+    // cannot fire while this one is waiting.
+    //
+    // A short grace race still catches a dialog that is ALREADY pending, which
+    // is the only case the old wait could legitimately have caught. Otherwise it
+    // returns at once and says what is true: armed, waiting. (2026-07-29)
+    const grace = new Promise<null>((resolve) => setTimeout(() => resolve(null), 300));
+    const alreadyPending = await Promise.race([dialogPromise, grace]);
 
-    if (result) {
-      return { content: [{ type: "text" as const, text: JSON.stringify({ handled: true, dialogType: result.type, message: result.message, action, _browserToken: token }, null, 2) }] };
+    if (alreadyPending) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        armed: true,
+        handledImmediately: true,
+        dialogType: alreadyPending.type,
+        message: alreadyPending.message,
+        action,
+        _browserToken: token,
+      }, null, 2) }] };
     }
-    return { content: [{ type: "text" as const, text: JSON.stringify({ handled: false, message: "No dialog appeared within 5 seconds. Call this BEFORE the action that triggers the dialog.", _browserToken: token }, null, 2) }] };
+    return { content: [{ type: "text" as const, text: JSON.stringify({
+      armed: true,
+      handledImmediately: false,
+      action,
+      note: `Handler is registered and will ${action} the next dialog on this page. Trigger it with your next call (e.g. click, or evaluate_script running confirm()). No dialog was already pending, which is expected.`,
+      _browserToken: token,
+    }, null, 2) }] };
   });
 
   // ── upload_file ──
@@ -123,11 +187,15 @@ export function registerAdvancedInteractionTools(
     annotations: { title: "Upload File", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ selector, filePaths, _browserToken }) => {
     let b, token;
+    try {
     if (getBrowserByToken) { const r = await getBrowserByToken(_browserToken); b = r.browser; token = r.token; }
     else { b = await getBrowser(); }
     const page = await b.getPage();
     await page.locator(selector).setInputFiles(filePaths);
     return { content: [{ type: "text" as const, text: JSON.stringify({ uploaded: filePaths, selector, _browserToken: token }, null, 2) }] };
+  } catch (err) {
+      return interactionError("upload_file", err, token);
+    }
   });
 
   // ── drag ──
@@ -142,10 +210,14 @@ export function registerAdvancedInteractionTools(
     annotations: { title: "Drag and Drop", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async ({ source, target, _browserToken }) => {
     let b, token;
+    try {
     if (getBrowserByToken) { const r = await getBrowserByToken(_browserToken); b = r.browser; token = r.token; }
     else { b = await getBrowser(); }
     const page = await b.getPage();
     await page.dragAndDrop(source, target);
     return { content: [{ type: "text" as const, text: JSON.stringify({ dragged: source, droppedOn: target, _browserToken: token }, null, 2) }] };
+  } catch (err) {
+      return interactionError("drag", err, token);
+    }
   });
 }
