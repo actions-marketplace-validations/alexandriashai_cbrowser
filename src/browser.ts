@@ -252,6 +252,26 @@ export async function launchBrowserWithFallback(
   }
 }
 
+/**
+ * Compress a Playwright error for a tool response.
+ *
+ * Playwright appends a "Call log:" listing every retry, which for a click that
+ * waits out its timeout runs to dozens of near-identical lines and roughly 4k
+ * tokens. The first lines say what failed and the last say how it ended; the
+ * middle is the same line repeated. Keep both ends, drop the middle, and say how
+ * much was dropped so nobody wonders what they are not seeing. (2026-07-29)
+ */
+function summarizePlaywrightError(message: string, headLines = 6, tailLines = 4): string {
+  const lines = message.split("\n");
+  if (lines.length <= headLines + tailLines + 2) return message;
+  const dropped = lines.length - headLines - tailLines;
+  return [
+    ...lines.slice(0, headLines),
+    `  … ${dropped} more lines of Playwright retry log elided (set verbose for the full log) …`,
+    ...lines.slice(-tailLines),
+  ].join("\n");
+}
+
 export class CBrowser {
   private config: CBrowserConfig;
   private paths: CBrowserPaths;
@@ -2460,7 +2480,10 @@ For more help: https://playwright.dev/docs/browsers
       const result: ClickResult = {
         success: false,
         screenshot: await this.screenshot(),
-        message: `Failed to click: ${errorMessage}`,
+        // Was the raw Playwright error, whose Call log ran to ~4k tokens of
+        // near-identical retry lines and crowded out everything else in the
+        // response. verbose still gets the whole thing. (2026-07-29)
+        message: `Failed to click: ${options.verbose ? errorMessage : summarizePlaywrightError(errorMessage)}`,
       };
 
       if (options.verbose) {
