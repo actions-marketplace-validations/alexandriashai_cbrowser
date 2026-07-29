@@ -636,8 +636,34 @@ async function detectNavigationPatterns(ctx: DetectionContext): Promise<void> {
   const navPatterns = await page.evaluate(() => {
     // Check for breadcrumbs
     const breadcrumbNav = document.querySelector('nav[aria-label*="breadcrumb" i], nav[aria-label*="Breadcrumb" i], [role="navigation"][aria-label*="breadcrumb" i]');
+    // Microdata only. A JSON-LD BreadcrumbList lives inside a
+    // <script type="application/ld+json"> as TEXT, so no selector can see it and
+    // sites that ship one were told "No breadcrumb navigation found" —
+    // cbrowser.ai itself among them. (2026-07-29)
     const breadcrumbSchema = document.querySelector('[itemtype*="BreadcrumbList"]');
-    const hasBreadcrumbs = !!breadcrumbNav || !!breadcrumbSchema;
+
+    const hasJsonLdBreadcrumb = (() => {
+      const blocks = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+      for (const block of blocks) {
+        try {
+          const parsed = JSON.parse(block.textContent || "");
+          // A block may be one object, an array of them, or an @graph wrapper.
+          const stack: unknown[] = [parsed];
+          while (stack.length) {
+            const node = stack.pop();
+            if (!node || typeof node !== "object") continue;
+            if (Array.isArray(node)) { stack.push(...node); continue; }
+            const obj = node as Record<string, unknown>;
+            const t = obj["@type"];
+            if (t === "BreadcrumbList" || (Array.isArray(t) && t.includes("BreadcrumbList"))) return true;
+            if (Array.isArray(obj["@graph"])) stack.push(...(obj["@graph"] as unknown[]));
+          }
+        } catch { /* a malformed block is not a breadcrumb */ }
+      }
+      return false;
+    })();
+
+    const hasBreadcrumbs = !!breadcrumbNav || !!breadcrumbSchema || hasJsonLdBreadcrumb;
 
     // Check for skip links
     const skipLinks = document.querySelectorAll('a[href^="#"]:first-child, a[href^="#main"], a[href^="#content"], .skip-link, .skip-to-content');
