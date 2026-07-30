@@ -500,6 +500,15 @@ export interface DOMAttentionElement {
   isHeading?: boolean;
   isNav?: boolean;
   isDecorative?: boolean;
+  /**
+   * Per-word boxes for this element's text.
+   *
+   * When present the semantic map paints THESE instead of the element rect, so
+   * heat lands on glyphs rather than on the whitespace a text box spans. A
+   * 400x44 heading is mostly empty pixels; painting the box puts attention where
+   * there is nothing to attend to.
+   */
+  words?: Array<{ text: string; x: number; y: number; width: number; height: number }>;
 }
 
 /**
@@ -656,19 +665,51 @@ function buildSemanticMap(
       }
     }
 
-    // Map element bounds to grid cells
+    // Map element bounds to grid cells, weighted by how much of each cell the
+    // element actually covers.
+    //
+    // Whole-cell assignment bled an element's full weight into every cell it
+    // merely touched: a button at x=540 with 16px cells lit the cell starting at
+    // x=528, so 12px of heat sat outside the button, and a 1px underline lit a
+    // full 16px row. Fractional coverage keeps the heat on the element, which is
+    // what makes an overlay point at something a designer can go and fix.
+    //
+    // This is a rendering-fidelity fix, not an accuracy one — no attention claim
+    // at 16px is verifiable against human gaze, where the foveal limit alone is
+    // 35-60px. It buys legibility, not truth.
     const pxPerCol = imageWidth / cols;
     const pxPerRow = imageHeight / rows;
-    const startCol = Math.max(0, Math.floor(el.x / pxPerCol));
-    const endCol = Math.min(cols - 1, Math.floor((el.x + el.width) / pxPerCol));
-    const startRow = Math.max(0, Math.floor(el.y / pxPerRow));
-    const endRow = Math.min(rows - 1, Math.floor((el.y + el.height) / pxPerRow));
+
+    // Text elements paint their WORDS; everything else paints its box. A button
+    // is a solid target and its whole rect is the thing you look at, but a
+    // paragraph's box is mostly gaps between lines.
+    const boxes = (el.words && el.words.length > 0)
+      ? el.words.map((w) => ({ x: w.x, y: w.y, width: w.width, height: w.height }))
+      : [{ x: el.x, y: el.y, width: el.width, height: el.height }];
+
+    for (const box of boxes) {
+    const x0 = box.x, x1 = box.x + box.width;
+    const y0 = box.y, y1 = box.y + box.height;
+    const startCol = Math.max(0, Math.floor(x0 / pxPerCol));
+    const endCol = Math.min(cols - 1, Math.floor((x1 - 1e-6) / pxPerCol));
+    const startRow = Math.max(0, Math.floor(y0 / pxPerRow));
+    const endRow = Math.min(rows - 1, Math.floor((y1 - 1e-6) / pxPerRow));
 
     for (let r = startRow; r <= endRow; r++) {
+      const cellTop = r * pxPerRow;
+      const overlapY = Math.max(0, Math.min(y1, cellTop + pxPerRow) - Math.max(y0, cellTop));
+      if (overlapY <= 0) continue;
       for (let c = startCol; c <= endCol; c++) {
+        const cellLeft = c * pxPerCol;
+        const overlapX = Math.max(0, Math.min(x1, cellLeft + pxPerCol) - Math.max(x0, cellLeft));
+        if (overlapX <= 0) continue;
+        // Fraction of the CELL covered, so a sliver of element contributes a
+        // sliver of heat instead of the whole cell's worth.
+        const coverage = (overlapX * overlapY) / (pxPerCol * pxPerRow);
         const idx = r * cols + c;
-        map[idx] = Math.max(map[idx], weight);
+        map[idx] = Math.max(map[idx], weight * coverage);
       }
+    }
     }
   }
 

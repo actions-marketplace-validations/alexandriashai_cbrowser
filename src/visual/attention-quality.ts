@@ -410,6 +410,14 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
   backgroundColor?: string;
   fontSize?: number;
   fontWeight?: number;
+  /**
+   * Per-word bounding boxes for this element's text, in viewport coordinates.
+   *
+   * A heading's relevance belongs on its glyphs, not on the whitespace its box
+   * happens to span — a 400x44 heading box is mostly empty pixels, and painting
+   * the whole rect puts heat where there is nothing to look at.
+   */
+  words?: Array<{ text: string; x: number; y: number; width: number; height: number }>;
 }>> {
   const p = page as { evaluate: (fn: () => unknown) => Promise<unknown> };
   return p.evaluate(() => {
@@ -426,6 +434,39 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
     // from a filled primary button. Background walks UP the tree: an element's
     // own background is transparent far more often than not, and reporting
     // "rgba(0,0,0,0)" as the background makes every contrast judgement wrong.
+    // Per-word rects via Range over the element's text nodes. Range.getClientRects
+    // returns one rect per line box, so a word wrapped across lines yields the
+    // pieces rather than one box spanning both — which is what makes this usable
+    // on real running text instead of only on single-line labels.
+    const wordRects = (el: Element): Array<{ text: string; x: number; y: number; width: number; height: number }> => {
+      const out: Array<{ text: string; x: number; y: number; width: number; height: number }> = [];
+      try {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          const raw = node.textContent ?? "";
+          if (!raw.trim()) continue;
+          // Walk the string so offsets stay aligned with the ORIGINAL text —
+          // splitting and re-joining loses the real character positions and the
+          // rects drift word by word across the line.
+          const re = /\S+/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(raw))) {
+            if (out.length >= 300) return out; // a pathological page is not worth an unbounded walk
+            const range = document.createRange();
+            range.setStart(node, m.index);
+            range.setEnd(node, m.index + m[0].length);
+            for (const r of Array.from(range.getClientRects())) {
+              if (r.width <= 0 || r.height <= 0) continue;
+              out.push({ text: m[0], x: r.x, y: r.y, width: r.width, height: r.height });
+            }
+            range.detach?.();
+          }
+        }
+      } catch { /* an element whose text cannot be ranged still returns its box */ }
+      return out;
+    };
+
     const styleOf = (el: Element): {
       color?: string; backgroundColor?: string; fontSize?: number; fontWeight?: number;
     } => {
@@ -448,6 +489,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
 
     const elements: Array<{
       selector: string;
+      words?: Array<{ text: string; x: number; y: number; width: number; height: number }>;
       color?: string;
       backgroundColor?: string;
       fontSize?: number;
@@ -484,6 +526,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isDecorative: false,
         classList: (el as HTMLElement).className || "",
         ...styleOf(el),
+        words: wordRects(el),
       });
     });
 
@@ -510,6 +553,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isDecorative: false,
         classList: (el as HTMLElement).className || "",
         ...styleOf(el),
+        words: wordRects(el),
       });
     });
 
@@ -531,6 +575,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isDecorative,
         classList: (el as HTMLElement).className || "",
         ...styleOf(el),
+        words: wordRects(el),
       });
     });
 
