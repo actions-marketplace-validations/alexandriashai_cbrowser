@@ -222,10 +222,27 @@ export async function overlayAttentionOnFrames(
   const dir = join(outDir, "frames-attention");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  /**
+   * DOM in effect at a moment — the newest snapshot at or before it.
+   *
+   * Used by BOTH rendering and judging. Rendering previously passed one
+   * stop-time DOM into every frame, which made the semantic half of the blend —
+   * 65% of it — byte-identical across the whole recording. Only the visual 35%
+   * varied, so the overlay looked static no matter what happened on the page,
+   * and a capture measured nothing a single screenshot did not.
+   */
+  const domAt = (tMs: number): DOMAttentionElement[] => {
+    const tl = options.domTimeline;
+    if (!tl || tl.length === 0) return options.domElements ?? [];
+    let best = tl[0];
+    for (const snap of tl) if (snap.atMs <= tMs) best = snap;
+    return best.elements;
+  };
+
   const frames: string[] = [];
   let failed = 0;
 
-  for (const framePath of framePaths) {
+  for (const [frameIdx, framePath] of framePaths.entries()) {
     const target = join(dir, basename(framePath));
     try {
       const meta = await sharp(framePath).metadata();
@@ -233,7 +250,10 @@ export async function overlayAttentionOnFrames(
       const height = meta.height ?? 0;
       if (!width || !height) throw new Error("frame has no dimensions");
 
-      const heat = await renderHeatLayer(framePath, width, height, opts);
+      const heat = await renderHeatLayer(framePath, width, height, {
+        ...opts,
+        domElements: domAt(options.frameTimesMs?.[frameIdx] ?? 0),
+      });
       if (!heat) throw new Error("no attention map produced");
 
       // Blur at foveal scale. The saliency literature smooths fixation maps with
@@ -282,20 +302,6 @@ export async function overlayAttentionOnFrames(
     : [];
 
   if (ctx && getApiKey && usedDom && judgeAt.length > 0) {
-    /**
-     * DOM in effect at a moment — the newest snapshot at or before it.
-     *
-     * Falls back to the single stop-time extract when no timeline was supplied,
-     * which is correct only for a capture that never navigated.
-     */
-    const domAt = (tMs: number): DOMAttentionElement[] => {
-      const tl = options.domTimeline;
-      if (!tl || tl.length === 0) return options.domElements ?? [];
-      let best = tl[0];
-      for (const snap of tl) if (snap.atMs <= tMs) best = snap;
-      return best.elements;
-    };
-
     moments = [];
     for (const frameIndex of judgeAt) {
       if (frameIndex < 0 || frameIndex >= framePaths.length) continue;

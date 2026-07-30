@@ -163,6 +163,11 @@ const DEFAULT_FPS = 10;
 const DEFAULT_QUALITY = 80;
 const DEFAULT_MAX_FRAMES = 3000;
 
+/** How often to check whether the page scrolled far enough to re-read the DOM. */
+const SCROLL_SNAPSHOT_INTERVAL_MS = 400;
+/** Scroll distance that changes the viewport enough to warrant a fresh snapshot. */
+const SCROLL_SNAPSHOT_THRESHOLD_PX = 200;
+
 /*
  * The change thresholds and the saturation ratio live in types.ts, next to the
  * schema that documents them, and are imported rather than restated here.
@@ -270,6 +275,7 @@ export class VideoCaptureSession {
    */
   private domSnapshots: Array<{ atMs: number; elements: unknown[] }> = [];
   private navListener?: () => void;
+  private scrollTimer?: ReturnType<typeof setInterval>;
   private nextDueMs = 0;
   private writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -906,6 +912,28 @@ export class VideoCaptureSession {
     void snapshot();
     this.navListener = () => { void snapshot(); };
     this.page.on("framenavigated", this.navListener);
+
+    // Scroll changes what is on screen just as much as navigation does, and
+    // extractPageElementsForAttention filters to the viewport — so a snapshot
+    // taken before a 700px scroll describes elements that are no longer visible
+    // and carries stale coordinates for the ones that are. Without this, a
+    // time-series capture returns the same judgement at every scroll position,
+    // which is to say it measures nothing a single static call did not.
+    //
+    // Polled rather than event-driven: scroll fires far too often to snapshot
+    // on, and a threshold poll costs one cheap evaluate per interval.
+    let lastScrollY = 0;
+    this.scrollTimer = setInterval(() => {
+      void (async () => {
+        try {
+          const y = await this.page.evaluate(() => window.scrollY);
+          if (Math.abs(y - lastScrollY) >= SCROLL_SNAPSHOT_THRESHOLD_PX) {
+            lastScrollY = y;
+            await snapshot();
+          }
+        } catch { /* page gone; the stop path handles it */ }
+      })();
+    }, SCROLL_SNAPSHOT_INTERVAL_MS);
   }
 
   private detachPageListeners(): void {
@@ -924,6 +952,13 @@ export class VideoCaptureSession {
     if (this.loopTimer) { clearInterval(this.loopTimer); this.loopTimer = null; }
     if (this.trackTimer) { clearInterval(this.trackTimer); this.trackTimer = null; }
     if (this.stopTriggerTimer) { clearInterval(this.stopTriggerTimer); this.stopTriggerTimer = null; }
+    // A leaked interval holds the event loop open and keeps a finished capture's
+    // process alive.
+    if (this.scrollTimer) { clearInterval(this.scrollTimer); this.scrollTimer = undefined; }
+    if (this.navListener) {
+      try { this.page.off("framenavigated", this.navListener); } catch { /* page already gone */ }
+      this.navListener = undefined;
+    }
     if (this.stopTimeoutTimer) { clearTimeout(this.stopTimeoutTimer); this.stopTimeoutTimer = null; }
 
     // Close the window with a real frame when the stream has gone quiet, so the
