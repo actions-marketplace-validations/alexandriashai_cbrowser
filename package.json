@@ -131,6 +131,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@mcp-ui/server": "^6.1.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.25.3",
     "@types/express": "^5.0.6",
     "express": "^5.2.1",

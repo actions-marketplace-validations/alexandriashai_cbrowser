@@ -21,6 +21,8 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
 export const UI_PROBE_URI = "ui://cbrowser/probe";
 export const CAPTURE_UI_PREFIX = "ui://cbrowser/capture/";
@@ -116,7 +118,38 @@ const registered = new WeakSet<McpServer>();
  * that returned only a panel would leave the model able to report that a widget
  * appeared and nothing else.
  */
-export const EXT_APPS_ESM = "https://esm.sh/@modelcontextprotocol/ext-apps@1.7.5";
+/**
+ * The ext-apps browser bundle, inlined into every widget.
+ *
+ * Not a CDN import. The iframe CSP blocks esm.sh from fetching the transitive
+ * @modelcontextprotocol/sdk dependencies, and the failure mode is a blank
+ * rectangle with the error visible only in the iframe's own devtools console --
+ * nothing surfaces host-side, which is why an esm.sh import looks like it works
+ * right up until nothing renders. Anthropic's own guidance names this the first
+ * entry in its symptom table.
+ *
+ * Read once at module load. The replacer is a FUNCTION rather than a string
+ * because String.replace interprets $-sequences in string replacements and the
+ * minified bundle is full of them.
+ */
+let extAppsBundle: string | undefined;
+function getExtAppsBundle(): string {
+  if (extAppsBundle !== undefined) return extAppsBundle;
+  try {
+    const req = createRequire(import.meta.url);
+    const raw = readFileSync(req.resolve("@modelcontextprotocol/ext-apps/app-with-deps"), "utf8");
+    extAppsBundle = raw.replace(/export\{([^}]+)\};?\s*$/, (_m, body: string) =>
+      "globalThis.ExtApps={" +
+      body.split(",").map((pair) => {
+        const [local, exported] = pair.split(" as ").map((x) => x.trim());
+        return `${exported ?? local}:${local}`;
+      }).join(",") + "};");
+  } catch {
+    // A widget without its runtime says so rather than showing a blank card.
+    extAppsBundle = 'globalThis.ExtApps=undefined;';
+  }
+  return extAppsBundle;
+}
 
 /**
  * Static status view.
@@ -138,43 +171,53 @@ export const EXT_APPS_ESM = "https://esm.sh/@modelcontextprotocol/ext-apps@1.7.5
  */
 export function buildStatusTemplate(): string {
   return `<!doctype html><meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
 <style>
-  :root{color-scheme:light dark;--ink:#14161a;--ground:#fff;--muted:#6b7078;--rule:#dcdfe4;--accent:#2f6f4f;--card:#fff}
-  @media (prefers-color-scheme:dark){:root{--ink:#e8eaed;--ground:#16181c;--muted:#9aa0a8;--rule:#31353b;--accent:#6fbf8f;--card:#1d2025}}
-  :root[data-theme="dark"]{--ink:#e8eaed;--ground:#16181c;--muted:#9aa0a8;--rule:#31353b;--accent:#6fbf8f;--card:#1d2025}
-  :root[data-theme="light"]{--ink:#14161a;--ground:#fff;--muted:#6b7078;--rule:#dcdfe4;--accent:#2f6f4f;--card:#fff}
+  /* Transparent: the host renders this inside its own card chrome, so painting
+     an opaque background makes the widget sit as a slab inside a card. */
+  :root{
+    --ink:var(--color-text-primary,#14161a);
+    --sub:var(--color-text-secondary,#6b7078);
+    --line:var(--color-border-default,#dcdfe4);
+    --accent:var(--color-accent-primary,#2f6f4f);
+  }
+  :root.dark{--ink:#e8eaed;--sub:#9aa0a8;--line:#31353b;--accent:#6fbf8f}
   *{box-sizing:border-box}
-  body{margin:0;padding:16px;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--ground)}
-  .eyebrow{font:600 .67rem/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 .4rem}
-  h1{font-size:1.05rem;margin:0 0 .9rem}
-  .wrap{overflow-x:auto;border:1px solid var(--rule);border-radius:8px;background:var(--card)}
+  html,body{background:transparent;color:var(--ink)}
+  body{margin:0;padding:14px;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
+  .eyebrow{font:600 .67rem/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--sub);margin:0 0 .35rem}
+  h1{font-size:1.02rem;margin:0 0 .8rem}
+  .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--border-radius-md,8px)}
   table{border-collapse:collapse;width:100%;font-size:.85rem}
-  th,td{text-align:left;padding:.42rem .7rem;border-bottom:1px solid var(--rule);vertical-align:top}
+  th,td{text-align:left;padding:.4rem .68rem;border-bottom:1px solid var(--line);vertical-align:top}
   tr:last-child th,tr:last-child td{border-bottom:0}
-  th{font:.74rem/1.4 ui-monospace,monospace;color:var(--muted);font-weight:500;white-space:nowrap;width:1%}
+  th{font:.73rem/1.4 ui-monospace,monospace;color:var(--sub);font-weight:500;white-space:nowrap;width:1%}
   td{font-variant-numeric:tabular-nums;word-break:break-word}
-  .status{font-size:.86rem;color:var(--muted)}
+  .msg{font-size:.82rem;color:var(--sub);margin:.6rem 0 0}
 </style>
 <p class="eyebrow">CBrowser</p>
 <h1>Environment status</h1>
 <div class="wrap"><table><tbody id="rows"></tbody></table></div>
-<p class="status" id="status">Waiting for the host to deliver the tool result&hellip;</p>
+<p class="msg" id="msg">Waiting for the host&hellip;</p>
 <script type="module">
-  import { App } from "${EXT_APPS_ESM}";
-
+/*__EXT_APPS_BUNDLE__*/
+// Async IIFE rather than top-level await: older iframe contexts throw on
+// top-level await, and the throw surfaces only as a blank widget.
+(async () => {
+  var msg = document.getElementById("msg");
+  if (!globalThis.ExtApps) { msg.textContent = "Widget runtime unavailable."; return; }
+  var App = globalThis.ExtApps.App;
+  var applyHostStyleVariables = globalThis.ExtApps.applyHostStyleVariables;
   var tbody = document.getElementById("rows");
-  var status = document.getElementById("status");
 
-  // Values are written with textContent, never innerHTML. The view is hydrated
-  // from tool output, and tool output includes strings this server does not
-  // control (paths, versions, browser names) -- interpolating those into markup
-  // is how a status panel becomes an injection sink.
+  // textContent, never innerHTML: this renders tool output containing paths and
+  // versions the server does not control.
   function addRow(label, value) {
     var tr = document.createElement("tr");
     var th = document.createElement("th");
     var td = document.createElement("td");
     th.textContent = label;
-    td.textContent = value === "" || value === null || value === undefined ? "\u2014" : String(value);
+    td.textContent = (value === "" || value === null || value === undefined) ? "\u2014" : String(value);
     tr.appendChild(th); tr.appendChild(td); tbody.appendChild(tr);
   }
   function walk(obj, prefix) {
@@ -189,20 +232,42 @@ export function buildStatusTemplate(): string {
     if (!data) return;
     tbody.replaceChildren();
     walk(data, "");
-    status.textContent = "";
+    msg.textContent = "";
   }
 
-  var app = new App({ name: "cbrowser-status", version: "1.0.0" });
-  app.addEventListener("toolresult", function (p) {
-    render(p && (p.structuredContent || (p.result && p.result.structuredContent)));
-  });
+  var app = new App({ name: "cbrowser-status", version: "1.0.0" }, {}, { autoResize: true });
+
+  function applyHostContext(ctx) {
+    document.documentElement.classList.toggle("dark", ctx && ctx.theme === "dark");
+    if (ctx && ctx.styles && ctx.styles.variables && applyHostStyleVariables) {
+      applyHostStyleVariables(ctx.styles.variables);
+    }
+  }
+
+  // Handlers before connect(), or the first result is delivered into nothing.
+  app.ontoolresult = function (res) {
+    try {
+      // structuredContent when the host forwards it; the text block is the
+      // documented path and the one that survives hosts that drop the former.
+      var data = res && res.structuredContent;
+      if (!data && res && res.content && res.content[0] && res.content[0].text) {
+        data = JSON.parse(res.content[0].text);
+      }
+      render(data);
+    } catch (e) {
+      msg.textContent = "Could not read the status payload: " + (e && e.message ? e.message : e);
+    }
+  };
+  app.onhostcontextchanged = applyHostContext;
+
   try {
     await app.connect();
-    status.textContent = "Connected. Waiting for status data\u2026";
+    applyHostContext(app.getHostContext());
   } catch (e) {
-    status.textContent = "Could not connect to the host: " + (e && e.message ? e.message : e);
+    msg.textContent = "Could not connect to the host: " + (e && e.message ? e.message : e);
   }
-</script>`;
+})();
+</script>`.replace("/*__EXT_APPS_BUNDLE__*/", () => getExtAppsBundle());
 }
 
 /** Read back a published capture panel by its resource URI. */
