@@ -78,6 +78,16 @@ export interface RelevanceElement {
 export interface RelevanceContext {
   goal?: string;
   /**
+   * Whether the caller is entitled to spend a model call.
+   *
+   * This layer costs money per page, so entitlement is checked HERE rather than
+   * only at the tool boundary: `screen_capture` is a free-tier tool whose
+   * `attention_overlay` option would otherwise let any free key spend calls.
+   * Absent means allowed, so non-MCP callers (CLI, tests, research harness) are
+   * unaffected.
+   */
+  entitled?: boolean;
+  /**
    * Screenshot bytes. Supplying them lets the judge see the rendered page —
    * visual hierarchy, whether an element actually stands out, what competes
    * with it — rather than inferring layout from numbers.
@@ -263,6 +273,13 @@ export async function judgeRelevance(
   const hit = readCache(key);
   if (hit) return hit;
 
+  if (ctx.entitled === false) {
+    return keywordFallback(
+      elements, ctx,
+      "Persona-judged relevance requires CBrowser Pro — using keyword matching",
+    );
+  }
+
   const apiKey = getApiKey();
   if (!apiKey) return keywordFallback(elements, ctx, "No Anthropic API key configured");
 
@@ -312,7 +329,7 @@ export async function judgeRelevance(
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model: RELEVANCE_MODEL,
-      max_tokens: 2000,
+      max_tokens: 4000,
       system,
       messages: [{
         role: "user",
@@ -361,14 +378,30 @@ export async function judgeRelevance(
     };
 
     const json = extractJson(text);
-    if (!json) {
+
+    // Salvage a truncated response rather than discarding it.
+    //
+    // `scores` is emitted before `reasoning`, so a response cut off mid-sentence
+    // still contains a COMPLETE scores object — and the scores are the part that
+    // matters. Throwing the whole thing away and silently returning keyword
+    // numbers was strictly worse than losing only the prose. Observed live: a
+    // response ending mid-reasoning with "scores": {"0": 0.95} fully intact.
+    let parsed: { scores?: Record<string, number>; reasoning?: string } | null = null;
+    if (json) {
+      try { parsed = JSON.parse(json); } catch { parsed = null; }
+    }
+    if (!parsed) {
+      const scoresOnly = text.match(/"scores"\s*:\s*(\{[^{}]*\})/);
+      if (scoresOnly) {
+        try { parsed = { scores: JSON.parse(scoresOnly[1]) }; } catch { parsed = null; }
+      }
+    }
+    if (!parsed) {
       return keywordFallback(
         elements, ctx,
         `Model returned no parseable JSON (${text.slice(0, 80).replace(/\s+/g, " ")})`,
       );
     }
-
-    const parsed = JSON.parse(json) as { scores?: Record<string, number>; reasoning?: string };
     const scores: Record<number, number> = {};
     for (const [k, v] of Object.entries(parsed.scores ?? {})) {
       const idx = Number(k);
@@ -433,6 +466,10 @@ export async function summarizeCapture(
 ): Promise<CaptureSummary> {
   if (moments.length === 0) {
     return { narrative: "", source: "unavailable", unavailable: "No judged moments to summarise" };
+  }
+
+  if (ctx.entitled === false) {
+    return { narrative: "", source: "unavailable", unavailable: "Capture summary requires CBrowser Pro" };
   }
 
   const apiKey = getApiKey();

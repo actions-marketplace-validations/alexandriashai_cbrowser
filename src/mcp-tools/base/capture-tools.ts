@@ -31,6 +31,23 @@ import { VIEWPORT_PRESETS } from "../../types.js";
 import { buildContentWithScreenshots, MAX_RESPONSE_SIZE } from "../screenshot-utils.js";
 import type { CBrowser, McpServer, ToolRegistrationContext } from "../types.js";
 
+/**
+ * Does the active key entitle paid model calls?
+ *
+ * A null tier is the self-hosted "no gating" path, which is entitled: someone
+ * running their own instance with their own API key is spending their own money.
+ */
+async function hasProAccess(): Promise<boolean> {
+  try {
+    const { getActiveTier } = await import("../tier-gate.js");
+    const { tierHasAccess } = await import("../tool-categories.js");
+    const tier = getActiveTier();
+    return tier === null ? true : tierHasAccess(tier, "pro");
+  } catch {
+    return false;
+  }
+}
+
 /** Formats the engine can encode. */
 const CAPTURE_FORMATS = ["gif", "webp", "mp4", "webm"] as const;
 
@@ -462,6 +479,12 @@ export async function startCapture(
           saliencyOverlay: {
             ...(args.overlay_persona ? { persona: args.overlay_persona } : {}),
             ...(args.overlay_goal ? { goal: args.overlay_goal } : {}),
+            // screen_capture is a free-tier tool, but the persona relevance
+            // judge and the capture summary each cost a model call. Entitlement
+            // is resolved from the live key's tier rather than from the tool's
+            // own tier, so a free key still gets the overlay — computed with the
+            // keyword scorer instead of a paid judgement.
+            entitled: await hasProAccess(),
           },
         }
       : {}),

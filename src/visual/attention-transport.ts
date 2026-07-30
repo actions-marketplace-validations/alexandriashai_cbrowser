@@ -583,6 +583,15 @@ function buildSemanticMap(
   goal?: string,
   cognitiveTraits?: Record<string, number>,
   schwartzValues?: Record<string, number>,
+  /**
+   * Per-element relevance, keyed by index into `elements`, 0-1.
+   *
+   * Supplied by the LLM judge when available. Kept as a PARAMETER rather than
+   * computed here so this function stays synchronous — the judge is one network
+   * call per page, and the caller is where it can be cached, tier-gated and
+   * reused across the frames of a recording.
+   */
+  relevanceScores?: Record<number, number>,
 ): Float64Array {
   const map = new Float64Array(rows * cols);
 
@@ -601,7 +610,7 @@ function buildSemanticMap(
     community: { pattern: /community|join|forum|together|open.?source|contrib/i, values: { benevolence: 0.8, universalism: 0.6 } },
   };
 
-  for (const el of elements) {
+  for (const [elementIndex, el] of elements.entries()) {
     // Determine element type
     let elType = el.type || "content";
     if (el.isCTA) elType = "cta";
@@ -616,11 +625,20 @@ function buildSemanticMap(
     const modifier = modifiers[elType] ?? 1.0;
     weight *= modifier;
 
-    // Layer 3: Goal relevance — elements matching the goal get up to 3x boost
-    if (goal && el.text) {
+    // Layer 3: Relevance — how much THIS persona should attend to this element.
+    //
+    // Prefers the LLM judge's score when the caller supplied one. The keyword
+    // scorer below is the fallback and is kept deliberately: for the goal "buy a
+    // subscription" it scores "Checkout", "Get Started" and "Upgrade to Pro" at
+    // zero while giving a footer link "Subscription terms" the full boost, so it
+    // is a floor to degrade to, never the intended path.
+    const judged = relevanceScores?.[elementIndex];
+    if (judged !== undefined && judged > 0) {
+      weight *= (1.0 + judged * 2.0); // same 3x ceiling as the keyword path
+    } else if (goal && el.text) {
       const goalBoost = computeGoalRelevance(el.text, goal);
       if (goalBoost > 0) {
-        weight *= (1.0 + goalBoost); // Up to 3x for full goal match
+        weight *= (1.0 + goalBoost);
       }
     }
 
@@ -717,6 +735,7 @@ export async function analyzeAttentionFromDOM(
   schwartzValues?: Record<string, number>,
   goal?: string,
   cognitiveTraits?: Record<string, number>,
+  relevanceScores?: Record<number, number>,
 ): Promise<AttentionAnalysis> {
   const startTime = performance.now();
   const profile = getPerceptualProfile(personaName);
@@ -760,7 +779,7 @@ export async function analyzeAttentionFromDOM(
     domElements,
     rows, cols, cellSize,
     viewportWidth, viewportHeight,
-    personaName, goal, traits, values,
+    personaName, goal, traits, values, relevanceScores,
   );
 
   // Apply persona perceptual filter directly to the semantic map (no Lab blend)
@@ -819,6 +838,7 @@ export async function analyzeAttention(
   domElements?: DOMAttentionElement[],
   goal?: string,
   cognitiveTraits?: Record<string, number>,
+  relevanceScores?: Record<number, number>,
 ): Promise<AttentionAnalysis> {
   const startTime = performance.now();
   const profile = getPerceptualProfile(personaName);
@@ -865,6 +885,7 @@ export async function analyzeAttention(
       goal,
       traits,
       values,
+      relevanceScores,
     );
     // Blend: 35% visual (what pops) + 65% semantic (what matters)
     combinedSaliency = blendSaliencyMaps(baseSaliency.cells, semanticMap, 0.35, 0.65);

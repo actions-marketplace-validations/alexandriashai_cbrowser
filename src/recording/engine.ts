@@ -120,6 +120,8 @@ export interface VideoCaptureOptions {
     persona?: string;
     /** Goal string weighting goal-relevance in the semantic half. */
     goal?: string;
+    /** Whether the caller may spend paid model calls on judging and summary. */
+    entitled?: boolean;
   };
   /** Delay the first frame until this condition holds. */
   startTrigger?: StartTrigger;
@@ -1083,6 +1085,9 @@ export class VideoCaptureSession {
         const overlay = await overlayAttentionOnFrames(encodePaths, this.outDir, {
           ...cfg,
           ...(domElements ? { domElements: domElements as never } : {}),
+          ...(cfg.entitled !== undefined
+            ? { relevanceContext: { personaName: cfg.persona ?? "first-timer", goal: cfg.goal, entitled: cfg.entitled } }
+            : {}),
         });
         encodePaths = overlay.frames;
         manifest.attention_overlay = {

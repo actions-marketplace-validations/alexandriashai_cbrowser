@@ -478,7 +478,41 @@ export function registerVisualTestingTools(server: McpServer): void {
         // Run attention analysis with DOM semantic layer (visual + semantic blend)
         const { analyzeAttention } = await import("../../visual/attention-transport.js");
         const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
-        const result = await analyzeAttention(screenshotPath, persona, cellSize, undefined, domAttentionElements, goal);
+
+        // Persona-judged relevance, replacing keyword overlap in the semantic
+        // layer. Computed HERE rather than inside analyzeAttention so the one
+        // network call is visible, cached and tier-gated at the boundary that
+        // knows the caller's entitlement.
+        let relevanceScores: Record<number, number> | undefined;
+        let relevanceSource: string | undefined;
+        if (domAttentionElements.length > 0) {
+          try {
+            const { judgeRelevance } = await import("../../visual/llm-relevance.js");
+            const { getAnthropicApiKey } = await import("../../cognitive/index.js");
+            const { getActiveTier } = await import("../tier-gate.js");
+            const { tierHasAccess } = await import("../tool-categories.js");
+            const tier = getActiveTier();
+            const entitled = tier === null ? true : tierHasAccess(tier, "pro");
+
+            const judged = await judgeRelevance(
+              domAttentionElements.map((el, i) => ({
+                index: i,
+                type: el.type,
+                text: el.text ?? "",
+                x: el.x, y: el.y, width: el.width, height: el.height,
+              })),
+              { personaName: persona, goal, entitled },
+              getAnthropicApiKey,
+            );
+            relevanceScores = judged.scores;
+            relevanceSource = judged.source;
+          } catch { /* keyword path inside buildSemanticMap remains the floor */ }
+        }
+
+        const result = await analyzeAttention(
+          screenshotPath, persona, cellSize, undefined, domAttentionElements, goal,
+          undefined, relevanceScores,
+        );
 
         // Compute attention quality — cross-reference hotspots with classified elements
         let attentionQuality: unknown = null;
