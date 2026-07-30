@@ -713,9 +713,23 @@ function buildSemanticMap(
     }
   }
 
-  // Normalize to 0-1
-  const maxVal = Math.max(...Array.from(map), 0.001);
-  for (let i = 0; i < map.length; i++) map[i] /= maxVal;
+  // Normalize against a robust high percentile, not the max.
+  //
+  // Dividing by the max let a single element crush the whole field: the
+  // relevance boost multiplies a goal-matched CTA by up to 3x, so it becomes the
+  // denominator, and an image weighted 0.5 lands at 0.17 while every other
+  // element compresses toward zero. The visible result was a map with two or
+  // three glowing elements and a dead page around them — images and photos in
+  // particular disappeared, which is not what a person looking at the page sees.
+  //
+  // The 95th percentile keeps the field's dynamic range and lets genuinely
+  // exceptional cells clip, which is standard practice for rendering saliency.
+  const sorted = Array.from(map).filter((v) => v > 0).sort((a, b) => a - b);
+  const p95 = sorted.length > 0
+    ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]
+    : 0.001;
+  const denom = Math.max(p95, 0.001);
+  for (let i = 0; i < map.length; i++) map[i] = Math.min(1, map[i] / denom);
 
   return map;
 }
