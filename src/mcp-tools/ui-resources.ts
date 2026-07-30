@@ -22,7 +22,35 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+
+/**
+ * The cbrowser mark, inlined as a data URI.
+ *
+ * The widget sandbox will not fetch cbrowser.ai, so a <img src="https://..."> to
+ * the real logo renders as a broken image. URL-encoded rather than base64: the
+ * source is text, and percent-encoding is smaller than base64 for text.
+ *
+ * Read from disk at module load rather than pasted into this file as an 8KB
+ * literal, so the mark stays a single asset that can be replaced without
+ * touching code.
+ */
+let logoUri: string | undefined;
+function getLogoDataUri(): string {
+  if (logoUri !== undefined) return logoUri;
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const svg = readFileSync(join(here, "..", "..", "assets", "cbrowser-logo.svg"), "utf8")
+      .replace(/\s*\n\s*/g, " ")
+      .replace(/"/g, "'");
+    logoUri = "data:image/svg+xml," + encodeURIComponent(svg).replace(/'/g, "%27");
+  } catch {
+    logoUri = "";
+  }
+  return logoUri;
+}
 
 export const UI_PROBE_URI = "ui://cbrowser/probe";
 export const CAPTURE_UI_PREFIX = "ui://cbrowser/capture/";
@@ -173,130 +201,273 @@ export function buildStatusTemplate(): string {
   return `<!doctype html><meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
 <style>
-  /* Transparent: the host renders this inside its own card chrome, so painting
-     an opaque background makes the widget sit as a slab inside a card. */
+  /* Host tokens first, local fallbacks second, so the widget inherits Claude's
+     type and colour when offered and still stands alone when not. */
   :root{
     --ink:var(--color-text-primary,#14161a);
-    --sub:var(--color-text-secondary,#6b7078);
-    --line:var(--color-border-default,#dcdfe4);
-    --accent:var(--color-accent-primary,#2f6f4f);
+    --sub:var(--color-text-secondary,#606770);
+    --line:var(--color-border-default,#e0e3e8);
+    /* Brand values are cbrowser-web/src/app/globals.css verbatim, so the panel
+       and the site cannot drift apart. Host token first where one is offered. */
+    --brand:oklch(0.55 0.18 250);
+    --brand-2:oklch(0.6 0.18 180);
+    --accent:var(--color-accent-primary,oklch(0.55 0.18 250));
+    --warn:oklch(0.55 0.16 45);
+    --raise:color-mix(in srgb, var(--ink) 4%, transparent);
+    --r:var(--border-radius-md,8px);
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
   }
-  :root.dark{--ink:#e8eaed;--sub:#9aa0a8;--line:#31353b;--accent:#6fbf8f}
+  :root.dark{--ink:#e9ebee;--sub:#98a0aa;--line:#333840;
+    --brand:oklch(0.65 0.18 250);--brand-2:oklch(0.7 0.15 180);
+    --accent:oklch(0.65 0.18 250);--warn:oklch(0.72 0.14 55);
+    --raise:color-mix(in srgb, #fff 6%, transparent)}
   *{box-sizing:border-box}
   html,body{background:transparent;color:var(--ink)}
-  body{margin:0;padding:14px;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
-  .eyebrow{font:600 .67rem/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--sub);margin:0 0 .35rem}
-  h1{font-size:1.02rem;margin:0 0 .8rem}
-  .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--border-radius-md,8px);margin-bottom:.2rem}
-  h2{font-size:.82rem;margin:1rem 0 .35rem;color:var(--sub);font-weight:600;letter-spacing:.02em}
-  th.col{font:.7rem/1.4 ui-monospace,monospace;color:var(--sub);width:auto;text-transform:uppercase;letter-spacing:.06em}
+  body{margin:0;padding:2px 0 4px;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+
+  /* Header: the one place with real scale contrast. Everything else is quiet. */
+  .top{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:0 0 .1rem}
+  .mark{width:26px;height:26px;flex:0 0 auto;display:block}
+  .name{font-size:1.06rem;font-weight:650;letter-spacing:-.01em}
+  /* The single committed brand moment: a 2px blue-to-cyan rule under the header,
+     drawn from the site's own brand-primary and brand-secondary. Everything else
+     stays restrained, because a status panel is scanned, not admired. */
+  /* Short and saturated rather than a full-width fade: at full width it reads as
+     a divider, which is decoration pretending to be structure. 56px of the
+     brand's own blue-to-cyan under the wordmark reads as a mark. */
+  .rule{height:3px;width:56px;border-radius:3px;margin:.45rem 0 .1rem;
+    background:linear-gradient(90deg,var(--brand),var(--brand-2))}
+  .ver{font:.8rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+
+  /* Summary strip: what you came to find out, before any detail. */
+  .facts{display:flex;flex-wrap:wrap;gap:.35rem;margin:.55rem 0 .2rem}
+  .fact{display:inline-flex;align-items:baseline;gap:.36rem;padding:.26rem .55rem;
+    border:1px solid color-mix(in srgb,var(--brand) 22%,var(--line));
+    border-radius:calc(var(--r) - 2px);
+    background:color-mix(in srgb,var(--brand) 7%,transparent)}
+  .fact b{font:600 .84rem/1 var(--mono);font-variant-numeric:tabular-nums;color:var(--brand)}
+  .fact span{font-size:.76rem;color:var(--sub)}
+  .fact.attn{border-color:var(--warn)}
+  .fact.attn b{color:var(--warn)}
+
+  details{border-top:1px solid var(--line);margin:0}
+  details:last-of-type{border-bottom:1px solid var(--line)}
+  summary{display:flex;align-items:center;gap:.5rem;padding:.6rem .15rem;cursor:pointer;
+    list-style:none;user-select:none}
+  summary::-webkit-details-marker{display:none}
+  summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
+  summary:hover .stitle{color:var(--accent)}
+  .chev{flex:0 0 auto;width:9px;height:9px;border-right:1.6px solid var(--sub);
+    border-bottom:1.6px solid var(--sub);transform:rotate(-45deg);margin-left:2px;
+    transition:transform 180ms cubic-bezier(.22,1,.36,1)}
+  details[open] .chev{transform:rotate(45deg)}
+  .stitle{font-size:.9rem;font-weight:560;transition:color 150ms ease}
+  .scount{margin-left:auto;font:.75rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+  .sbody{padding:0 0 .7rem}
+
   table{border-collapse:collapse;width:100%;font-size:.85rem}
-  th,td{text-align:left;padding:.4rem .68rem;border-bottom:1px solid var(--line);vertical-align:top}
-  tr:last-child th,tr:last-child td{border-bottom:0}
-  th{font:.73rem/1.4 ui-monospace,monospace;color:var(--sub);font-weight:500;white-space:nowrap;width:1%}
-  td{font-variant-numeric:tabular-nums;word-break:break-word}
-  .msg{font-size:.82rem;color:var(--sub);margin:.6rem 0 0}
+  .kv th{width:1%;white-space:nowrap;text-align:left;padding:.26rem .9rem .26rem .15rem;
+    font:.78rem/1.45 var(--mono);color:var(--sub);font-weight:400;vertical-align:top}
+  .kv td{padding:.26rem 0;vertical-align:top;word-break:break-word}
+  .grid{table-layout:auto}
+  .grid thead th{text-align:left;padding:.2rem .7rem .34rem .15rem;font:.68rem/1 var(--mono);
+    color:var(--sub);font-weight:400;text-transform:uppercase;letter-spacing:.07em;
+    border-bottom:1px solid var(--line);white-space:nowrap}
+  .grid td{padding:.3rem .7rem .3rem .15rem;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .grid tr:last-child td{border-bottom:0}
+  .grid tbody tr:hover td{background:var(--raise)}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:.8rem;padding-right:.15rem}
+  .path{font-family:var(--mono);font-size:.78rem;color:var(--sub);word-break:break-all}
+
+  /* State reads as form, not just text, so a failure is visible without reading. */
+  .chip{display:inline-block;font:.68rem/1 var(--mono);padding:.16rem .38rem;border-radius:3px;
+    background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
+  .chip.no{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+  .msg{font-size:.82rem;color:var(--sub);padding:.5rem 0}
+  @media (prefers-reduced-motion:reduce){.chev,.stitle{transition:none}}
 </style>
-<p class="eyebrow">CBrowser</p>
-<h1>Environment status</h1>
-<div id="root"></div>
-<p class="msg" id="msg">Waiting for the host&hellip;</p>
+<div id="root"><p class="msg" id="msg">Waiting for the host&hellip;</p></div>
 <script type="module">
 /*__EXT_APPS_BUNDLE__*/
-// Async IIFE rather than top-level await: older iframe contexts throw on
-// top-level await, and the throw surfaces only as a blank widget.
 (async () => {
   var msg = document.getElementById("msg");
+  var root = document.getElementById("root");
   if (!globalThis.ExtApps) { msg.textContent = "Widget runtime unavailable."; return; }
   var App = globalThis.ExtApps.App;
   var applyHostStyleVariables = globalThis.ExtApps.applyHostStyleVariables;
-  var root = document.getElementById("root");
-  var tbody = null;
 
-  // textContent, never innerHTML: this renders tool output containing paths and
-  // versions the server does not control.
-  function addRow(label, value) {
-    var tr = document.createElement("tr");
-    var th = document.createElement("th");
-    var td = document.createElement("td");
-    th.textContent = label;
-    td.textContent = fmt(value);
-    tr.appendChild(th); tr.appendChild(td); tbody.appendChild(tr);
-  }
-  function fmt(v) {
-    if (v === true) return "yes";
-    if (v === false) return "no";
-    if (v === "" || v === null || v === undefined) return "\u2014";
-    return String(v);
-  }
+  var el = function (tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
   var isObjArray = function (v) {
     return Array.isArray(v) && v.length > 0 &&
       v.every(function (x) { return x && typeof x === "object" && !Array.isArray(x); });
   };
+  var fmt = function (v) {
+    if (v === true) return "yes";
+    if (v === false) return "no";
+    if (v === "" || v === null || v === undefined) return "—";
+    if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
+    return String(v);
+  };
+  var titleize = function (k) {
+    return k.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, function (c) { return c.toUpperCase(); });
+  };
 
-  // An array of objects gets its own table with real columns. Flattening one
-  // into a single cell is what produced "[object Object]": join() stringifies
-  // each element, and every element was a record. directories and browsers are
-  // both this shape, and both are more legible as a table than as dotted rows.
-  function addObjectTable(title, rows) {
+  // Curated grouping, with an explicit catch-all. The status payload changes
+  // shape as cbrowser gains features, so anything unrecognised still lands in a
+  // section rather than being silently dropped -- a status panel that quietly
+  // omits a field is worse than an ugly one.
+  var GROUPS = [
+    { title: "Configuration", keys: ["config"] },
+    { title: "Self-healing cache", keys: ["healCache"] },
+  ];
+  var HEADER_KEYS = ["version", "dataDir", "toolCount"];
+
+  function kvTable(pairs) {
+    var t = el("table", "kv"), tb = el("tbody");
+    pairs.forEach(function (p) {
+      var tr = el("tr");
+      tr.appendChild(el("th", null, p[0]));
+      var td = el("td");
+      if (/(^|\\.)(dataDir|configFile|path)$/i.test(p[0]) || /^\\//.test(String(p[1]))) td.className = "path";
+      td.textContent = fmt(p[1]);
+      tr.appendChild(td); tb.appendChild(tr);
+    });
+    t.appendChild(tb); return t;
+  }
+
+  function gridTable(rows) {
     var cols = [];
     rows.forEach(function (r) {
       Object.keys(r).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); });
     });
-    var h = document.createElement("h2");
-    h.textContent = title;
-    var wrap = document.createElement("div");
-    wrap.className = "wrap";
-    var t = document.createElement("table");
-    var thead = document.createElement("thead");
-    var htr = document.createElement("tr");
-    cols.forEach(function (c) {
-      var th = document.createElement("th");
-      th.className = "col";
-      th.textContent = c;
-      htr.appendChild(th);
-    });
+    var t = el("table", "grid"), thead = el("thead"), htr = el("tr");
+    cols.forEach(function (c) { htr.appendChild(el("th", null, c)); });
     thead.appendChild(htr);
-    var tb = document.createElement("tbody");
+    var tb = el("tbody");
     rows.forEach(function (r) {
-      var tr = document.createElement("tr");
+      var tr = el("tr");
       cols.forEach(function (c) {
-        var td = document.createElement("td");
-        td.textContent = fmt(r[c]);
+        var v = r[c], td = el("td");
+        if (typeof v === "boolean") {
+          td.appendChild(el("span", "chip" + (v ? "" : " no"), v ? "yes" : "no"));
+        } else if (typeof v === "number") {
+          td.className = "num"; td.textContent = String(v);
+        } else if (/path/i.test(c) || /^\\//.test(String(v))) {
+          td.className = "path"; td.textContent = fmt(v);
+        } else {
+          td.textContent = fmt(v);
+        }
         tr.appendChild(td);
       });
       tb.appendChild(tr);
     });
-    t.appendChild(thead); t.appendChild(tb); wrap.appendChild(t);
-    root.appendChild(h); root.appendChild(wrap);
+    t.appendChild(thead); t.appendChild(tb); return t;
   }
 
-  function walk(obj, prefix, deferred) {
-    Object.keys(obj || {}).forEach(function (k) {
-      var v = obj[k];
-      var label = prefix ? prefix + "." + k : k;
-      if (isObjArray(v)) deferred.push([label, v]);
-      else if (v && typeof v === "object" && !Array.isArray(v)) walk(v, label, deferred);
-      else addRow(label, Array.isArray(v) ? (v.length ? v.join(", ") : "\u2014") : v);
-    });
+  function section(title, count, node, open) {
+    var d = el("details");
+    if (open) d.open = true;
+    var sm = el("summary");
+    sm.appendChild(el("span", "chev"));
+    sm.appendChild(el("span", "stitle", title));
+    if (count !== null && count !== undefined) sm.appendChild(el("span", "scount", count));
+    d.appendChild(sm);
+    var body = el("div", "sbody");
+    body.appendChild(node);
+    d.appendChild(body);
+    return d;
   }
+
+  function addFact(strip, value, label, attn) {
+    var f = el("span", "fact" + (attn ? " attn" : ""));
+    f.appendChild(el("b", null, value));
+    f.appendChild(el("span", null, label));
+    strip.appendChild(f);
+  }
+
   function render(data) {
     if (!data) return;
     root.replaceChildren();
-    tbody = document.createElement("tbody");
-    var mainWrap = document.createElement("div");
-    mainWrap.className = "wrap";
-    var mainTable = document.createElement("table");
-    mainTable.appendChild(tbody);
-    mainWrap.appendChild(mainTable);
-    root.appendChild(mainWrap);
 
-    // Object-arrays are deferred so the scalar summary stays one uninterrupted
-    // table rather than being cut in half by whichever key happened to sort first.
-    var deferred = [];
-    walk(data, "", deferred);
-    deferred.forEach(function (d) { addObjectTable(d[0], d[1]); });
-    msg.textContent = "";
+    var top = el("div", "top");
+    var logo = "${getLogoDataUri()}";
+    if (logo) {
+      var img = document.createElement("img");
+      img.className = "mark";
+      img.src = logo;
+      img.alt = "";
+      top.appendChild(img);
+    }
+    top.appendChild(el("span", "name", "CBrowser"));
+    if (data.version) top.appendChild(el("span", "ver", "v" + data.version));
+    root.appendChild(top);
+    root.appendChild(el("div", "rule"));
+
+    // Summary strip. Counts are derived, and any that indicate a problem take
+    // the attention treatment -- so a broken environment is visible before a
+    // single section is expanded.
+    var strip = el("div", "facts");
+    if (typeof data.toolCount === "number") addFact(strip, String(data.toolCount), "tools");
+    if (isObjArray(data.browsers)) {
+      var ok = data.browsers.filter(function (b) { return b.installed; }).length;
+      addFact(strip, ok + "/" + data.browsers.length, "browsers", ok < data.browsers.length);
+    }
+    if (isObjArray(data.directories)) {
+      var present = data.directories.filter(function (d) { return d.exists; }).length;
+      addFact(strip, present + "/" + data.directories.length, "directories", present < data.directories.length);
+    }
+    if (typeof data.sessions === "number") addFact(strip, String(data.sessions), "sessions");
+    if (data.healCache && typeof data.healCache.totalHeals === "number") {
+      addFact(strip, String(data.healCache.totalHeals), "self-heals");
+    }
+    if (strip.childNodes.length) root.appendChild(strip);
+
+    var used = {};
+    HEADER_KEYS.forEach(function (k) { used[k] = true; });
+
+    // Curated groups first, in declared order.
+    GROUPS.forEach(function (g) {
+      var pairs = [];
+      g.keys.forEach(function (k) {
+        var v = data[k];
+        if (v === undefined) return;
+        used[k] = true;
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          Object.keys(v).forEach(function (sk) { pairs.push([titleize(sk), v[sk]]); });
+        } else pairs.push([titleize(k), v]);
+      });
+      if (pairs.length) root.appendChild(section(g.title, pairs.length, kvTable(pairs), false));
+    });
+
+    // Object arrays get real tables, one section each.
+    Object.keys(data).forEach(function (k) {
+      if (used[k] || !isObjArray(data[k])) return;
+      used[k] = true;
+      root.appendChild(section(titleize(k), String(data[k].length), gridTable(data[k]), false));
+    });
+
+    // Everything left over, so no field is ever silently dropped.
+    var rest = [];
+    Object.keys(data).forEach(function (k) {
+      if (used[k]) return;
+      var v = data[k];
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        Object.keys(v).forEach(function (sk) { rest.push([titleize(k) + " › " + titleize(sk), v[sk]]); });
+      } else rest.push([titleize(k), v]);
+    });
+    if (rest.length) root.appendChild(section("Counts and paths", String(rest.length), kvTable(rest), true));
+
+    var dd = el("p", "msg");
+    dd.className = "msg";
+    dd.appendChild(document.createTextNode("Data directory: "));
+    var dp = el("span", "path", data.dataDir || "—");
+    dd.appendChild(dp);
+    root.appendChild(dd);
   }
 
   var app = new App({ name: "cbrowser-status", version: "1.0.0" }, {}, { autoResize: true });
@@ -308,11 +479,8 @@ export function buildStatusTemplate(): string {
     }
   }
 
-  // Handlers before connect(), or the first result is delivered into nothing.
   app.ontoolresult = function (res) {
     try {
-      // structuredContent when the host forwards it; the text block is the
-      // documented path and the one that survives hosts that drop the former.
       var data = res && res.structuredContent;
       if (!data && res && res.content && res.content[0] && res.content[0].text) {
         data = JSON.parse(res.content[0].text);
