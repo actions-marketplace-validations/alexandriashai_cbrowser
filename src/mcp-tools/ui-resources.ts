@@ -187,7 +187,9 @@ export function buildStatusTemplate(): string {
   body{margin:0;padding:14px;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}
   .eyebrow{font:600 .67rem/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--sub);margin:0 0 .35rem}
   h1{font-size:1.02rem;margin:0 0 .8rem}
-  .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--border-radius-md,8px)}
+  .wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--border-radius-md,8px);margin-bottom:.2rem}
+  h2{font-size:.82rem;margin:1rem 0 .35rem;color:var(--sub);font-weight:600;letter-spacing:.02em}
+  th.col{font:.7rem/1.4 ui-monospace,monospace;color:var(--sub);width:auto;text-transform:uppercase;letter-spacing:.06em}
   table{border-collapse:collapse;width:100%;font-size:.85rem}
   th,td{text-align:left;padding:.4rem .68rem;border-bottom:1px solid var(--line);vertical-align:top}
   tr:last-child th,tr:last-child td{border-bottom:0}
@@ -197,7 +199,7 @@ export function buildStatusTemplate(): string {
 </style>
 <p class="eyebrow">CBrowser</p>
 <h1>Environment status</h1>
-<div class="wrap"><table><tbody id="rows"></tbody></table></div>
+<div id="root"></div>
 <p class="msg" id="msg">Waiting for the host&hellip;</p>
 <script type="module">
 /*__EXT_APPS_BUNDLE__*/
@@ -208,7 +210,8 @@ export function buildStatusTemplate(): string {
   if (!globalThis.ExtApps) { msg.textContent = "Widget runtime unavailable."; return; }
   var App = globalThis.ExtApps.App;
   var applyHostStyleVariables = globalThis.ExtApps.applyHostStyleVariables;
-  var tbody = document.getElementById("rows");
+  var root = document.getElementById("root");
+  var tbody = null;
 
   // textContent, never innerHTML: this renders tool output containing paths and
   // versions the server does not control.
@@ -217,21 +220,82 @@ export function buildStatusTemplate(): string {
     var th = document.createElement("th");
     var td = document.createElement("td");
     th.textContent = label;
-    td.textContent = (value === "" || value === null || value === undefined) ? "\u2014" : String(value);
+    td.textContent = fmt(value);
     tr.appendChild(th); tr.appendChild(td); tbody.appendChild(tr);
   }
-  function walk(obj, prefix) {
+  function fmt(v) {
+    if (v === true) return "yes";
+    if (v === false) return "no";
+    if (v === "" || v === null || v === undefined) return "\u2014";
+    return String(v);
+  }
+  var isObjArray = function (v) {
+    return Array.isArray(v) && v.length > 0 &&
+      v.every(function (x) { return x && typeof x === "object" && !Array.isArray(x); });
+  };
+
+  // An array of objects gets its own table with real columns. Flattening one
+  // into a single cell is what produced "[object Object]": join() stringifies
+  // each element, and every element was a record. directories and browsers are
+  // both this shape, and both are more legible as a table than as dotted rows.
+  function addObjectTable(title, rows) {
+    var cols = [];
+    rows.forEach(function (r) {
+      Object.keys(r).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); });
+    });
+    var h = document.createElement("h2");
+    h.textContent = title;
+    var wrap = document.createElement("div");
+    wrap.className = "wrap";
+    var t = document.createElement("table");
+    var thead = document.createElement("thead");
+    var htr = document.createElement("tr");
+    cols.forEach(function (c) {
+      var th = document.createElement("th");
+      th.className = "col";
+      th.textContent = c;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    var tb = document.createElement("tbody");
+    rows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      cols.forEach(function (c) {
+        var td = document.createElement("td");
+        td.textContent = fmt(r[c]);
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    t.appendChild(thead); t.appendChild(tb); wrap.appendChild(t);
+    root.appendChild(h); root.appendChild(wrap);
+  }
+
+  function walk(obj, prefix, deferred) {
     Object.keys(obj || {}).forEach(function (k) {
       var v = obj[k];
       var label = prefix ? prefix + "." + k : k;
-      if (v && typeof v === "object" && !Array.isArray(v)) walk(v, label);
-      else addRow(label, Array.isArray(v) ? v.join(", ") : v);
+      if (isObjArray(v)) deferred.push([label, v]);
+      else if (v && typeof v === "object" && !Array.isArray(v)) walk(v, label, deferred);
+      else addRow(label, Array.isArray(v) ? (v.length ? v.join(", ") : "\u2014") : v);
     });
   }
   function render(data) {
     if (!data) return;
-    tbody.replaceChildren();
-    walk(data, "");
+    root.replaceChildren();
+    tbody = document.createElement("tbody");
+    var mainWrap = document.createElement("div");
+    mainWrap.className = "wrap";
+    var mainTable = document.createElement("table");
+    mainTable.appendChild(tbody);
+    mainWrap.appendChild(mainTable);
+    root.appendChild(mainWrap);
+
+    // Object-arrays are deferred so the scalar summary stays one uninterrupted
+    // table rather than being cut in half by whichever key happened to sort first.
+    var deferred = [];
+    walk(data, "", deferred);
+    deferred.forEach(function (d) { addObjectTable(d[0], d[1]); });
     msg.textContent = "";
   }
 
