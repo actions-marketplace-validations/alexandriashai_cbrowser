@@ -244,6 +244,14 @@ export interface CaptureStopPayload {
   artifact_urls?: Record<string, string>;
   /** Public URL for the contact sheet, when it was published. */
   contact_sheet_url?: string;
+  /**
+   * Public URL of a standalone HTML player carrying the recording, the
+   * per-moment attention judgements and the closing narrative.
+   *
+   * This is the link to hand a person: it opens in any browser, needs no client,
+   * and is the only artifact here that survives leaving the tool response.
+   */
+  player_url?: string;
   note: string;
 }
 
@@ -270,6 +278,7 @@ export function buildCaptureStopPayload(
     contactSheetNote?: string;
     artifactUrls?: Record<string, string>;
     contactSheetUrl?: string;
+    playerUrl?: string;
   },
 ): CaptureStopPayload {
   const consoleErrors: string[] = [];
@@ -322,6 +331,7 @@ export function buildCaptureStopPayload(
       ? { artifact_urls: extra.artifactUrls }
       : {}),
     ...(extra.contactSheetUrl ? { contact_sheet_url: extra.contactSheetUrl } : {}),
+    ...(extra.playerUrl ? { player_url: extra.playerUrl } : {}),
     note:
       "Frames stay on disk — read them by path. Encoded artifacts are also published " +
       "to public HTTPS URLs in `artifact_urls`, so a GIF or video can be displayed " +
@@ -589,6 +599,35 @@ export async function stopCapture(
     } catch { /* same */ }
   }
 
+  // Build a standalone player and publish it alongside the media. This is the
+  // only artifact a chat client can actually open: video will not cross an MCP
+  // boundary and the judgement JSON is not something a person reads.
+  let playerUrl: string | undefined;
+  try {
+    const { buildCapturePlayer } = await import("../../recording/capture-player.js");
+    const overlay = manifest.attention_overlay;
+    const html = buildCapturePlayer({
+      slug: manifest.slug,
+      targetUrl: entry?.url,
+      durationMs: manifest.duration_ms,
+      frames: manifest.frames.length,
+      actualFps: manifest.actual_fps,
+      artifactUrls,
+      ...(contactSheetUrl ? { contactSheetUrl } : {}),
+      ...(overlay
+        ? {
+            overlay: {
+              quantity: overlay.quantity,
+              usedDom: overlay.used_dom,
+              domElements: overlay.dom_elements,
+            },
+          }
+        : {}),
+    });
+    const written = writeArtifact(Buffer.from(html, "utf8"), `${manifest.slug}-player.html`);
+    if (written) playerUrl = written.url;
+  } catch { /* the recording stands without its player */ }
+
   // Surface the recording in the account's Visual Reports gallery, the same way
   // heatmaps and empathy screenshots appear. Prefer the GIF: it plays inline in
   // a gallery, where a WebM needs a player and the contact sheet is only a
@@ -635,6 +674,7 @@ export async function stopCapture(
     ...(contactSheetNote ? { contactSheetNote } : {}),
     ...(Object.keys(artifactUrls).length > 0 ? { artifactUrls } : {}),
     ...(contactSheetUrl ? { contactSheetUrl } : {}),
+    ...(playerUrl ? { playerUrl } : {}),
   });
 
   finished.set(key, {
