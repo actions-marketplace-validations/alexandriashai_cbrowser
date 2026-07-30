@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.79.0](https://github.com/alexandriashai/cbrowser/compare/v18.78.0...v18.79.0) (2026-07-30)
+
+### Added
+
+* **research:** saliency4asd adapter, and the negative result it produced ([538279d](https://github.com/alexandriashai/cbrowser/commit/538279ddad51c3efc458109c320429a5e335c60d))
+
 ## [18.78.0](https://github.com/alexandriashai/cbrowser/compare/v18.77.0...v18.78.0) (2026-07-29)
 
 ### Added
