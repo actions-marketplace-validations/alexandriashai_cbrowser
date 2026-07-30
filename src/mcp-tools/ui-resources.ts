@@ -42,10 +42,29 @@ function getLogoDataUri(): string {
   if (logoUri !== undefined) return logoUri;
   try {
     const here = dirname(fileURLToPath(import.meta.url));
-    const svg = readFileSync(join(here, "..", "..", "assets", "cbrowser-logo.svg"), "utf8")
-      .replace(/\s*\n\s*/g, " ")
+    const raw = readFileSync(join(here, "..", "..", "assets", "cbrowser-logo.svg"), "utf8")
+      .replace(/\s*\n\s*/g, " ");
+
+    // The mark is ~100 rects whose opacity ramps down to 0.34, which is a
+    // deliberate fade at poster size and nearly invisible at 23px on a dark
+    // disc -- each dot renders under a pixel tall, so the faint end simply
+    // disappears. Three adjustments, applied here rather than to the asset so
+    // the brand file on disk stays canonical:
+    //
+    //   floor the opacity   - the fade survives, its bottom end does not vanish
+    //   brighten the fill   - the darker blues sat too close to the disc
+    //   stroke each rect    - at sub-pixel heights a stroke is what gives the
+    //                         dot enough mass to survive rasterisation
+    const brighten = (c: number): number => Math.round(c + (255 - c) * 0.34);
+    const svg = raw
+      .replace(/opacity="([\d.]+)"/g, (_m, v: string) =>
+        `opacity="${Math.min(1, 0.62 + parseFloat(v) * 0.38).toFixed(3)}"`)
+      .replace(/fill="rgb\((\d+),\s*(\d+),\s*(\d+)\)"/g, (_m, r: string, g: string, b: string) => {
+        const c = `rgb(${brighten(+r)},${brighten(+g)},${brighten(+b)})`;
+        return `fill="${c}" stroke="${c}" stroke-width="5" stroke-linejoin="round"`;
+      })
       .replace(/"/g, "'");
-    logoUri = "data:image/svg+xml," + encodeURIComponent(svg).replace(/'/g, "%27");
+    logoUri = "data:image/svg+xml," + encodeURIComponent(svg.replace("stdDeviation='5'", "stdDeviation='7'")).replace(/'/g, "%27");
   } catch {
     logoUri = "";
   }
@@ -250,10 +269,10 @@ export function buildStatusTemplate(): string {
      when the host theme flips -- the logo reads identically either way.
      The hairline ring keeps the disc from merging into the dark end of the
      gradient it sits on. */
-  .badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
+  .badge{flex:0 0 auto;width:37px;height:37px;border-radius:50%;display:grid;place-items:center;
     background:#14171d;
     box-shadow:0 0 0 1px rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28)}
-  .badge img{width:23px;height:23px;display:block}
+  .badge img{width:27px;height:27px;display:block}
   .htitle{font-size:1.08rem;font-weight:650;letter-spacing:-.01em}
   .health{margin-left:auto;display:inline-flex;align-items:center;gap:.4rem;
     padding:.28rem .6rem;border-radius:999px;background:rgba(255,255,255,.94);
