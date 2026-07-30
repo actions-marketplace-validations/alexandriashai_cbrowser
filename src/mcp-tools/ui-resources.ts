@@ -183,9 +183,9 @@ export const PERSONA_SPEC: WidgetSpec = {
     ],
   },
   blocks: [
-    { type: "traits", title: "Cognitive traits", field: "traits", ramp: "trait" },
+    { type: "traits", title: "Cognitive traits", field: "traits", ramp: "trait", describe: true },
     { type: "traits", title: "Values", field: "values", ramp: "value" },
-    { type: "traits", title: "Accessibility traits", field: "accessibility_traits", ramp: "accessibility" },
+    { type: "traits", title: "Accessibility traits", field: "accessibility_traits", ramp: "accessibility", describe: true },
     {
       type: "drawer",
       title: "Details",

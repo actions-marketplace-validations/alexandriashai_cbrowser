@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TRAIT_DEFINITIONS } from "../trait-reference.js";
 
 /** The MIME the host keys on to render a resource as an interactive view. */
 export const MCP_APP_MIME = "text/html;profile=mcp-app";
@@ -85,7 +86,9 @@ export type BlockSpec =
    */
   | { type: "traits"; title: string; field: FieldPath;
       ramp?: "trait" | "value" | "accessibility";
-      nameKey?: string; valueKey?: string }
+      nameKey?: string; valueKey?: string;
+      /** Show a definition tooltip on each label, from the baked-in glossary. */
+      describe?: boolean }
   /** Free prose. */
   | { type: "note"; title?: string; field: FieldPath }
   /** Everything not consumed by another block, so no field is silently dropped. */
@@ -375,6 +378,21 @@ const CSS = `
   .track .base{position:absolute;top:0;bottom:0;left:50%;width:1px;background:color-mix(in srgb,var(--ink) 22%,transparent);z-index:1}
   .track i{display:block;height:100%;border-radius:999px}
   .tval{font:.68rem/1 var(--mono);width:2.2rem;text-align:right;flex:0 0 auto;font-variant-numeric:tabular-nums}
+  button.tname{background:none;border:0;padding:0;font:inherit;font-size:.68rem;color:var(--sub);
+    cursor:help;text-align:right;text-decoration:underline dotted currentColor;text-underline-offset:2px}
+  button.tname:hover,button.tname:focus-visible{color:var(--ink)}
+  button.tname:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+  /* position:fixed, not absolute: the trait list sits inside scroll and
+     details containers, and an absolutely positioned tip would be clipped by
+     the first one with overflow set. */
+  .tip{position:fixed;z-index:50;max-width:270px;padding:.55rem .65rem;border-radius:7px;
+    background:#14171d;color:#f2f4f7;font-size:.76rem;line-height:1.45;
+    box-shadow:0 6px 20px rgba(0,0,0,.3);pointer-events:none;opacity:0;transition:opacity 120ms ease}
+  .tip.on{opacity:1}
+  .tip b{display:block;font-size:.72rem;letter-spacing:.04em;text-transform:uppercase;
+    color:#9fb4d8;margin-bottom:.2rem}
+  .tip .ends{margin-top:.35rem;color:#aab4c2;font-size:.72rem}
+  @media (prefers-reduced-motion:reduce){.tip{transition:none}}
   .shot{max-width:100%;height:auto;display:block;border-radius:6px;border:1px solid var(--line)}
   .cap{font-size:.77rem;color:var(--sub);margin:.35rem 0 0}
   .foot{padding:0 18px 14px;font-size:.77rem;color:var(--sub)}
@@ -433,6 +451,42 @@ const RUNTIME = String.raw`
     return k.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, function (c) { return c.toUpperCase(); });
   };
   var used = {};
+  var GLOSSARY = __GLOSSARY__;
+
+  // One tip element reused by every label, created lazily.
+  var tip = null;
+  function ensureTip() {
+    if (tip) return tip;
+    tip = el("div", "tip");
+    tip.id = "kit-tip";
+    tip.setAttribute("role", "tooltip");
+    document.body.appendChild(tip);
+    return tip;
+  }
+  function showTip(btn, info) {
+    var t = ensureTip();
+    t.replaceChildren();
+    t.appendChild(el("b", null, info.label));
+    t.appendChild(document.createTextNode(info.description || ""));
+    if (info.lowEnd || info.highEnd) {
+      var e = el("div", "ends");
+      if (info.lowEnd) e.appendChild(el("div", null, "0.0 — " + info.lowEnd));
+      if (info.highEnd) e.appendChild(el("div", null, "1.0 — " + info.highEnd));
+      t.appendChild(e);
+    }
+    t.classList.add("on");
+    var r = btn.getBoundingClientRect();
+    var tr = t.getBoundingClientRect();
+    // Flip below when there is not room above, and clamp horizontally so the
+    // tip never leaves the frame.
+    var top = r.top - tr.height - 8;
+    if (top < 4) top = r.bottom + 8;
+    var left = Math.min(Math.max(4, r.left), Math.max(4, window.innerWidth - tr.width - 4));
+    t.style.top = top + "px";
+    t.style.left = left + "px";
+  }
+  function hideTip() { if (tip) tip.classList.remove("on"); }
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTip(); });
 
   function kvTable(pairs) {
     var t = el("table", "kv"), tb = el("tbody");
@@ -497,7 +551,23 @@ const RUNTIME = String.raw`
       var name = r.name, v = Number(r.value);
       if (!isFinite(v)) return;
       var line = el("div", "trait");
-      line.appendChild(el("span", "tname", titleize(String(name))));
+      var label = titleize(String(name));
+      var info = b.describe ? GLOSSARY[String(name)] : null;
+      if (info) {
+        // A button, not a span: the definition has to be reachable by keyboard,
+        // and hover-only would hide it from anyone not using a mouse.
+        var btn = el("button", "tname", label);
+        btn.type = "button";
+        btn.setAttribute("aria-describedby", "kit-tip");
+        var payload = { label: label, description: info.d, lowEnd: info.l, highEnd: info.h };
+        btn.addEventListener("mouseenter", function () { showTip(btn, payload); });
+        btn.addEventListener("focus", function () { showTip(btn, payload); });
+        btn.addEventListener("mouseleave", hideTip);
+        btn.addEventListener("blur", hideTip);
+        line.appendChild(btn);
+      } else {
+        line.appendChild(el("span", "tname", label));
+      }
       var track = el("div", "track");
       track.appendChild(el("span", "base"));
       var fill = el("i");
@@ -858,9 +928,36 @@ const RUNTIME = String.raw`
  * Top-level await is deliberately absent from the emitted script: older iframe
  * contexts throw on it, and the throw surfaces only as a blank widget.
  */
+/**
+ * Definitions baked into every widget, keyed by trait name.
+ *
+ * Sourced from TRAIT_DEFINITIONS, the authoritative reference matrix, rather
+ * than written fresh -- a tooltip that disagrees with the docs is worse than
+ * no tooltip. Keys are short because this ships inside every view; ~4KB for
+ * all 25 traits, against a 300KB runtime bundle.
+ *
+ * Schwartz values have no runtime description map (they are interfaces with
+ * JSDoc), so value meters currently render without tooltips rather than with
+ * invented ones.
+ */
+function buildGlossary(): Record<string, { d: string; l?: string; h?: string }> {
+  const out: Record<string, { d: string; l?: string; h?: string }> = {};
+  for (const [key, def] of Object.entries(TRAIT_DEFINITIONS)) {
+    out[key] = {
+      d: def.description,
+      ...(def.lowEnd ? { l: def.lowEnd } : {}),
+      ...(def.highEnd ? { h: def.highEnd } : {}),
+    };
+  }
+  return out;
+}
+let glossaryCache: string | undefined;
+
 export function buildWidget(spec: WidgetSpec): string {
+  if (glossaryCache === undefined) glossaryCache = JSON.stringify(buildGlossary());
   const script = RUNTIME
     .replace("__SPEC__", () => JSON.stringify(spec))
+    .replace("__GLOSSARY__", () => glossaryCache as string)
     .replace("__LOGO__", () => getLogoDataUri());
   return `<!doctype html><meta charset="utf-8">
 <meta name="color-scheme" content="light dark">

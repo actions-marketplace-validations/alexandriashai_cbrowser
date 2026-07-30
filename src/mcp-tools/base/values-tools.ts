@@ -8,6 +8,8 @@
 
 import { z } from "zod";
 import { PERSONA_CATEGORIES } from "../../persona-questionnaire.js";
+import { getAnyPersona, getCognitiveProfile } from "../../personas.js";
+import { widgetUri } from "../widget-kit.js";
 import type { McpServer } from "../types.js";
 import {
   getPersonaValues,
@@ -76,6 +78,72 @@ export function registerValuesTools(server: McpServer): void {
             }, null, 2),
           },
         ],
+      };
+    }
+  );
+
+  /**
+   * Whole-persona lookup: traits, values, accessibility and demographics in one
+   * call, and the payload the persona view renders.
+   *
+   * persona_values_lookup stays registered rather than being renamed into this.
+   * It is a published tool name that connectors already call, and renaming it
+   * in the same deploy as the replacement would break every existing caller --
+   * the expand half of expand-contract. It can be retired once nothing calls it.
+   */
+  server.registerTool("persona_lookup", {
+    title: "Look Up Persona",
+    description: "Look up a complete persona: cognitive traits, Schwartz values, accessibility traits and demographics. Renders as an interactive profile with per-trait meters. Use this instead of persona_values_lookup when you want the whole persona rather than only its values.",
+    inputSchema: {
+      persona: z.string().describe("Persona name (e.g., 'first-timer', 'power-user', 'anxious-user')"),
+    },
+    outputSchema: {} as Record<string, never>,
+    annotations: {
+      title: "Look Up Persona",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    _meta: { ui: { resourceUri: widgetUri("persona") } },
+  }, async ({ persona }) => {
+      const p = getAnyPersona(persona);
+      if (!p) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({
+            error: `No persona found: ${persona}`,
+            hint: "Call list_cognitive_personas for the authoritative roster.",
+          }, null, 2) }],
+          isError: true,
+        };
+      }
+      const profile = getCognitiveProfile(p as never);
+      const values = getPersonaValues((p as { name: string }).name);
+      const rec = p as unknown as Record<string, unknown>;
+
+      // Flattened to plain name->number maps because that is what the meters
+      // read. The nested {value, meaning} shape values_lookup returns is fine
+      // for prose and useless for a bar.
+      const payload = {
+        name: (p as { name: string }).name,
+        description: (p as { description?: string }).description ?? "",
+        demographics: rec.demographics ?? {},
+        traits: profile?.traits ?? {},
+        ...(values ? { values: {
+          selfDirection: values.selfDirection, stimulation: values.stimulation,
+          hedonism: values.hedonism, achievement: values.achievement, power: values.power,
+          security: values.security, conformity: values.conformity, tradition: values.tradition,
+          benevolence: values.benevolence, universalism: values.universalism,
+        } } : {}),
+        ...(rec.accessibility_traits ? { accessibility_traits: rec.accessibility_traits } : {}),
+        ...(rec.accessibilityTraits ? { accessibility_traits: rec.accessibilityTraits } : {}),
+        ...(profile?.attentionPattern ? { attentionPattern: profile.attentionPattern } : {}),
+        ...(profile?.decisionStyle ? { decisionStyle: profile.decisionStyle } : {}),
+      };
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        structuredContent: payload as unknown as Record<string, unknown>,
       };
     }
   );
