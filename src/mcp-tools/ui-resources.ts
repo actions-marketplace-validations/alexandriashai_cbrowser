@@ -41,8 +41,21 @@ const PROBE_HTML = `<!doctype html><meta charset="utf-8">
   <p class="note">Served as <code>text/html;profile=mcp-app</code> from <code>ui://cbrowser/probe</code>.</p>
 </div>`;
 
-/** Register the inline-UI resources on a server. Safe to call on any variant. */
+/**
+ * Servers that already have these resources.
+ *
+ * The call site is genuinely ambiguous: startRemoteMcpServer registers them for
+ * every server it builds, and the demo/enterprise entrypoints also need to
+ * register them because they are separate builds. Whichever one you delete, the
+ * other layer is wrong for some variant -- so registration is idempotent instead.
+ * The SDK throws on a duplicate URI, which crash-loops the process at boot.
+ */
+const registered = new WeakSet<McpServer>();
+
+/** Register the inline-UI resources on a server. Safe to call more than once. */
 export function registerUiResources(server: McpServer): void {
+  if (registered.has(server)) return;
+  registered.add(server);
   server.resource(
     UI_PROBE_URI,
     UI_PROBE_URI,
