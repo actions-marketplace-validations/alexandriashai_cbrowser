@@ -75,8 +75,22 @@ export function buildCapturePlayer(data: CapturePlayerData): string {
   const image = data.artifactUrls.gif ?? data.artifactUrls.webp;
   const poster = data.contactSheetUrl;
 
+  // Speed control only exists for video. A GIF's frame delays are baked into the
+  // file and no browser API changes them, so offering a slider that silently did
+  // nothing would be worse than saying which artifact supports it.
+  const speedBar = video
+    ? `<div class="speed" role="group" aria-label="Playback speed">
+        <span class="lbl">Speed</span>
+        ${[0.25, 0.5, 1, 2].map((r) => `<button type="button" data-rate="${r}"${r === 1 ? ' aria-pressed="true"' : ' aria-pressed="false"'}>${r}&times;</button>`).join("")}
+        <button type="button" data-step="-1" title="Previous frame">&#9666;</button>
+        <button type="button" data-step="1" title="Next frame">&#9656;</button>
+       </div>`
+    : image
+      ? `<p class="speednote">Speed control needs the video artifact &mdash; capture with <code>format: "gif,webm"</code> to get it.</p>`
+      : "";
+
   const media = video
-    ? `<video controls loop muted playsinline${poster ? ` poster="${esc(poster)}"` : ""} src="${esc(video)}"></video>`
+    ? `<video id="rec" controls loop muted playsinline${poster ? ` poster="${esc(poster)}"` : ""} src="${esc(video)}"></video>`
     : image
       ? `<img src="${esc(image)}" alt="Recording of ${esc(data.targetUrl ?? data.slug)}">`
       : `<p class="empty">No playable artifact was produced for this capture.</p>`;
@@ -148,6 +162,14 @@ h2{font-size:1.2rem;margin:0 0 .5rem;padding-bottom:.35rem;border-bottom:1px sol
 figure{margin:0;background:var(--card);border:1px solid var(--rule);border-radius:6px;overflow:hidden}
 video,img{display:block;width:100%;height:auto;background:#000}
 .lede{color:var(--muted);margin:.2rem 0 1rem;font-size:.95rem}
+.speed{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;margin-top:-1.4rem}
+.speed .lbl{font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:.2rem}
+.speed button{font-family:var(--mono);font-size:.76rem;padding:.28rem .6rem;border:1px solid var(--rule);
+  border-radius:3px;background:var(--card);color:var(--ink);cursor:pointer}
+.speed button:hover{border-color:var(--accent)}
+.speed button[aria-pressed="true"]{background:var(--accent);color:var(--card);border-color:var(--accent)}
+.speed button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.speednote{font-size:.85rem;color:var(--muted);margin-top:-1.4rem}
 .moments{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.9rem}
 .moments>li{display:grid;grid-template-columns:5.5rem 1fr;gap:0 1rem;background:var(--card);
   border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:4px;padding:.9rem 1rem}
@@ -197,6 +219,7 @@ a:focus-visible,video:focus-visible{outline:2px solid var(--accent);outline-offs
   </header>
 
   <figure>${media}</figure>
+  ${speedBar}
 
   ${summary}
   ${timeline}
@@ -211,6 +234,43 @@ a:focus-visible,video:focus-visible{outline:2px solid var(--accent);outline-offs
       : "No attention overlay was applied to this capture."}
   </footer>
 </div>
+<script>
+(function () {
+  var v = document.getElementById("rec");
+  if (!v) return;
+  var bar = document.querySelector(".speed");
+  if (!bar) return;
+
+  // Frame step uses the capture's real rate, not a guessed 30fps — stepping by
+  // the wrong interval lands between frames and looks like nothing happened.
+  var FRAME = ${data.actualFps > 0 ? (1 / data.actualFps).toFixed(4) : "0.25"};
+
+  bar.addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.rate) {
+      v.playbackRate = parseFloat(b.dataset.rate);
+      bar.querySelectorAll("[data-rate]").forEach(function (o) {
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      return;
+    }
+    if (b.dataset.step) {
+      v.pause();
+      v.currentTime = Math.max(0, v.currentTime + parseInt(b.dataset.step, 10) * FRAME);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.target && /input|textarea/i.test(e.target.tagName)) return;
+    if (e.key === "," || e.key === ".") {
+      e.preventDefault();
+      v.pause();
+      v.currentTime = Math.max(0, v.currentTime + (e.key === "." ? FRAME : -FRAME));
+    }
+  });
+})();
+</script>
 </body>
 </html>`;
 }

@@ -164,7 +164,7 @@ const DEFAULT_QUALITY = 80;
 const DEFAULT_MAX_FRAMES = 3000;
 
 /** How often to check whether the page scrolled far enough to re-read the DOM. */
-const SCROLL_SNAPSHOT_INTERVAL_MS = 400;
+const SCROLL_SNAPSHOT_INTERVAL_MS = 200;
 /** Scroll distance that changes the viewport enough to warrant a fresh snapshot. */
 const SCROLL_SNAPSHOT_THRESHOLD_PX = 200;
 
@@ -273,7 +273,18 @@ export class VideoCaptureSession {
    * artifact. One extract per navigation is cheap; per frame would be a
    * page.evaluate on every screencast tick.
    */
-  private domSnapshots: Array<{ atMs: number; elements: unknown[] }> = [];
+  private domSnapshots: Array<{ atMs: number; scrollY: number; elements: unknown[] }> = [];
+  /**
+   * Scroll position over time, sampled cheaply.
+   *
+   * Element rects come from getBoundingClientRect, which is VIEWPORT-relative at
+   * the instant of extraction. Between snapshots the page keeps scrolling, so a
+   * rect captured before a scroll describes a position the element has since
+   * left — the heat lands below where the element now is, by exactly the drift.
+   * Storing scroll per sample lets the renderer correct each frame back to what
+   * was actually on screen.
+   */
+  private scrollTrack: Array<{ atMs: number; scrollY: number }> = [];
   private navListener?: () => void;
   private scrollTimer?: ReturnType<typeof setInterval>;
   private nextDueMs = 0;
@@ -906,7 +917,8 @@ export class VideoCaptureSession {
       try {
         const { extractPageElementsForAttention } = await import("../visual/attention-quality.js");
         const elements = await extractPageElementsForAttention(this.page);
-        this.domSnapshots.push({ atMs: Date.now() - this.startWallMs, elements });
+        const scrollY = await this.page.evaluate(() => window.scrollY).catch(() => 0);
+        this.domSnapshots.push({ atMs: Date.now() - this.startWallMs, scrollY, elements });
       } catch { /* a missing snapshot degrades that frame, never the recording */ }
     };
     void snapshot();
@@ -927,6 +939,10 @@ export class VideoCaptureSession {
       void (async () => {
         try {
           const y = await this.page.evaluate(() => window.scrollY);
+          // Sampled every tick regardless of the snapshot threshold: the
+          // correction needs fine-grained scroll, even where a fresh DOM read
+          // would be wasteful.
+          this.scrollTrack.push({ atMs: Date.now() - this.startWallMs, scrollY: y });
           if (Math.abs(y - lastScrollY) >= SCROLL_SNAPSHOT_THRESHOLD_PX) {
             lastScrollY = y;
             await snapshot();
@@ -1170,6 +1186,7 @@ export class VideoCaptureSession {
           // Time-indexed DOM, so a frame is judged against the page as it was
           // at that moment rather than against wherever the capture ended up.
           domTimeline: this.domSnapshots as never,
+          scrollTrack: this.scrollTrack,
           frameTimesMs: manifest.frames.map((f) => f.t_ms),
           summarize: true,
           getApiKey: getAnthropicApiKey,

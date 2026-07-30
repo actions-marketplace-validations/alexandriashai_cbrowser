@@ -82,7 +82,9 @@ export interface AttentionOverlayOptions {
    * every moment came back identical, and the summary read that uniformity as a
    * UX finding rather than as the artifact it was.
    */
-  domTimeline?: Array<{ atMs: number; elements: DOMAttentionElement[] }>;
+  domTimeline?: Array<{ atMs: number; scrollY?: number; elements: DOMAttentionElement[] }>;
+  /** Scroll position over time, used to correct rects for drift since capture. */
+  scrollTrack?: Array<{ atMs: number; scrollY: number }>;
   /** Persona context for the relevance judge and the closing summary. */
   relevanceContext?: Omit<RelevanceContext, "screenshot">;
   /** Produce a narrative of the whole recording after the frames are overlaid. */
@@ -231,12 +233,34 @@ export async function overlayAttentionOnFrames(
    * varied, so the overlay looked static no matter what happened on the page,
    * and a capture measured nothing a single screenshot did not.
    */
+  const scrollAt = (tMs: number): number => {
+    const track = options.scrollTrack;
+    if (!track || track.length === 0) return 0;
+    let best = track[0];
+    for (const s of track) if (s.atMs <= tMs) best = s;
+    return best.scrollY;
+  };
+
   const domAt = (tMs: number): DOMAttentionElement[] => {
     const tl = options.domTimeline;
     if (!tl || tl.length === 0) return options.domElements ?? [];
     let best = tl[0];
     for (const snap of tl) if (snap.atMs <= tMs) best = snap;
-    return best.elements;
+
+    // Correct for scroll drift since the snapshot was taken. Rects are
+    // viewport-relative at extraction, so if the page scrolled DOWN by d
+    // afterwards, every element is now d pixels higher than its stored y —
+    // painting at the stored value puts the heat that far below the element.
+    const drift = scrollAt(tMs) - (best.scrollY ?? scrollAt(best.atMs));
+    if (Math.abs(drift) < 1) return best.elements;
+
+    return best.elements.map((el) => ({
+      ...el,
+      y: el.y - drift,
+      ...(el.words
+        ? { words: el.words.map((w) => ({ ...w, y: w.y - drift })) }
+        : {}),
+    }));
   };
 
   const frames: string[] = [];
