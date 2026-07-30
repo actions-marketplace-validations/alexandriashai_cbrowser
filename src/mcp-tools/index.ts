@@ -1,3 +1,4 @@
+export { registerUiResources, UI_PROBE_URI, MCP_APP_MIME } from "./ui-resources.js";
 /**
  * CBrowser MCP Tools - Main Index
  *

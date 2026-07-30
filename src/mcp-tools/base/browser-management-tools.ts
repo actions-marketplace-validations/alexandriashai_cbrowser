@@ -34,6 +34,10 @@ export function registerBrowserManagementTools(
     title: "Browser Status",
     description: "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, self-healing cache statistics, and MCP tool count",
     inputSchema: {},
+    // Carries the MCP Apps inline-UI probe. status is the cheapest tool to call,
+    // so testing whether this host renders ui:// resources costs nothing and
+    // touches no browser state. Hosts that do not support MCP Apps ignore _meta.
+    _meta: { ui: { resourceUri: "ui://cbrowser/probe" } },
     annotations: {
       title: "Browser Status",
       readOnlyHint: true,
