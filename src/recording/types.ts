@@ -275,6 +275,8 @@ export const RecordingManifestSchema = z.object({
     used_dom: z.boolean(),
     dom_elements: z.number(),
     frames_failed: z.number(),
+    persona_resolved: z.boolean().optional(),
+    persona_used: z.string().optional(),
     /** Per-keyframe judgements. Computed during overlay and previously dropped. */
     moments: z.array(z.object({
       frame_index: z.number(),

@@ -108,6 +108,17 @@ export interface OverlayResult {
   usedDom: boolean;
   /** The quantity that was painted, for callers that label the artifact. */
   quantity: "predicted-attention" | "visual-contrast-only";
+  /**
+   * Whether the requested persona actually exists.
+   *
+   * An unknown name does not error — it falls through keyword inference to a
+   * default, which is right for custom personas and silent for typos. A caller
+   * who asks for "alexa-eden" and gets a generic profile has no way to tell,
+   * and every number downstream is then attributed to a persona that never ran.
+   */
+  personaResolved?: boolean;
+  /** The persona actually used, which may differ from the one requested. */
+  personaUsed?: string;
 }
 
 /**
@@ -366,6 +377,12 @@ export async function overlayAttentionOnFrames(
 
   const usedDom = (opts.domElements?.length ?? 0) > 0;
 
+  let personaResolved = true;
+  try {
+    const { getAnyPersona } = await import("../personas.js");
+    personaResolved = Boolean(getAnyPersona(opts.persona));
+  } catch { /* registry unavailable; assume resolved rather than cry wolf */ }
+
   // Judge the persona's attention at each KEYFRAME, not each frame. The engine's
   // SSIM keyframes are the moments the interface actually changed, so between
   // them the page — and therefore the judgement — is identical. This turns an
@@ -441,6 +458,8 @@ export async function overlayAttentionOnFrames(
     failed,
     usedDom,
     quantity: usedDom ? "predicted-attention" : "visual-contrast-only",
+    personaResolved,
+    personaUsed: opts.persona,
     ...(moments && moments.length > 0 ? { moments } : {}),
     ...(summary ? { summary } : {}),
   };

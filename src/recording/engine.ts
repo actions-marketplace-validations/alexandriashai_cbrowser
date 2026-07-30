@@ -1252,6 +1252,8 @@ export class VideoCaptureSession {
           used_dom: overlay.usedDom,
           dom_elements: domElements?.length ?? 0,
           frames_failed: overlay.failed,
+          ...(overlay.personaResolved !== undefined ? { persona_resolved: overlay.personaResolved } : {}),
+          ...(overlay.personaUsed ? { persona_used: overlay.personaUsed } : {}),
           // These were computed and thrown away. A per-keyframe judgement that
           // never leaves the function is an LLM call spent for nothing.
           ...(overlay.moments && overlay.moments.length > 0
