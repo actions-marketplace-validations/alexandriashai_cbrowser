@@ -46,16 +46,45 @@ const CACHE_DIR = join(
   "llm-relevance-cache",
 );
 
-/** Element as the relevance judge sees it. Geometry is irrelevant to relevance. */
+/**
+ * Element as the relevance judge sees it.
+ *
+ * Carries geometry and colour as well as text, because "does this deserve
+ * attention" is not answerable from words alone: a primary action rendered as
+ * 11px grey-on-white in a footer and the same words on a filled 200x56 button
+ * are different elements to a viewer, and a low-vision or impatient persona
+ * weighs that difference heavily.
+ */
 export interface RelevanceElement {
   /** Stable index the model scores against, so scores map back unambiguously. */
   index: number;
   type: string;
   text: string;
+  /** Viewport-relative position. Above/below the fold changes attention. */
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  /** Computed foreground colour. */
+  color?: string;
+  /** Nearest non-transparent background colour. */
+  backgroundColor?: string;
+  fontSize?: number;
+  fontWeight?: number;
 }
 
 export interface RelevanceContext {
   goal?: string;
+  /**
+   * Screenshot bytes. Supplying them lets the judge see the rendered page —
+   * visual hierarchy, whether an element actually stands out, what competes
+   * with it — rather than inferring layout from numbers.
+   */
+  screenshot?: Buffer;
+  /** Media type for the screenshot. Defaults to png. */
+  screenshotMediaType?: "image/png" | "image/jpeg";
+  /** Viewport, so the judge can reason about the fold. */
+  viewport?: { width: number; height: number };
   personaName: string;
   /** Free-text persona description, when the persona carries one. */
   personaDescription?: string;
@@ -66,6 +95,8 @@ export interface RelevanceContext {
 }
 
 export interface RelevanceResult {
+  /** True when the judge was given the rendered screenshot. */
+  sawScreenshot?: boolean;
   /** Relevance per element index, 0-1. Missing index means zero. */
   scores: Record<number, number>;
   /** Which method produced these numbers. Never omit this from telemetry. */
@@ -81,10 +112,19 @@ const RELEVANCE_MODEL = "claude-sonnet-5";
 
 function cacheKey(elements: RelevanceElement[], ctx: RelevanceContext): string {
   const h = createHash("sha256");
-  h.update(JSON.stringify(elements.map((e) => [e.index, e.type, e.text])));
+  // Geometry and colour are part of the question, so they must be part of the
+  // key: the same words restyled from a grey footer link to a filled button is
+  // a different judgement, and reusing the old answer would hide exactly the
+  // effect this layer was extended to capture.
+  h.update(JSON.stringify(elements.map((e) => [
+    e.index, e.type, e.text,
+    e.x, e.y, e.width, e.height,
+    e.color, e.backgroundColor, e.fontSize, e.fontWeight,
+  ])));
   h.update(`|${ctx.personaName}|${ctx.goal ?? ""}|${RELEVANCE_MODEL}|`);
   h.update(JSON.stringify(ctx.traits ?? {}));
   h.update(JSON.stringify(ctx.values ?? {}));
+  if (ctx.screenshot) h.update(ctx.screenshot);
   return h.digest("hex").slice(0, 32);
 }
 
@@ -191,9 +231,22 @@ export async function judgeRelevance(
     `Notable traits: ${describeTraits(ctx.traits)}`,
     ctx.values ? `Motivational values: ${describeTraits(ctx.values)}` : "",
     ctx.goal ? `Goal on this page: ${ctx.goal}` : "No stated goal — judge by what this persona is drawn to.",
+    ctx.viewport ? `Viewport: ${ctx.viewport.width}x${ctx.viewport.height} (fold at y=${ctx.viewport.height})` : "",
+    "",
+    ctx.screenshot
+      ? "The rendered page is attached. Elements below are listed with size, position and colour."
+      : "Elements below are listed with size, position and colour.",
     "",
     "Elements:",
-    ...elements.map((e) => `${e.index}. [${e.type}] ${e.text.slice(0, 120)}`),
+    ...elements.map((e) => {
+      const bits: string[] = [`${e.index}. [${e.type}] ${e.text.slice(0, 120)}`];
+      if (e.width && e.height) bits.push(`${Math.round(e.width)}x${Math.round(e.height)}px`);
+      if (e.x !== undefined && e.y !== undefined) bits.push(`at (${Math.round(e.x)},${Math.round(e.y)})`);
+      if (e.fontSize) bits.push(`${Math.round(e.fontSize)}px${e.fontWeight && e.fontWeight >= 600 ? " bold" : ""}`);
+      if (e.color) bits.push(`fg ${e.color}`);
+      if (e.backgroundColor) bits.push(`bg ${e.backgroundColor}`);
+      return bits.join("  ");
+    }),
   ].filter(Boolean).join("\n");
 
   try {
@@ -203,14 +256,61 @@ export async function judgeRelevance(
       model: RELEVANCE_MODEL,
       max_tokens: 2000,
       system,
-      messages: [{ role: "user", content: user }],
+      messages: [{
+        role: "user",
+        content: ctx.screenshot
+          ? [
+              {
+                type: "image" as const,
+                source: {
+                  type: "base64" as const,
+                  media_type: ctx.screenshotMediaType ?? "image/png",
+                  data: ctx.screenshot.toString("base64"),
+                },
+              },
+              { type: "text" as const, text: user },
+            ]
+          : user,
+      }],
     });
 
-    const text = response.content[0]?.type === "text" ? response.content[0].text : "";
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return keywordFallback(elements, ctx, "Model returned no parseable JSON");
+    // Concatenate EVERY text block, not just the first: a leading prose block
+    // pushed the JSON into content[1] and the layer silently degraded to keyword
+    // matching, which is the worst possible failure here because the fallback
+    // still returns plausible numbers.
+    const text = response.content
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text)
+      .join("\n")
+      .replace(/```(?:json)?/gi, "");
 
-    const parsed = JSON.parse(match[0]) as { scores?: Record<string, number> };
+    // Brace-balanced scan rather than a greedy regex, so prose containing braces
+    // on either side of the payload does not swallow or truncate it.
+    const extractJson = (src: string): string | null => {
+      const start = src.indexOf("{");
+      if (start < 0) return null;
+      let depth = 0, inStr = false, esc = false;
+      for (let i = start; i < src.length; i++) {
+        const c = src[i];
+        if (esc) { esc = false; continue; }
+        if (c === "\\") { esc = true; continue; }
+        if (c === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (c === "{") depth++;
+        else if (c === "}" && --depth === 0) return src.slice(start, i + 1);
+      }
+      return null;
+    };
+
+    const json = extractJson(text);
+    if (!json) {
+      return keywordFallback(
+        elements, ctx,
+        `Model returned no parseable JSON (${text.slice(0, 80).replace(/\s+/g, " ")})`,
+      );
+    }
+
+    const parsed = JSON.parse(json) as { scores?: Record<string, number> };
     const scores: Record<number, number> = {};
     for (const [k, v] of Object.entries(parsed.scores ?? {})) {
       const idx = Number(k);
@@ -221,7 +321,10 @@ export async function judgeRelevance(
       if (v > 0) scores[idx] = Math.max(0, Math.min(1, v));
     }
 
-    const result: RelevanceResult = { scores, source: "llm", cached: false, model: RELEVANCE_MODEL };
+    const result: RelevanceResult = {
+      scores, source: "llm", cached: false, model: RELEVANCE_MODEL,
+      sawScreenshot: Boolean(ctx.screenshot),
+    };
     writeCache(key, result);
     return result;
   } catch (e) {

@@ -404,6 +404,12 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
   isNav: boolean;
   isDecorative: boolean;
   classList: string;
+  /** Computed foreground colour, as the browser reports it. */
+  color?: string;
+  /** Nearest non-transparent background colour walking up the tree. */
+  backgroundColor?: string;
+  fontSize?: number;
+  fontWeight?: number;
 }>> {
   const p = page as { evaluate: (fn: () => unknown) => Promise<unknown> };
   return p.evaluate(() => {
@@ -416,8 +422,36 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
       rect.bottom > 0 && rect.top < vh &&
       rect.right > 0 && rect.left < vw;
 
+    // Colour and type size, so a downstream judge can tell a buried grey link
+    // from a filled primary button. Background walks UP the tree: an element's
+    // own background is transparent far more often than not, and reporting
+    // "rgba(0,0,0,0)" as the background makes every contrast judgement wrong.
+    const styleOf = (el: Element): {
+      color?: string; backgroundColor?: string; fontSize?: number; fontWeight?: number;
+    } => {
+      try {
+        const cs = window.getComputedStyle(el as HTMLElement);
+        let bg = cs.backgroundColor;
+        let node: Element | null = el.parentElement;
+        while (node && (!bg || bg === "transparent" || /rgba\([^)]*,\s*0\s*\)/.test(bg))) {
+          bg = window.getComputedStyle(node as HTMLElement).backgroundColor;
+          node = node.parentElement;
+        }
+        return {
+          color: cs.color,
+          backgroundColor: bg,
+          fontSize: parseFloat(cs.fontSize) || undefined,
+          fontWeight: parseInt(cs.fontWeight, 10) || undefined,
+        };
+      } catch { return {}; }
+    };
+
     const elements: Array<{
       selector: string;
+      color?: string;
+      backgroundColor?: string;
+      fontSize?: number;
+      fontWeight?: number;
       text: string;
       type: string;
       x: number;
@@ -449,6 +483,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isNav: false,
         isDecorative: false,
         classList: (el as HTMLElement).className || "",
+        ...styleOf(el),
       });
     });
 
@@ -474,6 +509,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isNav,
         isDecorative: false,
         classList: (el as HTMLElement).className || "",
+        ...styleOf(el),
       });
     });
 
@@ -494,6 +530,7 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
         isNav: false,
         isDecorative,
         classList: (el as HTMLElement).className || "",
+        ...styleOf(el),
       });
     });
 
