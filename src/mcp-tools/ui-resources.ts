@@ -223,7 +223,13 @@ export function buildStatusTemplate(): string {
     --raise:color-mix(in srgb, #fff 6%, transparent)}
   *{box-sizing:border-box}
   html,body{background:transparent;color:var(--ink)}
-  body{margin:0;padding:2px 0 4px;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+  /* Inset from the card edge on all four sides. The host card is rounded, so
+     anything flush to the edge gets clipped by the radius -- the padding is the
+     safe area that keeps every rule, row and table corner clear of it. */
+  body{margin:0;padding:16px 18px 18px;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+  /* Horizontal padding never drops below the card's corner radius, or narrow
+     widths put content back inside the arc. Only the vertical inset tightens. */
+  @media (max-width:420px){body{padding:13px 18px 15px}}
 
   /* Header: the one place with real scale contrast. Everything else is quiet. */
   .top{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:0 0 .1rem}
@@ -232,10 +238,10 @@ export function buildStatusTemplate(): string {
   /* The single committed brand moment: a 2px blue-to-cyan rule under the header,
      drawn from the site's own brand-primary and brand-secondary. Everything else
      stays restrained, because a status panel is scanned, not admired. */
-  /* Short and saturated rather than a full-width fade: at full width it reads as
-     a divider, which is decoration pretending to be structure. 56px of the
-     brand's own blue-to-cyan under the wordmark reads as a mark. */
-  .rule{height:3px;width:56px;border-radius:3px;margin:.45rem 0 .1rem;
+  /* Full width of the content area, with rounded caps so the ends read as
+     finished rather than cut. It stops at the padding rather than bleeding to
+     the card edge, which is what keeps it clear of the rounded corners. */
+  .rule{height:3px;width:100%;border-radius:3px;margin:.5rem 0 .15rem;
     background:linear-gradient(90deg,var(--brand),var(--brand-2))}
   .ver{font:.8rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
 
@@ -266,6 +272,7 @@ export function buildStatusTemplate(): string {
   .sbody{padding:0 0 .7rem}
 
   table{border-collapse:collapse;width:100%;font-size:.85rem}
+  .scroll{overflow-x:auto;max-width:100%}
   .kv th{width:1%;white-space:nowrap;text-align:left;padding:.26rem .9rem .26rem .15rem;
     font:.78rem/1.45 var(--mono);color:var(--sub);font-weight:400;vertical-align:top}
   .kv td{padding:.26rem 0;vertical-align:top;word-break:break-word}
@@ -366,7 +373,12 @@ export function buildStatusTemplate(): string {
       });
       tb.appendChild(tr);
     });
-    t.appendChild(thead); t.appendChild(tb); return t;
+    t.appendChild(thead); t.appendChild(tb);
+    // Wide content scrolls inside its own box; the page body never scrolls
+    // sideways, which on a rounded card would also cut into the corner radius.
+    var box = el("div", "scroll");
+    box.appendChild(t);
+    return box;
   }
 
   function section(title, count, node, open) {
