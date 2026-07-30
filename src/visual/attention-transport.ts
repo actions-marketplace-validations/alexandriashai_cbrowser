@@ -131,7 +131,14 @@ function srgbToLab(r: number, g: number, b: number): [number, number, number] {
  * For Gaussian measures, W₂ has a closed-form solution:
  * BW²(N(μ₁,σ₁²), N(μ₂,σ₂²)) = ||μ₁-μ₂||² + (σ₁-σ₂)²
  */
-async function computeLabSaliency(
+/**
+ * Exported so calibration work can obtain the PRE-filter saliency once per
+ * image and then sweep persona parameters over it cheaply. Recomputing the
+ * Lab pass for every parameter combination would make a grid search
+ * impractical, and re-deriving it in a separate script is how the Study 1
+ * Python port drifted from shipped code. (2026-07-29)
+ */
+export async function computeLabSaliency(
   imagePath: string,
   cellSize: number = 16,
   surroundRadius: number = 3,
