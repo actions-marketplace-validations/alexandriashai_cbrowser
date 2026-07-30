@@ -39,6 +39,29 @@ const PROBE_HTML = `<!doctype html><meta charset="utf-8">
   <p><span class="ok">This rendered as HTML.</span> MCP Apps UI resources display for
   this connector, so the capture player can be delivered the same way instead of as a link.</p>
   <p class="note">Served as <code>text/html;profile=mcp-app</code> from <code>ui://cbrowser/probe</code>.</p>
+  <hr style="border:0;border-top:1px solid rgba(128,128,128,.3);margin:14px 0">
+  <p><strong>data: URI image test</strong> &mdash; a green bar should appear below.</p>
+  <img id="swatch" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAAAoCAIAAAC6iKlyAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAo0lEQVR4nO3UQW0EARTD0MExlAxqqZdAr918VU8KAsvx836y9+8hPCi/X1EN6IDuP72N0QHdXENGNwcnHd2cRgd0cw0Z3RycdHRzGh3QzTVkdHNw0tHNaXRAN9eQ0c3BSUc3p9EB3VxDRjcHJx3dnEYHdHMNGd0cnHR0cxod0M01ZHRzcNLRzWl0QDfXkNHNwUlHN6fRAd1cQ0Y3BycdzZn+uh+XmLPx0sfXOwAAAABJRU5ErkJggg==" alt="data URI test swatch" width="120" height="40"
+       style="border-radius:4px;display:block">
+  <p class="note" id="verdict">If the bar is missing, this sandbox's CSP blocks
+  <code>data:</code> in <code>img-src</code>, and capture frames need another channel.</p>
+  <script>
+    // The capture player embeds frames as data: URIs -- nothing is fetched from an
+    // origin, because per-capture data cannot come from a static CDN and the
+    // sandbox allowlist does not include cbrowser.ai. Whether that works hinges
+    // entirely on img-src permitting data:, so the probe reports it rather than
+    // leaving it to be discovered after a player is built on the assumption.
+    var img = document.getElementById("swatch");
+    img.addEventListener("load", function () {
+      document.getElementById("verdict").textContent =
+        "data: URIs render here (" + img.naturalWidth + "x" + img.naturalHeight +
+        "). Capture frames can be embedded inline.";
+    });
+    img.addEventListener("error", function () {
+      document.getElementById("verdict").textContent =
+        "data: URI was BLOCKED by CSP. Capture frames need another channel.";
+    });
+  </script>
 </div>`;
 
 /**
