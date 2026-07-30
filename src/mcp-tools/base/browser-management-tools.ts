@@ -34,11 +34,6 @@ export function registerBrowserManagementTools(
     title: "Browser Status",
     description: "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, self-healing cache statistics, and MCP tool count",
     inputSchema: {},
-    // outputSchema is what permits structuredContent on the result; without it
-    // the SDK rejects the field and the view has nothing to hydrate from.
-    // Passthrough rather than enumerated: getStatusInfo's shape varies with what
-    // is installed, and a strict schema here would drop fields the panel shows.
-    outputSchema: { } as Record<string, never>,
     // The view for this tool. Nested form: the SDK resolver reads
     // _meta.ui.resourceUri first and falls back to the flat "ui/resourceUri"
     // key, so both are valid and this is the preferred one.
@@ -58,15 +53,15 @@ export function registerBrowserManagementTools(
   }, async () => {
       const toolCount = getToolCount?.();
       const info = await getStatusInfo(VERSION, toolCount);
-      // structuredContent, not an embedded HTML block. The host fetches the
-      // declared ui:// resource itself and pushes THIS result into the iframe,
-      // where the view reads structuredContent and renders. Returning the HTML
+      // The host fetches the declared ui:// resource itself and pushes THIS
+      // result into the iframe, where the view renders from it. Returning HTML
       // here instead put several KB of markup into the model's context as a
       // string and rendered nothing: a content block is not a view.
       //
-      // The text block is retained unchanged. status is read to diff numbers,
-      // by the model as much as by a person, and structuredContent alone would
-      // be a regression for every host that does not render views.
+      // No outputSchema, and so no structuredContent: an empty outputSchema is
+      // expanded by the SDK into a closed schema that permits no properties,
+      // which every real payload violates. The view falls back to parsing this
+      // text block, which is what Anthropic's own example does.
       return {
         content: [
           {
@@ -74,7 +69,6 @@ export function registerBrowserManagementTools(
             text: JSON.stringify(info, null, 2),
           },
         ],
-        structuredContent: info as unknown as Record<string, unknown>,
       };
     }
   );

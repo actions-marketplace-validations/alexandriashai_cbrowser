@@ -97,7 +97,6 @@ export function registerValuesTools(server: McpServer): void {
     inputSchema: {
       persona: z.string().describe("Persona name (e.g., 'first-timer', 'power-user', 'anxious-user')"),
     },
-    outputSchema: {} as Record<string, never>,
     annotations: {
       title: "Look Up Persona",
       readOnlyHint: true,
@@ -141,9 +140,21 @@ export function registerValuesTools(server: McpServer): void {
         ...(profile?.decisionStyle ? { decisionStyle: profile.decisionStyle } : {}),
       };
 
+      // JSON in the text block, no structuredContent and no outputSchema.
+      //
+      // An outputSchema of {} is not "unconstrained" -- the SDK expands it to
+      // {type:object, properties:{}, additionalProperties:false}, a schema that
+      // permits no properties at all, which every real payload then violates.
+      // A schema loose enough to be correct here cannot be expressed as a Zod
+      // raw shape anyway, since getStatusInfo-style payloads gain fields over
+      // time.
+      //
+      // The view reads structuredContent when a host forwards it and falls back
+      // to content[0].text otherwise, which is the shape Anthropic's own MCP
+      // Apps example uses. Dropping both removes the validation failure without
+      // costing the widget anything.
       return {
         content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
-        structuredContent: payload as unknown as Record<string, unknown>,
       };
     }
   );
