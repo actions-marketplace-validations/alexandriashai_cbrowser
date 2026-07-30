@@ -1,0 +1,873 @@
+/**
+ * Widget kit for MCP Apps views.
+ *
+ * An MCP Apps resource is static: the host fetches it once, caches it against
+ * its URI, and hydrates it at runtime with the tool result. So a widget cannot
+ * be a rendered document -- it has to be a renderer plus a description of what
+ * to render, with the data arriving later.
+ *
+ * That shape is what makes a kit possible. Every widget ships the same chrome
+ * (tokens, hero, tables, chips, accordions), the same runtime, and the same
+ * hydration and safety rules; what differs per tool is a small declarative
+ * spec naming which fields become which blocks. Adding a view is writing a
+ * spec, not another copy of 400 lines of CSS that will drift from its
+ * siblings by the third one.
+ *
+ * The alternative -- one hand-written template per tool -- was rejected after
+ * the status widget, where the CSS, the ext-apps bundling, the theme handling,
+ * the textContent discipline and three separate blank-render fixes would all
+ * have had to be repeated verbatim eight more times.
+ */
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** The MIME the host keys on to render a resource as an interactive view. */
+export const MCP_APP_MIME = "text/html;profile=mcp-app";
+
+// ---------------------------------------------------------------------------
+// Spec
+// ---------------------------------------------------------------------------
+
+/** A dotted path into the tool's structuredContent, e.g. "healCache.totalHeals". */
+export type FieldPath = string;
+
+export interface FactSpec {
+  /** Field holding the value, or a ratio when `of` is given. */
+  field: FieldPath;
+  label: string;
+  /** Renders `n/total` by counting entries of `field` whose `flag` is true. */
+  countFlag?: string;
+  /** Highlight when the count is short of the total. */
+  attnWhenShort?: boolean;
+}
+
+export interface HealthCheck {
+  /** Array field to scan. */
+  field: FieldPath;
+  /** Boolean property that must be true for each entry. */
+  flag: string;
+  /** Human noun for a failing entry, e.g. "browser not installed". */
+  failLabel: string;
+  /** Property to name the failing entry by. */
+  nameKey?: string;
+}
+
+export type BlockSpec =
+  /** Key/value rows from an object (or a flat list of scalar fields). */
+  | { type: "kv"; title: string; field?: FieldPath; fields?: FieldPath[] }
+  /** A grid from an array of records; columns are the union of keys. */
+  | { type: "table"; title: string; field: FieldPath }
+  /** A severity-ranked list: the shape audits and bug hunts actually produce. */
+  | { type: "findings"; title: string; field: FieldPath;
+      textKey: string; severityKey?: string; detailKey?: string }
+  /** A headline grade with a weighted category breakdown. */
+  | { type: "score"; title: string; gradeField?: FieldPath; scoreField?: FieldPath;
+      categoriesField?: FieldPath; labelKey?: string; valueKey?: string; weightKey?: string }
+  /** An image the widget fetches after mount, since results are size-capped. */
+  | { type: "image"; title: string; urlField?: FieldPath; dataField?: FieldPath;
+      fetchTool?: string; fetchArgsField?: FieldPath; caption?: FieldPath }
+  /**
+   * Persona trait/value meters, matching the account persona editor.
+   *
+   * Three ramps, one per section, so the section is legible from colour alone:
+   *   trait          red-to-green,      hue = value * 120        (editor verbatim)
+   *   value          blue-to-purple,    hue = 220 + value * 80   (editor verbatim)
+   *   accessibility  yellow-to-orange,  hue = 55 - value * 30
+   *
+   * The first two match cbrowser.ai's persona editor exactly. The third is a
+   * deliberate divergence: the editor currently draws accessibility traits with
+   * the same red-to-green ramp as cognitive ones, which makes two different
+   * kinds of measurement look like one. Severity also runs the other way for
+   * these -- a high value is more impairment, not more capability -- so a ramp
+   * whose "good" end is green would actively mislead.
+   */
+  | { type: "traits"; title: string; field: FieldPath;
+      ramp?: "trait" | "value" | "accessibility";
+      nameKey?: string; valueKey?: string }
+  /** Free prose. */
+  | { type: "note"; title?: string; field: FieldPath }
+  /** Everything not consumed by another block, so no field is silently dropped. */
+  | { type: "rest"; title: string }
+  /** Groups blocks behind one expander; the default state stays a card. */
+  | { type: "drawer"; title: string; blocks: BlockSpec[]; open?: boolean };
+
+export interface WidgetSpec {
+  /** Resource id; the URI becomes ui://cbrowser/<id>. */
+  id: string;
+  /** Hero title. Names the view, not the product. */
+  title: string;
+  /** Prefer this field from the payload as the title when present. */
+  titleField?: FieldPath;
+  hero?: {
+    /** gradient: brand sweep with depth. solid: flat brand. bare: no band. */
+    variant?: "gradient" | "solid" | "bare";
+    /** Line under the title; a literal, or {field} to read from the payload. */
+    subtitle?: string | { field: FieldPath };
+    /** Health pill. Omit for views with nothing that can be "wrong". */
+    health?: { checks: HealthCheck[] };
+    facts?: FactSpec[];
+    /**
+     * Outbound links, rendered as buttons.
+     *
+     * Routed through app.openLink rather than an anchor: the widget sandbox
+     * blocks window.open and target=_blank outright, so a plain link is a
+     * button that does nothing at all.
+     */
+    actions?: Array<{ label: string; url: string; urlField?: FieldPath }>;
+  };
+  blocks: BlockSpec[];
+  /** Muted line at the very bottom. */
+  footer?: { label: string; field: FieldPath };
+}
+
+export const widgetUri = (id: string): string => `ui://cbrowser/${id}`;
+
+// ---------------------------------------------------------------------------
+// Inlined assets
+// ---------------------------------------------------------------------------
+
+const here = (): string => dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The ext-apps browser bundle, inlined into every widget.
+ *
+ * Not a CDN import. The iframe CSP blocks esm.sh from fetching the transitive
+ * SDK dependencies, and the failure is a blank rectangle whose error appears
+ * only in the iframe's own devtools console -- nothing surfaces host-side,
+ * which is why an esm.sh import looks correct right up until nothing renders.
+ *
+ * The replacer is a function, not a string: String.replace interprets
+ * $-sequences and the minified bundle is full of them.
+ */
+let extAppsBundle: string | undefined;
+export function getExtAppsBundle(): string {
+  if (extAppsBundle !== undefined) return extAppsBundle;
+  try {
+    const req = createRequire(import.meta.url);
+    const raw = readFileSync(req.resolve("@modelcontextprotocol/ext-apps/app-with-deps"), "utf8");
+    extAppsBundle = raw.replace(/export\{([^}]+)\};?\s*$/, (_m, body: string) =>
+      "globalThis.ExtApps={" +
+      body.split(",").map((pair) => {
+        const [local, exported] = pair.split(" as ").map((x) => x.trim());
+        return `${exported ?? local}:${local}`;
+      }).join(",") + "};");
+  } catch {
+    extAppsBundle = "globalThis.ExtApps=undefined;";
+  }
+  return extAppsBundle;
+}
+
+/**
+ * The cbrowser mark as a data URI, brightened for badge size.
+ *
+ * The sandbox will not fetch cbrowser.ai, so an external src renders broken.
+ * The asset is ~100 rects whose opacity ramps to 0.31 -- deliberate at poster
+ * size, and at 27px each dot renders around a pixel tall, so the faint end
+ * drops out of the raster entirely. Opacity is floored, fills lifted, and each
+ * dot stroked, because at that size a stroke is what gives a dot enough mass
+ * to survive rasterisation; brightness alone cannot save something that rounds
+ * away. Applied here rather than to the file so the brand asset stays canonical.
+ */
+let logoUri: string | undefined;
+export function getLogoDataUri(): string {
+  if (logoUri !== undefined) return logoUri;
+  try {
+    const raw = readFileSync(join(here(), "..", "..", "assets", "cbrowser-logo.svg"), "utf8")
+      .replace(/\s*\n\s*/g, " ");
+    const brighten = (c: number): number => Math.round(c + (255 - c) * 0.34);
+    const svg = raw
+      .replace(/opacity="([\d.]+)"/g, (_m, v: string) =>
+        `opacity="${Math.min(1, 0.62 + parseFloat(v) * 0.38).toFixed(3)}"`)
+      .replace(/fill="rgb\((\d+),\s*(\d+),\s*(\d+)\)"/g, (_m, r: string, g: string, b: string) => {
+        const c = `rgb(${brighten(+r)},${brighten(+g)},${brighten(+b)})`;
+        return `fill="${c}" stroke="${c}" stroke-width="5" stroke-linejoin="round"`;
+      })
+      .replace(/stdDeviation="5"/, 'stdDeviation="7"')
+      .replace(/"/g, "'");
+    logoUri = "data:image/svg+xml," + encodeURIComponent(svg).replace(/'/g, "%27");
+  } catch {
+    logoUri = "";
+  }
+  return logoUri;
+}
+
+/**
+ * Soft arcs and an angled facet over the hero, as an inline SVG.
+ *
+ * preserveAspectRatio=none so one small asset stretches to any hero width.
+ * This layering, rather than a flatter ramp, is what reads as a lit surface.
+ */
+const HERO_ART = (() => {
+  const svg =
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 800 200' preserveAspectRatio='none'>" +
+    "<path d='M0,128 C150,58 330,168 505,96 C645,38 730,78 800,52 L800,200 L0,200 Z' fill='#ffffff' opacity='.10'/>" +
+    "<path d='M0,171 C190,116 372,190 548,142 C688,104 754,132 800,116 L800,200 L0,200 Z' fill='#ffffff' opacity='.07'/>" +
+    "<path d='M556,0 L800,0 L800,200 L678,200 Z' fill='#ffffff' opacity='.05'/>" +
+    "</svg>";
+  return "data:image/svg+xml," + encodeURIComponent(svg);
+})();
+
+// ---------------------------------------------------------------------------
+// Chrome
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared stylesheet.
+ *
+ * Hero stops are darker than the site's brand tokens on purpose: the white
+ * bloom lifts the ground under white text, and the contrast floor is measured
+ * off composited pixels rather than these declarations. Horizontal inset never
+ * drops below the host card's corner radius, or narrow widths put text back
+ * inside the arc.
+ */
+const CSS = `
+  :root{
+    --ink:var(--color-text-primary,#14161a);
+    --sub:var(--color-text-secondary,#606770);
+    --line:var(--color-border-default,#e0e3e8);
+    --brand:oklch(0.55 0.18 250);
+    --brand-2:oklch(0.6 0.18 180);
+    --hero-a:oklch(0.415 0.19 258);
+    --hero-b:oklch(0.45 0.13 202);
+    --accent:var(--color-accent-primary,oklch(0.55 0.18 250));
+    --warn:oklch(0.55 0.16 45);
+    --ok:oklch(0.62 0.16 150);
+    --bad:oklch(0.52 0.19 25);
+    --raise:color-mix(in srgb, var(--ink) 4%, transparent);
+    --r:var(--border-radius-md,8px);
+    --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  :root.dark{--ink:#e9ebee;--sub:#98a0aa;--line:#333840;
+    --brand:oklch(0.65 0.18 250);--brand-2:oklch(0.7 0.15 180);
+    --hero-a:oklch(0.385 0.18 258);--hero-b:oklch(0.42 0.12 202);
+    --accent:oklch(0.65 0.18 250);--warn:oklch(0.72 0.14 55);--ok:oklch(0.72 0.15 150);
+    --bad:oklch(0.68 0.17 25);
+    --raise:color-mix(in srgb, #fff 6%, transparent)}
+  *{box-sizing:border-box}
+  html,body{background:transparent;color:var(--ink)}
+  body{margin:0;padding:0;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+
+  .hero{padding:16px 18px 15px;color:#fff}
+  .hero.gradient{background:
+      radial-gradient(115% 95% at 10% -12%, rgba(255,255,255,.20), transparent 58%),
+      radial-gradient(95% 85% at 98% 118%, rgba(0,0,0,.26), transparent 60%),
+      url("${HERO_ART}") center/100% 100% no-repeat,
+      linear-gradient(118deg,var(--hero-a),var(--hero-b))}
+  .hero.solid{background:var(--hero-a)}
+  .hero.bare{background:transparent;color:var(--ink);padding-bottom:8px}
+  .hrow{display:flex;align-items:center;gap:.6rem}
+  .badge{flex:0 0 auto;width:37px;height:37px;border-radius:50%;display:grid;place-items:center;
+    background:#14171d;box-shadow:0 0 0 1px rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28)}
+  .hero.bare .badge{box-shadow:0 0 0 1px rgba(0,0,0,.12), 0 1px 3px rgba(0,0,0,.14)}
+  .badge img{width:27px;height:27px;display:block}
+  .htitle{font-size:1.08rem;font-weight:650;letter-spacing:-.01em}
+  .health{margin-left:auto;display:inline-flex;align-items:center;gap:.4rem;
+    padding:.28rem .6rem;border-radius:999px;background:rgba(255,255,255,.94);
+    font:650 .7rem/1 var(--mono);letter-spacing:.09em;color:#1b3a2b}
+  .hero.bare .health{background:color-mix(in srgb,var(--ok) 16%,transparent);color:var(--ink)}
+  .health .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .health.bad{color:#4a2410} .health.bad .dot{background:var(--warn)}
+  .health.unknown{color:#33383f} .health.unknown .dot{background:#8a9099}
+  .hnote{margin:.5rem 0 0;font-size:.79rem;color:#fff}
+  .hero.bare .hnote{color:var(--sub)}
+
+  .subttl{font-size:.8rem;color:rgba(255,255,255,.92);margin:.3rem 0 0}
+  .hero.bare .subttl{color:var(--sub)}
+  .acts{display:flex;flex-wrap:wrap;gap:.4rem;margin:.75rem 0 0}
+  .act{font:600 .74rem/1 ui-sans-serif,system-ui,sans-serif;padding:.42rem .7rem;border-radius:6px;
+    border:1px solid rgba(255,255,255,.5);background:rgba(255,255,255,.96);color:#123;
+    cursor:pointer;transition:background 150ms ease}
+  .act:hover{background:#fff}
+  .act:focus-visible{outline:2px solid #fff;outline-offset:2px}
+  .hero.bare .act{background:var(--brand);color:#fff;border-color:transparent}
+  .facts{display:flex;flex-wrap:wrap;gap:.34rem;margin:.7rem 0 0}
+  .fact{display:inline-flex;align-items:baseline;gap:.34rem;padding:.24rem .52rem;
+    border:1px solid rgba(255,255,255,.32);border-radius:6px;background:rgba(255,255,255,.10)}
+  .fact b{font:650 .82rem/1 var(--mono);font-variant-numeric:tabular-nums;color:#fff}
+  .fact span{font-size:.74rem;color:#fff}
+  .fact.attn{background:rgba(255,255,255,.94);border-color:transparent}
+  .fact.attn b{color:#7a3410} .fact.attn span{color:#5d3520}
+  .hero.bare .fact{border-color:var(--line);background:var(--raise)}
+  .hero.bare .fact b{color:var(--brand)} .hero.bare .fact span{color:var(--sub)}
+
+  .body{padding:0 18px 16px}
+  .drawer{border-top:1px solid var(--line)}
+  .drawer>summary{display:flex;align-items:center;gap:.5rem;padding:.7rem 18px;cursor:pointer;
+    list-style:none;user-select:none;font-size:.87rem;font-weight:560}
+  .drawer>summary::-webkit-details-marker{display:none}
+  .drawer>summary:hover{color:var(--accent)}
+  .drawer>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+  .dcount{margin-left:auto;font:.75rem/1 var(--mono);color:var(--sub)}
+  .inner{padding:0 18px 16px}
+
+  details.sec{border-top:1px solid var(--line)}
+  details.sec:first-of-type{border-top:0}
+  details.sec>summary{display:flex;align-items:center;gap:.5rem;padding:.55rem 0;cursor:pointer;
+    list-style:none;user-select:none}
+  details.sec>summary::-webkit-details-marker{display:none}
+  details.sec>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
+  details.sec>summary:hover .stitle{color:var(--accent)}
+  .chev{flex:0 0 auto;width:8px;height:8px;border-right:1.6px solid var(--sub);
+    border-bottom:1.6px solid var(--sub);transform:rotate(-45deg);
+    transition:transform 180ms cubic-bezier(.22,1,.36,1)}
+  details[open]>summary .chev{transform:rotate(45deg)}
+  .stitle{font-size:.88rem;font-weight:560;transition:color 150ms ease}
+  .scount{margin-left:auto;font:.74rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+  .sbody{padding:0 0 .65rem}
+  .btitle{font-size:.88rem;font-weight:560;margin:.9rem 0 .4rem}
+
+  .scroll{overflow-x:auto;max-width:100%}
+  table{border-collapse:collapse;width:100%;font-size:.85rem}
+  .kv th{width:1%;white-space:nowrap;text-align:left;padding:.24rem .9rem .24rem 0;
+    font:.77rem/1.45 var(--mono);color:var(--sub);font-weight:400;vertical-align:top}
+  .kv td{padding:.24rem 0;vertical-align:top;word-break:break-word}
+  .grid thead th{text-align:left;padding:.18rem .7rem .3rem 0;font:.67rem/1 var(--mono);
+    color:var(--sub);font-weight:400;text-transform:uppercase;letter-spacing:.07em;
+    border-bottom:1px solid var(--line);white-space:nowrap}
+  .grid td{padding:.28rem .7rem .28rem 0;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .grid tr:last-child td{border-bottom:0}
+  .grid tbody tr:hover td{background:var(--raise)}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:.79rem}
+  .path{font-family:var(--mono);font-size:.77rem;color:var(--sub);word-break:break-all}
+  .chip{display:inline-block;font:.67rem/1 var(--mono);padding:.15rem .36rem;border-radius:3px;
+    background:color-mix(in srgb,var(--ok) 18%,transparent);color:color-mix(in srgb,var(--ok) 80%,var(--ink))}
+  .chip.no{background:color-mix(in srgb,var(--warn) 18%,transparent);color:color-mix(in srgb,var(--warn) 82%,var(--ink))}
+
+  /* Findings: severity is encoded as a leading bar and a chip, so the ranking
+     reads without parsing the text of every row. */
+  .finds{list-style:none;padding:0;margin:0}
+  .finds li{display:grid;grid-template-columns:auto 1fr;gap:.55rem;align-items:baseline;
+    padding:.4rem 0;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .finds li:last-child{border-bottom:0}
+  .sev{font:650 .62rem/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;
+    padding:.2rem .36rem;border-radius:3px;white-space:nowrap}
+  .sev.critical{background:color-mix(in srgb,var(--bad) 22%,transparent);color:color-mix(in srgb,var(--bad) 85%,var(--ink))}
+  .sev.high{background:color-mix(in srgb,var(--warn) 22%,transparent);color:color-mix(in srgb,var(--warn) 85%,var(--ink))}
+  .sev.medium{background:color-mix(in srgb,var(--brand) 18%,transparent);color:color-mix(in srgb,var(--brand) 85%,var(--ink))}
+  .sev.low{background:var(--raise);color:var(--sub)}
+  .fdetail{grid-column:2;font-size:.79rem;color:var(--sub);margin:.15rem 0 0}
+
+  /* Score: one headline grade, then weighted categories as proportional bars.
+     The weight is shown because a 90 in a 15%-weighted category is not the
+     same finding as a 90 in a 35%-weighted one. */
+  .score{display:flex;align-items:center;gap:.9rem;margin:.2rem 0 .7rem}
+  .grade{font:700 2.1rem/1 ui-sans-serif,system-ui,sans-serif;letter-spacing:-.03em}
+  .grade.a{color:var(--ok)} .grade.b{color:var(--ok)} .grade.c{color:var(--warn)}
+  .grade.d{color:var(--bad)} .grade.f{color:var(--bad)}
+  .scoresub{font:.78rem/1.4 var(--mono);color:var(--sub)}
+  .cats{list-style:none;padding:0;margin:0}
+  .cats li{display:grid;grid-template-columns:1fr auto;gap:.4rem .6rem;padding:.28rem 0}
+  .catname{font-size:.82rem}
+  .catval{font:.78rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+  .bar{grid-column:1/-1;height:5px;border-radius:3px;background:var(--raise);overflow:hidden}
+  .bar i{display:block;height:100%;border-radius:3px;background:var(--brand)}
+
+  /* Trait meters, matching cbrowser.ai's persona editor: fixed-width right
+     aligned label, a pill track with a baseline tick at 0.5 so above- and
+     below-average read instantly, and a two-decimal monospace readout. */
+  .traits{display:flex;flex-direction:column;gap:.28rem}
+  .trait{display:flex;align-items:center;gap:.5rem}
+  .tname{font-size:.68rem;color:var(--sub);width:5.6rem;text-align:right;flex:0 0 auto;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .track{flex:1;height:16px;border-radius:999px;background:var(--raise);position:relative;overflow:hidden}
+  .track .base{position:absolute;top:0;bottom:0;left:50%;width:1px;background:color-mix(in srgb,var(--ink) 22%,transparent);z-index:1}
+  .track i{display:block;height:100%;border-radius:999px}
+  .tval{font:.68rem/1 var(--mono);width:2.2rem;text-align:right;flex:0 0 auto;font-variant-numeric:tabular-nums}
+  .shot{max-width:100%;height:auto;display:block;border-radius:6px;border:1px solid var(--line)}
+  .cap{font-size:.77rem;color:var(--sub);margin:.35rem 0 0}
+  .foot{padding:0 18px 14px;font-size:.77rem;color:var(--sub)}
+  .msg{padding:16px 18px;font-size:.85rem;color:var(--sub)}
+  @media (max-width:420px){
+    .hero{padding:14px 18px 13px}
+    .health{letter-spacing:.06em}
+  }
+  @media (prefers-reduced-motion:reduce){.chev,.stitle{transition:none}}
+`;
+
+/**
+ * Shared runtime.
+ *
+ * Interprets the spec against structuredContent. Every value is written with
+ * textContent and never innerHTML: views are hydrated from tool output that
+ * contains strings this server does not control -- paths, page titles, audit
+ * findings scraped off third-party sites -- and interpolating those into
+ * markup is how a status panel becomes an injection sink.
+ */
+const RUNTIME = String.raw`
+(async () => {
+  var SPEC = __SPEC__;
+  var LOGO = "__LOGO__";
+  var msg = document.getElementById("msg");
+  var root = document.getElementById("root");
+  if (!globalThis.ExtApps) { msg.textContent = "Widget runtime unavailable."; return; }
+  var App = globalThis.ExtApps.App;
+  var applyHostStyleVariables = globalThis.ExtApps.applyHostStyleVariables;
+  var app = new App({ name: SPEC.id, version: "1.0.0" }, {}, { autoResize: true });
+
+  var el = function (tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+  var at = function (obj, path) {
+    if (!path) return undefined;
+    return path.split(".").reduce(function (o, k) {
+      return (o === null || o === undefined) ? undefined : o[k];
+    }, obj);
+  };
+  var isObjArray = function (v) {
+    return Array.isArray(v) && v.length > 0 &&
+      v.every(function (x) { return x && typeof x === "object" && !Array.isArray(x); });
+  };
+  var fmt = function (v) {
+    if (v === true) return "yes";
+    if (v === false) return "no";
+    if (v === "" || v === null || v === undefined) return "—";
+    if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
+    return String(v);
+  };
+  var titleize = function (k) {
+    return k.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, function (c) { return c.toUpperCase(); });
+  };
+  var used = {};
+
+  function kvTable(pairs) {
+    var t = el("table", "kv"), tb = el("tbody");
+    pairs.forEach(function (p) {
+      var tr = el("tr");
+      tr.appendChild(el("th", null, p[0]));
+      var td = el("td");
+      if (/^\//.test(String(p[1]))) td.className = "path";
+      td.textContent = fmt(p[1]);
+      tr.appendChild(td); tb.appendChild(tr);
+    });
+    t.appendChild(tb); return t;
+  }
+
+  function gridTable(rows) {
+    var cols = [];
+    rows.forEach(function (r) {
+      Object.keys(r).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); });
+    });
+    var t = el("table", "grid"), thead = el("thead"), htr = el("tr");
+    cols.forEach(function (c) { htr.appendChild(el("th", null, c)); });
+    thead.appendChild(htr);
+    var tb = el("tbody");
+    rows.forEach(function (r) {
+      var tr = el("tr");
+      cols.forEach(function (c) {
+        var v = r[c], td = el("td");
+        if (typeof v === "boolean") td.appendChild(el("span", "chip" + (v ? "" : " no"), v ? "yes" : "no"));
+        else if (typeof v === "number") { td.className = "num"; td.textContent = String(v); }
+        else if (/path/i.test(c) || /^\//.test(String(v))) { td.className = "path"; td.textContent = fmt(v); }
+        else td.textContent = fmt(v);
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    t.appendChild(thead); t.appendChild(tb);
+    var box = el("div", "scroll"); box.appendChild(t); return box;
+  }
+
+  var SEV_ORDER = { critical: 0, high: 1, medium: 2, moderate: 2, low: 3, info: 4 };
+  function findingsList(rows, b) {
+    var sorted = rows.slice().sort(function (x, y) {
+      var a = SEV_ORDER[String(x[b.severityKey] || "").toLowerCase()];
+      var c = SEV_ORDER[String(y[b.severityKey] || "").toLowerCase()];
+      return (a === undefined ? 9 : a) - (c === undefined ? 9 : c);
+    });
+    var ul = el("ul", "finds");
+    sorted.forEach(function (r) {
+      var li = el("li");
+      var sev = String(r[b.severityKey] || "").toLowerCase();
+      li.appendChild(el("span", "sev " + (SEV_ORDER[sev] !== undefined ? sev : "low"), sev || "note"));
+      li.appendChild(el("span", null, fmt(r[b.textKey])));
+      if (b.detailKey && r[b.detailKey]) li.appendChild(el("p", "fdetail", fmt(r[b.detailKey])));
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+
+  function traitsBlock(rows, b) {
+    var wrap = el("div", "traits");
+    rows.forEach(function (r) {
+      var name = r.name, v = Number(r.value);
+      if (!isFinite(v)) return;
+      var line = el("div", "trait");
+      line.appendChild(el("span", "tname", titleize(String(name))));
+      var track = el("div", "track");
+      track.appendChild(el("span", "base"));
+      var fill = el("i");
+      var pct = Math.max(0, Math.min(1, v)) * 100;
+      fill.style.width = pct + "%";
+      fill.style.backgroundColor =
+        b.ramp === "value" ? "hsl(" + (220 + v * 80) + ", 55%, 55%)"
+        : b.ramp === "accessibility" ? "hsl(" + (55 - v * 30) + ", 78%, 50%)"
+        : "hsl(" + (v * 120) + ", 65%, 50%)";
+      track.appendChild(fill);
+      line.appendChild(track);
+      line.appendChild(el("span", "tval", v.toFixed(2)));
+      wrap.appendChild(line);
+    });
+    return wrap;
+  }
+
+  // Traits arrive either as {name: number} or as [{name, value}]; both are in
+  // use across the persona tools, so both are accepted rather than forcing a
+  // shape the callers do not already produce.
+  function normaliseTraits(v, b) {
+    if (isObjArray(v)) {
+      return v.map(function (r) {
+        return { name: r[b.nameKey || "name"] || r.trait || r.key,
+                 value: r[b.valueKey || "value"] !== undefined ? r[b.valueKey || "value"] : r.score };
+      });
+    }
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      return Object.keys(v).filter(function (k) { return typeof v[k] === "number"; })
+        .map(function (k) { return { name: k, value: v[k] }; });
+    }
+    return [];
+  }
+
+  function scoreBlock(data, b) {
+    var wrap = el("div");
+    var grade = at(data, b.gradeField);
+    var score = at(data, b.scoreField);
+    if (grade !== undefined || score !== undefined) {
+      var row = el("div", "score");
+      if (grade !== undefined) {
+        row.appendChild(el("span", "grade " + String(grade).toLowerCase().charAt(0), String(grade)));
+      }
+      if (score !== undefined) row.appendChild(el("span", "scoresub", String(score)));
+      wrap.appendChild(row);
+    }
+    var cats = at(data, b.categoriesField);
+    if (isObjArray(cats)) {
+      var ul = el("cats" === "" ? "ul" : "ul", "cats");
+      // Normalised against the largest value present, so bars stay comparable
+      // even when a source reports out of something other than 100.
+      var max = Math.max.apply(null, cats.map(function (c) { return Number(c[b.valueKey]) || 0; }).concat([1]));
+      cats.forEach(function (c) {
+        var li = el("li");
+        li.appendChild(el("span", "catname", fmt(c[b.labelKey])));
+        var v = Number(c[b.valueKey]) || 0;
+        var w = b.weightKey && c[b.weightKey] !== undefined ? " · weight " + c[b.weightKey] : "";
+        li.appendChild(el("span", "catval", v + w));
+        var bar = el("div", "bar"), fill = el("i");
+        fill.style.width = Math.max(2, Math.round((v / max) * 100)) + "%";
+        bar.appendChild(fill); li.appendChild(bar);
+        ul.appendChild(li);
+      });
+      wrap.appendChild(ul);
+    }
+    return wrap;
+  }
+
+  async function imageBlock(data, b) {
+    var wrap = el("div");
+    var img = document.createElement("img");
+    img.className = "shot"; img.alt = "";
+    var inline = b.dataField ? at(data, b.dataField) : undefined;
+    if (inline) {
+      img.src = String(inline).startsWith("data:") ? inline : "data:image/png;base64," + inline;
+      wrap.appendChild(img);
+    } else if (b.fetchTool) {
+      // Fetched after mount rather than shipped in the result: hosts cap tool
+      // results near 150k characters and swap in a file pointer, which reaches
+      // the widget as unparseable text. Heavy assets have to come over this
+      // channel instead.
+      var note = el("p", "cap", "Loading image…");
+      wrap.appendChild(img); wrap.appendChild(note);
+      try {
+        var args = b.fetchArgsField ? at(data, b.fetchArgsField) : {};
+        var res = await app.callServerTool({ name: b.fetchTool, arguments: args || {} });
+        var blk = (res && res.content || []).filter(function (c) { return c.type === "image"; })[0];
+        if (blk && blk.data) { img.src = "data:" + (blk.mimeType || "image/png") + ";base64," + blk.data; note.remove(); }
+        else { note.textContent = "No image was returned."; }
+      } catch (e) {
+        note.textContent = "Could not load image: " + (e && e.message ? e.message : e);
+      }
+    } else {
+      var url = at(data, b.urlField);
+      // A URL on a host outside the sandbox allowlist cannot load here, so it
+      // is offered as a link rather than an <img> that would render broken.
+      var a = document.createElement("a");
+      a.textContent = url ? "Open image" : "No image available";
+      if (url) { a.href = url; a.addEventListener("click", function (ev) { ev.preventDefault(); app.openLink({ url: url }); }); }
+      wrap.appendChild(a);
+      return wrap;
+    }
+    if (b.caption) { var c = at(data, b.caption); if (c) wrap.appendChild(el("p", "cap", fmt(c))); }
+    return wrap;
+  }
+
+  function section(title, count, node, open) {
+    var d = el("details", "sec");
+    if (open) d.open = true;
+    var sm = el("summary");
+    sm.appendChild(el("span", "chev"));
+    sm.appendChild(el("span", "stitle", title));
+    if (count !== null && count !== undefined) sm.appendChild(el("span", "scount", String(count)));
+    d.appendChild(sm);
+    var body = el("div", "sbody"); body.appendChild(node); d.appendChild(body);
+    return d;
+  }
+
+  async function buildBlock(data, b) {
+    if (b.type === "kv") {
+      var pairs = [];
+      if (b.field) {
+        used[b.field.split(".")[0]] = true;
+        var o = at(data, b.field);
+        if (o && typeof o === "object") Object.keys(o).forEach(function (k) { pairs.push([titleize(k), o[k]]); });
+      }
+      (b.fields || []).forEach(function (f) {
+        used[f.split(".")[0]] = true;
+        var v = at(data, f);
+        if (v !== undefined) pairs.push([titleize(f.split(".").pop()), v]);
+      });
+      return pairs.length ? { node: kvTable(pairs), count: pairs.length } : null;
+    }
+    if (b.type === "table") {
+      used[b.field.split(".")[0]] = true;
+      var rows = at(data, b.field);
+      return isObjArray(rows) ? { node: gridTable(rows), count: rows.length } : null;
+    }
+    if (b.type === "findings") {
+      used[b.field.split(".")[0]] = true;
+      var f = at(data, b.field);
+      return isObjArray(f) ? { node: findingsList(f, b), count: f.length } : null;
+    }
+    if (b.type === "score") {
+      [b.gradeField, b.scoreField, b.categoriesField].forEach(function (p) { if (p) used[p.split(".")[0]] = true; });
+      var node = scoreBlock(data, b);
+      return node.childNodes.length ? { node: node, count: null } : null;
+    }
+    if (b.type === "image") {
+      [b.urlField, b.dataField, b.fetchArgsField, b.caption].forEach(function (p) { if (p) used[p.split(".")[0]] = true; });
+      return { node: await imageBlock(data, b), count: null };
+    }
+    if (b.type === "traits") {
+      used[b.field.split(".")[0]] = true;
+      var rows = normaliseTraits(at(data, b.field), b);
+      return rows.length ? { node: traitsBlock(rows, b), count: rows.length } : null;
+    }
+    if (b.type === "note") {
+      used[b.field.split(".")[0]] = true;
+      var t = at(data, b.field);
+      return t ? { node: el("p", null, fmt(t)), count: null } : null;
+    }
+    if (b.type === "rest") {
+      var rest = [];
+      Object.keys(data).forEach(function (k) {
+        if (used[k]) return;
+        var v = data[k];
+        if (isObjArray(v)) return;
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          Object.keys(v).forEach(function (sk) { rest.push([titleize(k) + " › " + titleize(sk), v[sk]]); });
+        } else rest.push([titleize(k), v]);
+      });
+      return rest.length ? { node: kvTable(rest), count: rest.length } : null;
+    }
+    return null;
+  }
+
+  async function buildSections(data, blocks) {
+    var out = [];
+    for (var i = 0; i < blocks.length; i++) {
+      var b = blocks[i];
+      if (b.type === "drawer") continue;
+      var built = await buildBlock(data, b);
+      if (built) out.push(section(b.title || titleize(b.type), built.count, built.node, false));
+    }
+    return out;
+  }
+
+  function healthOf(data, spec) {
+    if (!spec || !spec.checks || !spec.checks.length) return null;
+    var issues = [], measured = false;
+    spec.checks.forEach(function (c) {
+      var arr = at(data, c.field);
+      if (!isObjArray(arr)) return;
+      measured = true;
+      arr.forEach(function (row) {
+        if (!row[c.flag]) issues.push(c.failLabel + ": " + (row[c.nameKey || "name"] || "?"));
+      });
+    });
+    // Three states: "measured nothing" is a different claim from "nothing is
+    // wrong", and collapsing them reports healthy on no evidence.
+    if (!measured) return { state: "unknown", label: "UNKNOWN", issues: [] };
+    return issues.length ? { state: "bad", label: "DEGRADED", issues: issues }
+                         : { state: "ok", label: "HEALTHY", issues: [] };
+  }
+
+  async function render(data) {
+    if (!data) return;
+    root.replaceChildren();
+    used = {};
+
+    var hero = SPEC.hero || {};
+    var variant = hero.variant || "gradient";
+    var band = el("div", "hero " + variant);
+    var hrow = el("div", "hrow");
+    if (LOGO) {
+      var badge = el("span", "badge");
+      var im = document.createElement("img"); im.src = LOGO; im.alt = "";
+      badge.appendChild(im); hrow.appendChild(badge);
+    }
+    // Payload title when the view is about a named thing; the spec title is the
+    // fallback and the label for views that are about the tool itself.
+    var titleText = (SPEC.titleField && at(data, SPEC.titleField)) || SPEC.title;
+    hrow.appendChild(el("span", "htitle", String(titleText)));
+
+    var h = healthOf(data, hero.health);
+    if (h) {
+      var pill = el("span", "health " + h.state);
+      pill.appendChild(el("i", "dot"));
+      pill.appendChild(document.createTextNode(h.label));
+      hrow.appendChild(pill);
+    }
+    band.appendChild(hrow);
+
+    if (h && h.issues.length) {
+      band.appendChild(el("p", "hnote", h.issues.length === 1 ? h.issues[0]
+        : h.issues.length + " problems: " + h.issues.join("; ")));
+    } else if (hero.subtitle) {
+      var sub = typeof hero.subtitle === "string" ? hero.subtitle : at(data, hero.subtitle.field);
+      if (sub) band.appendChild(el("p", "hnote", fmt(sub)));
+    }
+
+    if (hero.actions && hero.actions.length) {
+      var acts = el("div", "acts");
+      hero.actions.forEach(function (a) {
+        var url = a.urlField ? at(data, a.urlField) : a.url;
+        if (!url) return;
+        var btn = el("button", "act", a.label);
+        btn.type = "button";
+        btn.addEventListener("click", function () { app.openLink({ url: String(url) }); });
+        acts.appendChild(btn);
+      });
+      if (acts.childNodes.length) band.appendChild(acts);
+    }
+
+    if (hero.facts && hero.facts.length) {
+      var strip = el("div", "facts");
+      hero.facts.forEach(function (f) {
+        var v = at(data, f.field);
+        var value = null, attn = false;
+        if (f.countFlag && isObjArray(v)) {
+          var ok = v.filter(function (x) { return x[f.countFlag]; }).length;
+          value = ok + "/" + v.length;
+          attn = !!f.attnWhenShort && ok < v.length;
+        } else if (Array.isArray(v)) {
+          value = String(v.length);
+        } else if (v && typeof v === "object") {
+          // A bag of named numbers is a countable collection too. Without this
+          // a fact pointing at a traits object silently produced nothing, which
+          // reads as a missing field rather than an unhandled shape.
+          value = String(Object.keys(v).length);
+        } else if (v !== undefined) {
+          value = String(v);
+        }
+        if (value === null) return;
+        used[f.field.split(".")[0]] = true;
+        var chip = el("span", "fact" + (attn ? " attn" : ""));
+        chip.appendChild(el("b", null, value));
+        chip.appendChild(el("span", null, f.label));
+        strip.appendChild(chip);
+      });
+      if (strip.childNodes.length) band.appendChild(strip);
+    }
+    root.appendChild(band);
+
+    // Top-level blocks render inline; a drawer collects its children so the
+    // default state stays a card rather than a page.
+    for (var i = 0; i < SPEC.blocks.length; i++) {
+      var b = SPEC.blocks[i];
+      if (b.type === "drawer") {
+        var kids = await buildSections(data, b.blocks || []);
+        if (!kids.length) continue;
+        var d = el("details", "drawer");
+        if (b.open) d.open = true;
+        var sm = el("summary");
+        sm.appendChild(el("span", "chev"));
+        sm.appendChild(el("span", null, b.title || "Details"));
+        sm.appendChild(el("span", "dcount", kids.length + (kids.length === 1 ? " section" : " sections")));
+        d.appendChild(sm);
+        var inner = el("div", "inner");
+        kids.forEach(function (k) { inner.appendChild(k); });
+        d.appendChild(inner);
+        root.appendChild(d);
+      } else {
+        var built = await buildBlock(data, b);
+        if (!built) continue;
+        var wrap = el("div", "body");
+        if (b.title) wrap.appendChild(el("h2", "btitle", b.title));
+        wrap.appendChild(built.node);
+        root.appendChild(wrap);
+      }
+    }
+
+    if (SPEC.footer) {
+      var fv = at(data, SPEC.footer.field);
+      if (fv) {
+        var p = el("p", "foot");
+        p.appendChild(document.createTextNode(SPEC.footer.label + " "));
+        p.appendChild(el("span", "path", fmt(fv)));
+        root.appendChild(p);
+      }
+    }
+  }
+
+  function applyHostContext(ctx) {
+    document.documentElement.classList.toggle("dark", ctx && ctx.theme === "dark");
+    if (ctx && ctx.styles && ctx.styles.variables && applyHostStyleVariables) {
+      applyHostStyleVariables(ctx.styles.variables);
+    }
+  }
+
+  // Handlers before connect(), or the first result is delivered into nothing.
+  app.ontoolresult = function (res) {
+    try {
+      var data = res && res.structuredContent;
+      if (!data && res && res.content && res.content[0] && res.content[0].text) {
+        data = JSON.parse(res.content[0].text);
+      }
+      render(data);
+    } catch (e) {
+      msg.textContent = "Could not read the payload: " + (e && e.message ? e.message : e);
+    }
+  };
+  app.onhostcontextchanged = applyHostContext;
+
+  try {
+    await app.connect();
+    applyHostContext(app.getHostContext());
+  } catch (e) {
+    msg.textContent = "Could not connect to the host: " + (e && e.message ? e.message : e);
+  }
+})();
+`;
+
+/**
+ * Render a spec to a complete MCP Apps resource document.
+ *
+ * Top-level await is deliberately absent from the emitted script: older iframe
+ * contexts throw on it, and the throw surfaces only as a blank widget.
+ */
+export function buildWidget(spec: WidgetSpec): string {
+  const script = RUNTIME
+    .replace("__SPEC__", () => JSON.stringify(spec))
+    .replace("__LOGO__", () => getLogoDataUri());
+  return `<!doctype html><meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<style>${CSS}</style>
+<div id="root"><p class="msg" id="msg">Waiting for the host&hellip;</p></div>
+<script type="module">
+${getExtAppsBundle()}
+${script}
+</script>`;
+}
