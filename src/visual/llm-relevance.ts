@@ -41,6 +41,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { getTraitDefinition, getTraitLevel } from "../trait-reference.js";
+
 const CACHE_DIR = join(
   process.env.CBROWSER_DATA_DIR || join(homedir(), ".cbrowser"),
   "llm-relevance-cache",
@@ -97,6 +99,15 @@ export interface RelevanceContext {
 export interface RelevanceResult {
   /** True when the judge was given the rendered screenshot. */
   sawScreenshot?: boolean;
+  /**
+   * Why these scores, in the persona's terms. Two sentences.
+   *
+   * Requested from the model alongside the scores rather than derived after,
+   * because a number with no stated reason cannot be argued with — and the
+   * whole point of moving off keyword matching was to get judgements a human
+   * can inspect and disagree with.
+   */
+  reasoning?: string;
   /** Relevance per element index, 0-1. Missing index means zero. */
   scores: Record<number, number>;
   /** Which method produced these numbers. Never omit this from telemetry. */
@@ -145,15 +156,59 @@ function writeCache(key: string, value: RelevanceResult): void {
   } catch { /* a cold cache is slower, never wrong */ }
 }
 
-/** Render traits as prose the model can weigh, keeping only the extremes. */
+/**
+ * Render traits with what each VALUE means behaviourally for this persona.
+ *
+ * "patience 0.20 (low)" tells a judge almost nothing. The trait registry already
+ * carries a behavioural example per band — patience 0.20 is "Gives up after 1-2
+ * failed attempts" — and handing over that sentence instead of the number is the
+ * difference between the model guessing what low patience implies and being told.
+ */
 function describeTraits(traits?: Record<string, number>): string {
   if (!traits) return "unspecified";
   const notable = Object.entries(traits)
-    .filter(([, v]) => typeof v === "number" && (v <= 0.3 || v >= 0.7))
+    .filter(([, v]) => typeof v === "number" && (v <= 0.35 || v >= 0.65))
     .sort((a, b) => Math.abs(b[1] - 0.5) - Math.abs(a[1] - 0.5))
-    .slice(0, 10)
-    .map(([k, v]) => `${k} ${v.toFixed(2)} (${v >= 0.7 ? "high" : "low"})`);
-  return notable.length > 0 ? notable.join(", ") : "all traits near baseline";
+    .slice(0, 12)
+    .map(([k, v]) => {
+      const def = getTraitDefinition(k);
+      if (!def) return `- ${k} ${v.toFixed(2)}`;
+      const example = def.examples[getTraitLevel(v)];
+      return `- ${k} ${v.toFixed(2)} — ${def.description}. At this level: ${example}`;
+    });
+  return notable.length > 0 ? "\n" + notable.join("\n") : "all traits near baseline";
+}
+
+/**
+ * Schwartz values with their behavioural reading.
+ *
+ * No registry equivalent exists for values, and a bare number is as opaque here
+ * as it is for traits, so the meaning is spelled out at the point of use.
+ */
+const VALUE_MEANING: Record<string, [string, string]> = {
+  selfDirection: ["ignores recommendations, wants to explore and decide alone", "follows curated paths and suggestions"],
+  stimulation: ["prefers familiar, predictable interfaces", "drawn to novelty, new, beta, latest"],
+  hedonism: ["tolerates friction for utility", "abandons anything unpleasant or effortful"],
+  achievement: ["satisfices, takes the first workable option", "optimises, compares, seeks the best outcome"],
+  power: ["indifferent to status signals", "responds to premium, pro, exclusive framing"],
+  security: ["untroubled by risk signals", "scrutinises safety, privacy, guarantees, refunds"],
+  conformity: ["immune to social proof", "strongly moved by reviews, ratings, popularity"],
+  tradition: ["comfortable with the unfamiliar", "distrusts novelty, wants the established option"],
+  benevolence: ["self-focused in decisions", "attends to how choices affect others"],
+  universalism: ["indifferent to ethics framing", "attends to sustainability, fairness, accessibility claims"],
+};
+
+function describeValues(values?: Record<string, number>): string {
+  if (!values) return "unspecified";
+  const notable = Object.entries(values)
+    .filter(([, v]) => typeof v === "number" && (v <= 0.35 || v >= 0.65))
+    .sort((a, b) => Math.abs(b[1] - 0.5) - Math.abs(a[1] - 0.5))
+    .map(([k, v]) => {
+      const m = VALUE_MEANING[k];
+      if (!m) return `- ${k} ${v.toFixed(2)}`;
+      return `- ${k} ${v.toFixed(2)} — ${v >= 0.65 ? m[1] : m[0]}`;
+    });
+  return notable.length > 0 ? "\n" + notable.join("\n") : "all values near baseline";
 }
 
 /**
@@ -223,13 +278,16 @@ export async function judgeRelevance(
     "by social proof and ratings; high self-direction ignores them. Low comprehension needs " +
     "labels and headings before controls. Let these genuinely change the ranking — two personas " +
     "with the same goal should not produce the same scores.\n\n" +
-    "Return ONLY JSON: {\"scores\": {\"<index>\": <0.0-1.0>, ...}}. Omit elements scoring 0.";
+    "Return ONLY JSON: {\"scores\": {\"<index>\": <0.0-1.0>, ...}, \"reasoning\": \"<two sentences>\"}. " +
+    "Omit elements scoring 0. In `reasoning`, say what this persona is drawn to on THIS page and " +
+    "what they ignore, referring to their traits by name. Write it so a designer reading it knows " +
+    "what to change.";
 
   const user = [
     `Persona: ${ctx.personaName}`,
     ctx.personaDescription ? `Description: ${ctx.personaDescription}` : "",
-    `Notable traits: ${describeTraits(ctx.traits)}`,
-    ctx.values ? `Motivational values: ${describeTraits(ctx.values)}` : "",
+    `Notable traits:${describeTraits(ctx.traits)}`,
+    ctx.values ? `Motivational values:${describeValues(ctx.values)}` : "",
     ctx.goal ? `Goal on this page: ${ctx.goal}` : "No stated goal — judge by what this persona is drawn to.",
     ctx.viewport ? `Viewport: ${ctx.viewport.width}x${ctx.viewport.height} (fold at y=${ctx.viewport.height})` : "",
     "",
@@ -310,7 +368,7 @@ export async function judgeRelevance(
       );
     }
 
-    const parsed = JSON.parse(json) as { scores?: Record<string, number> };
+    const parsed = JSON.parse(json) as { scores?: Record<string, number>; reasoning?: string };
     const scores: Record<number, number> = {};
     for (const [k, v] of Object.entries(parsed.scores ?? {})) {
       const idx = Number(k);
@@ -324,10 +382,121 @@ export async function judgeRelevance(
     const result: RelevanceResult = {
       scores, source: "llm", cached: false, model: RELEVANCE_MODEL,
       sawScreenshot: Boolean(ctx.screenshot),
+      ...(typeof parsed.reasoning === "string" ? { reasoning: parsed.reasoning } : {}),
     };
     writeCache(key, result);
     return result;
   } catch (e) {
     return keywordFallback(elements, ctx, `LLM relevance failed: ${(e as Error).message}`);
+  }
+}
+
+// ===========================================================================
+// Capture summary
+// ===========================================================================
+
+/** One judged moment in a recording. */
+export interface JudgedMoment {
+  /** Frame index this judgement was made at. */
+  frameIndex: number;
+  /** Milliseconds from capture start. */
+  tMs: number;
+  /** Why this moment scored the way it did, in the persona's terms. */
+  reasoning?: string;
+  /** The elements that scored highest, already resolved to text. */
+  topElements: Array<{ text: string; type: string; score: number }>;
+}
+
+export interface CaptureSummary {
+  narrative: string;
+  source: "llm" | "unavailable";
+  unavailable?: string;
+}
+
+/**
+ * Narrate a whole recording from the moments that were judged along the way.
+ *
+ * A per-frame judgement answers "what did this persona attend to here". It does
+ * not answer "how did this experience go", which is the question a designer
+ * watching a recording actually has — where attention went first, what pulled it
+ * away, whether the thing they came to do ever became findable. That is a
+ * different question over a different unit (the run, not the frame), so it is a
+ * separate call rather than a field on the last frame.
+ *
+ * Costs one call per capture regardless of length, because it consumes the
+ * already-computed keyframe judgements rather than the frames.
+ */
+export async function summarizeCapture(
+  moments: JudgedMoment[],
+  ctx: RelevanceContext & { durationMs: number; frameCount: number },
+  getApiKey: () => string | null,
+): Promise<CaptureSummary> {
+  if (moments.length === 0) {
+    return { narrative: "", source: "unavailable", unavailable: "No judged moments to summarise" };
+  }
+
+  const apiKey = getApiKey();
+  if (!apiKey) return { narrative: "", source: "unavailable", unavailable: "No Anthropic API key configured" };
+
+  const system =
+    "You narrate how one specific person experienced a screen recording of a web page. " +
+    "You are given the moments where the interface changed enough to re-judge their attention. " +
+    "Write 3-5 sentences covering: what pulled them first, how their attention shifted as the page " +
+    "changed, whether what they came to do ever became obvious, and the single change that would " +
+    "most improve this experience for THIS person. Refer to their traits by name where it explains " +
+    "a shift. Write for a designer who will act on it — concrete, no hedging, no restating the brief. " +
+    "Return ONLY JSON: {\"narrative\": \"<3-5 sentences>\"}.";
+
+  const user = [
+    `Persona: ${ctx.personaName}`,
+    ctx.personaDescription ? `Description: ${ctx.personaDescription}` : "",
+    `Notable traits:${describeTraits(ctx.traits)}`,
+    ctx.values ? `Motivational values:${describeValues(ctx.values)}` : "",
+    ctx.goal ? `Goal: ${ctx.goal}` : "No stated goal.",
+    `Recording: ${ctx.frameCount} frames over ${(ctx.durationMs / 1000).toFixed(1)}s, ${moments.length} judged moments.`,
+    "",
+    "Moments:",
+    ...moments.map((m) => [
+      `t=${(m.tMs / 1000).toFixed(1)}s (frame ${m.frameIndex})`,
+      m.topElements.length > 0
+        ? `  drew attention: ${m.topElements.map((e) => `${e.text.slice(0, 60)} (${e.score.toFixed(2)})`).join("; ")}`
+        : "  drew attention: nothing scored",
+      m.reasoning ? `  why: ${m.reasoning}` : "",
+    ].filter(Boolean).join("\n")),
+  ].filter(Boolean).join("\n");
+
+  try {
+    const { default: Anthropic } = await import("@anthropic-ai/sdk");
+    const client = new Anthropic({ apiKey });
+    const response = await client.messages.create({
+      model: RELEVANCE_MODEL,
+      max_tokens: 1200,
+      system,
+      messages: [{ role: "user", content: user }],
+    });
+
+    const text = response.content
+      .filter((b): b is { type: "text"; text: string } => b.type === "text")
+      .map((b) => b.text)
+      .join("\n")
+      .replace(/```(?:json)?/gi, "");
+
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      // Prose without JSON is still a usable narrative; losing it to a parse
+      // rule would discard the answer over its packaging.
+      const bare = text.trim();
+      return bare
+        ? { narrative: bare, source: "llm" }
+        : { narrative: "", source: "unavailable", unavailable: "Model returned nothing usable" };
+    }
+
+    const parsed = JSON.parse(text.slice(start, end + 1)) as { narrative?: string };
+    return parsed.narrative
+      ? { narrative: parsed.narrative, source: "llm" }
+      : { narrative: "", source: "unavailable", unavailable: "Model returned no narrative" };
+  } catch (e) {
+    return { narrative: "", source: "unavailable", unavailable: `Summary failed: ${(e as Error).message}` };
   }
 }

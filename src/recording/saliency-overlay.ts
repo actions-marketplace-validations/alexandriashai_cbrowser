@@ -32,6 +32,13 @@ import { existsSync, mkdirSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { analyzeAttention, type DOMAttentionElement } from "../visual/attention-transport.js";
+import {
+  judgeRelevance,
+  summarizeCapture,
+  type JudgedMoment,
+  type RelevanceContext,
+  type RelevanceElement,
+} from "../visual/llm-relevance.js";
 
 export interface AttentionOverlayOptions {
   /** 0-1 opacity of the heat layer. Default 0.55 — readable without hiding the page. */
@@ -53,11 +60,34 @@ export interface AttentionOverlayOptions {
   domElements?: DOMAttentionElement[];
   /** Goal string, which weights goal-relevance in the semantic layer. */
   goal?: string;
+  /**
+   * Frame indices where the interface changed enough to warrant re-judging.
+   *
+   * The capture engine already computes this as `key_frames` via SSIM, and it is
+   * the right trigger precisely because it does not saturate the way
+   * `change_points` does. Re-judging every frame would cost one model call per
+   * frame; re-judging only where the page actually changed costs a handful per
+   * recording and produces the same map, because between keyframes the page —
+   * and therefore the judgement — is unchanged.
+   */
+  keyFrames?: number[];
+  /** Per-frame timestamps, used to place moments on the recording timeline. */
+  frameTimesMs?: number[];
+  /** Persona context for the relevance judge and the closing summary. */
+  relevanceContext?: Omit<RelevanceContext, "screenshot">;
+  /** Produce a narrative of the whole recording after the frames are overlaid. */
+  summarize?: boolean;
+  /** Resolves the Anthropic key. Absent means no judging and no summary. */
+  getApiKey?: () => string | null;
 }
 
 export interface OverlayResult {
   frames: string[];
   dir: string;
+  /** Judged moments, one per keyframe the judge was re-run on. */
+  moments?: JudgedMoment[];
+  /** Narrative of the whole recording, when a summary was requested. */
+  summary?: string;
   /** Frames that could not be overlaid and fell back to the original. */
   failed: number;
   /** True when DOM elements were supplied, i.e. the full model ran. */
@@ -99,8 +129,18 @@ async function renderHeatLayer(
   framePath: string,
   frameWidth: number,
   frameHeight: number,
-  opts: Required<Omit<AttentionOverlayOptions, "domElements" | "goal">> &
-    Pick<AttentionOverlayOptions, "domElements" | "goal">,
+  // Names exactly what rendering needs rather than deriving from the whole
+  // options type: the option bag also carries judging and summary concerns that
+  // have nothing to do with painting a frame, and a Required<Omit<...>> over it
+  // breaks every time an unrelated option is added.
+  opts: {
+    opacity: number;
+    floor: number;
+    cellSize: number;
+    persona: string;
+    domElements?: DOMAttentionElement[];
+    goal?: string;
+  },
 ): Promise<Buffer | null> {
   const analysis = await analyzeAttention(
     framePath,
@@ -185,11 +225,65 @@ export async function overlayAttentionOnFrames(
   }
 
   const usedDom = (opts.domElements?.length ?? 0) > 0;
+
+  // Judge the persona's attention at each KEYFRAME, not each frame. The engine's
+  // SSIM keyframes are the moments the interface actually changed, so between
+  // them the page — and therefore the judgement — is identical. This turns an
+  // unusable per-frame cost into a handful of calls per recording.
+  let moments: JudgedMoment[] | undefined;
+  let summary: string | undefined;
+
+  const ctx = options.relevanceContext;
+  const getApiKey = options.getApiKey;
+  if (ctx && getApiKey && usedDom && options.keyFrames && options.keyFrames.length > 0) {
+    const elements: RelevanceElement[] = (options.domElements ?? []).map((el, i) => ({
+      index: i,
+      type: el.type,
+      text: el.text ?? "",
+      x: el.x, y: el.y, width: el.width, height: el.height,
+    }));
+
+    moments = [];
+    for (const frameIndex of options.keyFrames) {
+      if (frameIndex < 0 || frameIndex >= framePaths.length) continue;
+      try {
+        const judged = await judgeRelevance(elements, { ...ctx, screenshot: undefined }, getApiKey);
+        const top = Object.entries(judged.scores)
+          .map(([i, score]) => ({ el: elements[Number(i)], score }))
+          .filter((e) => e.el)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5)
+          .map((e) => ({ text: e.el.text, type: e.el.type, score: e.score }));
+        moments.push({
+          frameIndex,
+          tMs: options.frameTimesMs?.[frameIndex] ?? 0,
+          ...(judged.reasoning ? { reasoning: judged.reasoning } : {}),
+          topElements: top,
+        });
+      } catch { /* one unjudged moment must not cost the recording */ }
+    }
+
+    if (options.summarize && moments.length > 0) {
+      const narrated = await summarizeCapture(
+        moments,
+        {
+          ...ctx,
+          durationMs: options.frameTimesMs?.[framePaths.length - 1] ?? 0,
+          frameCount: framePaths.length,
+        },
+        getApiKey,
+      );
+      if (narrated.source === "llm" && narrated.narrative) summary = narrated.narrative;
+    }
+  }
+
   return {
     frames,
     dir,
     failed,
     usedDom,
     quantity: usedDom ? "predicted-attention" : "visual-contrast-only",
+    ...(moments && moments.length > 0 ? { moments } : {}),
+    ...(summary ? { summary } : {}),
   };
 }
