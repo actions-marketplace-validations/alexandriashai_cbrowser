@@ -50,6 +50,17 @@ export interface CorpusStimulus {
   imagePath: string;
   /** Ground-truth fixation density map per horizon, when the corpus has them. */
   fixationMaps: Partial<Record<FixationHorizon, string>>;
+  /**
+   * Per-population maps, when the corpus separates groups.
+   *
+   * This is the field that makes a persona model testable. Without it every
+   * persona is scored against one undifferentiated ground truth and is
+   * penalised for deviating from the average viewer — which is what a persona
+   * model is FOR.
+   */
+  groupMaps?: Record<string, string>;
+  /** Per-population raw scanpath files, when available. */
+  scanpaths?: Record<string, string>;
 }
 
 export interface CorpusInfo {
@@ -60,6 +71,8 @@ export interface CorpusInfo {
   /** Absent when the corpus ships only density maps and no raw logs. */
   fixationLogDir?: string;
   citation: string;
+  /** Set when the corpus's licence is unresolved. Blocks shipping derived results. */
+  licenceHold?: string;
 }
 
 /**
@@ -243,6 +256,102 @@ export function fixationsToGrid(
     }
   }
   return { values, width, height };
+}
+
+/**
+ * Load a Saliency4ASD-layout corpus (Duan et al. MMSys 2019 / Gutierrez et al.
+ * SPIC 2021): 300 natural-scene images from MIT1003, with fixation maps
+ * collected SEPARATELY from 14 children with ASD and 14 typically-developing
+ * controls.
+ *
+ * Separate per-group maps are what make this corpus different in kind. Every
+ * other corpus here gives one aggregate ground truth, so a persona model can
+ * only be scored on how well it predicts an undifferentiated population — which
+ * penalises it for the deviation that is its entire purpose. Two groups permit
+ * the crossover question instead: does the ASD model beat the neurotypical model
+ * on ASD viewers AND lose to it on TD viewers? Only that interaction
+ * distinguishes "models this population" from "is simply a worse model".
+ *
+ * DATA IMBALANCE, from the dataset README: for some images fewer than 14 ASD
+ * subjects contributed, because some children looked away from the screen
+ * entirely. Those maps are built from fewer fixations and are correspondingly
+ * noisier, so `asdSubjectCount` is surfaced per stimulus — an unweighted mean
+ * across images silently treats a 3-subject map as equal evidence to a
+ * 14-subject one.
+ *
+ * LICENCE, unresolved as of 2026-07-29: the Zenodo record says CC BY 4.0 while
+ * the deposit's own UsageAgreement.txt forbids commercial use. Held outside the
+ * repository pending written clarification from the depositors. Nothing derived
+ * from it may ship until that is answered.
+ */
+export function loadSaliency4ASDCorpus(root: string): CorpusInfo | null {
+  const imagesDir = join(root, "Images");
+  if (!existsSync(imagesDir)) return null;
+
+  const stimuli: CorpusStimulus[] = [];
+  for (const file of readdirSync(imagesDir)) {
+    const ext = extname(file).toLowerCase();
+    if (ext !== ".png" && ext !== ".jpg" && ext !== ".jpeg") continue;
+    const id = basename(file, ext);
+    // Fixmaps are named "<id>_s.png" regardless of the stimulus extension.
+    const asdMap = join(root, "ASD_FixMaps", `${id}_s.png`);
+    const tdMap = join(root, "TD_FixMaps", `${id}_s.png`);
+    const fixationMaps: Partial<Record<FixationHorizon, string>> = {};
+    // This corpus has no multi-duration split; the single map is recorded under
+    // the longest horizon rather than inventing 1s/3s data it does not contain.
+    if (existsSync(tdMap)) fixationMaps["7s"] = tdMap;
+    stimuli.push({
+      id,
+      imagePath: join(imagesDir, file),
+      fixationMaps,
+      groupMaps: {
+        ...(existsSync(asdMap) ? { asd: asdMap } : {}),
+        ...(existsSync(tdMap) ? { td: tdMap } : {}),
+      },
+      scanpaths: {
+        asd: join(root, "ASD", `ASD_scanpath_${id}.txt`),
+        td: join(root, "TD", `TD_scanpath_${id}.txt`),
+      },
+    });
+  }
+
+  return {
+    name: "Saliency4ASD",
+    root,
+    stimuli: stimuli.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true })),
+    horizons: ["7s"],
+    citation:
+      "Duan et al., A Dataset of Eye Movements for the Children with Autism Spectrum Disorder. ACM MMSys 2019; " +
+      "Gutierrez et al., Signal Processing: Image Communication 92:116092, 2021. Images from Judd et al., ICCV 2009 (MIT1003).",
+    licenceHold:
+      "Zenodo record says CC BY 4.0; the deposit's UsageAgreement.txt forbids commercial use. Unresolved — do not ship derived results.",
+  };
+}
+
+/**
+ * Parse a Saliency4ASD scanpath file: `Idx, x, y, duration`, pixel coordinates
+ * in the stimulus's own space, concatenated across subjects.
+ *
+ * Subject boundaries are marked by Idx resetting to 0, which is the only signal
+ * the format gives. Counting subjects matters because of the imbalance the
+ * README warns about.
+ */
+export function parseSaliency4ASDScanpath(
+  filePath: string,
+): { fixations: Fixation[]; subjectCount: number } {
+  if (!existsSync(filePath)) return { fixations: [], subjectCount: 0 };
+  const lines = readFileSync(filePath, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+  const fixations: Fixation[] = [];
+  let subjectCount = 0;
+  for (const line of lines) {
+    if (/^idx/i.test(line)) continue;
+    const parts = line.split(",").map((v) => Number(v.trim()));
+    if (parts.length < 4 || parts.some((v) => !Number.isFinite(v))) continue;
+    const [idx, x, y, duration] = parts;
+    if (idx === 0) subjectCount++;
+    fixations.push({ x, y, duration });
+  }
+  return { fixations, subjectCount };
 }
 
 /**
