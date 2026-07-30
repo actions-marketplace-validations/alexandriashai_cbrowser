@@ -285,6 +285,18 @@ export class VideoCaptureSession {
    * was actually on screen.
    */
   private scrollTrack: Array<{ atMs: number; scrollY: number }> = [];
+  /**
+   * Real interactions, captured from the page rather than inferred.
+   *
+   * The capture summary previously read the gap between two scripted tool calls
+   * as a user deliberating, and recommended a design change to fix the stall it
+   * had invented. Gagging the prompt stops the bad sentence; recording what
+   * actually happened is what makes the good one possible — and it is the same
+   * data needed to draw a ring where a click landed.
+   */
+  private interactions: Array<{
+    atMs: number; type: string; x: number; y: number; label: string;
+  }> = [];
   private navListener?: () => void;
   private scrollTimer?: ReturnType<typeof setInterval>;
   private nextDueMs = 0;
@@ -934,6 +946,31 @@ export class VideoCaptureSession {
     //
     // Polled rather than event-driven: scroll fires far too often to snapshot
     // on, and a threshold poll costs one cheap evaluate per interval.
+    // Listener injected into the page, drained on the poll. An exposeFunction
+    // binding would fire per event and race the screencast; a drained buffer
+    // costs one evaluate per tick regardless of how much the user clicks.
+    void this.page.evaluate(() => {
+      const w = window as unknown as { __cbInteractions?: unknown[] };
+      if (w.__cbInteractions) return;
+      w.__cbInteractions = [];
+      const record = (type: string) => (e: Event) => {
+        const me = e as MouseEvent;
+        const t = e.target as HTMLElement | null;
+        const label = (t?.innerText || t?.getAttribute?.("aria-label") || t?.tagName || "")
+          .toString().trim().slice(0, 60);
+        (w.__cbInteractions as unknown[]).push({
+          t: Date.now(),
+          type,
+          x: typeof me.clientX === "number" ? me.clientX : 0,
+          y: typeof me.clientY === "number" ? me.clientY : 0,
+          label,
+        });
+      };
+      document.addEventListener("click", record("click"), true);
+      document.addEventListener("change", record("input"), true);
+      document.addEventListener("submit", record("submit"), true);
+    }).catch(() => { /* CSP or a closed page; interactions degrade to empty */ });
+
     let lastScrollY = 0;
     this.scrollTimer = setInterval(() => {
       void (async () => {
@@ -943,6 +980,22 @@ export class VideoCaptureSession {
           // correction needs fine-grained scroll, even where a fresh DOM read
           // would be wasteful.
           this.scrollTrack.push({ atMs: Date.now() - this.startWallMs, scrollY: y });
+
+          const drained = await this.page.evaluate(() => {
+            const w = window as unknown as { __cbInteractions?: Array<Record<string, unknown>> };
+            const out = w.__cbInteractions ?? [];
+            w.__cbInteractions = [];
+            return out;
+          }).catch(() => []);
+          for (const it of drained as Array<Record<string, unknown>>) {
+            this.interactions.push({
+              atMs: Number(it.t) - this.startWallMs,
+              type: String(it.type ?? "click"),
+              x: Number(it.x ?? 0),
+              y: Number(it.y ?? 0),
+              label: String(it.label ?? ""),
+            });
+          }
           if (Math.abs(y - lastScrollY) >= SCROLL_SNAPSHOT_THRESHOLD_PX) {
             lastScrollY = y;
             await snapshot();
@@ -1187,6 +1240,7 @@ export class VideoCaptureSession {
           // at that moment rather than against wherever the capture ended up.
           domTimeline: this.domSnapshots as never,
           scrollTrack: this.scrollTrack,
+          interactions: this.interactions,
           frameTimesMs: manifest.frames.map((f) => f.t_ms),
           summarize: true,
           getApiKey: getAnthropicApiKey,

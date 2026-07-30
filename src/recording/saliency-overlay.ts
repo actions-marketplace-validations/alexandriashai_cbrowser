@@ -85,6 +85,8 @@ export interface AttentionOverlayOptions {
   domTimeline?: Array<{ atMs: number; scrollY?: number; elements: DOMAttentionElement[] }>;
   /** Scroll position over time, used to correct rects for drift since capture. */
   scrollTrack?: Array<{ atMs: number; scrollY: number }>;
+  /** Real interactions, for the click pulse and for the summary's action log. */
+  interactions?: Array<{ atMs: number; type: string; x: number; y: number; label: string }>;
   /** Persona context for the relevance judge and the closing summary. */
   relevanceContext?: Omit<RelevanceContext, "screenshot">;
   /** Produce a narrative of the whole recording after the frames are overlaid. */
@@ -127,6 +129,52 @@ function heatColour(v: number, opacity: number, floor: number): [number, number,
   else { const u = (t - 0.75) / 0.25; r = 255; g = Math.round(255 * (1 - u)); b = 0; }
 
   return [r, g, b, Math.round(255 * opacity * Math.min(1, 0.35 + t))];
+}
+
+/** How long a click pulse stays visible. Long enough to see at 2x, short enough not to smear. */
+const PULSE_MS = 600;
+/** Ring radius at the start and end of the pulse. */
+const PULSE_R0 = 14;
+const PULSE_R1 = 62;
+
+/**
+ * Draw an expanding ring over an interaction point.
+ *
+ * Painted in a colour outside the heat ramp (blue->red) so it cannot be mistaken
+ * for attention: an interaction is something that HAPPENED, attention is
+ * something the model PREDICTED, and a viewer must never have to guess which a
+ * mark represents. White with a dark rim reads on both light and dark pages.
+ */
+function drawPulse(
+  buf: Buffer, w: number, h: number,
+  cx: number, cy: number, progress: number,
+): void {
+  const radius = PULSE_R0 + (PULSE_R1 - PULSE_R0) * progress;
+  const alpha = Math.round(235 * (1 - progress));
+  if (alpha <= 0) return;
+  const thickness = 3;
+
+  const y0 = Math.max(0, Math.floor(cy - radius - thickness));
+  const y1 = Math.min(h - 1, Math.ceil(cy + radius + thickness));
+  const x0 = Math.max(0, Math.floor(cx - radius - thickness));
+  const x1 = Math.min(w - 1, Math.ceil(cx + radius + thickness));
+
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const d = Math.hypot(x - cx, y - cy);
+      const edge = Math.abs(d - radius);
+      if (edge > thickness) continue;
+      // Soft edge so the ring does not alias into a jagged circle.
+      const a = Math.round(alpha * (1 - edge / thickness));
+      if (a <= 0) continue;
+      const i = (y * w + x) * 4;
+      const dark = edge > thickness * 0.6;
+      buf[i] = dark ? 20 : 255;
+      buf[i + 1] = dark ? 20 : 255;
+      buf[i + 2] = dark ? 30 : 255;
+      buf[i + 3] = Math.max(buf[i + 3], a);
+    }
+  }
 }
 
 /**
@@ -291,6 +339,20 @@ export async function overlayAttentionOnFrames(
         .raw()
         .toBuffer();
 
+      // Pulses go on AFTER the blur. Blurring a ring turns it into a smudge, and
+      // the whole point of the mark is that it is crisp where the heat is soft —
+      // that contrast is what separates "this happened" from "this is predicted".
+      const tNow = options.frameTimesMs?.[frameIdx] ?? 0;
+      const scrollNow = scrollAt(tNow);
+      for (const it of options.interactions ?? []) {
+        const age = tNow - it.atMs;
+        if (age < 0 || age > PULSE_MS) continue;
+        // Interaction coords are viewport-relative at click time, so they need
+        // the same scroll correction the element rects get.
+        const y = it.y - (scrollNow - scrollAt(it.atMs));
+        drawPulse(blurred, width, height, it.x, y, age / PULSE_MS);
+      }
+
       await sharp(framePath)
         .composite([{ input: blurred, raw: { width, height, channels: 4 }, blend: "over" }])
         .toFile(target);
@@ -363,6 +425,9 @@ export async function overlayAttentionOnFrames(
           ...ctx,
           durationMs: options.frameTimesMs?.[framePaths.length - 1] ?? 0,
           frameCount: framePaths.length,
+          actions: (options.interactions ?? []).map((i) => ({
+            atMs: i.atMs, type: i.type, label: i.label,
+          })),
         },
         getApiKey,
       );

@@ -489,7 +489,19 @@ export interface CaptureSummary {
  */
 export async function summarizeCapture(
   moments: JudgedMoment[],
-  ctx: RelevanceContext & { durationMs: number; frameCount: number },
+  ctx: RelevanceContext & {
+    durationMs: number;
+    frameCount: number;
+    /**
+     * What actually happened, captured from the page.
+     *
+     * Without this the model had only timestamps, and read the gaps between them
+     * as a person deliberating. With it, silence is attributable: nothing
+     * happened because nothing was driven, which is a fact about the script and
+     * not about a user.
+     */
+    actions?: Array<{ atMs: number; type: string; label: string }>;
+  },
   getApiKey: () => string | null,
 ): Promise<CaptureSummary> {
   if (moments.length === 0) {
@@ -511,12 +523,20 @@ export async function summarizeCapture(
     "and the single change that would most improve this page for THIS person. Refer to their traits " +
     "by name where it explains a difference. Write for a designer who will act on it — concrete, no " +
     "hedging.\n\n" +
+    "An ACTION LOG may be supplied. It is the complete record of what was driven " +
+    "on the page — every click, input and submit. Anything not in it did not happen. " +
+    "You may say what an action led to; you may not invent one that is not listed.\n\n" +
     "CRITICAL — DO NOT INFER BEHAVIOUR FROM TIME. These timestamps are when an automation issued " +
     "its next command; the gaps between them are script cadence, NOT a person deliberating. Never " +
     "write that the user hesitated, stalled, lingered, re-read, second-guessed, hovered, or 'took N " +
     "seconds to decide'. There is no human in this recording and no dwell data. A four-second gap " +
     "means nothing called the tool for four seconds. Describe what the page shows and what the model " +
     "predicts about it — never a mental state, and never a duration as evidence of one.\n\n" +
+    "This holds for the RECOMMENDATION too. Do not justify a fix with what a user 'will stall on' " +
+    "or 'would hesitate over' — that reads as an observed finding to anyone skimming, and nothing " +
+    "here observed a user. Argue from the model instead: 'this persona weights security signals " +
+    "heavily and the page has none above the fold' is defensible; 'they stall before signing up' " +
+    "is not, even as a prediction.\n\n" +
     "Return ONLY JSON: {\"narrative\": \"<3-5 sentences>\"}.";
 
   const user = [
@@ -526,6 +546,12 @@ export async function summarizeCapture(
     ctx.values ? `Motivational values:${describeValues(ctx.values)}` : "",
     ctx.goal ? `Goal: ${ctx.goal}` : "No stated goal.",
     `Recording: ${ctx.frameCount} frames over ${(ctx.durationMs / 1000).toFixed(1)}s, ${moments.length} judged moments.`,
+    "",
+    ctx.actions && ctx.actions.length > 0
+      ? "Action log (complete — nothing else was driven):\n" +
+        ctx.actions.map((a) => `  t=${(a.atMs / 1000).toFixed(1)}s ${a.type}${a.label ? ` on "${a.label}"` : ""}`).join("\n")
+      : "Action log: EMPTY. Nothing was clicked or typed during this recording. " +
+        "Do not describe the persona as doing anything.",
     "",
     "Moments:",
     ...moments.map((m) => [
@@ -542,7 +568,7 @@ export async function summarizeCapture(
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model: RELEVANCE_MODEL,
-      max_tokens: 1200,
+      max_tokens: 2000,
       system,
       messages: [{ role: "user", content: user }],
     });
@@ -553,8 +579,18 @@ export async function summarizeCapture(
       .join("\n")
       .replace(/```(?:json)?/gi, "");
 
+    // Salvage a truncated narrative rather than returning the raw JSON envelope.
+    // A cut-off response has no closing brace, so the brace scan failed and the
+    // "prose without JSON" fallback handed back the literal {"narrative":"...
+    // string — which then rendered verbatim in the player.
+    const narrativeOnly = text.match(/"narrative"\s*:\s*"((?:[^"\\]|\\.)*)/);
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
+    if ((start < 0 || end <= start) && narrativeOnly) {
+      const salvaged = narrativeOnly[1]
+        .replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\\\\/g, "\\").trim();
+      if (salvaged) return { narrative: salvaged, source: "llm" };
+    }
     if (start < 0 || end <= start) {
       // Prose without JSON is still a usable narrative; losing it to a parse
       // rule would discard the answer over its packaging.
