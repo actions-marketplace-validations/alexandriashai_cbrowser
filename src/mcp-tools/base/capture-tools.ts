@@ -552,10 +552,15 @@ export async function startCapture(
   // capture_stop: it has just been told recording started but has no idea what
   // is on screen, so it cannot tell "the page loaded" from "the page is a 404"
   // until the whole capture is spent. Cheap, and it anchors everything after.
+  // Routed through browser.screenshot rather than page.screenshot so it obeys
+  // the same compression budget every other screenshot does. A raw grab here was
+  // returning a full-size frame while the screenshot tool returned a compressed
+  // one, so the two disagreed on size within a single session. noResize because
+  // a capture is now running and the viewport is not the budget's to spend.
   let openingFrame: string | undefined;
   try {
-    const shot = await page.screenshot({ type: "jpeg", quality: 60 });
-    openingFrame = shot.toString("base64");
+    const shotPath = await browser.screenshot(undefined, { compress: true, noResize: true });
+    openingFrame = (await import("node:fs")).readFileSync(shotPath).toString("base64");
   } catch { /* a capture that started is still a success without the preview */ }
 
   return {

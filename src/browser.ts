@@ -128,6 +128,15 @@ export interface ScreenshotOptions {
   scale?: number;
   /** Target max file size in bytes - will auto-adjust quality/scale if needed */
   maxSize?: number;
+  /**
+   * Never resize the viewport to hit the size budget; drop quality instead.
+   *
+   * The compression loop shrinks files by calling setViewportSize, which
+   * reflows the page for real -- it can cross responsive breakpoints, and
+   * during a screen capture it puts a resize into the recording. Callers that
+   * own the viewport (a running capture) set this so the page is left alone.
+   */
+  noResize?: boolean;
   /** Full page screenshot (default: false) */
   fullPage?: boolean;
   /**
@@ -5390,7 +5399,10 @@ For more help: https://playwright.dev/docs/browsers
 
     // Quality and scale steps to try
     const qualitySteps = [85, 70, 55, 45, 35, 25];
-    const scaleSteps = [1.0, 0.75, 0.5, 0.4, 0.3];
+    // With noResize the viewport is off limits, so 1.0 is the only scale and the
+    // budget is met by quality alone. A slightly heavier file is better than
+    // silently reflowing a page the caller is in the middle of recording.
+    const scaleSteps = options?.noResize ? [1.0] : [1.0, 0.75, 0.5, 0.4, 0.3];
 
     let quality = options?.quality || 85;
     let scale = options?.scale || 1.0;

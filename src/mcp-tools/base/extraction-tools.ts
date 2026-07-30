@@ -47,19 +47,26 @@ export function registerExtractionTools(
       // recording never contained -- and the two artifacts of the same moment
       // would disagree. Coerce to the recording's size rather than let that happen.
       let viewportForced: { width: number; height: number } | undefined;
+      let recording: { width: number; height: number } | undefined;
       try {
-        const rec = activeRecordingViewport(token);
-        if (rec) {
+        recording = activeRecordingViewport(token);
+        if (recording) {
           const page = await b.getPage();
           const now = page.viewportSize();
-          if (!now || now.width !== rec.width || now.height !== rec.height) {
-            await page.setViewportSize(rec);
-            viewportForced = rec;
+          if (!now || now.width !== recording.width || now.height !== recording.height) {
+            await page.setViewportSize(recording);
+            viewportForced = recording;
           }
         }
       } catch { /* never let viewport matching break a screenshot */ }
 
-      const file = await b.screenshot(path);
+      // Forcing the viewport before the shot is not enough on its own: the
+      // compression path shrinks oversized files by resizing the viewport, which
+      // would undo the match and put a reflow into the recording. noResize makes
+      // it hit the budget with quality instead.
+      const file = recording
+        ? await b.screenshot(path, { noResize: true })
+        : await b.screenshot(path);
       return {
         content: buildContentWithScreenshots({ screenshot: file,
           ...(viewportForced
