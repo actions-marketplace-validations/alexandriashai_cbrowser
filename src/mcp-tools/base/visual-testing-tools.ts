@@ -485,6 +485,7 @@ export function registerVisualTestingTools(server: McpServer): void {
         // knows the caller's entitlement.
         let relevanceScores: Record<number, number> | undefined;
         let relevanceSource: string | undefined;
+        let relevanceReasoning: string | undefined;
         if (domAttentionElements.length > 0) {
           try {
             const { judgeRelevance } = await import("../../visual/llm-relevance.js");
@@ -506,6 +507,7 @@ export function registerVisualTestingTools(server: McpServer): void {
             );
             relevanceScores = judged.scores;
             relevanceSource = judged.source;
+            relevanceReasoning = judged.reasoning;
           } catch { /* keyword path inside buildSemanticMap remains the floor */ }
         }
 
@@ -570,6 +572,13 @@ export function registerVisualTestingTools(server: McpServer): void {
             transportCost: result.transportCost,
             topAttentionAreas: result.attentionCompetitors,
             ...(attentionQuality ? { attentionQuality } : {}),
+            // Why this persona attends where it does, and by which method.
+            // The scores were already being used to build the map while the
+            // reasoning behind them was computed and thrown away — a judgement
+            // with no stated reason is one the caller cannot argue with, which
+            // was the point of leaving keyword matching.
+            ...(relevanceReasoning ? { attentionReasoning: relevanceReasoning } : {}),
+            ...(relevanceSource ? { relevanceMethod: relevanceSource } : {}),
             // These two lines used to read as a contradiction — "Scattered
             // attention (overwhelmed)" printed directly above "Attention
             // concentrated on few areas". The numbers were never wrong; the
