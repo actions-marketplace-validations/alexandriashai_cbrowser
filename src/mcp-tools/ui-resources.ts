@@ -201,96 +201,110 @@ export function buildStatusTemplate(): string {
   return `<!doctype html><meta charset="utf-8">
 <meta name="color-scheme" content="light dark">
 <style>
-  /* Host tokens first, local fallbacks second, so the widget inherits Claude's
-     type and colour when offered and still stands alone when not. */
   :root{
     --ink:var(--color-text-primary,#14161a);
     --sub:var(--color-text-secondary,#606770);
     --line:var(--color-border-default,#e0e3e8);
-    /* Brand values are cbrowser-web/src/app/globals.css verbatim, so the panel
-       and the site cannot drift apart. Host token first where one is offered. */
+    /* Brand values are cbrowser-web/src/app/globals.css verbatim. The hero ends
+       are darkened from the site tokens so white text clears AA on both ends of
+       the sweep -- the cyan end is the lighter one and sets the floor. */
     --brand:oklch(0.55 0.18 250);
     --brand-2:oklch(0.6 0.18 180);
+    --hero-a:oklch(0.47 0.17 255);
+    --hero-b:oklch(0.52 0.11 205);
     --accent:var(--color-accent-primary,oklch(0.55 0.18 250));
     --warn:oklch(0.55 0.16 45);
+    --ok:oklch(0.62 0.16 150);
     --raise:color-mix(in srgb, var(--ink) 4%, transparent);
     --r:var(--border-radius-md,8px);
     --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
   }
   :root.dark{--ink:#e9ebee;--sub:#98a0aa;--line:#333840;
     --brand:oklch(0.65 0.18 250);--brand-2:oklch(0.7 0.15 180);
-    --accent:oklch(0.65 0.18 250);--warn:oklch(0.72 0.14 55);
+    --hero-a:oklch(0.42 0.16 255);--hero-b:oklch(0.46 0.11 205);
+    --accent:oklch(0.65 0.18 250);--warn:oklch(0.72 0.14 55);--ok:oklch(0.72 0.15 150);
     --raise:color-mix(in srgb, #fff 6%, transparent)}
   *{box-sizing:border-box}
   html,body{background:transparent;color:var(--ink)}
-  /* Inset from the card edge on all four sides. The host card is rounded, so
-     anything flush to the edge gets clipped by the radius -- the padding is the
-     safe area that keeps every rule, row and table corner clear of it. */
-  body{margin:0;padding:16px 18px 18px;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
-  /* Horizontal padding never drops below the card's corner radius, or narrow
-     widths put content back inside the arc. Only the vertical inset tightens. */
-  @media (max-width:420px){body{padding:13px 18px 15px}}
+  /* No body padding: the hero bleeds to the card edge on purpose. A gradient cut
+     by the corner radius reads as intended, where a hairline cut by it reads as
+     broken. Inset lives on the two bands instead. */
+  body{margin:0;padding:0;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
 
-  /* Header: the one place with real scale contrast. Everything else is quiet. */
-  .top{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin:0 0 .1rem}
-  .mark{width:26px;height:26px;flex:0 0 auto;display:block}
-  .name{font-size:1.06rem;font-weight:650;letter-spacing:-.01em}
-  /* The single committed brand moment: a 2px blue-to-cyan rule under the header,
-     drawn from the site's own brand-primary and brand-secondary. Everything else
-     stays restrained, because a status panel is scanned, not admired. */
-  /* Full width of the content area, with rounded caps so the ends read as
-     finished rather than cut. It stops at the padding rather than bleeding to
-     the card edge, which is what keeps it clear of the rounded corners. */
-  .rule{height:3px;width:100%;border-radius:3px;margin:.5rem 0 .15rem;
-    background:linear-gradient(90deg,var(--brand),var(--brand-2))}
-  .ver{font:.8rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+  .hero{padding:16px 18px 15px;background:linear-gradient(118deg,var(--hero-a),var(--hero-b));color:#fff}
+  .hrow{display:flex;align-items:center;gap:.6rem}
+  .badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
+    background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.18)}
+  :root.dark .badge{background:#12141a}
+  .badge img{width:23px;height:23px;display:block}
+  .htitle{font-size:1.08rem;font-weight:650;letter-spacing:-.01em}
+  .health{margin-left:auto;display:inline-flex;align-items:center;gap:.4rem;
+    padding:.28rem .6rem;border-radius:999px;background:rgba(255,255,255,.94);
+    font:650 .7rem/1 var(--mono);letter-spacing:.09em;color:#1b3a2b}
+  .health .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .health.bad{color:#4a2410}
+  .health.bad .dot{background:var(--warn)}
+  .health.unknown{color:#33383f}
+  .health.unknown .dot{background:#8a9099}
+  .hnote{margin:.5rem 0 0;font-size:.79rem;color:rgba(255,255,255,.9)}
 
-  /* Summary strip: what you came to find out, before any detail. */
-  .facts{display:flex;flex-wrap:wrap;gap:.35rem;margin:.55rem 0 .2rem}
-  .fact{display:inline-flex;align-items:baseline;gap:.36rem;padding:.26rem .55rem;
-    border:1px solid color-mix(in srgb,var(--brand) 22%,var(--line));
-    border-radius:calc(var(--r) - 2px);
-    background:color-mix(in srgb,var(--brand) 7%,transparent)}
-  .fact b{font:600 .84rem/1 var(--mono);font-variant-numeric:tabular-nums;color:var(--brand)}
-  .fact span{font-size:.76rem;color:var(--sub)}
-  .fact.attn{border-color:var(--warn)}
-  .fact.attn b{color:var(--warn)}
+  .facts{display:flex;flex-wrap:wrap;gap:.34rem;margin:.7rem 0 0}
+  .fact{display:inline-flex;align-items:baseline;gap:.34rem;padding:.24rem .52rem;
+    border:1px solid rgba(255,255,255,.34);border-radius:6px;background:rgba(255,255,255,.14)}
+  .fact b{font:650 .82rem/1 var(--mono);font-variant-numeric:tabular-nums;color:#fff}
+  .fact span{font-size:.74rem;color:rgba(255,255,255,.88)}
+  .fact.attn{background:rgba(255,255,255,.94);border-color:transparent}
+  .fact.attn b{color:#7a3410} .fact.attn span{color:#5d3520}
 
-  details{border-top:1px solid var(--line);margin:0}
-  details:last-of-type{border-bottom:1px solid var(--line)}
-  summary{display:flex;align-items:center;gap:.5rem;padding:.6rem .15rem;cursor:pointer;
+  /* One drawer holds every accordion, so the card is a card until asked. */
+  .drawer{border-top:1px solid var(--line)}
+  .drawer>summary{display:flex;align-items:center;gap:.5rem;padding:.7rem 18px;cursor:pointer;
+    list-style:none;user-select:none;font-size:.87rem;font-weight:560}
+  .drawer>summary::-webkit-details-marker{display:none}
+  .drawer>summary:hover{color:var(--accent)}
+  .drawer>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+  .dcount{margin-left:auto;font:.75rem/1 var(--mono);color:var(--sub)}
+  .inner{padding:0 18px 16px}
+
+  details.sec{border-top:1px solid var(--line)}
+  details.sec:first-of-type{border-top:0}
+  details.sec>summary{display:flex;align-items:center;gap:.5rem;padding:.55rem 0;cursor:pointer;
     list-style:none;user-select:none}
-  summary::-webkit-details-marker{display:none}
-  summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
-  summary:hover .stitle{color:var(--accent)}
-  .chev{flex:0 0 auto;width:9px;height:9px;border-right:1.6px solid var(--sub);
-    border-bottom:1.6px solid var(--sub);transform:rotate(-45deg);margin-left:2px;
+  details.sec>summary::-webkit-details-marker{display:none}
+  details.sec>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:4px}
+  details.sec>summary:hover .stitle{color:var(--accent)}
+  .chev{flex:0 0 auto;width:8px;height:8px;border-right:1.6px solid var(--sub);
+    border-bottom:1.6px solid var(--sub);transform:rotate(-45deg);
     transition:transform 180ms cubic-bezier(.22,1,.36,1)}
-  details[open] .chev{transform:rotate(45deg)}
-  .stitle{font-size:.9rem;font-weight:560;transition:color 150ms ease}
-  .scount{margin-left:auto;font:.75rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
-  .sbody{padding:0 0 .7rem}
+  details[open]>summary .chev{transform:rotate(45deg)}
+  .stitle{font-size:.88rem;font-weight:560;transition:color 150ms ease}
+  .scount{margin-left:auto;font:.74rem/1 var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+  .sbody{padding:0 0 .65rem}
 
-  table{border-collapse:collapse;width:100%;font-size:.85rem}
   .scroll{overflow-x:auto;max-width:100%}
-  .kv th{width:1%;white-space:nowrap;text-align:left;padding:.26rem .9rem .26rem .15rem;
-    font:.78rem/1.45 var(--mono);color:var(--sub);font-weight:400;vertical-align:top}
-  .kv td{padding:.26rem 0;vertical-align:top;word-break:break-word}
-  .grid{table-layout:auto}
-  .grid thead th{text-align:left;padding:.2rem .7rem .34rem .15rem;font:.68rem/1 var(--mono);
+  table{border-collapse:collapse;width:100%;font-size:.85rem}
+  .kv th{width:1%;white-space:nowrap;text-align:left;padding:.24rem .9rem .24rem 0;
+    font:.77rem/1.45 var(--mono);color:var(--sub);font-weight:400;vertical-align:top}
+  .kv td{padding:.24rem 0;vertical-align:top;word-break:break-word}
+  .grid thead th{text-align:left;padding:.18rem .7rem .3rem 0;font:.67rem/1 var(--mono);
     color:var(--sub);font-weight:400;text-transform:uppercase;letter-spacing:.07em;
     border-bottom:1px solid var(--line);white-space:nowrap}
-  .grid td{padding:.3rem .7rem .3rem .15rem;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .grid td{padding:.28rem .7rem .28rem 0;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
   .grid tr:last-child td{border-bottom:0}
   .grid tbody tr:hover td{background:var(--raise)}
-  .num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:.8rem;padding-right:.15rem}
-  .path{font-family:var(--mono);font-size:.78rem;color:var(--sub);word-break:break-all}
-
-  /* State reads as form, not just text, so a failure is visible without reading. */
-  .chip{display:inline-block;font:.68rem/1 var(--mono);padding:.16rem .38rem;border-radius:3px;
-    background:color-mix(in srgb,var(--accent) 15%,transparent);color:var(--accent)}
-  .chip.no{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
-  .msg{font-size:.82rem;color:var(--sub);padding:.5rem 0}
+  .num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:.79rem}
+  .path{font-family:var(--mono);font-size:.77rem;color:var(--sub);word-break:break-all}
+  .chip{display:inline-block;font:.67rem/1 var(--mono);padding:.15rem .36rem;border-radius:3px;
+    background:color-mix(in srgb,var(--ok) 18%,transparent);color:color-mix(in srgb,var(--ok) 80%,var(--ink))}
+  .chip.no{background:color-mix(in srgb,var(--warn) 18%,transparent);color:color-mix(in srgb,var(--warn) 82%,var(--ink))}
+  .foot{padding:0 18px 14px;font-size:.77rem;color:var(--sub)}
+  .msg{padding:16px 18px;font-size:.85rem;color:var(--sub)}
+  /* Horizontal inset never drops below the card's corner radius at any width,
+     or narrow layouts put text back inside the arc. Only vertical tightens. */
+  @media (max-width:420px){
+    .hero{padding:14px 18px 13px}
+    .health{letter-spacing:.06em}
+  }
   @media (prefers-reduced-motion:reduce){.chev,.stitle{transition:none}}
 </style>
 <div id="root"><p class="msg" id="msg">Waiting for the host&hellip;</p></div>
@@ -324,15 +338,38 @@ export function buildStatusTemplate(): string {
     return k.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, function (c) { return c.toUpperCase(); });
   };
 
-  // Curated grouping, with an explicit catch-all. The status payload changes
-  // shape as cbrowser gains features, so anything unrecognised still lands in a
-  // section rather than being silently dropped -- a status panel that quietly
-  // omits a field is worse than an ugly one.
   var GROUPS = [
     { title: "Configuration", keys: ["config"] },
     { title: "Self-healing cache", keys: ["healCache"] },
   ];
-  var HEADER_KEYS = ["version", "dataDir", "toolCount"];
+
+  /**
+   * Health is derived from the only two things in this payload that can be
+   * wrong: a browser that is not installed, and a directory that does not
+   * exist. Everything else is a count, and a count has no failing value.
+   *
+   * Three states rather than two, because "no signals present" is not the same
+   * claim as "nothing is wrong" -- a payload without browsers or directories
+   * would otherwise report HEALTHY on the strength of having measured nothing.
+   */
+  function health(data) {
+    var issues = [];
+    if (isObjArray(data.browsers)) {
+      data.browsers.forEach(function (b) {
+        if (!b.installed) issues.push("browser not installed: " + (b.name || "?"));
+      });
+    }
+    if (isObjArray(data.directories)) {
+      data.directories.forEach(function (d) {
+        if (!d.exists) issues.push("missing directory: " + (d.name || d.path || "?"));
+      });
+    }
+    var measured = isObjArray(data.browsers) || isObjArray(data.directories);
+    if (!measured) return { state: "unknown", label: "UNKNOWN", issues: [] };
+    return issues.length
+      ? { state: "bad", label: "DEGRADED", issues: issues }
+      : { state: "ok", label: "HEALTHY", issues: [] };
+  }
 
   function kvTable(pairs) {
     var t = el("table", "kv"), tb = el("tbody");
@@ -374,15 +411,11 @@ export function buildStatusTemplate(): string {
       tb.appendChild(tr);
     });
     t.appendChild(thead); t.appendChild(tb);
-    // Wide content scrolls inside its own box; the page body never scrolls
-    // sideways, which on a rounded card would also cut into the corner radius.
-    var box = el("div", "scroll");
-    box.appendChild(t);
-    return box;
+    var box = el("div", "scroll"); box.appendChild(t); return box;
   }
 
   function section(title, count, node, open) {
-    var d = el("details");
+    var d = el("details", "sec");
     if (open) d.open = true;
     var sm = el("summary");
     sm.appendChild(el("span", "chev"));
@@ -406,23 +439,32 @@ export function buildStatusTemplate(): string {
     if (!data) return;
     root.replaceChildren();
 
-    var top = el("div", "top");
+    var h = health(data);
+
+    var hero = el("div", "hero");
+    var hrow = el("div", "hrow");
+    var badge = el("span", "badge");
     var logo = "${getLogoDataUri()}";
     if (logo) {
       var img = document.createElement("img");
-      img.className = "mark";
-      img.src = logo;
-      img.alt = "";
-      top.appendChild(img);
+      img.src = logo; img.alt = "";
+      badge.appendChild(img);
     }
-    top.appendChild(el("span", "name", "CBrowser"));
-    if (data.version) top.appendChild(el("span", "ver", "v" + data.version));
-    root.appendChild(top);
-    root.appendChild(el("div", "rule"));
+    hrow.appendChild(badge);
+    hrow.appendChild(el("span", "htitle", "Status"));
+    var hp = el("span", "health " + h.state);
+    hp.appendChild(el("i", "dot"));
+    hp.appendChild(document.createTextNode(h.label));
+    hrow.appendChild(hp);
+    hero.appendChild(hrow);
 
-    // Summary strip. Counts are derived, and any that indicate a problem take
-    // the attention treatment -- so a broken environment is visible before a
-    // single section is expanded.
+    if (h.issues.length) {
+      hero.appendChild(el("p", "hnote",
+        h.issues.length === 1 ? h.issues[0] : h.issues.length + " problems: " + h.issues.join("; ")));
+    } else if (data.version) {
+      hero.appendChild(el("p", "hnote", "cbrowser v" + data.version));
+    }
+
     var strip = el("div", "facts");
     if (typeof data.toolCount === "number") addFact(strip, String(data.toolCount), "tools");
     if (isObjArray(data.browsers)) {
@@ -437,12 +479,13 @@ export function buildStatusTemplate(): string {
     if (data.healCache && typeof data.healCache.totalHeals === "number") {
       addFact(strip, String(data.healCache.totalHeals), "self-heals");
     }
-    if (strip.childNodes.length) root.appendChild(strip);
+    if (strip.childNodes.length) hero.appendChild(strip);
+    root.appendChild(hero);
 
-    var used = {};
-    HEADER_KEYS.forEach(function (k) { used[k] = true; });
+    // Everything else lives behind one drawer, so the default state is a card.
+    var sections = [];
+    var used = { version: true, dataDir: true, toolCount: true };
 
-    // Curated groups first, in declared order.
     GROUPS.forEach(function (g) {
       var pairs = [];
       g.keys.forEach(function (k) {
@@ -453,17 +496,13 @@ export function buildStatusTemplate(): string {
           Object.keys(v).forEach(function (sk) { pairs.push([titleize(sk), v[sk]]); });
         } else pairs.push([titleize(k), v]);
       });
-      if (pairs.length) root.appendChild(section(g.title, pairs.length, kvTable(pairs), false));
+      if (pairs.length) sections.push(section(g.title, pairs.length, kvTable(pairs), false));
     });
-
-    // Object arrays get real tables, one section each.
     Object.keys(data).forEach(function (k) {
       if (used[k] || !isObjArray(data[k])) return;
       used[k] = true;
-      root.appendChild(section(titleize(k), String(data[k].length), gridTable(data[k]), false));
+      sections.push(section(titleize(k), String(data[k].length), gridTable(data[k]), false));
     });
-
-    // Everything left over, so no field is ever silently dropped.
     var rest = [];
     Object.keys(data).forEach(function (k) {
       if (used[k]) return;
@@ -472,14 +511,27 @@ export function buildStatusTemplate(): string {
         Object.keys(v).forEach(function (sk) { rest.push([titleize(k) + " › " + titleize(sk), v[sk]]); });
       } else rest.push([titleize(k), v]);
     });
-    if (rest.length) root.appendChild(section("Counts and paths", String(rest.length), kvTable(rest), true));
+    if (rest.length) sections.push(section("Counts and paths", String(rest.length), kvTable(rest), false));
 
-    var dd = el("p", "msg");
-    dd.className = "msg";
-    dd.appendChild(document.createTextNode("Data directory: "));
-    var dp = el("span", "path", data.dataDir || "—");
-    dd.appendChild(dp);
-    root.appendChild(dd);
+    if (sections.length) {
+      var drawer = el("details", "drawer");
+      var ds = el("summary");
+      ds.appendChild(el("span", "chev"));
+      ds.appendChild(el("span", null, "Details"));
+      ds.appendChild(el("span", "dcount", sections.length + " sections"));
+      drawer.appendChild(ds);
+      var inner = el("div", "inner");
+      sections.forEach(function (x) { inner.appendChild(x); });
+      drawer.appendChild(inner);
+      root.appendChild(drawer);
+    }
+
+    if (data.dataDir) {
+      var f = el("p", "foot");
+      f.appendChild(document.createTextNode("Data directory: "));
+      f.appendChild(el("span", "path", data.dataDir));
+      root.appendChild(f);
+    }
   }
 
   var app = new App({ name: "cbrowser-status", version: "1.0.0" }, {}, { autoResize: true });
