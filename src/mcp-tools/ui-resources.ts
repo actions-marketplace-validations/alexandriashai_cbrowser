@@ -233,9 +233,14 @@ export function buildStatusTemplate(): string {
 
   .hero{padding:16px 18px 15px;background:linear-gradient(118deg,var(--hero-a),var(--hero-b));color:#fff}
   .hrow{display:flex;align-items:center;gap:.6rem}
+  /* Always dark, both themes. The mark is a blue that sits brightest against a
+     dark ground, and a fixed disc also means the badge does not restyle itself
+     when the host theme flips -- the logo reads identically either way.
+     The hairline ring keeps the disc from merging into the dark end of the
+     gradient it sits on. */
   .badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
-    background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.18)}
-  :root.dark .badge{background:#12141a}
+    background:#14171d;
+    box-shadow:0 0 0 1px rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28)}
   .badge img{width:23px;height:23px;display:block}
   .htitle{font-size:1.08rem;font-weight:650;letter-spacing:-.01em}
   .health{margin-left:auto;display:inline-flex;align-items:center;gap:.4rem;
