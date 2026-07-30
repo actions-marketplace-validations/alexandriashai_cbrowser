@@ -240,7 +240,19 @@ export function registerUiResources(server: McpServer): void {
 
   server.registerResource(
     "cbrowser-capture-ui",
-    new ResourceTemplate(`${CAPTURE_UI_PREFIX}{slug}`, { list: undefined }),
+    // A template with no list callback never appears in resources/list, so a
+    // host that discovers views by listing would never find a capture panel --
+    // and it fails silently, the way a URI mismatch does. Published captures are
+    // enumerated instead, which is cheap because the store is bounded at 24.
+    new ResourceTemplate(`${CAPTURE_UI_PREFIX}{slug}`, {
+      list: async () => ({
+        resources: [...captureHtml.keys()].map((slug) => ({
+          uri: `${CAPTURE_UI_PREFIX}${slug}`,
+          name: `Capture player: ${slug}`,
+          mimeType: MCP_APP_MIME,
+        })),
+      }),
+    }),
     { description: "Inline capture player with embedded frames", mimeType: MCP_APP_MIME },
     async (uri, vars) => {
       const slug = String(Array.isArray(vars.slug) ? vars.slug[0] : vars.slug ?? "");
