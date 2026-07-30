@@ -548,6 +548,16 @@ export async function startCapture(
     ...(recViewport ? { viewport: recViewport } : {}),
   });
 
+  // An opening frame, returned inline. Without it the caller is blind until
+  // capture_stop: it has just been told recording started but has no idea what
+  // is on screen, so it cannot tell "the page loaded" from "the page is a 404"
+  // until the whole capture is spent. Cheap, and it anchors everything after.
+  let openingFrame: string | undefined;
+  try {
+    const shot = await page.screenshot({ type: "jpeg", quality: 60 });
+    openingFrame = shot.toString("base64");
+  } catch { /* a capture that started is still a success without the preview */ }
+
   return {
     success: true,
     state: status.state,
@@ -555,6 +565,8 @@ export async function startCapture(
     out_dir: status.outDir,
     capture_method: status.captureMethod,
     engine,
+    ...(recViewport ? { viewport: `${recViewport.width}x${recViewport.height}` } : {}),
+    ...(openingFrame ? { opening_frame: openingFrame, opening_frame_mime: "image/jpeg" } : {}),
     ...(elementNote ? { element_note: elementNote } : {}),
     note:
       "Capture is event-driven: a page that never repaints emits no frames, and still " +
@@ -971,12 +983,20 @@ export function registerCaptureTools(
     try {
       const { browser, token } = await resolveBrowser(_browserToken);
       const payload = await startCapture(browser, args, token);
+      // The opening frame is split out of the JSON and emitted as a real image
+      // block. Left in the payload it would be a multi-KB base64 string the
+      // caller can read but not SEE, which is the opposite of the point.
+      const { opening_frame: frame, opening_frame_mime: mime, ...rest } = payload as
+        Record<string, unknown> & { opening_frame?: string; opening_frame_mime?: string };
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ...payload, ...(token ? { _browserToken: token } : {}) }, null, 2),
+            text: JSON.stringify({ ...rest, ...(token ? { _browserToken: token } : {}) }, null, 2),
           },
+          ...(frame
+            ? [{ type: "image" as const, data: frame, mimeType: mime ?? "image/jpeg" }]
+            : []),
         ],
       };
     } catch (error) {
