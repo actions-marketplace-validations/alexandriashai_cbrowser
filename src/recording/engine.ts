@@ -1082,12 +1082,27 @@ export class VideoCaptureSession {
           // A navigated-away or closed page still yields a visual-only overlay.
         }
 
+        // Everything the judging path needs must actually be handed over.
+        // Previously getApiKey was never passed, keyFrames and frameTimesMs were
+        // never passed, and relevanceContext was built only when `entitled` was
+        // defined — which no CLI caller sets. The guard inside the overlay then
+        // failed silently on every path, so an overlay ran, painted frames, and
+        // produced zero judged moments while reporting success.
+        const { getAnthropicApiKey } = await import("../cognitive/index.js");
         const overlay = await overlayAttentionOnFrames(encodePaths, this.outDir, {
           ...cfg,
           ...(domElements ? { domElements: domElements as never } : {}),
-          ...(cfg.entitled !== undefined
-            ? { relevanceContext: { personaName: cfg.persona ?? "first-timer", goal: cfg.goal, entitled: cfg.entitled } }
-            : {}),
+          relevanceContext: {
+            personaName: cfg.persona ?? "first-timer",
+            ...(cfg.goal ? { goal: cfg.goal } : {}),
+            // Undefined means "no entitlement opinion" — the judge treats only
+            // an explicit false as a block, so CLI and self-hosted callers work.
+            ...(cfg.entitled !== undefined ? { entitled: cfg.entitled } : {}),
+          },
+          keyFrames: manifest.key_frames ?? [],
+          frameTimesMs: manifest.frames.map((f) => f.t_ms),
+          summarize: true,
+          getApiKey: getAnthropicApiKey,
         });
         encodePaths = overlay.frames;
         manifest.attention_overlay = {
@@ -1096,6 +1111,21 @@ export class VideoCaptureSession {
           used_dom: overlay.usedDom,
           dom_elements: domElements?.length ?? 0,
           frames_failed: overlay.failed,
+          // These were computed and thrown away. A per-keyframe judgement that
+          // never leaves the function is an LLM call spent for nothing.
+          ...(overlay.moments && overlay.moments.length > 0
+            ? {
+                moments: overlay.moments.map((m) => ({
+                  frame_index: m.frameIndex,
+                  t_ms: m.tMs,
+                  ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+                  ...(m.source ? { source: m.source } : {}),
+                  ...(m.unavailable ? { unavailable: m.unavailable } : {}),
+                  top_elements: m.topElements,
+                })),
+              }
+            : {}),
+          ...(overlay.summary ? { summary: overlay.summary } : {}),
         };
       } catch (err) {
         // An overlay failure must never cost the recording.

@@ -235,7 +235,19 @@ export async function overlayAttentionOnFrames(
 
   const ctx = options.relevanceContext;
   const getApiKey = options.getApiKey;
-  if (ctx && getApiKey && usedDom && options.keyFrames && options.keyFrames.length > 0) {
+
+  // Frame 0 is ALWAYS judged, then each keyframe after it.
+  //
+  // Keying purely on keyframes meant a page that never changed produced no
+  // judgement at all — and a static page is precisely where "what does this
+  // persona attend to" is worth asking. Measured on a real pricing capture:
+  // key_frames was empty, so twelve frames were overlaid and nothing was ever
+  // judged. Deduped because frame 0 is sometimes a keyframe too.
+  const judgeAt = ctx && getApiKey && usedDom
+    ? Array.from(new Set([0, ...(options.keyFrames ?? [])])).sort((a, b) => a - b)
+    : [];
+
+  if (ctx && getApiKey && usedDom && judgeAt.length > 0) {
     const elements: RelevanceElement[] = (options.domElements ?? []).map((el, i) => ({
       index: i,
       type: el.type,
@@ -244,7 +256,7 @@ export async function overlayAttentionOnFrames(
     }));
 
     moments = [];
-    for (const frameIndex of options.keyFrames) {
+    for (const frameIndex of judgeAt) {
       if (frameIndex < 0 || frameIndex >= framePaths.length) continue;
       try {
         const judged = await judgeRelevance(elements, { ...ctx, screenshot: undefined }, getApiKey);
@@ -258,6 +270,8 @@ export async function overlayAttentionOnFrames(
           frameIndex,
           tMs: options.frameTimesMs?.[frameIndex] ?? 0,
           ...(judged.reasoning ? { reasoning: judged.reasoning } : {}),
+          source: judged.source,
+          ...(judged.unavailable ? { unavailable: judged.unavailable } : {}),
           topElements: top,
         });
       } catch { /* one unjudged moment must not cost the recording */ }

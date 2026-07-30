@@ -332,6 +332,11 @@ export function buildCaptureStopPayload(
       : {}),
     ...(extra.contactSheetUrl ? { contact_sheet_url: extra.contactSheetUrl } : {}),
     ...(extra.playerUrl ? { player_url: extra.playerUrl } : {}),
+    // The manifest carried this and the player rendered it, but the MCP
+    // response never surfaced it — so a caller who asked for an overlay had no
+    // way to learn whether one ran, which persona it used, or whether the DOM
+    // was read. Silence read as "not applied" whether or not it was.
+    ...(manifest.attention_overlay ? { attention_overlay: manifest.attention_overlay } : {}),
     note:
       "Frames stay on disk — read them by path. Encoded artifacts are also published " +
       "to public HTTPS URLs in `artifact_urls`, so a GIF or video can be displayed " +
@@ -583,8 +588,15 @@ export async function stopCapture(
   // rather than a URL that 404s — handing back a dead link is worse than
   // handing back only the disk path.
   const artifactUrls: Record<string, string> = {};
-  for (const [format, diskPath] of Object.entries(manifest.artifacts ?? {})) {
-    if (typeof diskPath !== "string" || !existsSync(diskPath)) continue;
+  for (const [format, artifactPath] of Object.entries(manifest.artifacts ?? {})) {
+    if (typeof artifactPath !== "string" || artifactPath.length === 0) continue;
+    // The engine stores `relative(outDir, outPath)` — a bare filename. Calling
+    // existsSync on it resolved against the process CWD, always missed, and the
+    // loop skipped every artifact, so artifact_urls came back absent while the
+    // note in the same payload advertised it. contact_sheet_url worked only
+    // because that path was already absolute.
+    const diskPath = isAbsolute(artifactPath) ? artifactPath : join(status.outDir, artifactPath);
+    if (!existsSync(diskPath)) continue;
     try {
       const written = writeArtifact(readFileSync(diskPath), `${manifest.slug}.${format}`);
       if (written) artifactUrls[format] = written.url;
@@ -621,6 +633,19 @@ export async function stopCapture(
               usedDom: overlay.used_dom,
               domElements: overlay.dom_elements,
             },
+            // The player was already built to render these; nothing was passing
+            // them, so every capture rendered an empty timeline.
+            ...(overlay.moments
+              ? {
+                  moments: overlay.moments.map((m) => ({
+                    frameIndex: m.frame_index,
+                    tMs: m.t_ms,
+                    ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+                    topElements: m.top_elements,
+                  })),
+                }
+              : {}),
+            ...(overlay.summary ? { summary: overlay.summary } : {}),
           }
         : {}),
     });

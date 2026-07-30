@@ -275,6 +275,19 @@ export const RecordingManifestSchema = z.object({
     used_dom: z.boolean(),
     dom_elements: z.number(),
     frames_failed: z.number(),
+    /** Per-keyframe judgements. Computed during overlay and previously dropped. */
+    moments: z.array(z.object({
+      frame_index: z.number(),
+      t_ms: z.number(),
+      reasoning: z.string().optional(),
+      source: z.string().optional(),
+      unavailable: z.string().optional(),
+      top_elements: z.array(z.object({
+        text: z.string(), type: z.string(), score: z.number(),
+      })),
+    })).optional(),
+    /** Narrative of the whole run, when a summary was requested. */
+    summary: z.string().optional(),
   }).optional(),
 });
 

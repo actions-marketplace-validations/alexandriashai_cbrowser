@@ -436,6 +436,16 @@ export interface JudgedMoment {
   tMs: number;
   /** Why this moment scored the way it did, in the persona's terms. */
   reasoning?: string;
+  /**
+   * Which method produced this moment's scores.
+   *
+   * Carried per-moment because a moment with no elements is otherwise
+   * indistinguishable from a moment that was never judged, and the two need
+   * completely different fixes.
+   */
+  source?: "llm" | "keyword-fallback";
+  /** Why the judgement was unusable, when it was. */
+  unavailable?: string;
   /** The elements that scored highest, already resolved to text. */
   topElements: Array<{ text: string; type: string; score: number }>;
 }
