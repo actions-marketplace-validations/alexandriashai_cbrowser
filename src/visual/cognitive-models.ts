@@ -1,0 +1,654 @@
+/**
+ * Cognitive Models — Formal implementations from cognitive science
+ *
+ * Layer 4: Grossman & Balakrishnan (2005) probabilistic pointing model
+ * Layer 6: Perry, Zorzi & Ziegler (2019) multi-deficit reading model
+ *
+ * These replace the heuristic multipliers in cognitive-transport.ts
+ * with empirically grounded computational models.
+ *
+ * @see Grossman & Balakrishnan (2005) ACM TOCHI — probabilistic 2D pointing
+ * @see Perry, Zorzi & Ziegler (2019) Psychological Science — personalized dyslexia models
+ * @since v18.39.0
+ */
+
+// ── Mathematical Primitives ──
+
+/**
+ * Standard normal CDF (cumulative distribution function).
+ * Abramowitz and Stegun approximation (7.1.26), error < 7.5e-8.
+ */
+function normalCDF(x: number): number {
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+
+  const sign = x < 0 ? -1 : 1;
+  const absX = Math.abs(x) / Math.SQRT2;
+  const t = 1 / (1 + p * absX);
+  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-absX * absX);
+
+  return 0.5 * (1 + sign * y);
+}
+
+/**
+ * Standard normal PDF (probability density function).
+ */
+function normalPDF(x: number): number {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+
+// ── Layer 4: Probabilistic Pointing Model ──
+
+export interface PointingProfile {
+  /** Endpoint dispersion SD in pixels (x-axis) */
+  sigmaX: number;
+  /** Endpoint dispersion SD in pixels (y-axis) */
+  sigmaY: number;
+  /** Correlation between x and y endpoint distributions */
+  rho: number;
+  /** Fitts' throughput (bits/s) */
+  throughput: number;
+}
+
+export interface TargetElement {
+  /** CSS selector or description */
+  selector: string;
+  /** Target width in pixels */
+  width: number;
+  /** Target height in pixels */
+  height: number;
+  /** Distance from likely cursor position (center of viewport) in pixels */
+  distance: number;
+}
+
+export interface MotorAccessibilityResult {
+  /** Per-element hit probability (0-1) */
+  elements: Array<{
+    selector: string;
+    hitProbability: number;
+    movementTime: number;
+    isBarrier: boolean;
+  }>;
+  /** Overall motor accessibility score (0-1, higher = more accessible) */
+  score: number;
+  /** Number of motor barriers found */
+  barrierCount: number;
+  /** Transport cost for this layer */
+  transportCost: number;
+}
+
+/**
+ * Known pointing profiles from the empirical literature.
+ *
+ * - Neurotypical baseline: MacKenzie (1992), Soukoreff & MacKenzie (2004)
+ * - Motor tremor: Hwang et al. (2004) ACM ASSETS
+ * - Elderly 65+: Chaparro et al. (1999), Ketcham et al. (2002)
+ * - ADHD: Flapper et al. (2006) — impulsive timing, near-normal precision
+ */
+const KNOWN_POINTING_PROFILES: Record<string, PointingProfile> = {
+  neurotypical: { sigmaX: 4, sigmaY: 4, rho: 0.0, throughput: 4.9 },
+  tremor: { sigmaX: 12, sigmaY: 12, rho: 0.3, throughput: 2.1 },
+  elderly: { sigmaX: 7.2, sigmaY: 7.2, rho: 0.1, throughput: 3.2 },
+  adhd: { sigmaX: 5.5, sigmaY: 5.5, rho: 0.0, throughput: 4.2 },
+};
+
+/**
+ * Derive a pointing profile from persona traits.
+ *
+ * Maps cognitive trait values to motor parameters by interpolating
+ * between known empirical profiles. Uses `motorPrecision` (derived from
+ * proceduralFluency and patience) as the primary interpolation axis.
+ *
+ * @param persona - Persona traits object with cognitive dimensions
+ * @returns Empirically calibrated pointing profile
+ */
+export function getPointingProfile(persona: {
+  traits?: Record<string, number>;
+  accessibilityTraits?: Record<string, boolean>;
+  name?: string;
+}): PointingProfile {
+  const traits = persona.traits ?? {};
+  const a11y = persona.accessibilityTraits ?? {};
+
+  // Check for explicit tremor trait
+  if (a11y.tremor) {
+    return { ...KNOWN_POINTING_PROFILES.tremor };
+  }
+
+  // Check for persona name hints
+  const name = (persona.name ?? '').toLowerCase();
+  if (name.includes('tremor') || name.includes('parkinson')) {
+    return { ...KNOWN_POINTING_PROFILES.tremor };
+  }
+  if (name.includes('elderly') || name.includes('senior') || name.includes('aging')) {
+    return { ...KNOWN_POINTING_PROFILES.elderly };
+  }
+  if (name.includes('adhd')) {
+    return { ...KNOWN_POINTING_PROFILES.adhd };
+  }
+
+  // Derive motorPrecision from available traits
+  // motorPrecision is a composite of fine motor control indicators
+  const motorPrecision = traits.motorPrecision
+    ?? (traits.proceduralFluency !== undefined && traits.patience !== undefined
+      ? (traits.proceduralFluency * 0.6 + traits.patience * 0.4)
+      : undefined);
+
+  if (motorPrecision === undefined) {
+    return { ...KNOWN_POINTING_PROFILES.neurotypical };
+  }
+
+  // Interpolate between profiles based on motorPrecision (0-1)
+  // 1.0 = neurotypical, 0.0 = severe impairment (tremor)
+  const clamped = Math.max(0, Math.min(1, motorPrecision));
+
+  const neuro = KNOWN_POINTING_PROFILES.neurotypical;
+  const impaired = KNOWN_POINTING_PROFILES.tremor;
+
+  return {
+    sigmaX: neuro.sigmaX + (impaired.sigmaX - neuro.sigmaX) * (1 - clamped),
+    sigmaY: neuro.sigmaY + (impaired.sigmaY - neuro.sigmaY) * (1 - clamped),
+    rho: neuro.rho + (impaired.rho - neuro.rho) * (1 - clamped),
+    throughput: neuro.throughput + (impaired.throughput - neuro.throughput) * (1 - clamped),
+  };
+}
+
+/**
+ * Compute the probability that a user hits a rectangular target.
+ *
+ * Grossman & Balakrishnan (2005) bivariate normal integral over target rectangle.
+ * For independent axes (rho=0): P(hit) = Phi(W/(2*sigmaX)) * Phi(H/(2*sigmaY))
+ * For correlated axes (rho!=0): applies the Plackett (1954) correction term.
+ *
+ * Assumes the user aims at the target center (optimal aiming point).
+ *
+ * @param target - Target element dimensions
+ * @param profile - User's pointing profile
+ * @returns Hit probability in [0, 1]
+ */
+export function computeHitProbability(target: TargetElement, profile: PointingProfile): number {
+  const { width, height } = target;
+  const { sigmaX, sigmaY, rho } = profile;
+
+  // Guard: degenerate targets
+  if (width <= 0 || height <= 0) return 0;
+  if (sigmaX <= 0 || sigmaY <= 0) return 1;
+
+  // Standardized half-widths
+  const zx = width / (2 * sigmaX);
+  const zy = height / (2 * sigmaY);
+
+  // CDF of standard normal at the standardized edges
+  // P(|X| < W/2) = 2*Phi(W/(2*sigma)) - 1
+  const pX = 2 * normalCDF(zx) - 1;
+  const pY = 2 * normalCDF(zy) - 1;
+
+  // Independent-axis approximation (exact for rho=0)
+  const pIndependent = pX * pY;
+
+  if (Math.abs(rho) < 1e-6) {
+    return pIndependent;
+  }
+
+  // Correlated correction (Grossman & Balakrishnan's approximation)
+  // P(hit) ~= Phi_x * Phi_y * (1 + rho * phi(zx) * phi(zy) / (Phi_x * Phi_y))
+  // where phi is PDF and Phi is the one-sided CDF P(|X| < ...)
+  const phiX = normalPDF(zx);
+  const phiY = normalPDF(zy);
+
+  if (pX < 1e-10 || pY < 1e-10) {
+    return pIndependent;
+  }
+
+  const correction = 1 + rho * phiX * phiY / (pX * pY);
+
+  // Clamp to valid probability range
+  return Math.max(0, Math.min(1, pIndependent * correction));
+}
+
+/**
+ * Compute Fitts' Law movement time for reaching a target.
+ *
+ * Uses the Shannon formulation (MacKenzie 1992, ISO 9241-9):
+ *   MT = (1/throughput) * log2(D/W + 1)
+ *
+ * @param distance - Distance to target center in pixels
+ * @param width - Effective target width in the movement direction (pixels)
+ * @param throughput - User's Fitts' throughput in bits/s
+ * @returns Movement time in milliseconds
+ */
+export function computeFittsTime(distance: number, width: number, throughput: number): number {
+  if (distance <= 0 || width <= 0 || throughput <= 0) return 0;
+
+  const indexOfDifficulty = Math.log2(distance / width + 1);
+  return (1 / throughput) * indexOfDifficulty * 1000;
+}
+
+/**
+ * Compute motor accessibility for a set of target elements.
+ *
+ * For each element, computes hit probability and movement time using the
+ * Grossman & Balakrishnan pointing model and Fitts' Law. Identifies
+ * motor barriers: elements where P(hit) falls below a persona-adjusted threshold.
+ *
+ * Barrier thresholds (from WCAG 2.5 / AAA guidance):
+ * - Neurotypical (throughput >= 4.0): P(hit) < 0.85 is a barrier
+ * - Impaired (throughput < 4.0): P(hit) < 0.70 is a barrier (relaxed standard)
+ *
+ * @param targets - Interactive elements on the page
+ * @param persona - Persona to evaluate for
+ * @returns Motor accessibility result with per-element breakdown
+ */
+export function motorAccessibility(
+  targets: TargetElement[],
+  persona: {
+    traits?: Record<string, number>;
+    accessibilityTraits?: Record<string, boolean>;
+    name?: string;
+  },
+): MotorAccessibilityResult {
+  if (targets.length === 0) {
+    return { elements: [], score: 1, barrierCount: 0, transportCost: 0 };
+  }
+
+  const profile = getPointingProfile(persona);
+  const barrierThreshold = profile.throughput >= 4.0 ? 0.85 : 0.70;
+
+  const elements = targets.map(target => {
+    const hitProbability = computeHitProbability(target, profile);
+
+    // Use geometric mean of width and height as effective width for Fitts
+    const effectiveWidth = Math.sqrt(target.width * target.height);
+    const movementTime = computeFittsTime(target.distance, effectiveWidth, profile.throughput);
+
+    return {
+      selector: target.selector,
+      hitProbability: Math.round(hitProbability * 10000) / 10000,
+      movementTime: Math.round(movementTime),
+      isBarrier: hitProbability < barrierThreshold,
+    };
+  });
+
+  const barrierCount = elements.filter(e => e.isBarrier).length;
+  const meanHitProbability = elements.reduce((sum, e) => sum + e.hitProbability, 0) / elements.length;
+  const score = Math.round(meanHitProbability * 10000) / 10000;
+  const transportCost = Math.round((1 - score) * 10000) / 10000;
+
+  return { elements, score, barrierCount, transportCost };
+}
+
+// ── Layer 6: Multi-Deficit Reading Model ──
+
+export interface ReadingProfile {
+  /** Orthographic processing speed (0-1, 1=fluent) */
+  orthographic: number;
+  /** Phonological decoding ability (0-1) */
+  phonological: number;
+  /** Visual span (number of characters processed per fixation) */
+  visualSpan: number;
+  /** Vocabulary breadth (0-1) */
+  vocabulary: number;
+  /** Crowding sensitivity (0-1, higher = more affected by crowding) */
+  crowding: number;
+}
+
+export interface TextBlock {
+  /** Text content */
+  text: string;
+  /** Font size in pixels */
+  fontSize: number;
+  /** Line height ratio (e.g., 1.5) */
+  lineHeight: number;
+  /** Font family */
+  fontFamily: string;
+  /** Whether font is serif or sans-serif */
+  isSerif: boolean;
+  /** Contrast ratio (foreground vs background) */
+  contrastRatio: number;
+}
+
+export interface ReadabilityResult {
+  /** Per-text-block reading difficulty */
+  blocks: Array<{
+    text: string;
+    difficulty: number;
+    fixationDuration: number;
+    wordsPerMinute: number;
+    penalties: string[];
+  }>;
+  /** Overall readability score (0-1, higher = more readable) */
+  score: number;
+  /** Transport cost for this layer */
+  transportCost: number;
+}
+
+/**
+ * Known reading profiles from the empirical literature.
+ *
+ * - Neurotypical: Rayner (2009) — typical college reader
+ * - Dyslexic: Perry, Zorzi & Ziegler (2019) Psychological Science
+ * - Low vision: Legge et al. (2007) — central scotoma and crowding
+ * - ADHD: Dhar et al. (2010) — intact decoding, reduced sustained attention
+ * - Elderly: Rayner et al. (2006) — aging effects on eye movements
+ */
+const KNOWN_READING_PROFILES: Record<string, ReadingProfile> = {
+  neurotypical: { orthographic: 0.85, phonological: 0.80, visualSpan: 7, vocabulary: 0.75, crowding: 0.15 },
+  dyslexic: { orthographic: 0.40, phonological: 0.35, visualSpan: 4, vocabulary: 0.65, crowding: 0.55 },
+  lowVision: { orthographic: 0.60, phonological: 0.75, visualSpan: 3, vocabulary: 0.75, crowding: 0.70 },
+  adhd: { orthographic: 0.80, phonological: 0.75, visualSpan: 6, vocabulary: 0.70, crowding: 0.20 },
+  elderly: { orthographic: 0.70, phonological: 0.65, visualSpan: 5, vocabulary: 0.85, crowding: 0.30 },
+};
+
+/**
+ * Derive a reading profile from persona traits.
+ *
+ * Maps cognitive trait values to reading parameters by selecting the
+ * closest known profile and interpolating with the neurotypical baseline.
+ *
+ * @param persona - Persona traits object
+ * @returns Empirically calibrated reading profile
+ */
+export function getReadingProfile(persona: {
+  traits?: Record<string, number>;
+  name?: string;
+}): ReadingProfile {
+  const traits = persona.traits ?? {};
+  const name = (persona.name ?? '').toLowerCase();
+
+  // Direct name matching for known profiles
+  if (name.includes('dyslexic') || name.includes('dyslexia')) {
+    return { ...KNOWN_READING_PROFILES.dyslexic };
+  }
+  if (name.includes('low-vision') || name.includes('low vision') || name.includes('magnified')) {
+    return { ...KNOWN_READING_PROFILES.lowVision };
+  }
+  if (name.includes('adhd') || name.includes('attention deficit')) {
+    return { ...KNOWN_READING_PROFILES.adhd };
+  }
+  if (name.includes('elderly') || name.includes('senior') || name.includes('aging')) {
+    return { ...KNOWN_READING_PROFILES.elderly };
+  }
+
+  // Trait-based interpolation
+  const textProcessing = traits.textProcessing;
+  const comprehension = traits.comprehension;
+
+  if (textProcessing === undefined && comprehension === undefined) {
+    return { ...KNOWN_READING_PROFILES.neurotypical };
+  }
+
+  // Use textProcessing as primary axis, comprehension as secondary
+  const readingAbility = textProcessing !== undefined && comprehension !== undefined
+    ? textProcessing * 0.6 + comprehension * 0.4
+    : (textProcessing ?? comprehension ?? 0.75);
+
+  const clamped = Math.max(0, Math.min(1, readingAbility));
+
+  const neuro = KNOWN_READING_PROFILES.neurotypical;
+  const impaired = KNOWN_READING_PROFILES.dyslexic;
+
+  return {
+    orthographic: impaired.orthographic + (neuro.orthographic - impaired.orthographic) * clamped,
+    phonological: impaired.phonological + (neuro.phonological - impaired.phonological) * clamped,
+    visualSpan: Math.round(impaired.visualSpan + (neuro.visualSpan - impaired.visualSpan) * clamped),
+    vocabulary: impaired.vocabulary + (neuro.vocabulary - impaired.vocabulary) * clamped,
+    crowding: neuro.crowding + (impaired.crowding - neuro.crowding) * (1 - clamped),
+  };
+}
+
+/**
+ * Irregular word patterns in English.
+ *
+ * These are grapheme-phoneme correspondence violations — words containing
+ * these patterns violate standard decoding rules and require whole-word
+ * (orthographic) recognition. Dyslexic readers with impaired orthographic
+ * processing are disproportionately slowed by these.
+ *
+ * Source: Plaut et al. (1996), Coltheart et al. (2001) DRC model.
+ */
+const IRREGULAR_PATTERN = /\b\w*(ough|tion|sion|ight|ould|alk|omb|wr|kn|gn|pn|ps|mn)\w*\b/gi;
+
+/**
+ * Estimate the proportion of irregular words in a text passage.
+ *
+ * Returns the fraction of words that contain irregular grapheme-phoneme
+ * correspondences. This determines the orthographic processing demand:
+ * higher irregularity = more reliance on whole-word recognition.
+ *
+ * @param text - Text passage to analyze
+ * @returns Proportion of irregular words (0-1)
+ */
+export function estimateIrregularity(text: string): number {
+  const words = text.trim().split(/\s+/);
+  if (words.length === 0) return 0;
+
+  // Reset regex state (global flag)
+  IRREGULAR_PATTERN.lastIndex = 0;
+  const matches = text.match(IRREGULAR_PATTERN);
+  const irregularCount = matches ? matches.length : 0;
+
+  return Math.min(1, irregularCount / words.length);
+}
+
+/**
+ * Compute reading difficulty for a text block using the multi-deficit model.
+ *
+ * The Perry, Zorzi & Ziegler (2019) framework models dyslexia as the
+ * intersection of multiple independent deficits. Each deficit independently
+ * increases fixation duration. The total penalty is additive (not multiplicative)
+ * because deficits affect different processing stages in the reading pipeline:
+ *
+ *   Visual input -> Visual span (crowding) -> Orthographic processing ->
+ *   Phonological decoding -> Lexical access (vocabulary) -> Comprehension
+ *
+ * Additional penalties from Rello & Baeza-Yates (2016) for font effects
+ * and WCAG 2.1 contrast requirements.
+ *
+ * @param text - Text content to analyze
+ * @param profile - Reader's deficit profile
+ * @param textBlock - Typographic properties of the text
+ * @returns Reading difficulty (0-1) and fixation duration
+ */
+export function computeReadingDifficulty(
+  text: string,
+  profile: ReadingProfile,
+  textBlock: TextBlock,
+): {
+  difficulty: number;
+  fixationDuration: number;
+  wordsPerMinute: number;
+  penalties: string[];
+} {
+  const words = text.trim().split(/\s+/);
+  const wordCount = Math.max(1, words.length);
+  const penalties: string[] = [];
+
+  // Base fixation duration: fluent adult reader (Rayner 2009)
+  const baseFixation = 250; // ms per word
+
+  // 1. Orthographic deficit: irregular words take longer to process
+  // When orthographic route is impaired, the reader must fall back to
+  // phonological decoding for irregular words, which is slower.
+  const irregularWordRatio = estimateIrregularity(text);
+  const orthoPenalty = (1 - profile.orthographic) * irregularWordRatio * 150;
+  if (orthoPenalty > 10) {
+    penalties.push(`orthographic: +${Math.round(orthoPenalty)}ms (${Math.round(irregularWordRatio * 100)}% irregular words)`);
+  }
+
+  // 2. Phonological deficit: all words require phonological activation
+  // Even for skilled readers, phonological codes are activated automatically.
+  // Impaired phonological processing slows all word recognition.
+  const phonoPenalty = (1 - profile.phonological) * 100;
+  if (phonoPenalty > 10) {
+    penalties.push(`phonological: +${Math.round(phonoPenalty)}ms`);
+  }
+
+  // 3. Visual span: fewer characters per fixation = more fixations per word
+  // Normal visual span ~7 characters (Legge et al. 2007).
+  // Reduced span means more saccades to read the same word.
+  const spanRatio = 7 / profile.visualSpan;
+  const spanPenalty = (spanRatio - 1) * 80;
+  if (spanPenalty > 5) {
+    penalties.push(`visual span: +${Math.round(spanPenalty)}ms (${profile.visualSpan} chars/fixation)`);
+  }
+
+  // 4. Vocabulary: unknown/rare words require additional processing
+  // Long words are more likely to be uncommon (Zipf's law correlation).
+  // Vocabulary deficit amplifies this effect.
+  const avgWordLength = words.reduce((sum, w) => sum + w.length, 0) / wordCount;
+  const vocabPenalty = (1 - profile.vocabulary) * Math.max(0, avgWordLength - 5) * 30;
+  if (vocabPenalty > 5) {
+    // "chars" is load-bearing: pageMetrics.avgWordLength is a 0-1 NORMALIZED
+    // score, and this one is raw characters. Same name, two scales — a reader
+    // seeing 11.4 next to a field documented 0-1 has no way to tell which they
+    // are looking at. (2026-07-29)
+    penalties.push(`vocabulary: +${Math.round(vocabPenalty)}ms (avg word length ${avgWordLength.toFixed(1)} chars)`);
+  }
+
+  // 5. Crowding: small or dense text increases lateral masking
+  // Below 16px, crowding effects increase substantially.
+  // Pelli et al. (2004, 2007) established the critical spacing formula.
+  const crowdingPenalty = profile.crowding * Math.max(0, 16 - textBlock.fontSize) * 10;
+  if (crowdingPenalty > 5) {
+    penalties.push(`crowding: +${Math.round(crowdingPenalty)}ms (${textBlock.fontSize}px font)`);
+  }
+
+  // 6. Font penalty: serif fonts penalize dyslexic readers
+  // Rello & Baeza-Yates (2016): sans-serif fonts reduce fixation time
+  // for readers with orthographic processing below 0.6.
+  const fontPenalty = textBlock.isSerif && profile.orthographic < 0.6 ? 50 : 0;
+  if (fontPenalty > 0) {
+    penalties.push(`serif font: +${fontPenalty}ms (orthographic deficit)`);
+  }
+
+  // 7. Contrast penalty: low contrast increases fixation duration
+  // WCAG 2.1 SC 1.4.3 minimum is 4.5:1 for normal text.
+  // Below this threshold, all readers are affected, but impaired readers more so.
+  const contrastPenalty = textBlock.contrastRatio < 4.5
+    ? (4.5 - textBlock.contrastRatio) * 40
+    : 0;
+  if (contrastPenalty > 0) {
+    penalties.push(`low contrast: +${Math.round(contrastPenalty)}ms (${textBlock.contrastRatio.toFixed(1)}:1 ratio)`);
+  }
+
+  // Total fixation duration per word
+  const totalFixation = baseFixation + orthoPenalty + phonoPenalty + spanPenalty + vocabPenalty + crowdingPenalty + fontPenalty + contrastPenalty;
+
+  // Words per minute
+  const wpm = Math.round(60000 / totalFixation);
+
+  // Normalize difficulty: 250ms = 0.0 (fluent), 750ms+ = 1.0 (severe)
+  const difficulty = Math.max(0, Math.min(1, (totalFixation - 250) / 500));
+
+  return {
+    difficulty: Math.round(difficulty * 10000) / 10000,
+    fixationDuration: Math.round(totalFixation),
+    wordsPerMinute: wpm,
+    penalties,
+  };
+}
+
+/**
+ * Compute readability for multiple text blocks using the multi-deficit model.
+ *
+ * Evaluates each text block independently, then computes an aggregate
+ * readability score weighted by text length (longer blocks matter more).
+ *
+ * @param blocks - Array of text blocks with typographic properties
+ * @param persona - Persona to evaluate for
+ * @returns Readability result with per-block breakdown and aggregate score
+ */
+export function readability(
+  blocks: TextBlock[],
+  persona: {
+    traits?: Record<string, number>;
+    name?: string;
+  },
+): ReadabilityResult {
+  if (blocks.length === 0) {
+    return { blocks: [], score: 1, transportCost: 0 };
+  }
+
+  const profile = getReadingProfile(persona);
+
+  const results = blocks.map(block => {
+    const { difficulty, fixationDuration, wordsPerMinute, penalties } = computeReadingDifficulty(
+      block.text,
+      profile,
+      block,
+    );
+
+    return {
+      text: block.text.length > 100 ? block.text.slice(0, 100) + '...' : block.text,
+      difficulty,
+      fixationDuration,
+      wordsPerMinute,
+      penalties,
+    };
+  });
+
+  // Weighted average by text length (longer blocks count more)
+  const totalChars = blocks.reduce((sum, b) => sum + b.text.length, 0) || 1;
+  const weightedDifficulty = results.reduce((sum, r, i) => {
+    const weight = blocks[i].text.length / totalChars;
+    return sum + r.difficulty * weight;
+  }, 0);
+
+  const score = Math.round((1 - weightedDifficulty) * 10000) / 10000;
+  const transportCost = Math.round(weightedDifficulty * 10000) / 10000;
+
+  return { blocks: results, score, transportCost };
+}
+
+// ── Unified Access ──
+
+/**
+ * Compute both motor and reading accessibility for a persona.
+ *
+ * Combines Layer 4 (pointing model) and Layer 6 (reading model) into
+ * a single assessment. Each layer contributes independently to the
+ * total transport cost.
+ *
+ * @param targets - Interactive elements for motor assessment
+ * @param textBlocks - Text blocks for reading assessment
+ * @param persona - Persona to evaluate
+ * @returns Combined accessibility result
+ */
+export function cognitiveAccessibility(
+  targets: TargetElement[],
+  textBlocks: TextBlock[],
+  persona: {
+    traits?: Record<string, number>;
+    accessibilityTraits?: Record<string, boolean>;
+    name?: string;
+  },
+): {
+  motor: MotorAccessibilityResult;
+  reading: ReadabilityResult;
+  combinedScore: number;
+  combinedTransportCost: number;
+} {
+  const motor = motorAccessibility(targets, persona);
+  const reading = readability(textBlocks, persona);
+
+  // Combined score: geometric mean (penalizes severe deficits in either domain)
+  const combinedScore = Math.round(
+    Math.sqrt(motor.score * reading.score) * 10000
+  ) / 10000;
+
+  // Combined transport cost: sum of independent layer costs (clamped to [0,1])
+  const combinedTransportCost = Math.round(
+    Math.min(1, motor.transportCost + reading.transportCost) * 10000
+  ) / 10000;
+
+  return { motor, reading, combinedScore, combinedTransportCost };
+}
+
+// ── Exports for testing ──
+
+export { normalCDF as _normalCDF, normalPDF as _normalPDF };
+export { KNOWN_POINTING_PROFILES, KNOWN_READING_PROFILES };

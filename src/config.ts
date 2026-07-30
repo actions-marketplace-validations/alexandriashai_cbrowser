@@ -92,8 +92,34 @@ export interface CBrowserConfig {
   userAgent?: string;
   /** Enable persistent browser context (cookies/localStorage survive between sessions) */
   persistent?: boolean;
+  /** Skip session URL restoration on launch (preserves current page state for screenshots after interactions) */
+  skipSessionRestore?: boolean;
   /** Proxy configuration for residential/datacenter proxies */
   proxy?: ProxyConfig;
+  /** Extra env vars passed to the browser process at launch (e.g. DISPLAY for headed Xvfb). Merged with process.env. */
+  launchEnv?: Record<string, string>;
+  /**
+   * Launch chromium in kiosk mode — no URL bar, no tabs, no chrome at all.
+   * The page fills the entire OS window. Useful for screen-recording or VNC
+   * overlay alignment where any browser chrome offset would break coords.
+   */
+  kioskMode?: boolean;
+  /**
+   * OS window dimensions (chromium --window-size). When unset, chromium uses
+   * viewportWidth/Height. Decoupling lets us have a viewport smaller than the
+   * window — required for VNC overlay alignment, where viewport must equal
+   * the visible page area (after browser chrome) but the window must fill Xvfb.
+   */
+  windowWidth?: number;
+  windowHeight?: number;
+  /**
+   * When set, any new page opened via target="_blank", window.open(), or other
+   * popup mechanisms automatically becomes the active page (CBrowser.getPage()
+   * returns the new tab). bringToFront() is also called on the new page so
+   * VNC streams show the active tab. Used by live cognitive journeys so the
+   * persona follows clicks that open new tabs.
+   */
+  followPopups?: boolean;
 }
 
 /**
@@ -498,6 +524,8 @@ export interface StatusInfo {
   suggestions: string[];
   /** Number of active screenshot sessions */
   screenshotSessions: number;
+  /** Number of registered MCP tools (v18.22.0, optional - only present when running as MCP server) */
+  toolCount?: number;
 }
 
 function countFiles(dir: string, ext?: string): number {
@@ -507,6 +535,23 @@ function countFiles(dir: string, ext?: string): number {
     if (ext) return files.filter(f => f.endsWith(ext)).length;
     return files.filter(f => !f.startsWith(".")).length;
   } catch {
+    return 0;
+  }
+}
+
+/**
+ * Count visual-baseline records the way list_baselines counts them: entries in the
+ * `baselines` array of visual-baselines/baselines.json. Mirrors
+ * visual/regression.ts:loadVisualBaselines, which returns `data.baselines || []`.
+ */
+function countVisualBaselineRecords(dir: string): number {
+  const indexPath = join(dir, "baselines.json");
+  if (!existsSync(indexPath)) return 0;
+  try {
+    const data = JSON.parse(readFileSync(indexPath, "utf-8"));
+    return Array.isArray(data.baselines) ? data.baselines.length : 0;
+  } catch (e) {
+    console.debug(`[CBrowser] Failed to read visual baseline index: ${(e as Error).message}`);
     return 0;
   }
 }
@@ -583,8 +628,10 @@ function countScreenshotSessions(baseDir: string): { sessions: number; files: nu
 
 /**
  * Gather environment status info for diagnostics.
+ * @param version CBrowser version string
+ * @param toolCount Optional number of registered MCP tools (v18.22.0)
  */
-export async function getStatusInfo(version: string): Promise<StatusInfo> {
+export async function getStatusInfo(version: string, toolCount?: number): Promise<StatusInfo> {
   const paths = getPaths();
   const config = getDefaultConfig();
 
@@ -650,7 +697,16 @@ export async function getStatusInfo(version: string): Promise<StatusInfo> {
   }
   const sessions = countFiles(paths.sessionsDir, ".json");
   const baselines = countFiles(paths.baselinesDir, ".json");
-  const visualBaselines = countFiles(paths.visualBaselinesDir);
+  // Visual baselines are records inside visual-baselines/baselines.json, not one
+  // file per baseline. Counting directory entries returned 2 (the index file plus
+  // screenshots/) while list_baselines reported 9 for the same data, so `status`
+  // and `list_baselines` contradicted each other. (2026-07-28)
+  //
+  // This deliberately duplicates the read in visual/regression.ts:loadVisualBaselines
+  // rather than calling it: that module imports CBrowser from ../browser.js, and
+  // pulling the Playwright stack into config loading would be a bad trade for one
+  // count. If the on-disk format changes, both readers must change together.
+  const visualBaselines = countVisualBaselineRecords(paths.visualBaselinesDir);
   const recordings = countFiles(paths.recordingsDir, ".json");
 
   return {
@@ -675,6 +731,7 @@ export async function getStatusInfo(version: string): Promise<StatusInfo> {
     recordings,
     suggestions,
     screenshotSessions: screenshotStats.sessions,
+    ...(toolCount !== undefined && { toolCount }),
   };
 }
 
@@ -737,7 +794,12 @@ export function formatStatus(info: StatusInfo): string {
 
   // MCP
   lines.push("🔌 MCP Server:");
-  lines.push("   └── Ready to start: npx cbrowser mcp-server");
+  if (info.toolCount !== undefined) {
+    lines.push(`   ├── Tool count:    ${info.toolCount}`);
+    lines.push("   └── Status:        Running");
+  } else {
+    lines.push("   └── Ready to start: npx cbrowser mcp-server");
+  }
   lines.push("");
 
   // Suggestions

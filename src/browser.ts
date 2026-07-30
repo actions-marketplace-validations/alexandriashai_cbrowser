@@ -12,8 +12,10 @@
  */
 
 import { chromium, firefox, webkit, type Browser, type Page, type BrowserContext, type Route, type Locator } from "playwright";
-import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, mkdirSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, readdirSync, statSync, unlinkSync, mkdirSync, readlinkSync } from "fs";
+import { isStaleSingletonLock } from "./utils.js";
 import { join } from "path";
+import { execSync } from "child_process";
 
 import { type CBrowserConfig, mergeConfig, getPaths, ensureDirectories, type CBrowserPaths } from "./config.js";
 import { BUILTIN_PERSONAS, getPersona } from "./personas.js";
@@ -65,8 +67,11 @@ import {
 } from "./cognitive/index.js";
 import { SessionManager } from "./browser/session-manager.js";
 import { SelectorCacheManager } from "./browser/selector-cache.js";
+import { extractExpected, extractSubject, UNPARSEABLE_MESSAGE } from "./browser/assertion-value.js";
 import { OverlayHandler } from "./browser/overlay-handler.js";
 import { getRemoteMode, MAX_RESPONSE_SIZE } from "./mcp-tools/screenshot-utils.js";
+import { clampRect } from "./recording/timing.js";
+import type { Rect } from "./recording/types.js";
 
 // Browser-specific fast launch args for performance optimization
 const BROWSER_LAUNCH_ARGS: Record<SupportedBrowser, string[]> = {
@@ -125,6 +130,146 @@ export interface ScreenshotOptions {
   maxSize?: number;
   /** Full page screenshot (default: false) */
   fullPage?: boolean;
+  /**
+   * Crop the screenshot to a rectangle in CSS pixels, relative to the top-left
+   * of the page. Clamped to the viewport (or the full page when fullPage=true);
+   * a rect that clamps to zero area throws.
+   */
+  clip?: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * A screenshot clip rectangle in CSS pixels.
+ *
+ * Clamping is delegated to `clampRect` in the recording module so screenshots
+ * and recordings share one definition of "trim this rect to the capture area".
+ */
+export type ClipRect = Rect;
+
+// =========================================================================
+// Standalone Browser Launch Utilities (for use outside CBrowser class)
+// =========================================================================
+
+/**
+ * Check if an error indicates missing Playwright browsers.
+ */
+export function isBrowserNotInstalledError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("executable doesn't exist") ||
+    message.includes("executable does not exist") ||
+    message.includes("browsertype.launch") ||
+    message.includes("no usable browser") ||
+    message.includes("browser was not found")
+  );
+}
+
+/**
+ * Attempt to install Playwright browsers automatically.
+ * Returns true if installation succeeded, false otherwise.
+ */
+export async function installPlaywrightBrowsers(browserName?: string): Promise<boolean> {
+  console.log("🔧 Playwright browsers not found. Installing automatically...");
+  console.log("   This may take a few minutes on first run.\n");
+
+  try {
+    // Install specific browser or all browsers
+    const browsers = browserName || "chromium firefox webkit";
+    execSync(`npx playwright install ${browsers}`, {
+      stdio: "inherit",
+      timeout: 300000, // 5 minute timeout
+    });
+    console.log("\n✅ Playwright browsers installed successfully.\n");
+    return true;
+  } catch {
+    console.error("\n❌ Automatic browser installation failed.\n");
+    return false;
+  }
+}
+
+/**
+ * Get actionable error message for browser installation failure.
+ */
+export function getBrowserInstallErrorMessage(browserName: string = "chromium"): string {
+  return `
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  Playwright browsers are not installed                                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+CBrowser requires Playwright browsers to run. Automatic installation failed.
+
+To fix this, run one of these commands:
+
+  npx playwright install                    # Install all browsers
+  npx playwright install ${browserName.padEnd(20)} # Install ${browserName} only
+
+Common issues:
+  • Corporate network blocking downloads → Contact IT or use a VPN
+  • Permission errors → Try with sudo or check write permissions
+  • PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 → Unset this environment variable
+
+For more help: https://playwright.dev/docs/browsers
+`;
+}
+
+/**
+ * Launch a Playwright browser with automatic installation fallback.
+ * Use this instead of direct chromium.launch() / firefox.launch() / webkit.launch()
+ * to ensure browsers are installed on first run.
+ */
+export async function launchBrowserWithFallback(
+  browserType: typeof chromium | typeof firefox | typeof webkit = chromium,
+  options: Parameters<typeof chromium.launch>[0] = {}
+): Promise<Browser> {
+  const browserName = browserType === chromium ? "chromium" : browserType === firefox ? "firefox" : "webkit";
+
+  try {
+    return await browserType.launch(options);
+  } catch (error) {
+    if (isBrowserNotInstalledError(error)) {
+      // Attempt automatic installation
+      const installed = await installPlaywrightBrowsers(browserName);
+      if (installed) {
+        // Retry launch after installation
+        try {
+          return await browserType.launch(options);
+        } catch (retryError) {
+          throw new Error(
+            `Browser launch failed after installation. ` +
+            `This may indicate a system configuration issue.\n\n` +
+            `Original error: ${retryError instanceof Error ? retryError.message : String(retryError)}`
+          );
+        }
+      } else {
+        // Installation failed - provide actionable instructions
+        throw new Error(getBrowserInstallErrorMessage(browserName));
+      }
+    } else {
+      // Not a browser installation error - re-throw
+      throw error;
+    }
+  }
+}
+
+/**
+ * Compress a Playwright error for a tool response.
+ *
+ * Playwright appends a "Call log:" listing every retry, which for a click that
+ * waits out its timeout runs to dozens of near-identical lines and roughly 4k
+ * tokens. The first lines say what failed and the last say how it ended; the
+ * middle is the same line repeated. Keep both ends, drop the middle, and say how
+ * much was dropped so nobody wonders what they are not seeing. (2026-07-29)
+ */
+export function summarizePlaywrightError(message: string, headLines = 6, tailLines = 4): string {
+  const lines = message.split("\n");
+  if (lines.length <= headLines + tailLines + 2) return message;
+  const dropped = lines.length - headLines - tailLines;
+  return [
+    ...lines.slice(0, headLines),
+    `  … ${dropped} more lines of Playwright retry log elided (set verbose for the full log) …`,
+    ...lines.slice(-tailLines),
+  ].join("\n");
 }
 
 export class CBrowser {
@@ -136,9 +281,17 @@ export class CBrowser {
   private currentPersona: Persona | null = null;
   private networkRequests: NetworkRequest[] = [];
   private networkResponses: Map<string, NetworkResponse> = new Map();
+  /**
+   * In-flight requests awaiting a response, so the response handler can attach
+   * status and duration to the originating record. Keyed by url+method, capped
+   * so a page that fires requests which never resolve cannot grow it without
+   * bound. (2026-07-28)
+   */
+  private pendingRequests: Map<string, { req: NetworkRequest; startedAt: number }> = new Map();
+  private static readonly MAX_PENDING_REQUESTS = 2000;
   private harEntries: HAREntry[] = [];
   private isRecordingHar = false;
-  private skipSessionRestore = false;
+  private skipSessionRestore: boolean;
 
   // Modular components (extracted for maintainability)
   private sessionManager: SessionManager;
@@ -150,6 +303,7 @@ export class CBrowser {
 
   constructor(userConfig: Partial<CBrowserConfig> = {}) {
     this.config = mergeConfig(userConfig);
+    this.skipSessionRestore = userConfig.skipSessionRestore ?? false;
     this.paths = ensureDirectories(getPaths(this.config.dataDir));
 
     // Initialize modular components
@@ -178,6 +332,56 @@ export class CBrowser {
     return join(this.paths.dataDir, "browser-state", "last-session.json");
   }
 
+  /**
+   * Where cookies are snapshotted between CLI invocations. The persistent
+   * userDataDir preserves *persistent* cookies but NOT session cookies (no
+   * expiry) — Chromium keeps those only in memory, so they die when the browser
+   * closes between invocations. We snapshot all cookies on close and re-add them
+   * on launch so `cookie set` + a later `navigate` actually carries the cookie.
+   */
+  private get persistedCookiesFile(): string {
+    return join(this.paths.dataDir, "browser-state", "persisted-cookies.json");
+  }
+
+  /**
+   * Remove a STALE Chromium `SingletonLock` from a persistent-profile dir before
+   * launch. A SIGKILL'd browser leaves the lock symlink pointing at a dead pid,
+   * which otherwise wedges `launchPersistentContext` indefinitely (the manual
+   * fix was `rm browser-state/SingletonLock`). We remove it ONLY when
+   * `isStaleSingletonLock` proves the target pid is not alive, so a lock held by
+   * a live browser is never touched.
+   */
+  private clearStaleSingletonLock(browserStateDir: string): void {
+    const lock = join(browserStateDir, "SingletonLock");
+    let target: string;
+    try {
+      target = readlinkSync(lock);
+    } catch {
+      return; // no lock, or not a symlink — nothing to recover
+    }
+    const stale = isStaleSingletonLock(target, (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true; // signal delivered — process is alive
+      } catch (e) {
+        // ESRCH = no such process (dead); EPERM = alive but not ours (keep it)
+        return (e as NodeJS.ErrnoException).code === "EPERM";
+      }
+    });
+    if (stale) {
+      try {
+        unlinkSync(lock);
+        if (this.config.verbose) {
+          console.log(`[browser] removed stale SingletonLock (target: ${target})`);
+        }
+      } catch (e) {
+        if (this.config.verbose) {
+          console.warn(`[browser] failed to remove stale SingletonLock: ${(e as Error).message}`);
+        }
+      }
+    }
+  }
+
   private saveSessionState(url: string, viewport?: { width: number; height: number }, device?: string): void {
     try {
       // Don't save about:blank or empty URLs
@@ -197,7 +401,11 @@ export class CBrowser {
 
       writeFileSync(this.sessionStateFile, JSON.stringify(state, null, 2));
     } catch (e) {
-      // Silently fail - this is a best-effort feature
+      // Best-effort feature, but the user should know if it's silently failing
+      // (filesystem full, permissions, etc) — surface a warning when verbose.
+      if (this.config.verbose) {
+        console.warn(`[browser] saveSessionState failed: ${(e as Error).message}`);
+      }
     }
   }
 
@@ -257,6 +465,72 @@ export class CBrowser {
   }
 
   // =========================================================================
+  // Browser Installation
+  // =========================================================================
+
+  /**
+   * Check if an error indicates missing Playwright browsers.
+   */
+  private isBrowserNotInstalledError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const message = error.message.toLowerCase();
+    return (
+      message.includes("executable doesn't exist") ||
+      message.includes("executable does not exist") ||
+      message.includes("browsertype.launch") ||
+      message.includes("no usable browser") ||
+      message.includes("browser was not found")
+    );
+  }
+
+  /**
+   * Attempt to install Playwright browsers automatically.
+   * Returns true if installation succeeded, false otherwise.
+   */
+  private async installPlaywrightBrowsers(): Promise<boolean> {
+    console.log("🔧 Playwright browsers not found. Installing automatically...");
+    console.log("   This may take a few minutes on first run.\n");
+
+    try {
+      // Install all browsers to avoid future issues
+      execSync("npx playwright install chromium firefox webkit", {
+        stdio: "inherit",
+        timeout: 300000, // 5 minute timeout
+      });
+      console.log("\n✅ Playwright browsers installed successfully.\n");
+      return true;
+    } catch (installError) {
+      console.error("\n❌ Automatic browser installation failed.\n");
+      return false;
+    }
+  }
+
+  /**
+   * Get actionable error message for browser installation failure.
+   */
+  private getBrowserInstallErrorMessage(browserName: string): string {
+    return `
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  Playwright browsers are not installed                                        ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+CBrowser requires Playwright browsers to run. Automatic installation failed.
+
+To fix this, run one of these commands:
+
+  npx playwright install                    # Install all browsers
+  npx playwright install ${browserName.padEnd(20)} # Install ${browserName} only
+
+Common issues:
+  • Corporate network blocking downloads → Contact IT or use a VPN
+  • Permission errors → Try with sudo or check write permissions
+  • PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 → Unset this environment variable
+
+For more help: https://playwright.dev/docs/browsers
+`;
+  }
+
+  // =========================================================================
   // Lifecycle
   // =========================================================================
 
@@ -290,6 +564,8 @@ export class CBrowser {
         width: this.config.viewportWidth,
         height: this.config.viewportHeight,
       },
+      // Accept self-signed certs when using proxies (SOCKS proxies may alter cert chain)
+      ...(this.config.proxy ? { ignoreHTTPSErrors: true } : {}),
     };
 
     // Apply device emulation if configured
@@ -324,9 +600,15 @@ export class CBrowser {
       contextOptions.permissions = ["geolocation"];
     }
 
-    // Apply locale if configured
+    // Apply locale if configured — sets navigator.language AND Accept-Language header
+    // This makes sites that respect Accept-Language serve localized content
     if (this.config.locale) {
       contextOptions.locale = this.config.locale;
+      const lang = this.config.locale.split("-")[0];
+      contextOptions.extraHTTPHeaders = {
+        ...contextOptions.extraHTTPHeaders,
+        "Accept-Language": `${this.config.locale},${lang};q=0.9,en;q=0.5`,
+      };
     }
 
     // Apply timezone if configured
@@ -356,7 +638,30 @@ export class CBrowser {
 
     // Use persistent context if enabled (preserves cookies/localStorage between sessions)
     // Use browser-specific launch args for optimal performance
-    const launchArgs = BROWSER_LAUNCH_ARGS[this.config.browser];
+    const launchArgs = [...BROWSER_LAUNCH_ARGS[this.config.browser]];
+
+    // Size the OS window to the configured viewport. Without this, chromium
+    // launches at its default (~1280×720) regardless of viewportWidth/Height,
+    // leaving black margins inside Xvfb when viewing via VNC. Only meaningful
+    // for chromium — Firefox/WebKit ignore --window-size.
+    if (this.config.browser === "chromium") {
+      const winW = this.config.windowWidth ?? this.config.viewportWidth;
+      const winH = this.config.windowHeight ?? this.config.viewportHeight;
+      launchArgs.push(`--window-size=${winW},${winH}`);
+      launchArgs.push("--window-position=0,0");
+      // Stability flags for long-running journeys on Xvfb/software rendering:
+      //   --disable-background-timer-throttling: keep timers running while VNC peer disconnects
+      //   --disable-features=PaintHolding: disable paint holding which can leave white frames during nav
+      //   --disable-renderer-backgrounding: prevent renderer freezing when not focused
+      //   --renderer-process-limit=4: cap renderer count, avoid memory blowup
+      //   --js-flags=--max-old-space-size=512: cap V8 heap so a runaway page doesn't OOM the slot
+      launchArgs.push(
+        "--disable-renderer-backgrounding",
+        "--disable-features=PaintHolding,Translate",
+        "--renderer-process-limit=4",
+        "--js-flags=--max-old-space-size=512",
+      );
+    }
 
     // Build proxy options for Playwright if configured
     const proxyOptions = this.config.proxy ? {
@@ -368,34 +673,110 @@ export class CBrowser {
       },
     } : {};
 
-    if (this.config.persistent) {
-      const browserStateDir = join(this.paths.dataDir, "browser-state");
-      if (!existsSync(browserStateDir)) {
-        mkdirSync(browserStateDir, { recursive: true });
-      }
-      this.context = await browserType.launchPersistentContext(browserStateDir, {
-        headless: this.config.headless,
-        args: launchArgs,
-        ...contextOptions,
-        ...proxyOptions,
-      });
-      this.page = this.context.pages()[0] || await this.context.newPage();
-      if (this.config.verbose) {
-        console.log(`🔄 Using persistent browser context: ${browserStateDir}`);
-        if (this.config.proxy) {
+    // Helper to perform the actual browser launch
+    const performLaunch = async (): Promise<void> => {
+      if (this.config.persistent) {
+        const browserStateDir = join(this.paths.dataDir, "browser-state");
+        if (!existsSync(browserStateDir)) {
+          mkdirSync(browserStateDir, { recursive: true });
+        }
+        // Recover from a stale SingletonLock left by a hard-killed browser,
+        // which would otherwise wedge the launch below (see method doc).
+        this.clearStaleSingletonLock(browserStateDir);
+        this.context = await browserType.launchPersistentContext(browserStateDir, {
+          headless: this.config.headless,
+          args: launchArgs,
+          env: this.config.launchEnv ? { ...process.env, ...this.config.launchEnv } as Record<string, string> : undefined,
+          ...contextOptions,
+          ...proxyOptions,
+        });
+        this.page = this.context.pages()[0] || await this.context.newPage();
+        // Restore cookies snapshotted on the previous close — in particular
+        // session cookies, which the persistent userDataDir drops between CLI
+        // invocations. Additive: re-adding a persistent cookie by name is
+        // idempotent, so this only ever recovers what would otherwise be lost.
+        try {
+          if (existsSync(this.persistedCookiesFile)) {
+            const cookies = JSON.parse(readFileSync(this.persistedCookiesFile, "utf-8"));
+            if (Array.isArray(cookies) && cookies.length > 0) {
+              await this.context.addCookies(cookies);
+            }
+          }
+        } catch (e) {
+          if (this.config.verbose) {
+            console.warn(`[browser] cookie restore failed: ${(e as Error).message}`);
+          }
+        }
+        if (this.config.verbose) {
+          console.log(`🔄 Using persistent browser context: ${browserStateDir}`);
+          if (this.config.proxy) {
+            console.log(`🌐 Using proxy: ${this.config.proxy.server}`);
+          }
+        }
+      } else {
+        this.browser = await browserType.launch({
+          headless: this.config.headless,
+          args: launchArgs,
+          env: this.config.launchEnv ? { ...process.env, ...this.config.launchEnv } as Record<string, string> : undefined,
+          ...proxyOptions,
+        });
+        this.context = await this.browser.newContext(contextOptions);
+        this.page = await this.context.newPage();
+        if (this.config.verbose && this.config.proxy) {
           console.log(`🌐 Using proxy: ${this.config.proxy.server}`);
         }
       }
-    } else {
-      this.browser = await browserType.launch({
-        headless: this.config.headless,
-        args: launchArgs,
-        ...proxyOptions,
-      });
-      this.context = await this.browser.newContext(contextOptions);
-      this.page = await this.context.newPage();
-      if (this.config.verbose && this.config.proxy) {
-        console.log(`🌐 Using proxy: ${this.config.proxy.server}`);
+
+      // Live-journey mode: when a click opens a new tab, swap the journey's
+      // active page to it and bring it to the front so VNC stream follows.
+      // Closes the old page after a short grace period so its DOM is freed.
+      if (this.config.followPopups && this.context) {
+        this.context.on("page", async (newPage) => {
+          try {
+            await newPage.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => {});
+            const oldPage = this.page;
+            this.page = newPage;
+            try { await newPage.bringToFront(); } catch {}
+            // Close the old tab after a moment so the persona doesn't leak tabs
+            // across many popups. Skip if it's the same page or already closed.
+            if (oldPage && oldPage !== newPage && !oldPage.isClosed()) {
+              setTimeout(() => { oldPage.close().catch(() => {}); }, 1500);
+            }
+          } catch (e) {
+            if (this.config.verbose) {
+              console.warn(`[CBrowser] followPopups handler error: ${(e as Error).message}`);
+            }
+          }
+        });
+      }
+    };
+
+    // Attempt launch with automatic browser installation fallback
+    try {
+      await performLaunch();
+    } catch (error) {
+      if (this.isBrowserNotInstalledError(error)) {
+        // Attempt automatic installation
+        const installed = await this.installPlaywrightBrowsers();
+        if (installed) {
+          // Retry launch after installation
+          try {
+            await performLaunch();
+          } catch (retryError) {
+            // Installation succeeded but launch still failed
+            throw new Error(
+              `Browser launch failed after installation. ` +
+              `This may indicate a system configuration issue.\n\n` +
+              `Original error: ${retryError instanceof Error ? retryError.message : String(retryError)}`
+            );
+          }
+        } else {
+          // Installation failed - provide actionable instructions
+          throw new Error(this.getBrowserInstallErrorMessage(this.config.browser));
+        }
+      } else {
+        // Not a browser installation error - re-throw
+        throw error;
       }
     }
 
@@ -448,6 +829,23 @@ export class CBrowser {
         this.saveSessionState(currentUrl, viewport || undefined);
       } catch (e) {
         // Ignore errors during cleanup
+      }
+    }
+
+    // Snapshot cookies (incl. in-memory session cookies) so the next CLI
+    // invocation can restore them — the persistent userDataDir does not.
+    if (this.config.persistent && this.context) {
+      try {
+        const cookies = await this.context.cookies();
+        const stateDir = join(this.paths.dataDir, "browser-state");
+        if (!existsSync(stateDir)) {
+          mkdirSync(stateDir, { recursive: true });
+        }
+        writeFileSync(this.persistedCookiesFile, JSON.stringify(cookies, null, 2));
+      } catch (e) {
+        if (this.config.verbose) {
+          console.warn(`[browser] cookie snapshot failed: ${(e as Error).message}`);
+        }
       }
     }
 
@@ -555,7 +953,10 @@ export class CBrowser {
       }
     }
 
-    return this.page!;
+    if (!this.page) {
+      throw new Error("Browser page is not available — launch and recovery both failed");
+    }
+    return this.page;
   }
 
   // =========================================================================
@@ -778,31 +1179,57 @@ export class CBrowser {
       }
     }
 
-    // Force close context
-    if (this.context) {
+    // Force close context with a timeout that doesn't leak its own timer.
+    // Plain Promise.race(close, setTimeout(r, 2000)) leaks the setTimeout if
+    // close() wins — the timer keeps the event loop alive for 2s and accumulates
+    // on every forceClose call.
+    // Resolves TRUE when the TIMEOUT won, so the caller can tell "closed" from
+    // "gave up waiting". The old signature returned void, which is why forceClose
+    // did not actually force anything: on timeout the race resolved, the handles
+    // were dropped, and nothing was ever signalled. A page with a hanging
+    // beforeunload handler or a JS busy-loop therefore left an orphaned chromium
+    // with no reference to it, and in the long-lived daemon those accumulate
+    // until memory is exhausted. (2026-07-26)
+    const raceWithTimeout = async <T>(p: Promise<T>, ms: number): Promise<boolean> => {
+      let timer: NodeJS.Timeout | undefined;
       try {
-        await Promise.race([
-          this.context.close(),
-          new Promise((r) => setTimeout(r, 2000)), // 2s timeout for close
+        return await Promise.race([
+          p.then(() => false),
+          new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), ms); }),
         ]);
-      } catch {
-        // Ignore - may already be closed
+      } finally {
+        if (timer) clearTimeout(timer);
       }
+    };
+
+    if (this.context) {
+      try { await raceWithTimeout(this.context.close(), 2000); } catch { /* may already be closed */ }
       this.context = null;
       this.page = null;
     }
 
     // Force close browser
     if (this.browser) {
-      try {
-        await Promise.race([
-          this.browser.close(),
-          new Promise((r) => setTimeout(r, 2000)), // 2s timeout for close
-        ]);
-      } catch {
-        // Ignore - may already be closed
-      }
+      let timedOut = false;
+      try { timedOut = await raceWithTimeout(this.browser.close(), 2000); } catch { /* may already be closed */ }
       this.browser = null;
+
+      if (timedOut) {
+        // We cannot signal it, and saying so beats pretending to.
+        //
+        // Playwright's Browser does NOT expose the child process — verified
+        // 2026-07-26: `typeof browser.process === "function"` is false on a
+        // chromium.launch() handle; only launchServer()'s BrowserServer has
+        // process(). Which also means the session reaper in mcp-server-remote.ts
+        // (`browserInstance?.process?.()?.pid`) always resolves undefined and its
+        // force-kill branch never runs either — another guard that reads as
+        // working and does nothing.
+        //
+        // Until the launch path moves to launchServer (a real change, not a
+        // patch), the honest behaviour is to make the orphan LOUD so it can be
+        // reaped externally, instead of dropping the handle in silence.
+        console.warn("[CBrowser] forceClose: browser.close() timed out after 2000ms — the chromium process may be orphaned. Playwright exposes no process handle to signal it; reap externally if these accumulate.");
+      }
     }
   }
 
@@ -973,6 +1400,17 @@ export class CBrowser {
       };
       this.networkRequests.push(networkRequest);
 
+      // Track it so the response handler can complete the record. Evict the
+      // oldest entry rather than growing forever when responses never arrive.
+      if (this.pendingRequests.size >= CBrowser.MAX_PENDING_REQUESTS) {
+        const oldest = this.pendingRequests.keys().next();
+        if (!oldest.done) this.pendingRequests.delete(oldest.value);
+      }
+      this.pendingRequests.set(request.url() + request.method(), {
+        req: networkRequest,
+        startedAt: Date.now(),
+      });
+
       if (this.isRecordingHar) {
         // Start HAR entry
         const harEntry: Partial<HAREntry> = {
@@ -993,12 +1431,18 @@ export class CBrowser {
 
     this.page.on("response", async (response) => {
       const key = response.url() + response.request().method();
-      const _networkResponse: NetworkResponse = {
-        url: response.url(),
-        status: response.status(),
-        statusText: response.statusText(),
-        headers: response.headers(),
-      };
+
+      // This status was already being computed here and then discarded into an
+      // unused local, which is why get_network_requests could never report the
+      // status codes and timing its description promised. Attach it to the
+      // originating request record instead. (2026-07-28)
+      const pending = this.pendingRequests.get(key);
+      if (pending) {
+        pending.req.status = response.status();
+        pending.req.statusText = response.statusText();
+        pending.req.durationMs = Date.now() - pending.startedAt;
+        this.pendingRequests.delete(key);
+      }
 
       if (this.isRecordingHar && this.networkResponses.has(key)) {
         const partial = this.networkResponses.get(key) as Partial<HAREntry>;
@@ -1084,6 +1528,7 @@ export class CBrowser {
   clearNetworkHistory(): void {
     this.networkRequests = [];
     this.harEntries = [];
+    this.pendingRequests.clear();
   }
 
   // =========================================================================
@@ -1096,7 +1541,7 @@ export class CBrowser {
   async getPerformanceMetrics(): Promise<PerformanceMetrics> {
     const page = await this.getPage();
 
-    const metrics = await page.evaluate(() => {
+    const metrics = await page.evaluate(async () => {
       const result: Record<string, number | undefined> = {};
 
       // Navigation timing
@@ -1115,20 +1560,42 @@ export class CBrowser {
         }
       }
 
-      // LCP from PerformanceObserver (if available)
-      const lcpEntries = performance.getEntriesByType("largest-contentful-paint");
-      if (lcpEntries.length > 0) {
-        result.lcp = (lcpEntries[lcpEntries.length - 1] as any).startTime;
-      }
-
-      // CLS from layout-shift entries
-      const clsEntries = performance.getEntriesByType("layout-shift");
+      // LCP and CLS are delivered ONLY to a PerformanceObserver. Chromium never
+      // adds largest-contentful-paint or layout-shift entries to the performance
+      // timeline, so the previous getEntriesByType() calls returned [] on every
+      // page. LCP was therefore always undefined, and CLS was always exactly 0 —
+      // which looked like a real measurement of a perfectly stable page rather
+      // than no measurement at all. `buffered: true` replays the entries that
+      // already fired before this observer existed. (2026-07-29)
       let clsScore = 0;
-      for (const entry of clsEntries) {
-        if (!(entry as any).hadRecentInput) {
-          clsScore += (entry as any).value || 0;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => { if (!settled) { settled = true; resolve(); } };
+        try {
+          const lcpObs = new PerformanceObserver((list) => {
+            const entries = list.getEntries();
+            if (entries.length > 0) {
+              result.lcp = (entries[entries.length - 1] as any).startTime;
+            }
+          });
+          lcpObs.observe({ type: "largest-contentful-paint", buffered: true });
+
+          const clsObs = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              if (!(entry as any).hadRecentInput) {
+                clsScore += (entry as any).value || 0;
+              }
+            }
+          });
+          clsObs.observe({ type: "layout-shift", buffered: true });
+        } catch {
+          // Older engines without these entry types: leave lcp undefined rather
+          // than reporting a fabricated value.
+          finish();
         }
-      }
+        // Buffered entries arrive on the next task; give late shifts a moment too.
+        setTimeout(finish, 300);
+      });
       result.cls = clsScore;
 
       // Resource counts
@@ -1243,6 +1710,15 @@ export class CBrowser {
   async clearCookies(): Promise<void> {
     if (!this.context) return;
     await this.context.clearCookies();
+    // Clear the cross-invocation snapshot too, so the clear actually sticks
+    // even if the process is killed before a graceful close re-snapshots.
+    try {
+      if (existsSync(this.persistedCookiesFile)) {
+        writeFileSync(this.persistedCookiesFile, "[]");
+      }
+    } catch {
+      /* best effort */
+    }
   }
 
   /**
@@ -1434,9 +1910,10 @@ export class CBrowser {
    */
   async navigate(url: string, options: NavigateOptions = {}): Promise<NavigationResult> {
     // Skip session restore since we're explicitly navigating to a new URL
+    const prevSkip = this.skipSessionRestore;
     this.skipSessionRestore = true;
     const page = await this.getPage();
-    this.skipSessionRestore = false;
+    this.skipSessionRestore = prevSkip;
     const startTime = Date.now();
 
     const errors: string[] = [];
@@ -1456,6 +1933,34 @@ export class CBrowser {
     const waitTimeout = options.waitTimeout ?? 10000;
     const waitForStability = options.waitForStability ?? (waitStrategy === "auto" || waitStrategy === "domcontentloaded");
 
+    // Helper to detect proxy tunnel errors and provide actionable messages
+    const wrapProxyError = (e: unknown): never => {
+      const errMsg = (e as Error).message || "";
+      if (errMsg.includes("ERR_TUNNEL_CONNECTION_FAILED") || errMsg.includes("ERR_PROXY_CONNECTION_FAILED")) {
+        const proxyServer = this.config.proxy?.server || "configured proxy";
+        throw new Error(
+          `Proxy tunnel rejected by ${url}. The target site is blocking proxy/VPN connections ` +
+          `(proxy: ${proxyServer}). This is the site's anti-bot defense, not a CBrowser issue.\n\n` +
+          `Recommendations:\n` +
+          `1. Re-run without the proxy to test from your direct IP\n` +
+          `2. Try a different geo region — the site may block specific IP ranges\n` +
+          `3. Some sites (Stripe, GitHub, banking) aggressively block residential proxies`
+        );
+      }
+      if (errMsg.includes("ERR_NETWORK_CHANGED") && this.config.proxy) {
+        throw new Error(
+          `Network changed during proxy connection to ${url}. The residential proxy IP may have rotated mid-request ` +
+          `or the site detected and dropped the proxy tunnel.\n\n` +
+          `Recommendations:\n` +
+          `1. Retry — residential proxy IPs rotate and the next one may work\n` +
+          `2. Re-run without the proxy to test from your direct IP\n` +
+          `3. Use a sticky session proxy for sites that are sensitive to IP changes`
+        );
+      }
+      throw e;
+    };
+
+    try {
     if (waitStrategy === "commit") {
       // Fastest: don't wait at all after navigation commits
       await page.goto(url, { waitUntil: "commit", timeout: this.config.timeout || 30000 });
@@ -1501,10 +2006,30 @@ export class CBrowser {
             await this.waitForStability(page, 2000);
           }
         } else {
-          // Non-timeout error, rethrow
-          throw e;
+          // Non-timeout error — proxy detection handled by outer catch
+          wrapProxyError(e);
         }
       }
+    }
+    } catch (navError) {
+      // Wrap any proxy-related navigation error with actionable message
+      wrapProxyError(navError);
+    }
+
+    // Post-navigation waits for dynamic content (translation, deferred rendering)
+    let waitSelectorTimedOut = false;
+    if (options.waitForSelector) {
+      try {
+        await page.waitForSelector(options.waitForSelector, {
+          timeout: options.waitTimeout ?? 10000,
+        });
+      } catch {
+        waitSelectorTimedOut = true;
+        warnings.push(`waitForSelector "${options.waitForSelector}" timed out after ${options.waitTimeout ?? 10000}ms — the expected element never appeared. The page may not have completed the operation you were waiting for (e.g., translation, dynamic render).`);
+      }
+    }
+    if (options.waitAfterLoad && options.waitAfterLoad > 0) {
+      await page.waitForTimeout(options.waitAfterLoad);
     }
 
     const loadTime = Date.now() - startTime;
@@ -1559,6 +2084,7 @@ export class CBrowser {
       warnings,
       loadTime,
       success: true,
+      ...(waitSelectorTimedOut ? { waitSelectorTimedOut: true } : {}),
     };
   }
 
@@ -1954,7 +2480,10 @@ export class CBrowser {
       const result: ClickResult = {
         success: false,
         screenshot: await this.screenshot(),
-        message: `Failed to click: ${errorMessage}`,
+        // Was the raw Playwright error, whose Call log ran to ~4k tokens of
+        // near-identical retry lines and crowded out everything else in the
+        // response. verbose still gets the whole thing. (2026-07-29)
+        message: `Failed to click: ${options.verbose ? errorMessage : summarizePlaywrightError(errorMessage)}`,
       };
 
       if (options.verbose) {
@@ -2037,7 +2566,7 @@ export class CBrowser {
         if (topElement.id) {
           selector = `#${topElement.id}`;
         } else if (topElement.className && typeof topElement.className === 'string') {
-          selector += `.${topElement.className.split(' ')[0]}`;
+          selector += `.${String((topElement.className as unknown as { baseVal?: string })?.baseVal ?? topElement.className ?? "").split(' ')[0]}`;
         }
 
         // Check if it's a sticky/fixed element (those are the problematic ones)
@@ -2096,7 +2625,7 @@ export class CBrowser {
           if (rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none') {
             let selector = el.tagName.toLowerCase();
             if (el.id) selector += `#${el.id}`;
-            else if (el.className && typeof el.className === 'string') selector += `.${el.className.split(' ')[0]}`;
+            else if (el.className && typeof el.className === 'string') selector += `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}`;
 
             results.push({
               selector,
@@ -2290,7 +2819,7 @@ export class CBrowser {
             if (hasClickIndicator || hasRole || isButton || hasDropdownClass) {
               // Return a selector for this element
               if (sibling.id) return `#${sibling.id}`;
-              if (sibling.className) return `.${sibling.className.split(' ')[0]}`;
+              if (sibling.className) return `.${String((sibling.className as unknown as { baseVal?: string })?.baseVal ?? sibling.className ?? "").split(' ')[0]}`;
               return null;
             }
           }
@@ -2338,13 +2867,13 @@ export class CBrowser {
                 const clickableStyle = getComputedStyle(clickable);
                 if (clickableStyle.display !== 'none') {
                   if ((clickable as HTMLElement).id) return `#${(clickable as HTMLElement).id}`;
-                  if (clickable.className) return `.${clickable.className.split(' ')[0]}`;
+                  if (clickable.className) return `.${String((clickable.className as unknown as { baseVal?: string })?.baseVal ?? clickable.className ?? "").split(' ')[0]}`;
                 }
               }
 
               // If parent itself looks clickable
               if (parent.id) return `#${parent.id}`;
-              if (parent.className) return `.${parent.className.split(' ')[0]}`;
+              if (parent.className) return `.${String((parent.className as unknown as { baseVal?: string })?.baseVal ?? parent.className ?? "").split(' ')[0]}`;
             }
           }
           parent = parent.parentElement;
@@ -2380,7 +2909,7 @@ export class CBrowser {
               const style = getComputedStyle(el);
               if (style.display !== 'none' && style.visibility !== 'hidden') {
                 if (el.id) return `#${el.id}`;
-                if (el.className) return `.${el.className.split(' ')[0]}`;
+                if (el.className) return `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}`;
               }
             }
           }
@@ -3384,11 +3913,25 @@ export class CBrowser {
     const page = await this.getPage();
 
     const analysis = await page.evaluate(() => {
+      // Values are escaped before they enter a selector. Raw interpolation broke
+      // on ids a framework generated rather than a human wrote: `#:r0:` (React 18
+      // useId) and `#2fa-code` throw DOMException, and `#a.b` silently matches
+      // nothing at all. Priority is ARIA-first to match find_element_by_intent
+      // and the documented behaviour; an explicit test hook outranks a generated
+      // id, and aria-label outranks both. (2026-07-29)
+      const q = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
       const getSelector = (el: Element): string => {
-        if (el.id) return `#${el.id}`;
-        if (el.getAttribute("data-testid")) return `[data-testid="${el.getAttribute("data-testid")}"]`;
-        if (el.getAttribute("name")) return `[name="${el.getAttribute("name")}"]`;
-        const text = el.textContent?.trim().substring(0, 30);
+        const ariaLabel = el.getAttribute("aria-label");
+        if (ariaLabel) return `[aria-label="${q(ariaLabel)}"]`;
+        const testId = el.getAttribute("data-testid");
+        if (testId) return `[data-testid="${q(testId)}"]`;
+        if (el.id) return `#${CSS.escape(el.id)}`;
+        if (el.getAttribute("name")) return `[name="${q(el.getAttribute("name")!)}"]`;
+        // Was substring(0, 30) — the same truncation removed from aria-label and
+        // visible text elsewhere, still cutting the SELECTOR here, so a generated
+        // step said text="Sign up for Pro and get 500 bo" and matched nothing.
+        // A selector has to be the whole string to resolve. (2026-07-29)
+        const text = el.textContent?.trim().substring(0, 200);
         if (text) return `text="${text}"`;
         return el.tagName.toLowerCase();
       };
@@ -3601,11 +4144,23 @@ export class CBrowser {
         tests.push({
           name: "Navigation Links",
           description: "Test main navigation links work",
-          steps: navLinks.slice(0, 5).flatMap(link => [
-            { action: "navigate" as const, target: analysis.url, description: "Start from home" },
-            { action: "click" as const, target: link.selector, description: `Click ${link.text || "link"}` },
-            { action: "assert" as const, target: `url contains '${new URL(link.href || "").pathname}'`, description: "Verify navigation" },
-          ]),
+          // A same-page link has pathname "/", and `assert url contains '/'` is
+          // true of every URL ever produced — a step that always passes is worse
+          // than no step, because it reads in the report as verified navigation.
+          // Emit the assertion only when the path can actually distinguish the
+          // destination from the origin. (2026-07-29)
+          steps: navLinks.slice(0, 5).flatMap(link => {
+            let path = "";
+            try { path = new URL(link.href || "", analysis.url).pathname; } catch { path = ""; }
+            const discriminating = path.length > 1 && path !== new URL(analysis.url).pathname;
+            return [
+              { action: "navigate" as const, target: analysis.url, description: "Start from home" },
+              { action: "click" as const, target: link.selector, description: `Click ${link.text || "link"}` },
+              ...(discriminating
+                ? [{ action: "assert" as const, target: `url contains '${path}'`, description: "Verify navigation" }]
+                : []),
+            ];
+          }),
           assertions: ["no console errors"],
         });
       }
@@ -3655,28 +4210,41 @@ export class CBrowser {
       script += `# ${test.name}\n`;
       script += `# ${test.description}\n`;
 
+      // This must be the dialect src/testing/nl-test-suite.ts PARSES, because the
+      // MCP tool tells callers to paste it straight into nl_test_inline. It used
+      // to emit a `verb "quoted-arg"` form of its own invention, and every line
+      // came back action:"unknown" — `navigate "url"` is not a rule (the rule is
+      // `go to <url>`), and wrapping a selector in quotes leaves literal quote
+      // characters inside the target, which then nests against selectors like
+      // [data-testid="x"]. (2026-07-29)
       for (const step of test.steps) {
         switch (step.action) {
           case "navigate":
-            script += `navigate "${step.target}"\n`;
+            script += `go to ${step.target}\n`;
             break;
           case "click":
-            script += `click "${step.target}"\n`;
+            // Unquoted: the parser takes the rest of the line as the target.
+            script += `click ${step.target}\n`;
             break;
           case "fill":
-            script += `fill "${step.target}" "${step.value}"\n`;
+            // The parser wants the VALUE quoted and the field bare.
+            script += `fill ${step.target} with "${step.value}"\n`;
             break;
           case "assert":
-            script += `assert "${step.target}"\n`;
+            // step.target is already a predicate, e.g. url contains '/docs/'.
+            script += `assert ${step.target}\n`;
             break;
           case "wait":
-            script += `# wait ${step.value}ms\n`;
+            script += `wait ${Math.max(1, Math.round(Number(step.value ?? 1000) / 1000))} seconds\n`;
             break;
         }
       }
 
+      // test.assertions are intentions, not executable steps — "no console
+      // errors" has no rule, and the grammar has no OR. Emitting them as steps
+      // produced unparseable lines, so they ship as comments.
       for (const assertion of test.assertions) {
-        script += `assert "${assertion}"\n`;
+        script += `# expected: ${assertion}\n`;
       }
 
       script += "\n";
@@ -3745,30 +4313,159 @@ export class CBrowser {
    * Get all clickable elements on the page for verbose output.
    * Public so cognitive journey can use it to show Claude what's clickable.
    */
-  async getAvailableClickables(page?: Page): Promise<Array<{ tag: string; text: string; selector: string; role?: string }>> {
+  /**
+   * Snapshot of viewport-level state — what the cognitive journey AI needs to
+   * reason about layout, scroll position, and active overlays. Returned as a
+   * structured object that buildStepPrompt can format for Claude.
+   */
+  async getViewportContext(page?: Page): Promise<{
+    viewport: { width: number; height: number };
+    scroll: { y: number; max: number; pct: number; atTop: boolean; atBottom: boolean };
+    headings: Array<{ level: number; text: string; visible: boolean }>;
+    activeModals: number;
+    formErrors: string[];
+    bannersBlocking: string[];
+  }> {
+    const targetPage = page || await this.getPage();
+    try {
+      return await targetPage.evaluate(() => {
+        const docHeight = Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight,
+          document.body.offsetHeight,
+          document.documentElement.offsetHeight,
+        );
+        const vh = window.innerHeight;
+        const vw = window.innerWidth;
+        const scrollY = window.scrollY;
+        const maxScroll = Math.max(0, docHeight - vh);
+        const pct = maxScroll > 0 ? scrollY / maxScroll : 0;
+
+        // Headings outline — including which are currently visible
+        const headings: Array<{ level: number; text: string; visible: boolean }> = [];
+        document.querySelectorAll('h1, h2, h3, h4').forEach(el => {
+          const r = el.getBoundingClientRect();
+          const text = (el as HTMLElement).innerText?.trim().substring(0, 100);
+          if (text) {
+            headings.push({
+              level: parseInt(el.tagName.charAt(1)),
+              text,
+              visible: r.top < vh && r.bottom > 0,
+            });
+          }
+        });
+
+        // Active modals/dialogs that block interaction
+        const modalSelectors = '[role="dialog"], [aria-modal="true"], dialog[open], .modal:not(.hidden), [class*="overlay"][class*="active"]';
+        const activeModals = Array.from(document.querySelectorAll(modalSelectors)).filter(el => {
+          const r = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return style.display !== 'none' && style.visibility !== 'hidden' && r.width > 50 && r.height > 50;
+        }).length;
+
+        // Form errors (common patterns)
+        const formErrors: string[] = [];
+        document.querySelectorAll('[role="alert"], .error-message, [aria-invalid="true"], .invalid-feedback, .form-error').forEach(el => {
+          const text = (el as HTMLElement).innerText?.trim().substring(0, 120);
+          if (text && text.length > 3) formErrors.push(text);
+        });
+
+        // Banners that block content (cookie banners, full-screen overlays)
+        const bannersBlocking: string[] = [];
+        document.querySelectorAll('[class*="cookie"], [class*="consent"], [class*="banner"][class*="bottom"], [id*="cookie"]').forEach(el => {
+          const r = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          if (style.position === 'fixed' && r.width > vw * 0.5 && style.display !== 'none') {
+            const text = (el as HTMLElement).innerText?.trim().substring(0, 80);
+            if (text) bannersBlocking.push(text);
+          }
+        });
+
+        return {
+          viewport: { width: vw, height: vh },
+          scroll: {
+            y: Math.round(scrollY),
+            max: Math.round(maxScroll),
+            pct: Math.round(pct * 100) / 100,
+            atTop: scrollY < 50,
+            atBottom: scrollY > maxScroll - 50,
+          },
+          headings: headings.slice(0, 20),
+          activeModals,
+          formErrors: formErrors.slice(0, 5),
+          bannersBlocking: bannersBlocking.slice(0, 3),
+        };
+      });
+    } catch {
+      return {
+        viewport: { width: 0, height: 0 },
+        scroll: { y: 0, max: 0, pct: 0, atTop: true, atBottom: false },
+        headings: [],
+        activeModals: 0,
+        formErrors: [],
+        bannersBlocking: [],
+      };
+    }
+  }
+
+  async getAvailableClickables(page?: Page): Promise<Array<{ tag: string; text: string; selector: string; role?: string; aboveFold?: boolean; region?: string; x?: number; y?: number; width?: number; height?: number }>> {
     const targetPage = page || await this.getPage();
     try {
       // v11.6.0: Expanded selector to include all button types, form submits, and onclick handlers
-      // Fixed: Was missing button[type="submit"], form buttons, and onclick handlers
+      // v18.68.0: Returns spatial context (region, fold, bbox) so the cognitive
+      //           journey AI can disambiguate same-text targets and reason
+      //           about layout. Existing callers only read the original fields.
       return await targetPage.$$eval(
         'button, a, [role="button"], [role="link"], input[type="submit"], input[type="button"], [onclick], [type="submit"]',
         els => {
-          // Deduplicate and filter to visible elements only
+          const vh = window.innerHeight;
+          const vw = window.innerWidth;
+          // Region classifier — uses semantic ancestors and viewport position.
+          // Order matters: most specific first.
+          const classifyRegion = (el: Element, top: number, bottom: number): string => {
+            const inside = (sel: string) => !!el.closest(sel);
+            if (inside('nav, [role="navigation"], header[role="banner"]') || inside('header')) return 'header-nav';
+            if (inside('footer, [role="contentinfo"]')) return 'footer';
+            if (inside('aside, [role="complementary"], [role="dialog"], [aria-modal="true"]')) {
+              return inside('[role="dialog"], [aria-modal="true"]') ? 'modal' : 'sidebar';
+            }
+            if (inside('form')) return 'form';
+            // Position-based fallback
+            if (top < vh * 0.15) return 'top-bar';
+            if (top < vh) return 'main-visible';
+            return 'below-fold';
+          };
+          // Deduplicate, filter visible, sort by vertical position
           const seen = new Set<Element>();
           return els
             .filter(el => {
               if (seen.has(el)) return false;
               seen.add(el);
               const style = window.getComputedStyle(el);
-              return style.display !== 'none' && style.visibility !== 'hidden';
+              return style.display !== 'none' && style.visibility !== 'hidden' && el.getBoundingClientRect().height > 0;
             })
-            .slice(0, 50) // v14.2.1: Increased from 20 to 50 for better verbose output
-            .map((el, i) => ({
-              tag: el.tagName.toLowerCase(),
-              text: (el as HTMLElement).innerText?.trim().substring(0, 60) || el.getAttribute("aria-label") || el.getAttribute("value") || "",
-              selector: el.id ? `#${el.id}` : el.getAttribute("data-testid") ? `[data-testid="${el.getAttribute("data-testid")}"]` : `${el.tagName.toLowerCase()}:nth-of-type(${i + 1})`,
-              role: el.getAttribute("role") || undefined,
-            }));
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+            .slice(0, 80)
+            .map((el, i) => {
+              const r = el.getBoundingClientRect();
+              const aboveFold = r.top < vh && r.bottom > 0;
+              return {
+                tag: el.tagName.toLowerCase(),
+                text: (el as HTMLElement).innerText?.trim().substring(0, 80) || el.getAttribute("aria-label") || el.getAttribute("value") || "",
+                selector: el.getAttribute("data-testid")
+                  ? `[data-testid="${el.getAttribute("data-testid")!.replace(/"/g, '\\"')}"]`
+                  : el.id
+                    ? `#${CSS.escape(el.id)}`
+                    : `${el.tagName.toLowerCase()}:nth-of-type(${i + 1})`,
+                role: el.getAttribute("role") || undefined,
+                aboveFold,
+                region: classifyRegion(el, r.top, r.bottom),
+                x: Math.round(r.left),
+                y: Math.round(r.top),
+                width: Math.round(r.width),
+                height: Math.round(r.height),
+              };
+            });
         }
       );
     } catch {
@@ -4004,8 +4701,8 @@ export class CBrowser {
     // Page title assertions
     if (lowerAssertion.includes("title") && (lowerAssertion.includes("is") || lowerAssertion.includes("contains"))) {
       const title = await page.title();
-      const match = assertion.match(/["']([^"']+)["']/);
-      const expected = match?.[1] || "";
+      const expected = extractExpected(assertion);
+      if (expected === null) return { passed: false, assertion, actual: title, message: UNPARSEABLE_MESSAGE };
 
       if (lowerAssertion.includes("contains")) {
         const passed = title.toLowerCase().includes(expected.toLowerCase());
@@ -4019,8 +4716,8 @@ export class CBrowser {
     // URL assertions
     if (lowerAssertion.includes("url") && (lowerAssertion.includes("is") || lowerAssertion.includes("contains"))) {
       const url = page.url();
-      const match = assertion.match(/["']([^"']+)["']/);
-      const expected = match?.[1] || "";
+      const expected = extractExpected(assertion);
+      if (expected === null) return { passed: false, assertion, actual: url, message: UNPARSEABLE_MESSAGE };
 
       if (lowerAssertion.includes("contains")) {
         const passed = url.includes(expected);
@@ -4034,8 +4731,8 @@ export class CBrowser {
     // Text presence assertions
     // v14.3.0: Filter script/style content to avoid ad injection false negatives
     if (lowerAssertion.includes("page") && (lowerAssertion.includes("contains") || lowerAssertion.includes("has") || lowerAssertion.includes("shows"))) {
-      const match = assertion.match(/["']([^"']+)["']/);
-      const expected = match?.[1] || "";
+      const expected = extractExpected(assertion);
+      if (expected === null) return { passed: false, assertion, message: UNPARSEABLE_MESSAGE };
       // v14.3.0: Use filtered text extraction (excludes script/style content)
       const content = await page.evaluate(() => {
         const clone = document.body.cloneNode(true) as HTMLElement;
@@ -4051,8 +4748,8 @@ export class CBrowser {
 
     // Element existence assertions
     if (lowerAssertion.includes("exists") || lowerAssertion.includes("visible") || lowerAssertion.includes("present")) {
-      const match = assertion.match(/["']([^"']+)["']/);
-      const selector = match?.[1] || "";
+      const selector = extractSubject(assertion);
+      if (selector === null) return { passed: false, assertion, message: UNPARSEABLE_MESSAGE };
       const element = await this.findElement(selector);
       const passed = element !== null;
 
@@ -4102,6 +4799,17 @@ export class CBrowser {
     }
 
     return { passed: false, assertion, message: "Could not parse assertion. Use quotes around expected values." };
+  }
+
+  /**
+   * Public accessor for the element resolver, for callers outside this class
+   * that need a Locator rather than an action (screen capture element
+   * tracking, for one). Deliberately a thin delegate: all nine resolution
+   * strategies, the self-healing cache and the verbose reporting stay in
+   * findElement, so there is exactly one resolver in the codebase.
+   */
+  async resolveElementLocator(selector: string): Promise<Locator | null> {
+    return this.findElement(selector);
   }
 
   /**
@@ -4252,11 +4960,15 @@ export class CBrowser {
         // Convert ElementHandle back to Locator isn't directly possible,
         // but we can get a selector from it
         const generatedSelector = await page.evaluate((el) => {
-          if (el.id) return `#${el.id}`;
-          const name = el.getAttribute("name");
-          if (name) return `[name="${name}"]`;
+          // Escaped, and ARIA-first — see the note on analyzePage's getSelector.
+          const q = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          const ariaLabel = el.getAttribute("aria-label");
+          if (ariaLabel) return `[aria-label="${q(ariaLabel)}"]`;
           const testId = el.getAttribute("data-testid");
-          if (testId) return `[data-testid="${testId}"]`;
+          if (testId) return `[data-testid="${q(testId)}"]`;
+          if (el.id) return `#${CSS.escape(el.id)}`;
+          const name = el.getAttribute("name");
+          if (name) return `[name="${q(name)}"]`;
           return null;
         }, element);
 
@@ -4405,11 +5117,15 @@ export class CBrowser {
       const element = fuzzyHandle.asElement();
       if (element) {
         const generatedSelector = await page.evaluate((el) => {
-          if (el.id) return `#${el.id}`;
-          const name = el.getAttribute("name");
-          if (name) return `[name="${name}"]`;
+          // Escaped, and ARIA-first — see the note on analyzePage's getSelector.
+          const q = (v: string) => v.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          const ariaLabel = el.getAttribute("aria-label");
+          if (ariaLabel) return `[aria-label="${q(ariaLabel)}"]`;
           const testId = el.getAttribute("data-testid");
-          if (testId) return `[data-testid="${testId}"]`;
+          if (testId) return `[data-testid="${q(testId)}"]`;
+          if (el.id) return `#${CSS.escape(el.id)}`;
+          const name = el.getAttribute("name");
+          if (name) return `[name="${q(name)}"]`;
           return null;
         }, element);
 
@@ -4630,8 +5346,33 @@ export class CBrowser {
 
     const filename = path || join(this.paths.screenshotsDir, `screenshot-${Date.now()}.png`);
 
-    await page.screenshot({ path: filename, fullPage: opts.fullPage || false });
+    const clip = opts.clip ? await this.resolveClip(opts) : undefined;
+    await page.screenshot({ path: filename, fullPage: opts.fullPage || false, ...(clip ? { clip } : {}) });
     return filename;
+  }
+
+  /**
+   * Clamp a caller-supplied clip rect to the surface actually being captured
+   * (the viewport, or the full document when fullPage is set).
+   */
+  private async resolveClip(opts: ScreenshotOptions): Promise<ClipRect | undefined> {
+    if (!opts.clip) return undefined;
+    const page = await this.getPage();
+    const viewport = page.viewportSize() || { width: 1280, height: 800 };
+    const bounds = opts.fullPage
+      ? await page.evaluate(() => ({
+          width: Math.max(document.documentElement.scrollWidth, window.innerWidth),
+          height: Math.max(document.documentElement.scrollHeight, window.innerHeight),
+        }))
+      : viewport;
+
+    const { rect, clamped } = clampRect(opts.clip, bounds);
+    if (clamped && this.config.verbose) {
+      console.log(`  Clip clamped to capture area (${bounds.width}x${bounds.height}): ` +
+        `{x:${opts.clip.x}, y:${opts.clip.y}, w:${opts.clip.width}, h:${opts.clip.height}} -> ` +
+        `{x:${rect.x}, y:${rect.y}, w:${rect.width}, h:${rect.height}}`);
+    }
+    return rect;
   }
 
   /**
@@ -4663,6 +5404,9 @@ export class CBrowser {
     // Get viewport size for scaling
     const viewport = page.viewportSize() || { width: 1280, height: 800 };
 
+    // Clip is expressed in unscaled CSS pixels, so it has to scale with the viewport
+    const baseClip = options?.clip ? await this.resolveClip(options) : undefined;
+
     // Try different quality/scale combinations
     for (const tryScale of scaleSteps) {
       for (const tryQuality of qualitySteps) {
@@ -4678,11 +5422,19 @@ export class CBrowser {
         }
 
         try {
+          const scaledClip = baseClip && {
+            x: Math.round(baseClip.x * tryScale),
+            y: Math.round(baseClip.y * tryScale),
+            width: Math.max(1, Math.round(baseClip.width * tryScale)),
+            height: Math.max(1, Math.round(baseClip.height * tryScale)),
+          };
+
           await page.screenshot({
             path: filename,
             fullPage,
             type: 'jpeg',
-            quality: tryQuality
+            quality: tryQuality,
+            ...(scaledClip ? { clip: scaledClip } : {})
           });
 
           // Check file size

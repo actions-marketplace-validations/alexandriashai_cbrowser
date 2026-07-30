@@ -1,0 +1,43 @@
+{
+  "url": "https://example.com/perfect",
+  "touchTargets": [
+    { "width": 48, "height": 48 },
+    { "width": 120, "height": 44 },
+    { "width": 56, "height": 48 },
+    { "width": 200, "height": 52 },
+    { "width": 44, "height": 44 },
+    { "width": 88, "height": 46 },
+    { "width": 24, "height": 24, "exempt": true }
+  ],
+  "agentReadyScore": 94,
+  "semanticScore": 96,
+  "ariaScore": 92,
+  "landmarkScore": 95,
+  "headingScore": 98,
+  "formLabelScore": 97,
+  "totalCTC": 0.18,
+  "layers": [
+    { "name": "perception", "cost": 0.04 },
+    { "name": "decision", "cost": 0.03 },
+    { "name": "motor", "cost": 0.05 },
+    { "name": "memory", "cost": 0.03 },
+    { "name": "navigation", "cost": 0.03 }
+  ],
+  "abandonmentRisk": 0.06,
+  "pageType": "landing",
+  "elementCount": 140,
+  "interactiveCount": 12,
+  "formFieldCount": 2,
+  "navItemCount": 5,
+  "linkCount": 18,
+  "imageCount": 6,
+  "animationCount": 1,
+  "hasReducedMotionSupport": true,
+  "ctaCaptureRate": 0.48,
+  "distractorRatio": 0.12,
+  "attentionQualityScore": 91,
+  "avgSentenceLength": 14,
+  "fleschScore": 74,
+  "technicalDensity": 0.08,
+  "informationDensity": 0.32
+}

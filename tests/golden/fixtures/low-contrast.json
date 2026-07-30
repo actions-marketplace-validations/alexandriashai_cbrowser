@@ -1,0 +1,34 @@
+{
+  "url": "https://example.com/pricing",
+  "contrastIssues": [
+    { "ratio": 2.3, "isLargeText": false, "element": "p.text-muted" },
+    { "ratio": 3.1, "isLargeText": false, "element": "span.badge-light" },
+    { "ratio": 3.9, "isLargeText": false, "element": "a.footer-link" },
+    { "ratio": 2.8, "isLargeText": true, "element": "h2.hero-subtitle" },
+    { "ratio": 4.2, "isLargeText": false, "element": "td.price-note" },
+    { "ratio": 2.1, "isLargeText": false, "element": "input.email-capture" },
+    { "ratio": 3.4, "isLargeText": false, "element": "small.disclaimer" },
+    { "ratio": 2.9, "isLargeText": true, "element": "h3.tier-name" },
+    { "ratio": 4.4, "isLargeText": false, "element": "a.compare-link" },
+    { "ratio": 1.9, "isLargeText": false, "element": "span.strikethrough-price" },
+    { "ratio": 3.7, "isLargeText": false, "element": "td.feature-note" },
+    { "ratio": 2.6, "isLargeText": false, "element": "p.faq-answer" }
+  ],
+  "barriers": [
+    { "type": "color_only_indicator", "severity": "serious", "element": ".plan-recommended", "description": "Recommended plan indicated by color alone", "wcagCriteria": ["1.4.1"] }
+  ],
+  "agentReadyScore": 72,
+  "semanticScore": 78,
+  "ariaScore": 70,
+  "landmarkScore": 75,
+  "headingScore": 82,
+  "formLabelScore": 80,
+  "pageType": "pricing",
+  "elementCount": 48,
+  "interactiveCount": 22,
+  "navItemCount": 6,
+  "linkCount": 30,
+  "informationDensity": 0.5,
+  "fleschScore": 58,
+  "ctaCaptureRate": 0.31
+}

@@ -7,6 +7,7 @@
  */
 
 import { z } from "zod";
+import { PERSONA_CATEGORIES } from "../../persona-questionnaire.js";
 import type { McpServer } from "../types.js";
 import {
   getPersonaValues,
@@ -19,11 +20,18 @@ import {
  * Register values system tools (7 tools)
  */
 export function registerValuesTools(server: McpServer): void {
-  server.tool(
-    "persona_values_list",
-    "List all Schwartz's 10 Universal Values with their meanings, plus higher-order values, Self-Determination Theory needs, and Maslow levels. Use this to understand the values framework before looking up specific personas.",
-    {},
-    async () => {
+  server.registerTool("persona_values_list", {
+    title: "List Persona Values",
+    description: "List all Schwartz's 10 Universal Values with their meanings, plus higher-order values, Self-Determination Theory needs, and Maslow levels. Use this to understand the values framework before looking up specific personas.",
+    inputSchema: {},
+    annotations: {
+      title: "List Persona Values",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       return {
         content: [
           {
@@ -72,14 +80,21 @@ export function registerValuesTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "persona_values_lookup",
-    "Look up the values profile for a persona (Schwartz's 10 Universal Values, SDT needs, Maslow level). Values describe WHO the persona is at a deeper motivational level, informing influence susceptibility.",
-    {
+  server.registerTool("persona_values_lookup", {
+    title: "Lookup Persona Values",
+    description: "Look up the values profile for a persona (Schwartz's 10 Universal Values, SDT needs, Maslow level). Values describe WHO the persona is at a deeper motivational level, informing influence susceptibility.",
+    inputSchema: {
       persona: z.string().describe("Persona name (e.g., 'first-timer', 'power-user', 'anxious-user')"),
       includeInfluencePatterns: z.boolean().optional().default(true).describe("Include ranked influence patterns this persona is susceptible to"),
     },
-    async ({ persona, includeInfluencePatterns }) => {
+    annotations: {
+      title: "Lookup Persona Values",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ persona, includeInfluencePatterns }) => {
       const values = getPersonaValues(persona);
 
       if (!values) {
@@ -163,11 +178,18 @@ export function registerValuesTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "list_influence_patterns",
-    "List research-backed behavioral persuasion patterns (Cialdini, Kahneman) and which persona values correlate with susceptibility to each pattern.",
-    {},
-    async () => {
+  server.registerTool("list_influence_patterns", {
+    title: "List Influence Patterns",
+    description: "List research-backed behavioral persuasion patterns (Cialdini, Kahneman) and which persona values correlate with susceptibility to each pattern.",
+    inputSchema: {},
+    annotations: {
+      title: "List Influence Patterns",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const patterns = INFLUENCE_PATTERNS.map(pattern => ({
         name: pattern.name,
         description: pattern.description,
@@ -193,15 +215,22 @@ export function registerValuesTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "persona_questionnaire_get",
-    "Get the persona questionnaire for building a custom persona. Returns research-backed questions that map to cognitive traits. Use comprehensive=true for all 25 traits, or leave false for 8 core traits. v16.12.0: Now includes optional category question for disability-specific value safeguards.",
-    {
+  server.registerTool("persona_questionnaire_get", {
+    title: "Get Persona Questionnaire",
+    description: "Get the persona questionnaire for building a custom persona. Returns research-backed questions that map to cognitive traits. Use comprehensive=true for all 25 traits, or leave false for 8 core traits. v16.12.0: Now includes optional category question for disability-specific value safeguards.",
+    inputSchema: {
       comprehensive: z.boolean().optional().default(false).describe("Include all 25 traits (true) or just 8 core traits (false)"),
       traits: z.array(z.string()).optional().describe("Specific trait names to include (overrides comprehensive)"),
       includeCategory: z.boolean().optional().default(true).describe("Include category question for disability-aware values (v16.12.0)"),
     },
-    async ({ comprehensive, traits, includeCategory }) => {
+    annotations: {
+      title: "Get Persona Questionnaire",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ comprehensive, traits, includeCategory }) => {
       const { generatePersonaQuestionnaire, formatForAskUserQuestion, CATEGORY_QUESTION } = await import("../../persona-questionnaire.js");
 
       const questions = generatePersonaQuestionnaire({
@@ -231,18 +260,25 @@ export function registerValuesTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "persona_questionnaire_build",
-    "Build a custom persona from questionnaire answers with category-aware value safeguards. Answers should be a map of trait names to values (0-1). Missing traits will use intelligent defaults based on research correlations. v16.12.0: Optionally specify category for disability-specific value handling.",
-    {
+  server.registerTool("persona_questionnaire_build", {
+    title: "Build Persona Questionnaire",
+    description: "Build a custom persona from questionnaire answers with category-aware value safeguards. Answers should be a map of trait names to values (0-1). Missing traits will use intelligent defaults based on research correlations. v16.12.0: Optionally specify category for disability-specific value handling.",
+    inputSchema: {
       name: z.string().describe("Name for the new persona"),
       description: z.string().describe("Description of the persona"),
       answers: z.record(z.string(), z.number()).describe("Map of trait names to values (0-1), e.g. {patience: 0.25, riskTolerance: 0.75}"),
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).optional().describe("Persona category for value safeguards (v16.12.0)"),
+      category: z.enum(PERSONA_CATEGORIES).optional().describe("Persona category for value safeguards (v16.12.0)"),
       valueOverrides: z.record(z.string(), z.number()).optional().describe("Override specific values (0-1) if different from category defaults"),
       save: z.boolean().optional().default(true).describe("Save the persona to disk for future use"),
     },
-    async ({ name, description, answers, category, valueOverrides, save }) => {
+    annotations: {
+      title: "Build Persona Questionnaire",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ name, description, answers, category, valueOverrides, save }) => {
       const {
         buildTraitsFromAnswers,
         getTraitLabel,
@@ -312,14 +348,21 @@ export function registerValuesTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "persona_trait_lookup",
-    "Look up behavioral descriptions for specific trait values. Useful for understanding what a trait value means in practice.",
-    {
+  server.registerTool("persona_trait_lookup", {
+    title: "Lookup Persona Trait",
+    description: "Look up behavioral descriptions for specific trait values. Useful for understanding what a trait value means in practice.",
+    inputSchema: {
       trait: z.string().describe("Trait name (e.g., 'patience', 'riskTolerance')"),
       value: z.number().min(0).max(1).describe("Trait value (0-1)"),
     },
-    async ({ trait, value }) => {
+    annotations: {
+      title: "Lookup Persona Trait",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ trait, value }) => {
       const { getTraitReference, getTraitLabel, getTraitBehaviors } = await import("../../persona-questionnaire.js");
 
       const reference = getTraitReference(trait as keyof import("../../types.js").CognitiveTraits);
@@ -337,7 +380,7 @@ export function registerValuesTools(server: McpServer): void {
                   "trustCalibration", "interruptRecovery", "informationForaging", "changeBlindness",
                   "anchoringBias", "timeHorizon", "attributionStyle", "metacognitivePlanning",
                   "proceduralFluency", "transferLearning", "authoritySensitivity", "emotionalContagion",
-                  "fearOfMissingOut", "socialProofSensitivity", "mentalModelRigidity"
+                  "fearOfMissingOut", "socialProofSensitivity", "mentalModelRigidity", "siteFamiliarity"
                 ],
               }, null, 2),
             },
@@ -364,13 +407,20 @@ export function registerValuesTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "persona_category_guidance",
-    "Get guidance for value assignment based on persona category. (v16.12.0) Explains research basis for why cognitive, physical, sensory, and emotional disability categories require different value handling approaches.",
-    {
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).describe("Persona category to get guidance for"),
+  server.registerTool("persona_category_guidance", {
+    title: "Persona Category Guidance",
+    description: "Get guidance for value assignment based on persona category. (v16.12.0) Explains research basis for why cognitive, physical, sensory, and emotional disability categories require different value handling approaches.",
+    inputSchema: {
+      category: z.enum(PERSONA_CATEGORIES).describe("Persona category to get guidance for"),
     },
-    async ({ category }) => {
+    annotations: {
+      title: "Persona Category Guidance",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ category }) => {
       const { CATEGORY_VALUE_PRESETS, COGNITIVE_SUBTYPES } = await import("../../persona-questionnaire.js");
 
       const preset = CATEGORY_VALUE_PRESETS.find(p => p.category === category);

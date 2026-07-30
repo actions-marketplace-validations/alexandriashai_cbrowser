@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recording fixture — fully static</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #f7f7fb; color: #1a1a22; font: 16px/1.4 system-ui, sans-serif; }
+  main { display: flex; align-items: center; justify-content: center; height: 100%; }
+</style>
+</head>
+<body>
+  <!-- No script, no animation, no transition: after first paint this page
+       emits zero screencast frames. That is the point of the fixture. -->
+  <main><h1>Nothing moves here</h1></main>
+</body>
+</html>

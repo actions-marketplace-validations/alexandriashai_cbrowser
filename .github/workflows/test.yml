@@ -54,27 +54,20 @@ jobs:
 
       - name: Verify LICENSE immutable fields unchanged
         run: |
-          # These fields were set when MIT was adopted and must NEVER change
+          # The project uses the standard MIT license (adopted deliberately); these
+          # fields must NEVER change without an explicit relicensing decision.
 
-          if ! grep -q "Licensor: Alexandria Eden" LICENSE; then
-            echo "❌ ERROR: 'Licensor' line has been modified!"
-            echo "Must remain: 'Alexandria Eden'"
+          if ! grep -q "MIT License" LICENSE; then
+            echo "❌ ERROR: LICENSE is no longer the MIT License!"
             exit 1
           fi
 
-          if ! grep -q "Licensed Work: CBrowser 8.6.0 and later" LICENSE; then
-            echo "❌ ERROR: 'Licensed Work' line has been modified!"
-            echo "Must remain: 'CBrowser 8.6.0 and later' (when MIT was adopted)"
-            exit 1
-          fi
-
-          if ! grep -q "Change Date: February 5, 2030" LICENSE; then
-            echo "❌ ERROR: 'Change Date' line has been modified!"
-            echo "Must remain: 'February 5, 2030' (4 years from MIT adoption)"
+          if ! grep -q "Copyright (c) 2026 Alexandria Eden" LICENSE; then
+            echo "❌ ERROR: copyright holder line has been modified!"
+            echo "Must remain: 'Copyright (c) 2026 Alexandria Eden'"
             exit 1
           fi
 
           echo "✅ LICENSE immutable fields are correct"
-          echo "   - Licensor: Alexandria Eden"
-          echo "   - Licensed Work: CBrowser 8.6.0 and later"
-          echo "   - Change Date: February 5, 2030"
+          echo "   - MIT License"
+          echo "   - Copyright (c) 2026 Alexandria Eden"

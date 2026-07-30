@@ -148,7 +148,7 @@ export class OverlayHandler {
             let selector = el.tagName.toLowerCase();
             if (el.id) selector = `#${el.id}`;
             else if (el.className && typeof el.className === "string") {
-              const cls = el.className.split(/\s+/).filter((c: string) => c.length > 0 && c.length < 40)[0];
+              const cls = String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(/\s+/).filter((c: string) => c.length > 0 && c.length < 40)[0];
               if (cls) selector = `.${cls}`;
             }
 

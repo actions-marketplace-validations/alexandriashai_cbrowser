@@ -158,24 +158,154 @@ export const PERSONA_VALUE_PROFILES: PersonaValueProfile[] = [
     values: createPersonaValues(
       {
         selfDirection: 0.6,
-        stimulation: 0.7,
-        hedonism: 0.4,
-        achievement: 0.8,
-        power: 0.5,
+        stimulation: 0.8,  // high — bored fast, wants novelty
+        hedonism: 0.5,
+        achievement: 0.5,  // reduced from 0.8 — impatience ≠ ambition, just wants speed
+        power: 0.4,
         security: 0.3,
         conformity: 0.3,
         tradition: 0.2,
-        benevolence: 0.4,
-        universalism: 0.4,
+        benevolence: 0.3,
+        universalism: 0.3,
       },
       {
         autonomyNeed: 0.7,
-        competenceNeed: 0.7,
+        competenceNeed: 0.5,  // reduced — not trying to master, just wants it done
         relatednessNeed: 0.3,
       },
       "esteem"
     ),
-    rationale: "Impatient users prioritize achievement and efficiency over process",
+    rationale: "Impatient users want speed and novelty, not mastery — high stimulation, moderate achievement",
+  },
+  {
+    // v18.54.0: Screen reader users — previously missing from values system
+    personaName: "screen-reader-user",
+    values: createPersonaValues(
+      {
+        selfDirection: 0.7,  // high — AT users develop strong independent navigation skills
+        stimulation: 0.3,    // low — prefer predictable, consistent interfaces
+        hedonism: 0.4,
+        achievement: 0.6,    // moderate-high — determined to complete tasks despite barriers
+        power: 0.4,
+        security: 0.8,       // high — need reliable, predictable structure (ARIA, landmarks)
+        conformity: 0.6,     // moderate — follow standard patterns (skip links, headings)
+        tradition: 0.5,
+        benevolence: 0.6,
+        universalism: 0.7,   // high — value inclusive design, empathize with accessibility needs
+      },
+      {
+        autonomyNeed: 0.8,       // high — independence is core to AT use
+        competenceNeed: 0.7,     // high — want to prove they can navigate independently
+        relatednessNeed: 0.5,
+      },
+      "esteem"
+    ),
+    rationale: "Screen reader users value independence (high autonomy/self-direction), need predictable structure (high security), and care about inclusive design (high universalism)",
+  },
+  {
+    // v18.54.0: Dyslexic users — previously missing from values system
+    personaName: "dyslexic-user",
+    values: createPersonaValues(
+      {
+        selfDirection: 0.5,
+        stimulation: 0.4,    // prefer calm, clear interfaces over novelty
+        hedonism: 0.5,
+        achievement: 0.6,    // motivated to succeed despite reading challenges
+        power: 0.3,
+        security: 0.7,       // need consistent, familiar layouts
+        conformity: 0.6,     // follow established patterns (reduces reading demand)
+        tradition: 0.5,
+        benevolence: 0.6,
+        universalism: 0.7,   // value inclusive design
+      },
+      {
+        autonomyNeed: 0.5,
+        competenceNeed: 0.7,     // want to feel capable despite processing challenges
+        relatednessNeed: 0.5,
+      },
+      "belonging"
+    ),
+    rationale: "Dyslexic users need predictable structure (security/conformity), are motivated by achievement despite challenges, and value inclusive design",
+  },
+  {
+    personaName: "deaf-user",
+    values: createPersonaValues(
+      { selfDirection: 0.6, stimulation: 0.4, hedonism: 0.5, achievement: 0.6, power: 0.4,
+        security: 0.7, conformity: 0.5, tradition: 0.5, benevolence: 0.6, universalism: 0.7 },
+      { autonomyNeed: 0.7, competenceNeed: 0.6, relatednessNeed: 0.6 },
+      "belonging"
+    ),
+    rationale: "Deaf users value visual communication (self-direction), predictable structure (security), and inclusive design (universalism). High relatedness — community-oriented.",
+  },
+  {
+    personaName: "elderly-low-vision",
+    values: createPersonaValues(
+      { selfDirection: 0.3, stimulation: 0.2, hedonism: 0.4, achievement: 0.3, power: 0.2,
+        security: 0.9, conformity: 0.8, tradition: 0.9, benevolence: 0.8, universalism: 0.7 },
+      { autonomyNeed: 0.4, competenceNeed: 0.4, relatednessNeed: 0.7 },
+      "safety"
+    ),
+    rationale: "Combined age + vision impairment. Highest security/tradition/conformity — needs maximum predictability and structure.",
+  },
+  {
+    personaName: "autism-spectrum",
+    values: createPersonaValues(
+      { selfDirection: 0.5, stimulation: 0.2, hedonism: 0.3, achievement: 0.6, power: 0.3,
+        security: 0.9, conformity: 0.7, tradition: 0.6, benevolence: 0.5, universalism: 0.5 },
+      { autonomyNeed: 0.6, competenceNeed: 0.8, relatednessNeed: 0.4 },
+      "safety"
+    ),
+    rationale: "Autistic users need predictability (very high security), literal/consistent interfaces (conformity), and value competence highly. Low stimulation — overwhelmed by novelty.",
+  },
+  {
+    personaName: "intellectual-disability",
+    values: createPersonaValues(
+      { selfDirection: 0.3, stimulation: 0.3, hedonism: 0.5, achievement: 0.4, power: 0.2,
+        security: 0.8, conformity: 0.7, tradition: 0.6, benevolence: 0.7, universalism: 0.6 },
+      { autonomyNeed: 0.4, competenceNeed: 0.5, relatednessNeed: 0.7 },
+      "safety"
+    ),
+    rationale: "Needs simple, predictable interfaces (security/conformity). High relatedness — benefits from support. Low self-direction — prefers guided paths.",
+  },
+  {
+    personaName: "aphasia-receptive",
+    values: createPersonaValues(
+      { selfDirection: 0.4, stimulation: 0.2, hedonism: 0.4, achievement: 0.5, power: 0.3,
+        security: 0.8, conformity: 0.6, tradition: 0.5, benevolence: 0.6, universalism: 0.7 },
+      { autonomyNeed: 0.5, competenceNeed: 0.6, relatednessNeed: 0.6 },
+      "safety"
+    ),
+    rationale: "Language comprehension impairment. High security — needs icons/visual cues over text. Values inclusive design (universalism).",
+  },
+  {
+    personaName: "dyscalculia",
+    values: createPersonaValues(
+      { selfDirection: 0.5, stimulation: 0.4, hedonism: 0.5, achievement: 0.5, power: 0.3,
+        security: 0.7, conformity: 0.6, tradition: 0.5, benevolence: 0.6, universalism: 0.6 },
+      { autonomyNeed: 0.5, competenceNeed: 0.6, relatednessNeed: 0.5 },
+      "belonging"
+    ),
+    rationale: "Numerical processing difficulty. High security — anxious around pricing, quantities. Moderate conformity — follows patterns to avoid math.",
+  },
+  {
+    personaName: "emotional-user",
+    values: createPersonaValues(
+      { selfDirection: 0.4, stimulation: 0.5, hedonism: 0.6, achievement: 0.4, power: 0.3,
+        security: 0.6, conformity: 0.5, tradition: 0.5, benevolence: 0.8, universalism: 0.7 },
+      { autonomyNeed: 0.4, competenceNeed: 0.4, relatednessNeed: 0.8 },
+      "belonging"
+    ),
+    rationale: "Emotionally reactive. High benevolence/relatedness — responsive to empathetic messaging. High hedonism — seeks pleasant experiences.",
+  },
+  {
+    personaName: "stoic-user",
+    values: createPersonaValues(
+      { selfDirection: 0.7, stimulation: 0.3, hedonism: 0.3, achievement: 0.7, power: 0.5,
+        security: 0.5, conformity: 0.4, tradition: 0.6, benevolence: 0.5, universalism: 0.5 },
+      { autonomyNeed: 0.7, competenceNeed: 0.7, relatednessNeed: 0.3 },
+      "esteem"
+    ),
+    rationale: "Emotionally stable, task-focused. High self-direction/achievement — goal-oriented. Low relatedness — not influenced by social proof.",
   },
   {
     personaName: "careful-reader",

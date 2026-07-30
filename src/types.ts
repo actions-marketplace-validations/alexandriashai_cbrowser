@@ -442,6 +442,155 @@ export interface CognitiveTraits {
    * @see Gentner & Stevens (1983) - "Mental Models"
    */
   mentalModelRigidity?: number;
+
+  /**
+   * How much the persona "knows" about a site from prior visits (0 = brand new, 1 = daily user)
+   *
+   * Controls how much site model data is exposed during cognitive journeys:
+   * - 0.0: No site model — truly blind first visit
+   * - 0.1–0.4: Failure patterns only — knows what to avoid, not where to go
+   * - 0.5–0.7: Failure patterns + page structure — vague familiarity
+   * - 0.8–1.0: Full site model — navigation paths, goal sequences, element reliability
+   *
+   * Research basis: Cockburn et al. (2007) - "Familiar Interfaces"
+   * Revisitation accounts for 58% of web pages viewed. Familiar users navigate
+   * 2-4x faster via spatial memory and landmark recognition.
+   *
+   * @see Tauscher & Greenberg (1997) - "How people revisit web pages"
+   * @see Weinreich et al. (2008) - "Off the beaten tracks: exploring three aspects of web navigation"
+   * @since v18.35.0
+   */
+  siteFamiliarity?: number;
+}
+
+// ============================================================================
+// AI Agent Traits (v17.0.0)
+// ============================================================================
+
+/**
+ * Selector strategy used by AI agents to find elements.
+ * Different agents prefer different selection approaches.
+ * @since 17.0.0
+ */
+export type AgentSelectorStrategy = "css" | "xpath" | "aria" | "text" | "visual";
+
+/**
+ * Domain knowledge level for AI agents.
+ * @since 17.0.0
+ */
+export type AgentDomainKnowledge = "general" | "specialized" | "none";
+
+/**
+ * Traits that define how an AI agent interacts with web pages.
+ * Fundamentally different from human CognitiveTraits - agents don't have emotions.
+ * @since 17.0.0
+ */
+export interface AgentTraits {
+  /**
+   * Primary strategy for selecting elements.
+   * - css: Fast, fragile to changes (crawlers)
+   * - xpath: Flexible path-based selection
+   * - aria: Accessibility-focused, robust (task agents)
+   * - text: Content-based selection (retrieval agents)
+   * - visual: Screenshot-based selection (multimodal agents)
+   */
+  selectorStrategy: AgentSelectorStrategy;
+
+  /**
+   * Context window size in tokens (affects how much page context agent considers).
+   * Lower values = faster but may miss context. Higher = thorough but slower.
+   * Typical range: 4096 - 128000
+   */
+  contextWindow: number;
+
+  /**
+   * Maximum retry attempts before abandoning a selector/action.
+   * Unlike human patience (emotional), this is a hard limit.
+   * Typical range: 1 - 10
+   */
+  retryBudget: number;
+
+  /**
+   * Willingness to backtrack and try alternative paths (0-1).
+   * 0 = commits to first path, never backtracks
+   * 1 = freely explores alternatives, high backtrack tolerance
+   */
+  backtrackWillingness: number;
+
+  /**
+   * Exploration strategy preference (0-1).
+   * 0 = depth-first (follows links deeply before trying siblings)
+   * 1 = breadth-first (explores all options at current level first)
+   */
+  explorationVsBreadth: number;
+
+  /**
+   * Tolerance for ambiguous or unclear element matches (0-1).
+   * 0 = only acts on exact matches, very strict
+   * 1 = acts on partial/fuzzy matches, lenient
+   */
+  ambiguityTolerance: number;
+
+  /**
+   * Ability to recover from errors and continue (0-1).
+   * 0 = fails fast on any error
+   * 1 = robust error handling, continues despite issues
+   */
+  errorRecovery: number;
+
+  /**
+   * Level of domain-specific knowledge.
+   * - none: Generic web navigation only
+   * - general: Understands common patterns (forms, auth, e-commerce)
+   * - specialized: Deep knowledge of specific domain (e.g., healthcare, finance)
+   */
+  domainKnowledge: AgentDomainKnowledge;
+
+  /**
+   * Whether agent can process visual content (screenshots, images).
+   * Multimodal agents can "see" the page, not just parse DOM.
+   */
+  multiModalCapability: boolean;
+}
+
+/**
+ * State tracking for agent journeys (different from human emotional state).
+ * @since 17.0.0
+ */
+export interface AgentJourneyState {
+  /** Total actions taken in this journey */
+  actionCount: number;
+  /** Remaining retries before abandonment */
+  retriesRemaining: number;
+  /** Number of selector failures encountered */
+  selectorFailures: number;
+  /** Number of times agent backtracked */
+  backtrackCount: number;
+  /** Number of ambiguous situations encountered */
+  ambiguityEncountered: number;
+  /** URLs/elements already visited (for loop detection) */
+  visitedPaths: Set<string>;
+  /** Whether agent is stuck in a loop */
+  loopDetected: boolean;
+  /** Current exploration depth */
+  depth: number;
+}
+
+/**
+ * Agent persona definition combining traits with metadata.
+ * @since 17.0.0
+ */
+export interface AgentPersona {
+  /** Unique identifier for the agent persona */
+  name: string;
+  /** Human-readable description of agent's purpose */
+  description: string;
+  /** Agent behavioral traits */
+  agentTraits: AgentTraits;
+  /** Primary use case for this agent type */
+  useCase: "retrieval" | "task-completion" | "crawling" | "conversation";
+  /** Optional: specific domains this agent excels at */
+  domains?: string[];
 }
 
 /**
@@ -2067,6 +2216,42 @@ export interface CognitiveJourneyResult {
   emotionalJourney?: EmotionalEvent[];
   /** Final emotional state (v13.1.0) */
   finalEmotionalState?: EmotionalState;
+  /** v18.29.0: Step-by-step journey log with URLs, actions, elements, moods */
+  journeyLog?: Array<{
+    step: number;
+    url: string;
+    pageTitle: string;
+    phase: string;
+    action: string | null;
+    actionTarget: string | null;
+    focusedElement: string | null;
+    monologue: string;
+    mood: string;
+    goalProgress: number;
+    patience: number;
+    confusion: number;
+    frustration: number;
+    timestamp: number;
+  }>;
+  /** v18.29.0: Evidence for goal completion — exact text from page, with verification status */
+  goalEvidence?: string;
+  /** v18.29.0: Reason for failure — what was sought but not found */
+  failureReason?: string;
+  /** v18.29.0: Sequence of unique URLs visited */
+  navigationPath?: string[];
+  /** v18.29.0: Final page the persona was on */
+  lastPage?: { url: string; title: string };
+  /** v18.70.0: Screen capture of the journey, when invoked with capture enabled */
+  capture?: {
+    slug: string;
+    outDir: string;
+    manifestPath?: string;
+    frames: number;
+    actualFps?: number;
+    durationMs?: number;
+    artifacts?: Record<string, string>;
+    error?: string;
+  };
 }
 
 // ============================================================================
@@ -2149,6 +2334,22 @@ export interface NavigateOptions {
    * Default: true when waitStrategy is "auto" or "domcontentloaded"
    */
   waitForStability?: boolean;
+
+  /**
+   * Additional milliseconds to wait after navigation completes.
+   * Useful for pages with client-side translation, deferred rendering,
+   * or other post-load async processing.
+   * Default: 0
+   */
+  waitAfterLoad?: number;
+
+  /**
+   * CSS selector to wait for after navigation, before considering the page ready.
+   * Useful for waiting on specific dynamic content (e.g., "[data-translated]",
+   * ".loaded", "#content:not(:empty)").
+   * Times out after waitTimeout ms (default 10s) without failing navigation.
+   */
+  waitForSelector?: string;
 }
 
 export interface NavigationResult {
@@ -2164,6 +2365,8 @@ export interface NavigationResult {
   desyncDetected?: boolean;
   /** v11.9.0: The originally requested URL (when desync detected) */
   expectedUrl?: string;
+  /** Whether waitForSelector timed out without finding the element */
+  waitSelectorTimedOut?: boolean;
 }
 
 export interface ClickResult {
@@ -2334,11 +2537,13 @@ export interface NLTestStep {
   /** Original natural language instruction */
   instruction: string;
   /** Parsed action type */
-  action: "navigate" | "click" | "fill" | "select" | "scroll" | "wait" | "assert" | "screenshot" | "unknown";
+  action: "navigate" | "click" | "fill" | "select" | "scroll" | "cookie" | "wait" | "assert" | "screenshot" | "unknown";
   /** Target element or URL */
   target?: string;
   /** Value for fill/select actions */
   value?: string;
+  /** Scroll amount unit — "pixels" scrolls value px, "times" scrolls value 500px steps */
+  unit?: "times" | "pixels";
   /** Assertion type for assert actions */
   assertionType?: "contains" | "equals" | "exists" | "count" | "url" | "title";
 }
@@ -2411,6 +2616,17 @@ export interface NLTestSuiteResult {
   };
   /** AI-generated recommendations for fixing failures */
   recommendations?: string[];
+  /** Screen capture of the run, when the suite was invoked with capture enabled (v18.70.0) */
+  capture?: {
+    slug: string;
+    outDir: string;
+    manifestPath?: string;
+    frames: number;
+    actualFps?: number;
+    durationMs?: number;
+    artifacts?: Record<string, string>;
+    error?: string;
+  };
 }
 
 // ============================================================================
@@ -2745,17 +2961,144 @@ export enum CBrowserErrorCode {
 }
 
 /**
+ * Remediation guidance for each error code.
+ * Maps error codes to human-friendly fix instructions and documentation links.
+ */
+export const ERROR_REMEDIATION: Record<CBrowserErrorCode, { howToFix: string; docUrl: string }> = {
+  [CBrowserErrorCode.NAVIGATION_FAILED]: {
+    howToFix: "Check that the URL is correct and the site is reachable. Try opening it in a regular browser first.",
+    docUrl: "https://cbrowser.ai/docs/errors#E101",
+  },
+  [CBrowserErrorCode.NAVIGATION_TIMEOUT]: {
+    howToFix: "The page took too long to load. Increase timeout with --timeout <ms> or set CBROWSER_TIMEOUT env var.",
+    docUrl: "https://cbrowser.ai/docs/errors#E102",
+  },
+  [CBrowserErrorCode.PAGE_NOT_FOUND]: {
+    howToFix: "The URL returned a 404. Verify the path is correct and the page exists.",
+    docUrl: "https://cbrowser.ai/docs/errors#E103",
+  },
+  [CBrowserErrorCode.ELEMENT_NOT_FOUND]: {
+    howToFix: "No element matched that selector. Try using smart-click with a text description instead of a CSS selector.",
+    docUrl: "https://cbrowser.ai/docs/errors#E201",
+  },
+  [CBrowserErrorCode.ELEMENT_NOT_VISIBLE]: {
+    howToFix: "The element exists but is hidden. It may be behind a modal, scrolled off-screen, or have display:none.",
+    docUrl: "https://cbrowser.ai/docs/errors#E202",
+  },
+  [CBrowserErrorCode.ELEMENT_NOT_CLICKABLE]: {
+    howToFix: "The element is visible but not interactive. It may be disabled, covered by another element, or not a clickable type.",
+    docUrl: "https://cbrowser.ai/docs/errors#E203",
+  },
+  [CBrowserErrorCode.ELEMENT_INTERCEPTED]: {
+    howToFix: "Another element is blocking the click (e.g., a cookie banner or modal overlay). Try dismissing it first.",
+    docUrl: "https://cbrowser.ai/docs/errors#E204",
+  },
+  [CBrowserErrorCode.SESSION_NOT_FOUND]: {
+    howToFix: "No active session found. Start a new session with 'cbrowser navigate <url>' first.",
+    docUrl: "https://cbrowser.ai/docs/errors#E301",
+  },
+  [CBrowserErrorCode.SESSION_CORRUPTED]: {
+    howToFix: "Session data is corrupted. Delete ~/.cbrowser/sessions/ and start fresh.",
+    docUrl: "https://cbrowser.ai/docs/errors#E302",
+  },
+  [CBrowserErrorCode.SESSION_EXPIRED]: {
+    howToFix: "The session has expired. Start a new one with 'cbrowser navigate <url>'.",
+    docUrl: "https://cbrowser.ai/docs/errors#E303",
+  },
+  [CBrowserErrorCode.AUTH_REQUIRED]: {
+    howToFix: "This operation requires authentication. Run 'cbrowser config set-api-key <key>' to set your API key.",
+    docUrl: "https://cbrowser.ai/docs/errors#E401",
+  },
+  [CBrowserErrorCode.AUTH_FAILED]: {
+    howToFix: "Authentication failed. Verify your API key is correct and hasn't expired.",
+    docUrl: "https://cbrowser.ai/docs/errors#E402",
+  },
+  [CBrowserErrorCode.API_KEY_MISSING]: {
+    howToFix: "No API key configured. Run 'cbrowser config set-api-key <key>' with your Anthropic API key (starts with sk-ant-).",
+    docUrl: "https://cbrowser.ai/docs/errors#E403",
+  },
+  [CBrowserErrorCode.API_KEY_INVALID]: {
+    howToFix: "The API key format is invalid. Anthropic keys start with 'sk-ant-'. Run 'cbrowser config set-api-key <key>' with a valid key.",
+    docUrl: "https://cbrowser.ai/docs/errors#E404",
+  },
+  [CBrowserErrorCode.CONFIG_INVALID]: {
+    howToFix: "Configuration file has invalid syntax. Check .cbrowserrc.json for JSON errors. Run 'cbrowser doctor' to diagnose.",
+    docUrl: "https://cbrowser.ai/docs/errors#E501",
+  },
+  [CBrowserErrorCode.CONFIG_NOT_FOUND]: {
+    howToFix: "Configuration file not found. This is usually fine — CBrowser uses sensible defaults. Create .cbrowserrc.json if you need custom config.",
+    docUrl: "https://cbrowser.ai/docs/errors#E502",
+  },
+  [CBrowserErrorCode.BROWSER_NOT_INSTALLED]: {
+    howToFix: "Chromium is not installed. Run 'npx playwright install chromium' to install it (~150MB download).",
+    docUrl: "https://cbrowser.ai/docs/errors#E503",
+  },
+  [CBrowserErrorCode.FILE_NOT_FOUND]: {
+    howToFix: "The specified file does not exist. Check the path and try again.",
+    docUrl: "https://cbrowser.ai/docs/errors#E601",
+  },
+  [CBrowserErrorCode.FILE_PERMISSION_DENIED]: {
+    howToFix: process.platform === "win32"
+      ? "Permission denied. Try running your terminal as Administrator, or check file permissions in Properties."
+      : "Permission denied. Check file ownership with 'ls -la' and fix with 'chmod' or 'chown'. On Linux: sudo chown $USER:$USER <path>",
+    docUrl: "https://cbrowser.ai/docs/errors#E602",
+  },
+  [CBrowserErrorCode.PATH_TRAVERSAL_BLOCKED]: {
+    howToFix: "Path contains directory traversal (../) which is blocked for security. Use absolute paths or paths within the project directory.",
+    docUrl: "https://cbrowser.ai/docs/errors#E603",
+  },
+  [CBrowserErrorCode.TEST_FAILED]: {
+    howToFix: "One or more test assertions failed. Check the test output for details on which assertions didn't match.",
+    docUrl: "https://cbrowser.ai/docs/errors#E701",
+  },
+  [CBrowserErrorCode.ASSERTION_FAILED]: {
+    howToFix: "An assertion did not match the expected value. Review the expected vs actual values in the error details.",
+    docUrl: "https://cbrowser.ai/docs/errors#E702",
+  },
+  [CBrowserErrorCode.TEST_TIMEOUT]: {
+    howToFix: "Test exceeded the time limit. Increase timeout with --timeout <ms> or check if the page is loading correctly.",
+    docUrl: "https://cbrowser.ai/docs/errors#E703",
+  },
+  [CBrowserErrorCode.BROWSER_CRASHED]: {
+    howToFix: "The browser process crashed. This can happen with memory-intensive pages. Try with --headless or reduce concurrent operations.",
+    docUrl: "https://cbrowser.ai/docs/errors#E801",
+  },
+  [CBrowserErrorCode.BROWSER_DISCONNECTED]: {
+    howToFix: "Lost connection to the browser. The browser may have been closed externally. CBrowser will attempt auto-recovery.",
+    docUrl: "https://cbrowser.ai/docs/errors#E802",
+  },
+  [CBrowserErrorCode.BROWSER_UNRESPONSIVE]: {
+    howToFix: "The browser stopped responding. A page may be consuming too many resources. Try navigating to a simpler page first.",
+    docUrl: "https://cbrowser.ai/docs/errors#E803",
+  },
+  [CBrowserErrorCode.BROWSER_RECOVERY_FAILED]: {
+    howToFix: "Automatic recovery failed. Try restarting CBrowser. If persistent, run 'cbrowser doctor' to check your environment.",
+    docUrl: "https://cbrowser.ai/docs/errors#E804",
+  },
+  [CBrowserErrorCode.UNKNOWN]: {
+    howToFix: "An unexpected error occurred. Run 'cbrowser doctor' to check your environment, or report this at https://github.com/alexandriashai/cbrowser/issues",
+    docUrl: "https://cbrowser.ai/docs/errors#E999",
+  },
+};
+
+/**
  * Structured error with code for programmatic handling.
+ * Includes remediation guidance (howToFix) and documentation links (docUrl).
  */
 export class CBrowserError extends Error {
   code: CBrowserErrorCode;
   details?: Record<string, unknown>;
+  howToFix: string;
+  docUrl: string;
 
   constructor(code: CBrowserErrorCode, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "CBrowserError";
     this.code = code;
     this.details = details;
+    const remediation = ERROR_REMEDIATION[code] || ERROR_REMEDIATION[CBrowserErrorCode.UNKNOWN];
+    this.howToFix = (details?.howToFix as string) || remediation.howToFix;
+    this.docUrl = (details?.docUrl as string) || remediation.docUrl;
   }
 }
 
@@ -2918,6 +3261,31 @@ export const DEVICE_PRESETS: Record<string, DeviceDescriptor> = {
     isMobile: false,
     hasTouch: false,
   },
+  // Generic device aliases
+  "mobile": {
+    name: "Mobile (iPhone 15)",
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    viewport: { width: 393, height: 852 },
+    deviceScaleFactor: 3,
+    isMobile: true,
+    hasTouch: true,
+  },
+  "tablet": {
+    name: "Tablet (iPad Pro 11)",
+    userAgent: "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    viewport: { width: 834, height: 1194 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+  },
+  "desktop": {
+    name: "Desktop (1920x1080)",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    viewport: { width: 1920, height: 1080 },
+    deviceScaleFactor: 1,
+    isMobile: false,
+    hasTouch: false,
+  },
 };
 
 // ============================================================================
@@ -2971,6 +3339,18 @@ export interface NetworkRequest {
   postData?: string;
   resourceType: string;
   timestamp: string;
+  /**
+   * Response status, filled in when the response arrives. Optional because a
+   * request may still be in flight, or may never complete.
+   *
+   * get_network_requests documented "status codes and timing" but returned
+   * neither: the response handler built a NetworkResponse with the status and
+   * then dropped it on the floor. (2026-07-28)
+   */
+  status?: number;
+  statusText?: string;
+  /** Milliseconds from request start to response, when known. */
+  durationMs?: number;
 }
 
 export interface NetworkResponse {
@@ -3116,7 +3496,7 @@ export interface CBrowserConfigFile {
   performanceBudget?: PerformanceBudget;
   /** Anthropic API key for autonomous cognitive journeys */
   anthropicApiKey?: string;
-  /** Default Claude model for cognitive journeys (default: claude-sonnet-4-20250514) */
+  /** Default Claude model for cognitive journeys (default: claude-sonnet-5) */
   anthropicModel?: string;
 }
 
@@ -3590,6 +3970,12 @@ export interface CoverageMapResult {
   duration: number;
   /** Test files analyzed */
   testFiles: string[];
+  /**
+   * Test file paths that could not be read and so contributed nothing.
+   * These were previously skipped in silence, which meant a wholly bad path
+   * set produced a confident "0.0% coverage" rather than an error. (2026-07-28)
+   */
+  missingTestFiles: string[];
   /** All pages found on site */
   sitePages: SitePage[];
   /** Pages with test coverage */
@@ -4216,6 +4602,21 @@ export type AgentReadyIssueCategory = "findability" | "stability" | "accessibili
 /** Severity level for agent-ready issues */
 export type AgentReadyIssueSeverity = "low" | "medium" | "high" | "critical";
 
+/**
+ * AI-specific audit subcategories for granular reporting.
+ * These provide more detail within the main categories without affecting scoring.
+ * @since 17.0.0
+ */
+export type AIAuditSubcategory =
+  | "machine-metadata"      // JSON-LD, OpenGraph, Twitter Cards
+  | "navigation-patterns"   // Breadcrumbs, skip links, heading hierarchy
+  | "actionable-elements"   // Action verbs, aria-describedby
+  | "content-chrome"        // Content-to-nav ratio
+  | "api-exposure"          // /api/ endpoints, GraphQL
+  | "llms-txt"              // /llms.txt presence
+  | "state-persistence"     // CSRF, session indicators
+  | "dynamic-content";      // Loading states, infinite scroll
+
 /** Effort level for fixing issues */
 export type AgentReadyEffort = "trivial" | "easy" | "medium" | "hard";
 
@@ -4228,6 +4629,8 @@ export interface AgentReadyIssue {
   category: AgentReadyIssueCategory;
   /** Severity level */
   severity: AgentReadyIssueSeverity;
+  /** AI-specific subcategory for granular reporting @since 17.0.0 */
+  subcategory?: AIAuditSubcategory;
   /** Element selector or description */
   element: string;
   /** Description of the issue */
@@ -4238,6 +4641,21 @@ export interface AgentReadyIssue {
   recommendation: string;
   /** Code example for fix */
   codeExample?: string;
+  /**
+   * The element's actual outerHTML, captured at detection time.
+   *
+   * remediation_patches previously emitted `before: issue.element` — a SELECTOR
+   * like "a", not markup — so the patch had nothing real to diff against. It
+   * could not capture the DOM itself: patch templates are pure
+   * `(issue) => patch` functions with no I/O or DOM access (AGENTS.md), and the
+   * Page is closed before generation. Capturing it here, where the audit is
+   * already inside page.$$eval, keeps the templates pure and gives them the
+   * real markup. Capped for payload size; see elementHtmlTruncated.
+   * (2026-07-29)
+   */
+  elementHtml?: string;
+  /** True when elementHtml was cut to the cap — it is descriptive, never apply it. */
+  elementHtmlTruncated?: boolean;
 }
 
 /** Prioritized recommendation for agent-ready improvements */
@@ -4288,6 +4706,17 @@ export interface AgentReadySummary {
   customDropdowns: number;
   /** Elements without visible text */
   elementsWithoutText: number;
+  // AI-specific counters @since 17.0.0
+  /** Machine-readable metadata found (JSON-LD, OG, Twitter) */
+  machineMetadataCount?: number;
+  /** Navigation aids found (breadcrumbs, skip links) */
+  navigationAidsCount?: number;
+  /** Whether /llms.txt was found */
+  hasLlmsTxt?: boolean;
+  /** API endpoints detected in page */
+  apiEndpointsCount?: number;
+  /** Dynamic content patterns detected */
+  dynamicContentCount?: number;
 }
 
 /** Letter grade for agent-ready audit */
@@ -4323,6 +4752,32 @@ export interface AgentReadyAuditOptions {
   html?: boolean;
   /** Run browser in headless mode */
   headless?: boolean;
+  /** Overall timeout in milliseconds (default: 60000) */
+  timeout?: number;
+  /** Navigation timeout in milliseconds (default: 30000) */
+  navigationTimeout?: number;
+  /** Use Lightpanda for high-performance headless browsing (opt-in, beta) */
+  useLightpanda?: boolean;
+  /**
+   * Enable SPA mode for sites with heavy JavaScript.
+   * Waits for React/Vue/Angular hydration and dynamic content to load.
+   * @since v18.22.0
+   */
+  spaMode?: boolean;
+  /**
+   * Use randomized realistic user agents to reduce bot detection.
+   * Rotates through Chrome/Firefox/Safari user agents.
+   * @since v18.22.0
+   */
+  useRandomUserAgent?: boolean;
+  /** Proxy server for geo-accurate testing (e.g., { server: "socks5://host:port" }) @since v18.39.0 */
+  proxy?: { server: string; username?: string; password?: string };
+  /** Browser locale for language-accurate testing (e.g., "en-US") @since v18.39.0 */
+  locale?: string;
+  /** Device emulation: 'mobile', 'tablet', 'desktop', or specific device name @since v18.60.0 */
+  device?: string;
+  /** Pre-existing Playwright Page — skip browser launch and navigation. The page must already be at the target URL. */
+  page?: import("playwright").Page;
 }
 
 // ============================================================================
@@ -4441,6 +4896,127 @@ export interface CompetitiveBenchmarkOptions {
 }
 
 // ============================================================================
+// AI Readiness Benchmark Types (v17.0.0)
+// ============================================================================
+
+/** Failure category for audit errors */
+export type AuditFailureCategory =
+  | "timeout"          // Page load or operation timed out
+  | "bot-detection"    // Site detected and blocked automation
+  | "network"          // Network error (DNS, connection refused, etc.)
+  | "parse-error"      // Page loaded but couldn't be analyzed
+  | "unknown";         // Unexpected error
+
+/** Audit status indicating completion level */
+export type AuditStatus =
+  | "complete"   // Audit finished successfully
+  | "partial"    // Some data collected before failure
+  | "failed";    // Audit could not complete
+
+/** Result for a single site in AI benchmark */
+export interface AIBenchmarkSiteResult {
+  /** URL tested */
+  url: string;
+  /** Site name (extracted from hostname) */
+  siteName: string;
+  /** AI readiness grade (A-F, or null if audit failed) */
+  grade: AgentReadyGrade | null;
+  /**
+   * AI readiness score (0-100, or null if audit failed)
+   * - null = audit could not complete (network error, bot detection, timeout)
+   * - 0-100 = audit completed successfully and this is the actual score
+   * @breaking v18.15.0: Changed from `number` to `number | null`
+   */
+  score: number | null;
+  /** Score breakdown by category (null if audit failed) */
+  scoreBreakdown: AgentReadyScore | null;
+  /** Top issues found */
+  topIssues: string[];
+  /** Strengths for AI agents */
+  strengths: string[];
+  /** Weaknesses for AI agents */
+  weaknesses: string[];
+  /** Duration of audit in ms */
+  duration: number;
+  /** Error message if audit failed */
+  error?: string;
+  /** Status of the audit */
+  auditStatus: AuditStatus;
+  /** Category of failure (only present if auditStatus !== "complete") */
+  failureCategory?: AuditFailureCategory;
+  /** Detailed failure information */
+  failureDetails?: string;
+  /** Number of retry attempts made */
+  retryAttempts?: number;
+  /** Suggestion for resolving failure */
+  suggestion?: string;
+}
+
+/** Comparison data between sites */
+export interface AIBenchmarkComparison {
+  /** Best overall site for AI agents */
+  bestOverall: string;
+  /** Best site for findability */
+  bestFindability: string;
+  /** Best site for stability */
+  bestStability: string;
+  /** Best site for accessibility */
+  bestAccessibility: string;
+  /** Best site for semantics */
+  bestSemantics: string;
+  /** Common issues across all sites */
+  commonIssues: string[];
+  /** What each site does better */
+  siteAdvantages: Record<string, string[]>;
+}
+
+/** Recommendation for improving AI readiness */
+export interface AIBenchmarkRecommendation {
+  /** Site this applies to */
+  site: string;
+  /** Priority (1=highest) */
+  priority: number;
+  /** What to improve */
+  improvement: string;
+  /** Which competitor does it better */
+  competitorReference?: string;
+}
+
+/** Result of AI readiness benchmark */
+export interface AIBenchmarkResult {
+  /** When benchmark was run */
+  timestamp: string;
+  /** Duration of entire benchmark in ms */
+  duration: number;
+  /** Results per site */
+  sites: AIBenchmarkSiteResult[];
+  /** Sites ranked by AI readiness (failed audits sorted last) */
+  ranking: Array<{
+    rank: number;
+    site: string;
+    grade: AgentReadyGrade | null;
+    score: number | null;
+    auditStatus: AuditStatus;
+  }>;
+  /** Comparative analysis */
+  comparison: AIBenchmarkComparison;
+  /** Prioritized recommendations */
+  recommendations: AIBenchmarkRecommendation[];
+}
+
+/** Options for AI readiness benchmark */
+export interface AIBenchmarkOptions {
+  /** URLs to benchmark */
+  urls: string[];
+  /** Optional goal for agent journey simulation */
+  goal?: string;
+  /** Run headless */
+  headless?: boolean;
+  /** Max concurrent audits */
+  maxConcurrency?: number;
+}
+
+// ============================================================================
 // Accessibility Empathy Types (v8.0.0)
 // ============================================================================
 
@@ -4501,6 +5077,15 @@ export interface AccessibilityBarrier {
   wcagCriteria: string[];
   /** Severity of the barrier */
   severity: AccessibilityBarrierSeverity;
+  /**
+   * Set on DEDUPLICATED entries (topBarriers), where `severity` is the worst
+   * across every element in the group rather than one element's own. Without
+   * it the same target read "major" in barrierRects and "critical" in
+   * topBarriers and looked like a contradiction. (2026-07-29)
+   */
+  severityIsGroupMax?: boolean;
+  /** Number of distinct elements grouped under this barrier type. */
+  affectedElementCount?: number;
   /** How to remediate */
   remediation: string;
 }
@@ -4533,6 +5118,26 @@ export interface RemediationItem {
   effort: AgentReadyEffort;
 }
 
+/**
+ * Score context explaining how the empathy score was calculated (v18.22.0)
+ */
+export interface EmpathyScoreContext {
+  /** Starting score before deductions */
+  baseScore: number;
+  /** Deductions by barrier type (e.g., {touch_target: -15, contrast: -8}) */
+  deductionsByType: Record<string, number>;
+  /** Total deduction from barriers */
+  totalBarrierDeduction: number;
+  /** Deduction from friction points */
+  frictionDeduction: number;
+  /** Deduction from goal failure (0 if achieved, -15 if failed) */
+  goalDeduction: number;
+  /** Final computed score */
+  finalScore: number;
+  /** Human-readable explanation of major scoring factors */
+  explanation: string;
+}
+
 /** Result of accessibility empathy audit for a single persona */
 export interface AccessibilityEmpathyResult {
   /** URL tested */
@@ -4553,6 +5158,8 @@ export interface AccessibilityEmpathyResult {
   remediationPriority: RemediationItem[];
   /** Empathy score 0-100 */
   empathyScore: number;
+  /** Score context explaining deductions (v18.22.0) */
+  scoreContext?: EmpathyScoreContext;
   /** Duration in ms */
   duration: number;
   /** Final emotional state (v13.1.0) */
@@ -4601,8 +5208,14 @@ export interface EmpathyAuditOptions {
   headless?: boolean;
   /** Output path for JSON report */
   output?: string;
+  /** Scope: 'viewport' (default, above-the-fold only) or 'full_page' (scroll through all content) */
+  scope?: "viewport" | "full_page";
+  /** Device emulation: 'mobile', 'tablet', 'desktop', or specific device name like 'iPhone 15' */
+  device?: string;
   /** Generate HTML report */
   html?: boolean;
+  /** Pre-existing Playwright Page — skip browser launch and navigation. Page must already be at the target URL. */
+  page?: import("playwright").Page;
 }
 
 /** Accessibility-focused persona extending base persona */
@@ -4796,4 +5409,123 @@ export interface IConstitutionalEnforcer {
   validateAcknowledgment(ack: StealthAcknowledgment): boolean;
   /** Apply stealth measures to a page (implemented by enterprise) */
   applyStealthMeasures(page: unknown): Promise<void>;
+}
+
+// ============================================================================
+// WebMCP Readiness Types (v18.15.0)
+// ============================================================================
+
+/** Tier in the 6-tier WebMCP evaluation framework */
+export type WebMCPTierNumber = 1 | 2 | 3 | 4 | 5 | 6;
+
+/** Tier names for the WebMCP evaluation framework */
+export const WEBMCP_TIERS = {
+  1: { name: "Server Implementation", weight: 0.25 },
+  2: { name: "Tool Discoverability", weight: 0.20 },
+  3: { name: "Instrumentation", weight: 0.15 },
+  4: { name: "Consistency", weight: 0.15 },
+  5: { name: "Agent Optimizations", weight: 0.15 },
+  6: { name: "Documentation", weight: 0.10 },
+} as const;
+
+/** Individual check within a tier */
+export interface WebMCPCheck {
+  /** Check ID (e.g., "protocol_version") */
+  id: string;
+  /** Human-readable check name */
+  name: string;
+  /** Whether check passed */
+  passed: boolean;
+  /** Score contribution (0-1) */
+  score: number;
+  /** Max possible score for this check */
+  maxScore: number;
+  /** Details of what was found */
+  details: string;
+  /** Evidence (e.g., response snippet, URL) */
+  evidence?: string;
+}
+
+/** Issue found during WebMCP evaluation */
+export interface WebMCPIssue {
+  /** Which tier this issue belongs to */
+  tier: WebMCPTierNumber;
+  /** Severity: critical, high, medium, low */
+  severity: "critical" | "high" | "medium" | "low";
+  /** Issue description */
+  issue: string;
+  /** How to fix it */
+  remediation: string;
+  /** Estimated effort: quick, moderate, significant */
+  effort: "quick" | "moderate" | "significant";
+}
+
+/** Result for a single tier */
+export interface WebMCPTierResult {
+  /** Tier number (1-6) */
+  tier: WebMCPTierNumber;
+  /** Tier name */
+  name: string;
+  /** Score for this tier (0-100) */
+  score: number;
+  /** Weight applied to overall score */
+  weight: number;
+  /** Individual checks within this tier */
+  checks: WebMCPCheck[];
+}
+
+/** Letter grade for WebMCP readiness */
+export type WebMCPGrade = "A" | "B" | "C" | "D" | "F";
+
+/** Full result of WebMCP readiness audit */
+export interface WebMCPReadyResult {
+  /** URL of the MCP server tested */
+  url: string;
+  /** When audit was run */
+  timestamp: string;
+  /** Overall score (0-100) */
+  score: number;
+  /** Letter grade */
+  grade: WebMCPGrade;
+  /** Results by tier */
+  tiers: WebMCPTierResult[];
+  /** All issues found, sorted by severity */
+  issues: WebMCPIssue[];
+  /** Prioritized recommendations */
+  recommendations: string[];
+  /** Duration of audit in ms */
+  duration: number;
+  /** Summary statistics */
+  summary: {
+    /** Total checks run */
+    totalChecks: number;
+    /** Checks that passed */
+    passedChecks: number;
+    /** Critical issues count */
+    criticalIssues: number;
+    /** High issues count */
+    highIssues: number;
+    /** Whether server responded */
+    serverResponded: boolean;
+    /** Protocol version detected */
+    protocolVersion?: string;
+    /** Number of tools exposed */
+    toolCount?: number;
+  };
+}
+
+/** Options for WebMCP readiness audit */
+export interface WebMCPReadyOptions {
+  /** Include verbose check details */
+  verbose?: boolean;
+  /** Output path for JSON report */
+  output?: string;
+  /** Generate HTML report */
+  html?: boolean;
+  /** Overall timeout in milliseconds (default: 30000) */
+  timeout?: number;
+  /** API key if server requires auth */
+  apiKey?: string;
+  /** OAuth token if server requires auth */
+  oauthToken?: string;
 }

@@ -220,6 +220,7 @@ function getTraitHeader(trait: string): string {
     fearOfMissingOut: "FOMO",
     socialProofSensitivity: "Social Proof",
     mentalModelRigidity: "Flexibility",
+    siteFamiliarity: "Site Memory",
   };
   return headers[trait] || trait;
 }
@@ -257,14 +258,21 @@ function convertToThirdPerson(question: string, personaName: string): string {
  * Register persona creation tools (7 tools)
  */
 export function registerPersonaCreationTools(server: McpServer): void {
-  server.tool(
-    "persona_create_start",
-    "Start creating a custom persona. YOU MUST USE YOUR AskUserQuestion TOOL to present the choice to the user - do NOT just show JSON. Ask whether they want questionnaire or description mode.",
-    {
+  server.registerTool("persona_create_start", {
+    title: "Start Persona Creation",
+    description: "Start creating a custom persona. Best practice: present the choice to the user via AskUserQuestion (questionnaire vs description mode) rather than showing raw JSON.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the new persona (e.g., 'tech-savvy-millennial')"),
       comprehensive: z.boolean().optional().describe("Include all 25 traits (true) or just core 8 traits (false, default)"),
     },
-    async ({ persona_name, comprehensive = false }) => {
+    annotations: {
+      title: "Start Persona Creation",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, comprehensive = false }) => {
       const sessionId = getSessionId();
 
       const existingSession = getQuestionnaireSession(sessionId);
@@ -311,14 +319,21 @@ IMPORTANT: Do NOT show this text to the user. USE AskUserQuestion to present the
     }
   );
 
-  server.tool(
-    "persona_create_questionnaire_start",
-    "Start the questionnaire mode for persona creation. YOU MUST USE AskUserQuestion to present each question interactively.",
-    {
+  server.registerTool("persona_create_questionnaire_start", {
+    title: "Start Persona Questionnaire",
+    description: "Start the questionnaire mode for persona creation. Each question is best presented via AskUserQuestion for interactive selection.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the new persona"),
       comprehensive: z.boolean().optional().describe("Include all 25 traits (default: false, core 8 traits only)"),
     },
-    async ({ persona_name, comprehensive = false }) => {
+    annotations: {
+      title: "Start Persona Questionnaire",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, comprehensive = false }) => {
       const sessionId = getSessionId();
       const rawQuestions = generatePersonaQuestionnaire({ comprehensive });
 
@@ -362,13 +377,20 @@ IMPORTANT: Use AskUserQuestion - do NOT just display this text.`,
     }
   );
 
-  server.tool(
-    "persona_create_questionnaire_answer",
-    "Submit an answer for the current questionnaire question. Returns instructions for the next question, or completed persona when done.",
-    {
+  server.registerTool("persona_create_questionnaire_answer", {
+    title: "Answer Questionnaire Question",
+    description: "Submit an answer for the current questionnaire question. Returns instructions for the next question, or completed persona when done.",
+    inputSchema: {
       answer_value: z.number().min(0).max(1).describe("The value selected (0.0, 0.25, 0.33, 0.67, 0.75, or 1.0)"),
     },
-    async ({ answer_value }) => {
+    annotations: {
+      title: "Answer Questionnaire Question",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ answer_value }) => {
       const sessionId = getSessionId();
       const session = getQuestionnaireSession(sessionId);
 
@@ -504,23 +526,41 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_create_from_description",
-    "Create a persona from a text description. Returns trait reference matrix for Claude to infer appropriate values.",
-    {
+  server.registerTool("persona_create_from_description", {
+    title: "Create Persona from Description",
+    description: "Create a persona from a text description. Returns trait reference matrix for Claude to infer appropriate values.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the new persona"),
       description: z.string().describe("Text description of the persona (e.g., 'An impatient power user who skims content')"),
+      includeTraitReference: z.boolean().optional().default(false).describe("Return the full trait reference matrix with per-level behaviours (~7k tokens, same content as persona_traits_list). Off by default; a compact name+meaning reference is always included."),
     },
-    async ({ persona_name, description }) => {
-      const traitInfo = TRAIT_REFERENCE_MATRIX.map(trait => ({
-        name: trait.name,
-        description: trait.description,
-        levels: trait.levels.map(l => ({
-          value: l.value,
-          label: l.label,
-          behaviors: l.behaviors.slice(0, 2),
-        })),
-      }));
+    annotations: {
+      title: "Create Persona from Description",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, description, includeTraitReference }) => {
+      // The full matrix is every trait crossed with every level and its
+      // behaviours — roughly 7k tokens, duplicating persona_traits_list, and it
+      // shipped on every call. The instruction below genuinely needs something
+      // to infer against, so the default is the compact form (name + meaning)
+      // rather than nothing, with the full matrix behind a flag. (2026-07-29)
+      const traitInfo = includeTraitReference
+        ? TRAIT_REFERENCE_MATRIX.map(trait => ({
+            name: trait.name,
+            description: trait.description,
+            levels: trait.levels.map(l => ({
+              value: l.value,
+              label: l.label,
+              behaviors: l.behaviors.slice(0, 2),
+            })),
+          }))
+        : TRAIT_REFERENCE_MATRIX.map(trait => ({
+            name: trait.name,
+            description: trait.description,
+          }));
 
       return {
         content: [{
@@ -529,16 +569,36 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             mode: "manual_inference",
             persona_name,
             user_description: description,
-            instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. Use the trait reference matrix below to guide your inference. Return the traits via persona_create_submit_traits.`,
+            instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. Use the trait reference matrix below to guide your inference. If the description mentions ANY physical or sensory disability (vision loss, motor impairment, color blindness, hearing loss, tremor, etc.), you MUST also include accessibilityTraits. Without accessibilityTraits, the persona gets cognitive-only modeling and the perceptual transport layer will report near-perfect perception — which is wrong for someone with a disability. Return the traits via persona_create_submit_traits.`,
             trait_reference: traitInfo,
+            ...(includeTraitReference ? {} : { trait_reference_note: "Compact form: trait names and meanings. For per-level behaviours call persona_traits_list, or pass includeTraitReference:true." }),
+            accessibility_traits_reference: {
+              visionLevel: "0=blind, 0.3=legally blind, 0.5=low vision (needs magnification), 0.7=mild vision loss, 1.0=sighted",
+              contrastSensitivity: "0=needs very high contrast (7:1+), 0.5=needs elevated contrast, 1.0=normal",
+              colorBlindness: "red-green (deuteranopia/protanopia), blue-yellow (tritanopia), monochrome (achromatopsia), or omit if none",
+              motorControl: "0=severe impairment (can barely click), 0.3=significant difficulty, 0.5=moderate (slow, imprecise), 0.7=mild, 1.0=full control",
+              tremor: "true if involuntary hand movement (Parkinson's, essential tremor, etc.)",
+              processingSpeed: "0=very slow (needs 5x more time), 0.5=moderate, 1.0=fast",
+              attentionSpan: "0=very short (< 30 seconds sustained focus), 0.5=moderate, 1.0=sustained",
+              hearingLevel: "0=deaf, 0.5=hard of hearing, 1.0=full hearing",
+            },
             example_output: {
-              patience: 0.25,
-              riskTolerance: 0.75,
-              comprehension: 0.75,
-              persistence: 0.5,
-              curiosity: 0.5,
-              workingMemory: 0.75,
-              readingTendency: 0.25,
+              traits: {
+                patience: 0.8,
+                riskTolerance: 0.25,
+                comprehension: 0.6,
+                persistence: 0.7,
+                curiosity: 0.3,
+                workingMemory: 0.5,
+                readingTendency: 0.9,
+              },
+              accessibilityTraits: {
+                visionLevel: 0.4,
+                contrastSensitivity: 0.3,
+                motorControl: 0.7,
+                processingSpeed: 0.5,
+              },
+              ageRange: "65+",
             },
             follow_up_tool: "persona_create_submit_traits",
           }, null, 2),
@@ -547,17 +607,129 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_create_submit_traits",
-    "Submit inferred traits for a persona created from description. Use after persona_create_from_description.",
-    {
+  server.registerTool("persona_create_submit_traits", {
+    title: "Submit Persona Traits",
+    description: "Submit inferred traits for a persona created from description. Use after persona_create_from_description. For disability personas, include accessibilityTraits to enable sensory/motor modeling in empathy_audit.",
+    inputSchema: {
       persona_name: z.string().describe("Name for the persona"),
-      traits: z.record(z.string(), z.number()).describe("Map of trait names to values (0-1)"),
+      traits: z.record(z.string(), z.number()).describe("Map of cognitive trait names to values (0-1)"),
       description: z.string().optional().describe("Original description for reference"),
+      accessibilityTraits: z.object({
+        visionLevel: z.number().min(0).max(1).optional().describe("Vision level: 0=blind, 0.5=low vision, 1=sighted"),
+        contrastSensitivity: z.number().min(0).max(1).optional().describe("Contrast sensitivity: 0=needs very high contrast, 1=normal"),
+        colorBlindness: z.enum(["red-green", "blue-yellow", "monochrome"]).optional().describe("Type of color blindness, if any"),
+        motorControl: z.number().min(0).max(1).optional().describe("Motor control: 0=severe impairment, 1=full control"),
+        tremor: z.boolean().optional().describe("Has hand tremor (Parkinson's, essential tremor)"),
+        processingSpeed: z.number().min(0).max(1).optional().describe("Information processing speed: 0=very slow, 1=fast"),
+        attentionSpan: z.number().min(0).max(1).optional().describe("Focus duration before fatigue: 0=very short, 1=sustained"),
+        hearingLevel: z.number().min(0).max(1).optional().describe("Hearing level: 0=deaf, 1=full hearing"),
+      }).optional().describe("Sensory/motor/physical traits for disability modeling. Without these, the persona gets cognitive-only modeling (no vision/motor simulation in empathy_audit)."),
+      ageRange: z.string().optional().describe("Age range: '18-24', '25-45', '45-65', '65+'"),
     },
-    async ({ persona_name, traits, description }) => {
+    annotations: {
+      title: "Submit Persona Traits",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ persona_name, traits, description, accessibilityTraits, ageRange }) => {
       const builtTraits = buildTraitsFromAnswers(traits);
       const derivedResult = deriveValuesFromTraits(builtTraits);
+
+      // buildTraitsFromAnswers fills every unsupplied trait from research
+      // baselines, so a caller who names 3 traits gets back a complete 26-trait
+      // persona with no way to tell which 23 were invented. Report both lists.
+      // (2026-07-28)
+      const allTraitNames = Object.keys(builtTraits);
+      const providedTraits = allTraitNames.filter((k) => k in traits);
+      const defaultedTraits = allTraitNames.filter((k) => !(k in traits));
+      const unknownTraits = Object.keys(traits).filter((k) => !allTraitNames.includes(k));
+
+      // Register the persona in the runtime so empathy_audit, cognitive_effort, etc. can find it
+      const { createCognitivePersona, registerPersonas } = await import("../personas.js");
+      const personaObj = createCognitivePersona(
+        persona_name,
+        description || persona_name,
+        builtTraits,
+        { ageRange: ageRange || undefined },
+      );
+
+      // Attach accessibility traits — either from explicit parameter or inferred from name/description
+      let resolvedAccessibilityTraits = accessibilityTraits;
+      if (!resolvedAccessibilityTraits || Object.keys(resolvedAccessibilityTraits).length === 0) {
+        // Infer disability traits from persona name and description
+        const text = `${persona_name} ${description || ''}`.toLowerCase();
+        const hasVision = /vision|blind|magnif|low.?vis|sight|visual.?impair/.test(text);
+        const hasMotor = /motor|tremor|parkinson|arthrit|dexterity|mobility/.test(text);
+        const hasCognitive = /adhd|dyslexic|dyslexia|cognitive|autism|intellectual/.test(text);
+        const hasHearing = /deaf|hearing|hard.?of.?hearing/.test(text);
+        const hasElderly = /elderly|senior|65|70|75|80|retired|aging|aged/.test(text);
+
+        if (hasVision || hasMotor || hasCognitive || hasHearing || hasElderly) {
+          resolvedAccessibilityTraits = {
+            visionLevel: hasVision ? 0.4 : hasElderly ? 0.6 : 1.0,
+            contrastSensitivity: hasVision ? 0.3 : hasElderly ? 0.5 : 1.0,
+            motorControl: hasMotor ? 0.3 : hasElderly ? 0.6 : 1.0,
+            tremor: hasMotor,
+            processingSpeed: hasCognitive ? 0.4 : hasElderly ? 0.5 : builtTraits.comprehension ?? 0.8,
+            attentionSpan: hasCognitive ? 0.3 : builtTraits.patience ?? 0.7,
+            hearingLevel: hasHearing ? 0.2 : 1.0,
+          };
+        }
+      }
+
+      if (resolvedAccessibilityTraits && Object.keys(resolvedAccessibilityTraits).length > 0) {
+        (personaObj as any).accessibilityTraits = {
+          motorControl: resolvedAccessibilityTraits.motorControl ?? 1.0,
+          tremor: resolvedAccessibilityTraits.tremor ?? false,
+          reachability: ((resolvedAccessibilityTraits.motorControl as number) ?? 1.0) < 0.5 ? 0.4 : 1.0,
+          visionLevel: resolvedAccessibilityTraits.visionLevel ?? 1.0,
+          contrastSensitivity: resolvedAccessibilityTraits.contrastSensitivity ?? 1.0,
+          colorBlindness: resolvedAccessibilityTraits.colorBlindness,
+          processingSpeed: resolvedAccessibilityTraits.processingSpeed ?? builtTraits.comprehension ?? 0.8,
+          attentionSpan: resolvedAccessibilityTraits.attentionSpan ?? builtTraits.patience ?? 0.7,
+          fatigueSusceptibility: ((resolvedAccessibilityTraits.visionLevel as number) ?? 1.0) < 0.7 || ((resolvedAccessibilityTraits.motorControl as number) ?? 1.0) < 0.7 ? 0.7 : 0.3,
+        };
+      }
+
+      registerPersonas([personaObj]);
+
+      // Also save to CMS if an API key is configured (makes it persistent across sessions)
+      let savedToCms = false;
+      try {
+        const { getSessionApiKey } = await import("./base/cognitive-tools.js");
+        const apiKey = getSessionApiKey();
+        if (apiKey) {
+          const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+          const slug = persona_name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+          const res = await fetch(`${cmsUrl}/api/personas`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: persona_name,
+              slug,
+              description: description || persona_name,
+              traits: builtTraits,
+              schwartz_values: derivedResult.values,
+              accessibility_traits: resolvedAccessibilityTraits || null,
+              age_range: ageRange || personaObj.demographics?.age_range || null,
+              source: "mcp",
+            }),
+          });
+          if (res.ok) {
+            savedToCms = true;
+            console.log(`[persona] Saved "${persona_name}" to CMS`);
+          } else {
+            const errBody = await res.text().catch(() => "");
+            console.warn(`[persona] CMS save failed (${res.status}): ${errBody.slice(0, 100)}`);
+          }
+        } else {
+          console.warn(`[persona] No API key in session — cannot save to CMS`);
+        }
+      } catch (e) {
+        console.warn(`[persona] CMS save error: ${(e as Error).message}`);
+      }
 
       return {
         content: [{
@@ -567,14 +739,31 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             persona_name,
             description,
             traits: builtTraits,
+            providedTraits,
+            defaultedTraits,
+            traitCompleteness: `${providedTraits.length} of ${allTraitNames.length} supplied; ${defaultedTraits.length} filled from research baselines`,
+            // A misspelled trait name was previously accepted in silence and had
+            // no effect, since buildTraitsFromAnswers only applies keys already
+            // present in the trait table.
+            ...(unknownTraits.length > 0 ? {
+              unknownTraits,
+              warning: `Ignored ${unknownTraits.length} unrecognized trait name(s): ${unknownTraits.join(", ")}. These had no effect.`,
+            } : {}),
             values: derivedResult.values,
             derivations: derivedResult.derivations,
-            instruction: `Persona "${persona_name}" created. Use with cognitive_journey_init.`,
+            accessibilityTraits: resolvedAccessibilityTraits || null,
+            hasDisabilityModeling: !!(resolvedAccessibilityTraits && Object.keys(resolvedAccessibilityTraits).length > 0),
+            disabilityTraitsSource: accessibilityTraits ? 'explicit' : resolvedAccessibilityTraits ? 'inferred_from_description' : 'none',
+            ageRange: ageRange || personaObj.demographics?.age_range || null,
+            registered: true,
+            savedToCms,
+            instruction: resolvedAccessibilityTraits
+              ? `Persona "${persona_name}" created with disability modeling (vision=${(resolvedAccessibilityTraits as any).visionLevel ?? 'default'}, motor=${(resolvedAccessibilityTraits as any).motorControl ?? 'default'}). The perceptual transport layer will simulate sensory impairment. Use with empathy_audit for accurate disability scoring.`
+              : `Persona "${persona_name}" created with cognitive-only modeling. For disability-specific scoring (vision impairment, motor difficulty, etc.), recreate with accessibilityTraits parameter.`,
             usage_example: {
-              tool: "cognitive_journey_init",
+              tool: "empathy_audit",
               params: {
-                persona: persona_name,
-                customTraits: builtTraits,
+                disabilities: [persona_name],
               },
             },
           }, null, 2),
@@ -583,11 +772,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_create_cancel",
-    "Cancel the current persona creation questionnaire session.",
-    {},
-    async () => {
+  server.registerTool("persona_create_cancel", {
+    title: "Cancel Persona Creation",
+    description: "Cancel the current persona creation questionnaire session.",
+    inputSchema: {},
+    annotations: {
+      title: "Cancel Persona Creation",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const sessionId = getSessionId();
       const session = getQuestionnaireSession(sessionId);
 
@@ -620,11 +816,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
     }
   );
 
-  server.tool(
-    "persona_traits_list",
-    "List all available cognitive traits with descriptions. Useful for understanding what traits can be customized.",
-    {},
-    async () => {
+  server.registerTool("persona_traits_list", {
+    title: "List Persona Traits",
+    description: "List all available cognitive traits with descriptions. Useful for understanding what traits can be customized.",
+    inputSchema: {},
+    annotations: {
+      title: "List Persona Traits",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const traits = TRAIT_REFERENCE_MATRIX.map(trait => ({
         name: trait.name,
         description: trait.description,

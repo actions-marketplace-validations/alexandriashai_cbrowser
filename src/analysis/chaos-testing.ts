@@ -133,6 +133,8 @@ export interface ChaosTestResult {
     pageInteractive: boolean;
     /** Number of console errors during chaos */
     consoleErrors: number;
+    /** The console error messages themselves (first 25), so the count is actionable. */
+    consoleErrorMessages?: string[];
     /** Summary of what degraded */
     degradationSummary: string[];
   };
@@ -158,6 +160,8 @@ export async function runChaosTest(
   const failedResources: string[] = [];
   const delayedResources: string[] = [];
   let consoleErrors = 0;
+  /** The console error TEXT, so the count above is something a caller can act on. */
+  const consoleErrorMessages: string[] = [];
   let pageCompleted = false;
   let pageInteractive = false;
   let loadTimeMs = 0;
@@ -165,9 +169,19 @@ export async function runChaosTest(
   try {
     const page = await (browser as any).getPage();
 
-    // Track console errors during chaos
+    // Track console errors during chaos.
+    //
+    // This only incremented a counter, so a run reported `consoleErrors: 3`
+    // beside `errors: []` — it knew three things went wrong and could not say
+    // what any of them were, which makes the count unactionable. The text was
+    // in hand the whole time. (2026-07-29)
     const consoleHandler = (msg: any) => {
-      if (msg.type() === "error") consoleErrors++;
+      if (msg.type() !== "error") return;
+      consoleErrors++;
+      const text = String(msg.text?.() ?? "").trim();
+      // Cap the list so a page erroring in a loop cannot flood the response;
+      // the counter above stays exact regardless.
+      if (text && consoleErrorMessages.length < 25) consoleErrorMessages.push(text.slice(0, 300));
     };
     page.on("console", consoleHandler);
 
@@ -351,6 +365,7 @@ export async function runChaosTest(
         pageCompleted,
         pageInteractive,
         consoleErrors,
+        consoleErrorMessages,
         degradationSummary,
       },
     };
@@ -368,6 +383,7 @@ export async function runChaosTest(
         pageCompleted,
         pageInteractive,
         consoleErrors,
+        consoleErrorMessages,
         degradationSummary: ["Test failed with exception"],
       },
     };

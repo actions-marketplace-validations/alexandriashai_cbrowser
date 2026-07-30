@@ -16,15 +16,22 @@ export function registerBugAnalysisTools(
   server: McpServer,
   { getBrowser }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "hunt_bugs",
-    "Autonomous bug hunting - crawl and find issues. Returns bugs with severity, selector, and actionable recommendation for each issue found.",
-    {
+  server.registerTool("hunt_bugs", {
+    title: "Hunt Bugs",
+    description: "Autonomous bug hunting - crawl and find issues. Returns bugs with severity, selector, and actionable recommendation for each issue found.",
+    inputSchema: {
       url: z.string().url().describe("Starting URL to hunt from"),
       maxPages: z.number().optional().default(10).describe("Maximum pages to visit"),
       timeout: z.number().optional().default(60000).describe("Timeout in milliseconds"),
     },
-    async ({ url, maxPages, timeout }) => {
+    annotations: {
+      title: "Hunt Bugs",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, maxPages, timeout }) => {
       const b = await getBrowser();
       const result = await huntBugs(b, url, { maxPages, timeout });
       return {
@@ -50,16 +57,23 @@ export function registerBugAnalysisTools(
     }
   );
 
-  server.tool(
-    "chaos_test",
-    "Inject failures and test resilience",
-    {
+  server.registerTool("chaos_test", {
+    title: "Chaos Engineering Test",
+    description: "Inject failures and test resilience",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       networkLatency: z.number().optional().describe("Simulate network latency (ms)"),
       offline: z.boolean().optional().describe("Simulate offline mode"),
       blockUrls: z.array(z.string()).optional().describe("URL patterns to block"),
     },
-    async ({ url, networkLatency, offline, blockUrls }) => {
+    annotations: {
+      title: "Chaos Engineering Test",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, networkLatency, offline, blockUrls }) => {
       const b = await getBrowser();
       try {
         const result = await runChaosTest(b, url, { networkLatency, offline, blockUrls });

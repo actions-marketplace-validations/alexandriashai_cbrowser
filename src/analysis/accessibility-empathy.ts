@@ -33,7 +33,9 @@
  * - User testing with people who have disabilities
  */
 
-import { chromium, type Browser, type Page } from "playwright";
+import { type Page } from "playwright";
+import { VERSION } from "../version.js";
+import { CBrowser } from "../browser.js";
 import type {
   EmpathyAuditResult,
   EmpathyAuditOptions,
@@ -51,6 +53,20 @@ import {
   runCognitiveJourney,
   isApiKeyConfigured,
 } from "../cognitive/index.js";
+import {
+  calculatePerceptualScore,
+  getPerceptualProfile,
+  analyzePerceptualTransport,
+  type PerceptualAnalysis,
+} from "../visual/perceptual-transport.js";
+import {
+  buildOTCognitiveProfile,
+  estimateCognitiveLoad,
+  extractPageMetrics,
+} from "../visual/cognitive-transport.js";
+import {
+  analyzeAttention,
+} from "../visual/attention-transport.js";
 import {
   getEmotionVisualizationStyles,
   generateEmotionVisualizationSection,
@@ -112,6 +128,41 @@ function _getWcagCriteriaForBarrier(barrierType: AccessibilityBarrierType): stri
   }
 }
 
+/** Get the LOWEST (most stringent) WCAG level of a barrier's criteria.
+ * A barrier that violates both 2.5.8 (AA) and 2.5.5 (AAA) should use AA
+ * because it fails the stricter standard. */
+function getBarrierWcagLevel(wcagCriteria: string[]): "A" | "AA" | "AAA" {
+  if (!wcagCriteria.length) return "AAA"; // no criteria = treat as advisory
+  let lowest: "A" | "AA" | "AAA" = "AAA";
+  const levelOrder: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
+  for (const code of wcagCriteria) {
+    const criteria = WCAG_CRITERIA[code];
+    if (criteria && levelOrder[criteria.level] < levelOrder[lowest]) {
+      lowest = criteria.level;
+    }
+  }
+  return lowest;
+}
+
+/**
+ * Adjust barrier severity based on WCAG level context.
+ * AAA-only issues should not be "critical" when auditing at AA level.
+ */
+function adjustSeverityForLevel(
+  severity: AccessibilityBarrierSeverity,
+  barrierWcagLevel: "A" | "AA" | "AAA",
+  auditLevel: "A" | "AA" | "AAA"
+): AccessibilityBarrierSeverity {
+  const levelOrder: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
+  // If the barrier is from a higher WCAG level than the audit target, downgrade severity
+  if (levelOrder[barrierWcagLevel] > levelOrder[auditLevel]) {
+    if (severity === "critical") return "minor"; // AAA issue at AA audit → minor
+    if (severity === "major") return "minor";
+    return severity;
+  }
+  return severity;
+}
+
 // ============================================================================
 // Barrier Detection Functions
 // ============================================================================
@@ -123,6 +174,10 @@ interface BarrierContext {
   frictionPoints: AccessibilityFrictionPoint[];
   wcagViolations: Set<string>;
   stepCount: number;
+  /** When true, barrier detectors only count elements in the initial viewport */
+  viewportOnly: boolean;
+  /** WCAG conformance level for this audit */
+  wcagLevel: "A" | "AA" | "AAA";
 }
 
 /**
@@ -131,41 +186,138 @@ interface BarrierContext {
  * (issues exist on the page whether or not this persona would encounter them)
  */
 async function detectSmallTouchTargets(ctx: BarrierContext): Promise<void> {
-  const { page, persona, barriers } = ctx;
+  const { page, persona, barriers, viewportOnly } = ctx;
 
   // v10.10.0: Removed trait-based skipping - always detect issues
-  // The severity is still adjusted based on persona traits
   const _motorControl = persona.accessibilityTraits.motorControl ?? 0.5;
 
   const smallTargets = await page.$$eval(
     'button, a, input[type="checkbox"], input[type="radio"], [role="button"], [onclick]',
-    (elements) => elements.map(el => {
-      const rect = el.getBoundingClientRect();
-      return {
-        selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
-        width: rect.width,
-        height: rect.height,
-        text: el.textContent?.trim().slice(0, 30) || '',
-        area: rect.width * rect.height,
-      };
-    }).filter(el => el.area > 0 && (el.width < 44 || el.height < 44))
+    (elements, vpOnly) => {
+      const vh = window.innerHeight;
+      return elements.map(el => {
+        const rect = el.getBoundingClientRect();
+        const text = el.textContent?.trim().slice(0, 50) || '';
+        const href = (el as HTMLAnchorElement).href || el.getAttribute('href') || '';
+        const style = window.getComputedStyle(el);
+
+        // Skip link detection: anchor with # href + skip-related text
+        const isSkipLink = el.tagName === 'A' && (
+          (href.startsWith('#') && /skip|jump|main.content|nav.*content/i.test(text)) ||
+          el.classList.contains('skip-link') || el.classList.contains('skip-nav') ||
+          el.classList.contains('skiplink') || el.id?.includes('skip')
+        );
+
+        // WCAG 2.5.8 exempts inline text links: "the target is in a sentence
+        // or its size is otherwise constrained by the line-height of non-target text."
+        // Detect: <a> whose parent contains other text content (not a button-styled element).
+        // Example: a 110×18 text link inside a paragraph is fine — the line-height bounds it.
+        const isInlineTextLink = el.tagName === 'A' && (() => {
+          const parent = el.parentElement;
+          if (!parent) return false;
+          // Parent has non-link text → this link is part of a sentence
+          const parentText = parent.textContent || '';
+          const linkText = el.textContent || '';
+          const otherText = parentText.replace(linkText, '').trim();
+          if (otherText.length < 10) return false;
+          // Must not be styled as a button (rough heuristic via display/padding)
+          const elStyle = window.getComputedStyle(el);
+          if (elStyle.display === 'inline-block' || elStyle.display === 'block' || elStyle.display === 'flex') return false;
+          if (parseInt(elStyle.padding) > 4) return false;
+          return true;
+        })();
+
+        // Tiny elements (1x1, 0x0) are tracking pixels or hidden inputs, not real touch targets
+        const isTiny = rect.width <= 2 || rect.height <= 2;
+
+        // Visually hidden / sr-only detection (intentionally offscreen, visible on focus)
+        const isVisuallyHidden = isTiny ||
+          style.position === 'absolute' && (
+            parseInt(style.left) < -100 || parseInt(style.top) < -100 ||
+            style.clip === 'rect(0px, 0px, 0px, 0px)' || style.clip === 'rect(1px, 1px, 1px, 1px)' ||
+            style.clipPath === 'inset(50%)' ||
+            (rect.width <= 1 && rect.height <= 1 && parseInt(style.overflow) === 0)
+          ) ||
+          el.classList.contains('sr-only') || el.classList.contains('visually-hidden') ||
+          el.classList.contains('screen-reader-text');
+
+        return {
+          selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+          width: rect.width,
+          height: rect.height,
+          // DOCUMENT coordinates. getBoundingClientRect is viewport-relative, and
+          // in scope:"full_page" the audit scrolls, so rects captured at different
+          // scroll positions landed in one list with no common frame: a single
+          // response held y:-274 and y:3951 while claiming a 393x852 viewport
+          // space, which no scroll position can satisfy. (2026-07-29)
+          x: rect.left + window.scrollX,
+          y: rect.top + window.scrollY,
+          text,
+          area: rect.width * rect.height,
+          inViewport: rect.bottom > 0 && rect.top < vh,
+          exempt: isSkipLink || isVisuallyHidden || isInlineTextLink,
+        };
+      }).filter(el => {
+        if (el.area <= 0 || el.exempt) return false;
+        if (vpOnly && !el.inViewport) return false;
+        // Only flag if the SMALLEST dimension is under the threshold
+        // A 1280x36px element is perfectly tappable — the 36px height is fine
+        // WCAG 2.5.8 AA: 24x24px minimum for the target area
+        const minDim = Math.min(el.width, el.height);
+        const maxDim = Math.max(el.width, el.height);
+        // Skip if the element is wide/tall enough to be easily tappable
+        // (one dimension >= 44px AND the other >= 24px = AA compliant)
+        if (minDim >= 24 && maxDim >= 44) return false;
+        // Flag if both dimensions are small
+        return minDim < 44;
+      });
+    }, viewportOnly
   );
 
+  // WCAG 2.5.8 (AA) minimum: 24x24px
+  // WCAG 2.5.5 (AAA) target: 44x44px
+  const aaMinimum = 24;
+  const aaaTarget = 44;
+
   for (const target of smallTargets.slice(0, 10)) {
-    const severity: AccessibilityBarrierSeverity =
-      target.width < 24 || target.height < 24 ? "critical" :
-      target.width < 32 || target.height < 32 ? "major" : "minor";
+    const w = Math.round(target.width);
+    const h = Math.round(target.height);
+
+    // Determine which WCAG criteria are violated
+    const wcagCriteria: string[] = [];
+    let description: string;
+    let rawSeverity: AccessibilityBarrierSeverity;
+
+    if (w < aaMinimum || h < aaMinimum) {
+      // Fails WCAG 2.5.8 AA (24x24px minimum)
+      wcagCriteria.push("2.5.8", "2.5.5");
+      description = `Touch target too small (${w}x${h}px) — fails WCAG 2.5.8 AA minimum (24x24px)`;
+      rawSeverity = w < 16 || h < 16 ? "critical" : "major";
+      ctx.wcagViolations.add("2.5.8");
+    } else {
+      // Passes AA but fails AAA (24-44px range)
+      wcagCriteria.push("2.5.5");
+      description = `Touch target below AAA target (${w}x${h}px) — passes AA (24px) but below AAA target (44px)`;
+      rawSeverity = "minor";
+      ctx.wcagViolations.add("2.5.5");
+    }
+
+    // Adjust severity based on audit level — AAA-only issues are minor at AA
+    const barrierLevel = getBarrierWcagLevel(wcagCriteria);
+    const severity = adjustSeverityForLevel(rawSeverity, barrierLevel, ctx.wcagLevel);
 
     barriers.push({
       type: "touch_target",
       element: target.selector,
-      description: `Touch target too small (${Math.round(target.width)}x${Math.round(target.height)}px) - minimum 44x44px recommended`,
+      description,
       affectedPersonas: ["motor-impairment-tremor", "elderly-low-vision"],
-      wcagCriteria: ["2.5.5", "2.5.8"],
+      wcagCriteria,
       severity,
-      remediation: `Increase clickable area to at least 44x44 pixels, or add padding/margin to increase touch target`,
-    });
-    ctx.wcagViolations.add("2.5.8");
+      remediation: w < aaMinimum || h < aaMinimum
+        ? `Increase clickable area to at least 24x24px (AA) — 44x44px recommended (AAA)`
+        : `Consider increasing to 44x44px for AAA compliance and better mobile usability`,
+      rect: { x: Math.round(target.x), y: Math.round(target.y), width: w, height: h },
+    } as any);
   }
 }
 
@@ -183,37 +335,96 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
 
   // Check text elements for contrast (simplified check - real check needs computed colors)
   const lowContrastElements = await page.$$eval(
-    'p, span, h1, h2, h3, h4, h5, h6, a, button, label',
+    'p, span, h1, h2, h3, h4, h5, h6, a, button, label, li, td, th',
     (elements) => {
+      // Relative luminance per WCAG 2.1
+      function luminance(r: number, g: number, b: number): number {
+        const [rs, gs, bs] = [r, g, b].map(c => {
+          c = c / 255;
+          return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        });
+        return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+      }
+      function contrastRatio(l1: number, l2: number): number {
+        const lighter = Math.max(l1, l2);
+        const darker = Math.min(l1, l2);
+        return (lighter + 0.05) / (darker + 0.05);
+      }
+      function parseColor(color: string): [number, number, number] | null {
+        const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+      }
+
+      const vh = window.innerHeight;
       const results: Array<{
-        selector: string;
-        text: string;
-        fontSize: string;
-        color: string;
-        bgColor: string;
+        selector: string; text: string; fontSize: number; ratio: number;
+        isLargeText: boolean; color: string; bgColor: string;
       }> = [];
 
-      for (const el of elements.slice(0, 100)) {
-        const styles = window.getComputedStyle(el);
-        const color = styles.color;
-        const bgColor = styles.backgroundColor;
+      for (const el of elements.slice(0, 150)) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0 || rect.bottom < 0 || rect.top > vh) continue;
+        const text = el.textContent?.trim();
+        if (!text || text.length < 2) continue;
 
-        // Simplified: flag light gray text as potential issue
-        if (color.includes('rgb')) {
-          const match = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
-          if (match) {
-            const [, r, g, b] = match.map(Number);
-            // Light gray text (common contrast issue)
-            if (r > 150 && g > 150 && b > 150 && r < 200 && g < 200 && b < 200) {
-              results.push({
-                selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
-                text: el.textContent?.trim().slice(0, 30) || '',
-                fontSize: styles.fontSize,
-                color,
-                bgColor,
-              });
+        const styles = window.getComputedStyle(el);
+        const fg = parseColor(styles.color);
+        const bg = parseColor(styles.backgroundColor);
+        if (!fg) continue;
+
+        // Walk up to find non-transparent background
+        // rgba(0, 0, 0, 0) = transparent, rgb(0, 0, 0) = black (valid)
+        let bgColor = bg;
+        const elBgStr = styles.backgroundColor;
+        const isTransparent = (s: string) => s === 'rgba(0, 0, 0, 0)' || s === 'transparent' || s === 'initial';
+        if (isTransparent(elBgStr)) {
+          bgColor = null;
+          let parent = el.parentElement;
+          while (parent) {
+            const pStyle = window.getComputedStyle(parent);
+            const pBgStr = pStyle.backgroundColor;
+            if (!isTransparent(pBgStr)) {
+              bgColor = parseColor(pBgStr);
+              break;
             }
+            parent = parent.parentElement;
           }
+        }
+        if (!bgColor) bgColor = [255, 255, 255]; // assume white if no bg found
+
+        // Skip elements where fg and bg are identical — likely hidden/decorative
+        if (fg[0] === bgColor[0] && fg[1] === bgColor[1] && fg[2] === bgColor[2]) continue;
+
+        const fgLum = luminance(fg[0], fg[1], fg[2]);
+        const bgLum = luminance(bgColor[0], bgColor[1], bgColor[2]);
+        const ratio = contrastRatio(fgLum, bgLum);
+
+        const fontSize = parseFloat(styles.fontSize);
+        const fontWeight = parseInt(styles.fontWeight) || 400;
+        // Large text: >= 18pt (24px) or >= 14pt (18.66px) bold
+        const isLargeText = fontSize >= 24 || (fontSize >= 18.66 && fontWeight >= 700);
+
+        // WCAG thresholds:
+        // AA: 4.5:1 normal, 3:1 large (1.4.3)
+        // AAA: 7:1 normal, 4.5:1 large (1.4.6)
+        const aaThreshold = isLargeText ? 3 : 4.5;
+        const aaaThreshold = isLargeText ? 4.5 : 7;
+
+        if (ratio < aaaThreshold) {
+          (results as any[]).push({
+            selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : el.className ? `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}` : ''),
+            text: text.slice(0, 30),
+            fontSize,
+            ratio: Math.round(ratio * 10) / 10,
+            isLargeText,
+            color: styles.color,
+            bgColor: styles.backgroundColor,
+            // Document coordinates, as above.
+            x: Math.round(rect.left + window.scrollX),
+            y: Math.round(rect.top + window.scrollY),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
         }
       }
 
@@ -221,17 +432,39 @@ async function detectLowContrast(ctx: BarrierContext): Promise<void> {
     }
   );
 
-  for (const el of lowContrastElements.slice(0, 5)) {
+  // AA threshold: 4.5:1 normal, 3:1 large text (WCAG 1.4.3)
+  // AAA threshold: 7:1 normal, 4.5:1 large text (WCAG 1.4.6)
+  for (const el of lowContrastElements.slice(0, 8)) {
+    const aaThreshold = el.isLargeText ? 3 : 4.5;
+    const failsAA = el.ratio < aaThreshold;
+    const wcagCriteria = failsAA ? ["1.4.3", "1.4.6"] : ["1.4.6"];
+    const barrierLevel = getBarrierWcagLevel(wcagCriteria);
+
+    let rawSeverity: AccessibilityBarrierSeverity;
+    if (failsAA) {
+      rawSeverity = el.ratio < 2 ? "critical" : el.ratio < 3 ? "major" : "minor";
+    } else {
+      rawSeverity = "minor"; // passes AA, fails AAA
+    }
+
+    const severity = adjustSeverityForLevel(rawSeverity, barrierLevel, ctx.wcagLevel);
+
     barriers.push({
       type: "contrast",
       element: el.selector,
-      description: `Low contrast text may be difficult to read (color: ${el.color})`,
-      affectedPersonas: ["low-vision-magnified", "elderly-low-vision"],
-      wcagCriteria: ["1.4.3", "1.4.6"],
-      severity: contrastSensitivity > 2 ? "major" : "minor",
-      remediation: "Increase text contrast to at least 4.5:1 for normal text, 3:1 for large text",
-    });
-    ctx.wcagViolations.add("1.4.3");
+      description: failsAA
+        ? `Contrast ratio ${el.ratio}:1 fails AA minimum (${el.isLargeText ? '3' : '4.5'}:1 required for ${el.isLargeText ? 'large' : 'normal'} text)`
+        : `Contrast ratio ${el.ratio}:1 passes AA but fails AAA (${el.isLargeText ? '4.5' : '7'}:1 required)`,
+      affectedPersonas: ["low-vision-magnified", "elderly-low-vision", "color-blind-deuteranopia"],
+      wcagCriteria,
+      severity,
+      remediation: failsAA
+        ? `Increase contrast to at least ${el.isLargeText ? '3' : '4.5'}:1 (current: ${el.ratio}:1)`
+        : `For AAA compliance, increase contrast to ${el.isLargeText ? '4.5' : '7'}:1 (current: ${el.ratio}:1)`,
+      rect: { x: (el as any).x, y: (el as any).y, width: (el as any).width, height: (el as any).height },
+    } as any);
+    if (failsAA) ctx.wcagViolations.add("1.4.3");
+    else ctx.wcagViolations.add("1.4.6");
   }
 }
 
@@ -247,11 +480,12 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
 
   const cognitiveIssues = await page.evaluate(() => {
     const issues: Array<{ type: string; description: string; count?: number }> = [];
+    const inVp = (window as any).__cbrowserInViewport || (() => true);
 
-    // Check for long forms
-    const forms = Array.from(document.querySelectorAll('form'));
+    // Check for long forms (in scope)
+    const forms = Array.from(document.querySelectorAll('form')).filter(inVp);
     for (const form of forms) {
-      const inputs = form.querySelectorAll('input:not([type="hidden"]), textarea, select');
+      const inputs = Array.from(form.querySelectorAll('input:not([type="hidden"]), textarea, select')).filter(inVp);
       if (inputs.length > 7) {
         issues.push({
           type: "long-form",
@@ -261,20 +495,20 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
       }
     }
 
-    // Check for text walls
-    const paragraphs = Array.from(document.querySelectorAll('p'));
+    // Check for text walls (in scope)
+    const paragraphs = Array.from(document.querySelectorAll('p')).filter(inVp);
     for (const p of paragraphs) {
       if (p.textContent && p.textContent.length > 500) {
         issues.push({
           type: "text-wall",
           description: "Long paragraph without breaks may be difficult to process",
         });
-        break; // Only flag once
+        break;
       }
     }
 
-    // Check for animations/movement
-    const animations = document.querySelectorAll('[class*="animate"], [class*="slider"], [class*="carousel"]');
+    // Check for animations/movement (in scope)
+    const animations = Array.from(document.querySelectorAll('[class*="animate"], [class*="slider"], [class*="carousel"]')).filter(inVp);
     if (animations.length > 0) {
       issues.push({
         type: "animation",
@@ -283,8 +517,8 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
       });
     }
 
-    // Check for complex navigation
-    const navItems = document.querySelectorAll('nav a, header a, [role="navigation"] a');
+    // Check for complex navigation (in scope)
+    const navItems = Array.from(document.querySelectorAll('nav a, header a, [role="navigation"] a')).filter(inVp);
     if (navItems.length > 10) {
       issues.push({
         type: "complex-nav",
@@ -297,12 +531,21 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
   });
 
   for (const issue of cognitiveIssues) {
+    // Map each cognitive issue type to appropriate WCAG criteria (if any)
+    const wcagMap: Record<string, { criteria: string[]; violation: string | null }> = {
+      "long-form": { criteria: ["3.3.2"], violation: "3.3.2" }, // Labels or Instructions
+      "text-wall": { criteria: ["1.3.1"], violation: null }, // Info and Relationships (recommendation, not violation)
+      "animation": { criteria: ["2.2.2", "2.3.1"], violation: "2.2.2" }, // Pause Stop Hide
+      "complex-nav": { criteria: [], violation: null }, // No WCAG criterion for nav item count — UX recommendation only
+    };
+    const mapping = wcagMap[issue.type] || { criteria: [], violation: null };
+
     barriers.push({
       type: "cognitive_load",
       element: issue.type,
-      description: issue.description,
+      description: issue.description + (mapping.criteria.length === 0 ? ' (UX recommendation, not a WCAG violation)' : ''),
       affectedPersonas: ["cognitive-adhd", "dyslexic-user"],
-      wcagCriteria: ["2.4.6", "3.3.2"],
+      wcagCriteria: mapping.criteria,
       severity: issue.type === "long-form" ? "major" : "minor",
       remediation: issue.type === "long-form"
         ? "Break form into multiple steps or sections"
@@ -310,9 +553,9 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
           ? "Break text into smaller paragraphs with headings"
           : issue.type === "animation"
             ? "Provide controls to pause/stop animations, or use prefers-reduced-motion"
-            : "Simplify navigation structure",
+            : "Consider simplifying navigation structure for cognitive accessibility",
     });
-    ctx.wcagViolations.add("3.3.2");
+    if (mapping.violation) ctx.wcagViolations.add(mapping.violation);
   }
 }
 
@@ -322,24 +565,47 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
 async function detectTimingIssues(ctx: BarrierContext): Promise<void> {
   const { page, persona: _persona, barriers } = ctx;
 
-  // Check for elements that might have timing constraints
+  // Look for ACTUAL timing constraints — not CSS class substrings.
+  // Previous version matched `[class*="auto-"]` (every Tailwind utility) and
+  // `[class*="session"]` (Stripe's "Sessions" product, "session storage" UI,
+  // etc.) and flagged them as severity:major time-limited content. That alone
+  // dropped well-built sites by 30+ points on every empathy audit.
+  // Real signals: explicit data-timeout, role=timer, ARIA live regions with
+  // visible "expires/remaining/seconds" text, or meta http-equiv=refresh.
   const timingElements = await page.$$eval(
-    '[data-timeout], [class*="countdown"], [class*="timer"], [class*="auto-"], [class*="session"]',
-    (elements) => elements.map(el => ({
-      selector: el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''),
-      text: el.textContent?.trim().slice(0, 50) || '',
-    }))
+    '[data-timeout], [role="timer"], meta[http-equiv="refresh"], [aria-live]',
+    (elements) => elements
+      .map((el) => {
+        const text = el.textContent?.trim().slice(0, 100) || "";
+        const role = el.getAttribute("role") || "";
+        const dataTimeout = el.hasAttribute("data-timeout");
+        const httpRefresh = el.tagName === "META" && el.getAttribute("http-equiv")?.toLowerCase() === "refresh";
+        // ARIA live regions only count as timing-relevant when their text
+        // includes time-cue language (countdown, expires, remaining, seconds).
+        const hasTimeCueText = /\b(countdown|expir|remaining|time\s*left|seconds?\s+left|minutes?\s+left)\b/i.test(text);
+        const isTimingRelevant = dataTimeout || role === "timer" || httpRefresh || hasTimeCueText;
+        return {
+          isTimingRelevant,
+          selector: el.tagName.toLowerCase() + (el.className && typeof (el as HTMLElement).className === "string"
+            ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(" ")[0]}` : ""),
+          text,
+        };
+      })
+      .filter((el) => el.isTimingRelevant)
   );
 
   if (timingElements.length > 0) {
+    const wcagCriteria = ["2.2.1", "2.2.2"];
+    const barrierLevel = getBarrierWcagLevel(wcagCriteria);
+    const severity = adjustSeverityForLevel("major", barrierLevel, ctx.wcagLevel);
     for (const el of timingElements) {
       barriers.push({
         type: "timing",
         element: el.selector,
-        description: `Time-limited content detected - may not allow enough time for users who need longer`,
+        description: `Time-limited content detected — may not allow enough time for users who need longer`,
         affectedPersonas: ["motor-impairment-tremor", "low-vision-magnified", "cognitive-adhd", "dyslexic-user", "elderly-low-vision"],
-        wcagCriteria: ["2.2.1", "2.2.2"],
-        severity: "major",
+        wcagCriteria,
+        severity,
         remediation: "Allow users to extend, adjust, or disable time limits",
       });
       ctx.wcagViolations.add("2.2.1");
@@ -364,7 +630,7 @@ async function detectColorOnlyInfo(ctx: BarrierContext): Promise<void> {
       const hasIcon = el.querySelector('svg, i, [class*="icon"]') !== null;
       const hasText = (el.textContent?.trim() || '').length > 0;
       return {
-        selector: el.tagName.toLowerCase() + (el.className ? `.${(el as HTMLElement).className.split(' ')[0]}` : ''),
+        selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
         hasIcon,
         hasText,
         color: styles.color,
@@ -415,9 +681,9 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
       const isLikelyDecorative =
         imgEl.width < 20 || imgEl.height < 20 ||
         rect.width < 50 || rect.height < 50 ||
-        imgEl.className.includes('icon') ||
-        imgEl.className.includes('decoration') ||
-        imgEl.className.includes('separator') ||
+        String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('icon') ||
+        String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('decoration') ||
+        String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('separator') ||
         imgEl.getAttribute('role') === 'presentation';
       return {
         selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
@@ -538,6 +804,486 @@ async function detectMissingFormLabels(ctx: BarrierContext): Promise<void> {
 }
 
 // ============================================================================
+// Persona-Specific Detectors (v18.15.0)
+// ============================================================================
+
+/**
+ * Get the persona category for routing to specialized detectors.
+ * @since v18.15.0
+ */
+function getPersonaCategory(personaName: string): "motor" | "cognitive" | "vision" | "general" {
+  const name = personaName.toLowerCase();
+
+  // Motor personas
+  if (
+    name.includes("motor") ||
+    name.includes("tremor") ||
+    name.includes("limited-mobility") ||
+    name.includes("mobility")
+  ) {
+    return "motor";
+  }
+
+  // Cognitive personas
+  if (
+    name.includes("adhd") ||
+    name.includes("dyslexia") ||
+    name.includes("dyslexic") ||
+    name.includes("memory") ||
+    name.includes("cognitive")
+  ) {
+    return "cognitive";
+  }
+
+  // Vision personas
+  if (
+    name.includes("vision") ||
+    name.includes("low-vision") ||
+    name.includes("color-blind") ||
+    name.includes("deuteranopia") ||
+    name.includes("elderly")
+  ) {
+    return "vision";
+  }
+
+  return "general";
+}
+
+/**
+ * Detect barriers specifically relevant to motor-impaired personas.
+ *
+ * Key checks:
+ * - Target size violations (< 44x44px critical for tremor users)
+ * - Hover-dependent interactions (impossible with tremor)
+ * - Drag-and-drop without keyboard alternative
+ * - Time-limited interactions
+ *
+ * @since v18.15.0
+ */
+async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
+  const { page, barriers } = ctx;
+
+  // Check for hover-dependent interactions (no click alternative)
+  const hoverOnlyElements = await page.$$eval(
+    '[class*="hover"], [class*="dropdown"], [class*="menu"], [class*="tooltip"]',
+    (elements) => {
+      const results: Array<{ selector: string; hasClickAlternative: boolean; text: string }> = [];
+
+      for (const el of elements.slice(0, 20)) {
+        // Check if element or children have click handlers
+        const hasClick = el.hasAttribute('onclick') ||
+                         el.querySelector('[onclick]') !== null ||
+                         el.querySelector('a, button') !== null;
+
+        results.push({
+          selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
+          hasClickAlternative: hasClick,
+          text: el.textContent?.trim().slice(0, 30) || '',
+        });
+      }
+
+      return results.filter(r => !r.hasClickAlternative);
+    }
+  );
+
+  for (const el of hoverOnlyElements.slice(0, 5)) {
+    barriers.push({
+      type: "motor_precision",
+      element: el.selector,
+      description: `Hover-dependent interaction without click alternative may be inaccessible for users with tremors`,
+      affectedPersonas: ["motor-impairment-tremor", "motor-impairment-limited-mobility"],
+      wcagCriteria: ["2.1.1", "2.5.1"],
+      severity: "major",
+      remediation: "Add click/tap alternative to hover interactions, or make hover content accessible via keyboard focus",
+    });
+    ctx.wcagViolations.add("2.1.1");
+  }
+
+  // Check for drag-and-drop without keyboard alternative
+  const dragDropElements = await page.$$eval(
+    '[draggable="true"], [class*="drag"], [class*="sortable"], [class*="reorder"]',
+    (elements) => elements.map(el => ({
+      selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+      hasAriaGrabbed: el.hasAttribute('aria-grabbed'),
+      hasKeyboardHandler: el.hasAttribute('onkeydown') || el.hasAttribute('onkeyup'),
+    }))
+  );
+
+  for (const el of dragDropElements.slice(0, 3)) {
+    if (!el.hasKeyboardHandler) {
+      barriers.push({
+        type: "motor_precision",
+        element: el.selector,
+        description: `Drag-and-drop element lacks keyboard alternative`,
+        affectedPersonas: ["motor-impairment-tremor", "motor-impairment-limited-mobility"],
+        wcagCriteria: ["2.1.1", "2.5.7"],
+        severity: "critical",
+        remediation: "Provide keyboard-accessible alternative for drag-and-drop (arrow keys, or explicit move buttons)",
+      });
+      ctx.wcagViolations.add("2.1.1");
+    }
+  }
+
+  // Check for very small spacing between interactive elements (motor precision issue)
+  const closeElements = await page.$$eval(
+    'button, a, input[type="checkbox"], input[type="radio"]',
+    (elements) => {
+      const closeGroups: Array<{ selectors: string[]; spacing: number }> = [];
+      const elArray = Array.from(elements);
+
+      for (let i = 0; i < Math.min(elArray.length, 30); i++) {
+        const rect1 = elArray[i].getBoundingClientRect();
+        if (rect1.width === 0) continue;
+
+        for (let j = i + 1; j < Math.min(elArray.length, 30); j++) {
+          const rect2 = elArray[j].getBoundingClientRect();
+          if (rect2.width === 0) continue;
+
+          // Calculate distance between elements
+          const dx = Math.max(0, Math.max(rect1.left, rect2.left) - Math.min(rect1.right, rect2.right));
+          const dy = Math.max(0, Math.max(rect1.top, rect2.top) - Math.min(rect1.bottom, rect2.bottom));
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          // Flag elements less than 8px apart
+          if (distance < 8 && distance >= 0) {
+            closeGroups.push({
+              selectors: [
+                elArray[i].tagName.toLowerCase() + (elArray[i].id ? `#${elArray[i].id}` : ''),
+                elArray[j].tagName.toLowerCase() + (elArray[j].id ? `#${elArray[j].id}` : '')
+              ],
+              spacing: Math.round(distance),
+            });
+          }
+        }
+      }
+
+      return closeGroups.slice(0, 5);
+    }
+  );
+
+  if (closeElements.length > 0) {
+    barriers.push({
+      type: "motor_precision",
+      element: `${closeElements.length} element groups`,
+      description: `${closeElements.length} groups of interactive elements are very close together (< 8px spacing), making them difficult to target for users with tremors`,
+      affectedPersonas: ["motor-impairment-tremor"],
+      wcagCriteria: ["2.5.5"],
+      severity: "major",
+      remediation: "Increase spacing between interactive elements to at least 8-12px",
+    });
+  }
+}
+
+/**
+ * Detect barriers specifically relevant to cognitive personas (ADHD, dyslexia, memory impairment).
+ *
+ * Key checks:
+ * - Form complexity (field count, required fields)
+ * - Distraction count (animations, auto-playing media)
+ * - Reading level (sentence complexity)
+ * - Memory burden (multi-step processes without progress indicators)
+ *
+ * @since v18.15.0
+ */
+async function detectCognitiveBarriers(ctx: BarrierContext): Promise<void> {
+  const { page, barriers } = ctx;
+
+  // Check for auto-playing media (distraction for ADHD)
+  const autoPlayMedia = await page.$$eval(
+    'video[autoplay], audio[autoplay], [class*="autoplay"]',
+    (elements) => elements.map(el => ({
+      selector: el.tagName.toLowerCase(),
+      hasControls: el.hasAttribute('controls'),
+      hasMuted: el.hasAttribute('muted'),
+    }))
+  );
+
+  for (const media of autoPlayMedia) {
+    if (!media.hasMuted) {
+      barriers.push({
+        type: "cognitive_load",
+        element: media.selector,
+        description: `Auto-playing ${media.selector} with sound can be highly distracting for users with ADHD`,
+        affectedPersonas: ["cognitive-adhd"],
+        wcagCriteria: ["1.4.2", "2.2.2"],
+        severity: "critical",
+        remediation: "Add muted attribute to autoplay media, or provide user controls to pause/stop",
+      });
+      ctx.wcagViolations.add("1.4.2");
+    }
+  }
+
+  // Check for multi-step forms without progress indicator
+  const multiStepForms = await page.$$eval('form', (forms) => {
+    const results: Array<{
+      selector: string;
+      fieldCount: number;
+      hasProgress: boolean;
+      hasStepIndicator: boolean;
+    }> = [];
+
+    for (const form of forms) {
+      const inputs = form.querySelectorAll('input:not([type="hidden"]):not([type="submit"]), textarea, select');
+      const hasProgress =
+        form.querySelector('[class*="progress"], [class*="stepper"], [role="progressbar"]') !== null ||
+        document.querySelector('[class*="step-indicator"], [class*="wizard"]') !== null;
+
+      results.push({
+        selector: 'form' + (form.id ? `#${form.id}` : ''),
+        fieldCount: inputs.length,
+        hasProgress,
+        hasStepIndicator: hasProgress,
+      });
+    }
+
+    return results;
+  });
+
+  for (const form of multiStepForms) {
+    if (form.fieldCount > 5 && !form.hasProgress) {
+      barriers.push({
+        type: "cognitive_load",
+        element: form.selector,
+        description: `Form with ${form.fieldCount} fields lacks progress indicator - users with memory impairment may lose track of progress`,
+        affectedPersonas: ["cognitive-adhd", "cognitive-memory-impairment"],
+        wcagCriteria: ["3.3.4"],
+        severity: "major",
+        remediation: "Add progress indicator showing steps completed and remaining, or break form into clearly numbered sections",
+      });
+    }
+  }
+
+  // Check for dense text blocks (dyslexia barrier)
+  const denseTextBlocks = await page.$$eval('p, article, section', (elements) => {
+    const results: Array<{
+      selector: string;
+      wordCount: number;
+      lineHeight: string;
+      fontSize: string;
+    }> = [];
+
+    for (const el of elements.slice(0, 20)) {
+      const text = el.textContent || '';
+      const wordCount = text.split(/\s+/).filter(w => w.length > 0).length;
+      const styles = window.getComputedStyle(el);
+
+      // Flag blocks with 200+ words AND tight line spacing
+      if (wordCount > 200) {
+        results.push({
+          selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
+          wordCount,
+          lineHeight: styles.lineHeight,
+          fontSize: styles.fontSize,
+        });
+      }
+    }
+
+    return results;
+  });
+
+  for (const block of denseTextBlocks.slice(0, 3)) {
+    const lineHeightNum = parseFloat(block.lineHeight);
+    const fontSizeNum = parseFloat(block.fontSize);
+    const lineHeightRatio = lineHeightNum / fontSizeNum;
+
+    // Line height < 1.5 is hard for dyslexic users
+    if (lineHeightRatio < 1.5) {
+      barriers.push({
+        type: "cognitive_load",
+        element: block.selector,
+        description: `Dense text block (${block.wordCount} words) with tight line spacing (${lineHeightRatio.toFixed(1)}x) is difficult for dyslexic users`,
+        affectedPersonas: ["dyslexic-user"],
+        wcagCriteria: ["1.4.12"],
+        severity: "major",
+        remediation: "Increase line-height to at least 1.5x font size, and consider breaking text into shorter paragraphs with headings",
+      });
+      ctx.wcagViolations.add("1.4.12");
+    }
+  }
+
+  // Check for justified text (dyslexia barrier)
+  const justifiedText = await page.$$eval('p, article, div', (elements) => {
+    const results: string[] = [];
+
+    for (const el of elements.slice(0, 50)) {
+      const styles = window.getComputedStyle(el);
+      if (styles.textAlign === 'justify') {
+        results.push(el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''));
+      }
+    }
+
+    return results.slice(0, 5);
+  });
+
+  if (justifiedText.length > 0) {
+    barriers.push({
+      type: "cognitive_load",
+      element: `${justifiedText.length} elements`,
+      description: `Justified text creates uneven word spacing that makes reading difficult for dyslexic users`,
+      affectedPersonas: ["dyslexic-user"],
+      wcagCriteria: ["1.4.12"],
+      severity: "minor",
+      remediation: "Use left-aligned text instead of justified for better readability",
+    });
+    ctx.wcagViolations.add("1.4.12");
+  }
+}
+
+/**
+ * Detect barriers specifically relevant to vision personas (low vision, color blindness, elderly).
+ *
+ * Key checks:
+ * - Contrast ratios below WCAG thresholds
+ * - Text scaling behavior
+ * - Color-only information
+ * - Small font sizes (< 16px)
+ *
+ * @since v18.15.0
+ */
+async function detectVisionBarriers(ctx: BarrierContext): Promise<void> {
+  const { page, barriers } = ctx;
+
+  // Check for small base font sizes (vision impairment)
+  const smallFontElements = await page.$$eval('body, p, span, div, li, td', (elements) => {
+    const results: Array<{ selector: string; fontSize: string; fontSizeNum: number }> = [];
+
+    for (const el of elements.slice(0, 100)) {
+      const styles = window.getComputedStyle(el);
+      const fontSize = parseFloat(styles.fontSize);
+
+      // Flag fonts smaller than 14px as problematic for low vision
+      if (fontSize > 0 && fontSize < 14) {
+        results.push({
+          selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
+          fontSize: styles.fontSize,
+          fontSizeNum: fontSize,
+        });
+      }
+    }
+
+    return results.slice(0, 10);
+  });
+
+  if (smallFontElements.length > 0) {
+    const avgSize = smallFontElements.reduce((sum, el) => sum + el.fontSizeNum, 0) / smallFontElements.length;
+    barriers.push({
+      type: "visual_clarity",
+      element: `${smallFontElements.length} elements`,
+      description: `${smallFontElements.length} text elements use small font sizes (avg ${avgSize.toFixed(0)}px) that may be difficult for low-vision users`,
+      affectedPersonas: ["low-vision-magnified", "elderly-low-vision"],
+      wcagCriteria: ["1.4.4"],
+      severity: avgSize < 12 ? "critical" : "major",
+      remediation: "Use minimum 16px base font size, and ensure text can be resized to 200% without loss of content",
+    });
+    ctx.wcagViolations.add("1.4.4");
+  }
+
+  // Check for thin fonts (hard for low vision)
+  const thinFontElements = await page.$$eval('body, h1, h2, h3, p, span', (elements) => {
+    const results: string[] = [];
+
+    for (const el of elements.slice(0, 50)) {
+      const styles = window.getComputedStyle(el);
+      const fontWeight = parseInt(styles.fontWeight, 10) || 400;
+
+      // Font weight < 400 is thin and harder to read
+      if (fontWeight < 400 && el.textContent && el.textContent.trim().length > 0) {
+        results.push(el.tagName.toLowerCase());
+      }
+    }
+
+    return results;
+  });
+
+  if (thinFontElements.length > 3) {
+    barriers.push({
+      type: "visual_clarity",
+      element: `${thinFontElements.length} text elements`,
+      description: `Multiple elements use thin font weights (< 400) which are harder to read for low-vision users`,
+      affectedPersonas: ["low-vision-magnified", "elderly-low-vision"],
+      wcagCriteria: ["1.4.12"],
+      severity: "minor",
+      remediation: "Use font-weight 400 or higher for body text to improve readability",
+    });
+  }
+
+  // Check for links distinguished only by color (color blindness)
+  const colorOnlyLinks = await page.$$eval('a', (links) => {
+    const results: Array<{ selector: string; hasUnderline: boolean; hasIcon: boolean }> = [];
+
+    for (const link of links.slice(0, 30)) {
+      const styles = window.getComputedStyle(link);
+      const hasUnderline = styles.textDecoration.includes('underline');
+      const hasIcon = link.querySelector('svg, i, [class*="icon"]') !== null;
+
+      if (!hasUnderline && !hasIcon) {
+        results.push({
+          selector: link.textContent?.trim().slice(0, 20) || 'link',
+          hasUnderline,
+          hasIcon,
+        });
+      }
+    }
+
+    return results;
+  });
+
+  if (colorOnlyLinks.length > 2) {
+    barriers.push({
+      type: "sensory",
+      element: `${colorOnlyLinks.length} links`,
+      description: `${colorOnlyLinks.length} links are distinguished only by color, without underline or icon - color-blind users may not identify them as links`,
+      affectedPersonas: ["color-blind-deuteranopia"],
+      wcagCriteria: ["1.4.1"],
+      severity: "major",
+      remediation: "Add underline to links on hover/focus at minimum, or use a non-color visual indicator",
+    });
+    ctx.wcagViolations.add("1.4.1");
+  }
+
+  // Check for status indicators using only red/green (color blindness)
+  const redGreenIndicators = await page.$$eval(
+    '[class*="status"], [class*="indicator"], [class*="badge"], [class*="alert"]',
+    (elements) => {
+      const problematic: string[] = [];
+
+      for (const el of elements.slice(0, 20)) {
+        const styles = window.getComputedStyle(el);
+        const bgColor = styles.backgroundColor;
+        const color = styles.color;
+
+        // Simplified red/green detection
+        const hasRedGreen =
+          (bgColor.includes('255') && bgColor.includes('0')) || // Pure red or green
+          (color.includes('255') && color.includes('0'));
+
+        const hasIcon = el.querySelector('svg, i, [class*="icon"]') !== null;
+        const hasText = (el.textContent?.trim() || '').length > 1;
+
+        if (hasRedGreen && !hasIcon && !hasText) {
+          problematic.push(el.className?.split(' ')[0] || 'indicator');
+        }
+      }
+
+      return problematic;
+    }
+  );
+
+  if (redGreenIndicators.length > 0) {
+    barriers.push({
+      type: "sensory",
+      element: `${redGreenIndicators.length} status indicators`,
+      description: `Status indicators using red/green without additional cues may be indistinguishable for color-blind users`,
+      affectedPersonas: ["color-blind-deuteranopia"],
+      wcagCriteria: ["1.4.1"],
+      severity: "major",
+      remediation: "Add icons, patterns, or text labels to status indicators in addition to color",
+    });
+    ctx.wcagViolations.add("1.4.1");
+  }
+}
+
+// ============================================================================
 // Journey Simulation for Empathy
 // ============================================================================
 
@@ -546,8 +1292,10 @@ async function simulateAccessibilityJourney(
   url: string,
   goal: string,
   persona: AccessibilityPersona,
+  scope: "viewport" | "full_page" = "viewport",
   maxSteps: number,
-  maxTime: number
+  maxTime: number,
+  wcagLevel: "A" | "AA" | "AAA" = "AA"
 ): Promise<AccessibilityEmpathyResult> {
   const startTime = Date.now();
   const ctx: BarrierContext = {
@@ -557,9 +1305,14 @@ async function simulateAccessibilityJourney(
     frictionPoints: [],
     wcagViolations: new Set(),
     stepCount: 0,
+    viewportOnly: scope === "viewport",
+    wcagLevel,
   };
 
   let goalAchieved = false;
+  /** Set when the navigation simulation threw — see the catch block below. */
+  let navigationError: string | undefined;
+  let journeyValidation: Record<string, unknown> | undefined;
 
   // Emotional state captured from cognitive journey (v13.1.0)
   let finalEmotionalState: import("../types.js").EmotionalState | undefined;
@@ -567,11 +1320,49 @@ async function simulateAccessibilityJourney(
 
   try {
     // Navigate to URL
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10000 });
+    await page.waitForTimeout(1500);
+
+    // Scope-dependent page discovery
+    if (scope === "full_page") {
+      // Scroll through the full page to trigger lazy-loaded content
+      try {
+        const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+        const viewportHeight = await page.evaluate(() => window.innerHeight);
+        const scrollSteps = Math.min(5, Math.ceil(pageHeight / viewportHeight));
+
+        for (let i = 1; i <= scrollSteps; i++) {
+          await page.evaluate((y: number) => window.scrollTo(0, y), i * viewportHeight);
+          await page.waitForTimeout(300);
+        }
+        // Scroll back to top — detectors check full DOM
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.waitForTimeout(300);
+      } catch {
+        // Scroll failure is non-fatal
+      }
+    }
+    // viewport scope: no scroll — evaluate only what the user sees on first paint
+
+    // Inject viewport filter helper so barrier detectors can scope their queries
+    if (scope === "viewport") {
+      await page.evaluate(() => {
+        const vh = window.innerHeight;
+        (window as any).__cbrowserInViewport = (el: Element): boolean => {
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < vh;
+        };
+        (window as any).__cbrowserViewportOnly = true;
+      });
+    } else {
+      await page.evaluate(() => {
+        (window as any).__cbrowserInViewport = () => true; // full page = everything counts
+        (window as any).__cbrowserViewportOnly = false;
+      });
+    }
 
     // Run barrier detection
-    // v10.10.0: All detectors now run unconditionally regardless of persona
+    // v10.10.0: All general detectors run unconditionally regardless of persona
     await detectSmallTouchTargets(ctx);
     await detectLowContrast(ctx);
     await detectCognitiveLoad(ctx);
@@ -580,19 +1371,47 @@ async function simulateAccessibilityJourney(
     await detectMissingAltText(ctx);
     await detectMissingFormLabels(ctx);
 
+    // v18.15.0: Run persona-specific detectors based on persona category
+    // This ensures each persona type gets specialized barrier detection
+    const personaCategory = getPersonaCategory(persona.name);
+
+    switch (personaCategory) {
+      case "motor":
+        await detectMotorBarriers(ctx);
+        break;
+      case "cognitive":
+        await detectCognitiveBarriers(ctx);
+        break;
+      case "vision":
+        await detectVisionBarriers(ctx);
+        break;
+      case "general":
+        // Run all category-specific detectors for general personas
+        await detectMotorBarriers(ctx);
+        await detectCognitiveBarriers(ctx);
+        await detectVisionBarriers(ctx);
+        break;
+    }
+
     // Use cognitive journey for realistic step tracking if API key available
+    // v18.35.0: Add hard timeout to prevent MCP proxy disconnection (~60s limit on claude.ai)
+    const journeyTimeoutMs = Math.min(maxTime * 1000, 45000); // Hard cap at 45s to leave margin
     if (isApiKeyConfigured()) {
       try {
-        const journey = await runCognitiveJourney({
+        const journeyPromise = runCognitiveJourney({
           persona: persona.name,
           startUrl: url,
           goal,
-          maxSteps,
-          maxTime,
+          maxSteps: Math.min(maxSteps, 5), // Cap steps to keep within timeout
+          maxTime: Math.min(maxTime, 30),   // Cap journey time
           headless: true,
           vision: false,
           verbose: false,
         });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Journey timeout")), journeyTimeoutMs)
+        );
+        const journey = await Promise.race([journeyPromise, timeoutPromise]);
         ctx.stepCount = journey.stepCount;
 
         // Capture emotional state (v13.1.0)
@@ -618,6 +1437,67 @@ async function simulateAccessibilityJourney(
         }
 
         goalAchieved = journey.goalAchieved;
+
+        // v18.29.0: Store journey validation data for attachment to result
+        journeyValidation = {
+          goalAchieved: journey.goalAchieved,
+          goalEvidence: journey.goalEvidence || null,
+          failureReason: journey.failureReason || null,
+          navigationPath: journey.navigationPath || [],
+          lastPage: journey.lastPage || null,
+          stepCount: journey.stepCount,
+          journeyLog: (journey.journeyLog || []).map((s) => ({
+            step: s.step,
+            url: s.url,
+            action: s.action,
+            focusedElement: s.focusedElement,
+            mood: s.mood,
+            goalProgress: s.goalProgress,
+          })),
+        };
+
+        // ── Record the goal path to the site model (6.23) ──
+        //
+        // `goalPaths` had been 0 forever. The only route to recordGoalPath was
+        // GoalDecomposer.recordOutcome, and GoalDecomposer is exported but never
+        // constructed anywhere in src/ — so the write was unreachable, not
+        // merely unused.
+        //
+        // The decision was where to wire it. A journey session store was the
+        // obvious answer and the wrong one: the hosted server is deliberately
+        // stateless per request, and an optional actionsTaken parameter on
+        // cognitive_journey_update_state would depend on the caller remembering
+        // to send it, leaving the field at 0 in practice while looking fixed.
+        //
+        // Here the server drove the journey itself, so it already holds both
+        // halves — the outcome AND the traversal — and was discarding them for
+        // this purpose. Same shape as updateFingerprint, wired the same way, at
+        // the layer that knows what happened. Failures are recorded too:
+        // recordGoalPath tracks successRate, and a path that keeps failing is
+        // exactly what a planner needs to know. (2026-07-29)
+        try {
+          const { SiteModelManager } = await import("../site-model/manager.js");
+          const goalActions = (journey.journeyLog || [])
+            .filter((step) => step.action)
+            .map((step) => ({
+              type: normalizeGoalActionType(String(step.action)),
+              target: String(step.focusedElement || step.url || ""),
+              expectedOutcome: `step ${step.step}: goalProgress ${step.goalProgress ?? 0}`,
+            }));
+          if (goalActions.length > 0) {
+            SiteModelManager.getInstance().recordGoalPath(
+              new URL(url).hostname,
+              goal,
+              inferGoalType(goal),
+              goalActions,
+              journey.goalAchieved,
+              journey.stepCount,
+              persona.name,
+            );
+          }
+        } catch {
+          // Never fail an audit over a site-model write.
+        }
       } catch {
         // Fall back to barrier-based estimation
         ctx.stepCount = Math.max(3, ctx.barriers.length + 2);
@@ -691,20 +1571,105 @@ async function simulateAccessibilityJourney(
     // Friction (small targets, contrast, cognitive load) reduces score but doesn't block
     goalAchieved = blockingBarriers.length === 0;
 
+    // If journey validation says goal failed, override barrier-based goalAchieved
+    if (journeyValidation && journeyValidation.goalAchieved === false) {
+      goalAchieved = false;
+    }
+
   } catch (e) {
+    // This block is why the SVG className crash was invisible for so long. The
+    // throw skipped the `goalAchieved = blockingBarriers.length === 0` line
+    // above, leaving goalAchieved at its initialised `false`, and the scorer
+    // then charged a 15-point goal deduction. The number measured OUR crash and
+    // was reported to the customer as their site failing the goal — while the
+    // error itself appeared only in the HTML report, never in the JSON.
+    //
+    // Two things follow: record the error where the JSON can see it, and do not
+    // charge a goal deduction for a traversal that never ran. An unmeasured goal
+    // is unknown, not failed. (2026-07-29)
+    navigationError = (e as Error).message;
     ctx.frictionPoints.push({
       step: 0,
       type: "error",
-      description: `Navigation error: ${(e as Error).message}`,
+      description: `Navigation error: ${navigationError}`,
       impact: "high",
     });
   }
 
-  // Calculate empathy score
-  const empathyScore = calculateEmpathyScore(ctx.barriers, ctx.frictionPoints, goalAchieved);
+  // v18.26.0: Persona-weighted scoring via perceptual transport profiles
+  // Each persona has different barrier weights — motor users are 3x penalized
+  // by touch targets, ADHD by cognitive load, low-vision by contrast, etc.
+  const perceptualResult = calculatePerceptualScore(
+    ctx.barriers,
+    ctx.frictionPoints,
+    // When navigation threw, the goal was never attempted. Passing `false` here
+    // charges the customer for our failure; passing `true` would invent a
+    // success. Treat it as not-failed and mark the result degraded instead, so
+    // the score reflects only what was actually measured (the barriers).
+    navigationError ? true : goalAchieved,
+    persona.name,
+    (persona as any).accessibilityTraits,
+  );
+  const empathyScore = perceptualResult.score;
+  const totalDeduction = Object.values(perceptualResult.deductions).reduce((a, b) => a + Math.abs(b), 0);
+  const scoreContext = {
+    baseScore: 100,
+    deductionsByType: perceptualResult.deductions,
+    totalBarrierDeduction: totalDeduction,
+    // Were a hardcoded 0 and a locally re-derived guess. Both now come from the
+    // same computation that actually moved the score, so the numbered fields and
+    // the explanation prose can no longer disagree. (2026-07-28)
+    frictionDeduction: perceptualResult.frictionDeduction,
+    goalDeduction: perceptualResult.goalDeduction,
+    cognitiveOverloadPenalty: perceptualResult.cognitiveOverloadPenalty,
+    // The reading behind the prose above and behind cognitiveOverloadPenalty.
+    // Named because two other numbers in this payload are also "cognitive load".
+    visualComplexityCognitiveLoad: perceptualResult.cognitiveLoad,
+    // Susceptibility weight applied per barrier type for THIS persona. Barriers
+    // name a couple of exemplar affectedPersonas, which looks contradictory
+    // beside a deduction charged to a different persona; the weight is what
+    // actually differentiates them.
+    appliedBarrierWeights: perceptualResult.appliedWeights,
+    finalScore: empathyScore,
+    // A caller must be able to tell a measured score from a partial one.
+    ...(navigationError
+      ? {
+          degraded: true,
+          degradedReason: `navigation error — goal traversal did not run, so no goal deduction was applied: ${navigationError}`,
+        }
+      : {}),
+    explanation: perceptualResult.explanation
+      + (perceptualResult.informationLoss > 0.05 ? ` | Info loss: ${(perceptualResult.informationLoss * 100).toFixed(0)}%` : '')
+      + (perceptualResult.motorCost > 0.1 ? ` | Motor cost: ${(perceptualResult.motorCost * 100).toFixed(0)}%` : '')
+      // Labelled by source. Three different numbers in one payload all called
+      // "cognitive load" — this one (visual-complexity model), the screenshot
+      // Wasserstein figure in perceptualTransport.cognitiveLoad, and the optimal
+      // transport figure in cognitiveLoad.totalLoad. On one example.com audit
+      // they read 70%, 34% and 4% respectively. See cognitiveLoadReadings.
+      // (2026-07-28)
+      + (perceptualResult.cognitiveLoad > 0.3 ? ` | Visual-complexity cog load: ${(perceptualResult.cognitiveLoad * 100).toFixed(0)}%` : ''),
+  };
 
   // Generate remediation priorities
   const remediationPriority = generateRemediationPriority(ctx.barriers);
+
+  // Capture page screenshot for WCAG overlay visualization
+  let pageScreenshotBase64: string | undefined;
+  let viewportSize: { width: number; height: number } | undefined;
+  // Full document height, so a consumer can tell whether a rect in document
+  // coordinates actually falls inside the captured image. Comparing document
+  // coordinates against the VIEWPORT height flagged every rect as outside.
+  // (2026-07-29)
+  let documentHeight: number | undefined;
+  try {
+    const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: false });
+    pageScreenshotBase64 = Buffer.from(screenshotBuffer).toString('base64');
+    const vp = page.viewportSize();
+    if (vp) viewportSize = { width: vp.width, height: vp.height };
+    documentHeight = await page.evaluate(() =>
+      Math.max(document.body?.scrollHeight ?? 0, document.documentElement?.scrollHeight ?? 0)
+    );
+  } catch {}
 
   return {
     url,
@@ -713,13 +1678,28 @@ async function simulateAccessibilityJourney(
     goalAchieved,
     barriers: ctx.barriers,
     frictionPoints: ctx.frictionPoints,
-    wcagViolations: Array.from(ctx.wcagViolations),
+    // Filtered to the audit's conformance level, exactly as the top-level
+    // allWcagViolations is (see the filter near the end of runEmpathyAudit).
+    // Without this the per-persona list kept AAA criteria that the aggregate
+    // had dropped at AA, so wcagViolationCount read 2 beside an
+    // allWcagViolations of ["2.2.2"] — the same finding counted under two
+    // different rules. (2026-07-29)
+    wcagViolations: Array.from(ctx.wcagViolations).filter((v) => {
+      const criteria = WCAG_CRITERIA[v];
+      const order: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
+      return !criteria || order[criteria.level] <= order[wcagLevel];
+    }),
     remediationPriority,
     empathyScore,
+    scoreContext, // v18.22.0: Added score breakdown
     duration: Date.now() - startTime,
     finalEmotionalState,
     emotionalEvents,
-  };
+    journeyValidation, // v18.29.0
+    pageScreenshot: pageScreenshotBase64, // v18.60.0: For WCAG overlay visualization
+    viewportSize, // v18.60.0
+    documentHeight,
+  } as any;
 }
 
 function getDisabilityType(persona: AccessibilityPersona): string {
@@ -732,7 +1712,16 @@ function getDisabilityType(persona: AccessibilityPersona): string {
 }
 
 /**
+ * Score calculation result with context (v18.22.0)
+ */
+interface ScoreResult {
+  score: number;
+  context: import("../types.js").EmpathyScoreContext;
+}
+
+/**
  * v11.10.0: Improved scoring with deduplication and capped deductions (issue #86)
+ * v18.22.0: Added score context for transparency
  *
  * Previous issues:
  * - 10 small touch targets = -30 to -200 points (too harsh)
@@ -744,12 +1733,14 @@ function getDisabilityType(persona: AccessibilityPersona): string {
  * - Scale by unique issues, not total element count
  * - Base score on accessibility, not just barrier count
  */
-function calculateEmpathyScore(
+function calculateEmpathyScoreWithContext(
   barriers: AccessibilityBarrier[],
   frictionPoints: AccessibilityFrictionPoint[],
   goalAchieved: boolean
-): number {
-  let score = 100;
+): ScoreResult {
+  const baseScore = 100;
+  let score = baseScore;
+  const deductionsByType: Record<string, number> = {};
 
   // v11.10.0: Group barriers by type to avoid over-penalizing repeated issues
   const barriersByType = new Map<AccessibilityBarrierType, AccessibilityBarrier[]>();
@@ -761,6 +1752,7 @@ function calculateEmpathyScore(
 
   // Deduct per barrier TYPE with caps
   // Max deduction per type: critical=25, major=15, minor=8
+  let totalBarrierDeduction = 0;
   for (const [type, typeBarriers] of barriersByType) {
     const criticalCount = typeBarriers.filter(b => b.severity === "critical").length;
     const majorCount = typeBarriers.filter(b => b.severity === "major").length;
@@ -771,22 +1763,29 @@ function calculateEmpathyScore(
     const majorDeduct = Math.min(15, majorCount > 0 ? 8 + Math.min(majorCount - 1, 2) * 3 : 0);
     const minorDeduct = Math.min(8, minorCount > 0 ? 3 + Math.min(minorCount - 1, 3) * 1.5 : 0);
 
-    score -= criticalDeduct + majorDeduct + minorDeduct;
+    const typeDeduction = criticalDeduct + majorDeduct + minorDeduct;
+    if (typeDeduction > 0) {
+      deductionsByType[type] = -typeDeduction;
+      totalBarrierDeduction += typeDeduction;
+    }
+    score -= typeDeduction;
   }
 
   // Deduct for friction points (capped at 25 total)
-  let frictionDeduct = 0;
+  let rawFrictionDeduct = 0;
   for (const fp of frictionPoints) {
     switch (fp.impact) {
-      case "high": frictionDeduct += 8; break;
-      case "medium": frictionDeduct += 4; break;
-      case "low": frictionDeduct += 2; break;
+      case "high": rawFrictionDeduct += 8; break;
+      case "medium": rawFrictionDeduct += 4; break;
+      case "low": rawFrictionDeduct += 2; break;
     }
   }
-  score -= Math.min(25, frictionDeduct);
+  const frictionDeduction = Math.min(25, rawFrictionDeduct);
+  score -= frictionDeduction;
 
   // Goal achievement affects score but doesn't zero it
   // v11.10.0: Reduced penalty, page can still be partially accessible
+  const goalDeduction = goalAchieved ? 0 : 15;
   if (!goalAchieved) score -= 15;
 
   // Ensure minimum score of 10 if there are any working elements
@@ -796,7 +1795,51 @@ function calculateEmpathyScore(
     score = 10;
   }
 
-  return Math.max(0, Math.round(score));
+  const finalScore = Math.max(0, Math.round(score));
+
+  // Generate human-readable explanation
+  const explanationParts: string[] = [];
+  if (Object.keys(deductionsByType).length > 0) {
+    const topDeductions = Object.entries(deductionsByType)
+      .sort(([, a], [, b]) => a - b) // Most negative first
+      .slice(0, 3)
+      .map(([type, deduction]) => `${type.replace(/_/g, " ")} (${deduction})`)
+      .join(", ");
+    explanationParts.push(`Main barrier deductions: ${topDeductions}`);
+  }
+  if (frictionDeduction > 0) {
+    explanationParts.push(`Friction deduction: -${frictionDeduction} (${frictionPoints.length} friction points)`);
+  }
+  if (goalDeduction > 0) {
+    explanationParts.push(`Goal not achieved: -${goalDeduction}`);
+  }
+  if (explanationParts.length === 0) {
+    explanationParts.push("No significant deductions - page is highly accessible");
+  }
+
+  return {
+    score: finalScore,
+    context: {
+      baseScore,
+      deductionsByType,
+      totalBarrierDeduction,
+      frictionDeduction,
+      goalDeduction,
+      finalScore,
+      explanation: explanationParts.join(". ") + ".",
+    },
+  };
+}
+
+/**
+ * Legacy wrapper for backward compatibility
+ */
+function calculateEmpathyScore(
+  barriers: AccessibilityBarrier[],
+  frictionPoints: AccessibilityFrictionPoint[],
+  goalAchieved: boolean
+): number {
+  return calculateEmpathyScoreWithContext(barriers, frictionPoints, goalAchieved).score;
 }
 
 function generateRemediationPriority(barriers: AccessibilityBarrier[]): RemediationItem[] {
@@ -937,7 +1980,7 @@ TOP REMEDIATION PRIORITIES
 * Methodology and research sources: docs/METHODOLOGY.md
   Key sources: WCAG 2.1, WebAIM Screen Reader Survey (2024), Baymard Institute
 
-Generated by CBrowser v8.0.0 - Accessibility Empathy Audit
+Generated by CBrowser v${VERSION} - Accessibility Empathy Audit
 `;
 
   return report;
@@ -1245,7 +2288,7 @@ export function generateEmpathyAuditHtmlReport(result: EmpathyAuditResult): stri
   </div>
 
   <p style="color: #64748b; text-align: center; margin-top: 2rem;">
-    Generated by CBrowser v8.0.0 - Accessibility Empathy Audit
+    Generated by CBrowser v${VERSION} - Accessibility Empathy Audit
   </p>
 </body>
 </html>`;
@@ -1277,14 +2320,17 @@ function deduplicateBarriers(
   }>();
 
   for (const result of results) {
-    const personaName = result.persona;
-
     for (const barrier of result.barriers) {
       const existing = barriersByType.get(barrier.type);
+      // Use the barrier's OWN affectedPersonas (set by the detector — accurate)
+      // rather than the test persona's name. Previously we overwrote with
+      // result.persona, which made every barrier appear to affect only the
+      // tested persona. That breaks downstream filtering and reporting.
+      const barrierPersonas = barrier.affectedPersonas ?? [];
 
       if (existing) {
         existing.barriers.push(barrier);
-        existing.personas.add(personaName);
+        for (const p of barrierPersonas) existing.personas.add(p);
         existing.elements.add(barrier.element);
 
         // Track highest severity
@@ -1295,7 +2341,7 @@ function deduplicateBarriers(
       } else {
         barriersByType.set(barrier.type, {
           barriers: [barrier],
-          personas: new Set([personaName]),
+          personas: new Set(barrierPersonas),
           elements: new Set([barrier.element]),
           highestSeverity: barrier.severity,
         });
@@ -1323,7 +2369,15 @@ function deduplicateBarriers(
       description: aggregatedDescription,
       affectedPersonas: Array.from(data.personas),
       wcagCriteria: representative.wcagCriteria,
+      // This is the WORST severity across every element grouped under this
+      // barrier type, not one element's severity — but it shipped under the same
+      // field name `severity` that individual rects use, so the same 152x20
+      // target read "major" in barrierRects and "critical" in topBarriers and
+      // looked like a contradiction. Both numbers were right; only the naming
+      // hid that one is an aggregate. (2026-07-29)
       severity: data.highestSeverity,
+      severityIsGroupMax: true,
+      affectedElementCount: data.elements.size,
       remediation: representative.remediation,
     });
   }
@@ -1334,6 +2388,33 @@ function deduplicateBarriers(
 // ============================================================================
 // Main Empathy Audit Function
 // ============================================================================
+
+/**
+ * Map a journey step's action word onto the site model's GoalAction type.
+ * Unknown verbs become "click" rather than being dropped: a step that happened
+ * is better recorded imprecisely than not at all.
+ */
+function normalizeGoalActionType(action: string): "navigate" | "click" | "fill" | "select" | "scroll" | "wait" {
+  const a = action.toLowerCase();
+  if (a.includes("navigat") || a.includes("goto") || a.includes("go to")) return "navigate";
+  if (a.includes("fill") || a.includes("type") || a.includes("enter")) return "fill";
+  if (a.includes("select") || a.includes("choose")) return "select";
+  if (a.includes("scroll")) return "scroll";
+  if (a.includes("wait")) return "wait";
+  return "click";
+}
+
+/** Classify a goal sentence into the site model's GoalType. */
+function inferGoalType(goal: string): import("../site-model/types.js").GoalType {
+  const g = goal.toLowerCase();
+  if (/\b(find|locate|look up|search for|read|learn)\b/.test(g)) return "find_information";
+  if (/\b(fill|submit|register|sign up|apply|checkout|complete the form)\b/.test(g)) return "fill_form";
+  if (/\b(compare|versus|vs\.?)\b/.test(g)) return "compare";
+  if (/\b(explore|browse|look around)\b/.test(g)) return "explore";
+  if (/\b(extract|scrape|collect|gather)\b/.test(g)) return "extract_data";
+  if (/\b(go to|navigate|reach|open)\b/.test(g)) return "navigate_to";
+  return "complete_action";
+}
 
 export async function runEmpathyAudit(
   url: string,
@@ -1378,34 +2459,299 @@ export async function runEmpathyAudit(
     "color-blind": "color-blind-deuteranopia",
     "colorblind": "color-blind-deuteranopia",
     "deuteranopia": "color-blind-deuteranopia",
+    // v18.35.0: New research-backed cognitive disability personas
+    "autism": "autism-spectrum",
+    "autistic": "autism-spectrum",
+    "asd": "autism-spectrum",
+    "autism-spectrum": "autism-spectrum",
+    "intellectual-disability": "intellectual-disability",
+    "intellectual": "intellectual-disability",
+    "learning-disability": "intellectual-disability",
+    "aphasia": "aphasia-receptive",
+    "aphasia-receptive": "aphasia-receptive",
+    "wernicke": "aphasia-receptive",
+    "dyscalculia": "dyscalculia",
+    "numeracy": "dyscalculia",
   };
 
   // Run audit for each disability type
+  // v18.35.0: Accept any persona — wrap non-disability personas with default accessibility traits
   for (const disability of disabilities) {
     const personaName = personaMap[disability.toLowerCase()] || disability;
-    const persona = getAccessibilityPersona(personaName);
+    let persona = getAccessibilityPersona(personaName);
+    let isDisabilityPersona = !!persona;
 
     if (!persona) {
-      console.warn(`Unknown disability/persona: ${disability}, skipping`);
-      continue;
+      // Try to find as a regular cognitive persona and wrap it
+      const { getAnyPersona, createCognitivePersona } = await import("../personas.js");
+      let cognitivePersona = getAnyPersona(personaName);
+
+      // CMS custom persona fallback — fetch from API if not found locally
+      if (!cognitivePersona) {
+        try {
+          const { getSessionApiKey } = await import("../mcp-tools/base/cognitive-tools.js");
+          const apiKey = getSessionApiKey();
+          if (apiKey) {
+            const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+            const res = await fetch(`${cmsUrl}/api/personas`, {
+              headers: { "Authorization": `Bearer ${apiKey}` },
+            });
+            if (res.ok) {
+              const data = await res.json() as { personas: Array<{ name: string; slug?: string; traits: Record<string, number>; accessibility_traits?: Record<string, unknown>; age_range?: string }> };
+              const cmsMatch = data.personas.find(
+                (p: { name: string; slug?: string }) =>
+                  p.name.toLowerCase() === personaName.toLowerCase() ||
+                  p.name.toLowerCase().replace(/\s+/g, '-') === personaName.toLowerCase() ||
+                  p.name.toLowerCase().replace(/\s+/g, '_') === personaName.toLowerCase() ||
+                  (p.slug && p.slug.toLowerCase() === personaName.toLowerCase())
+              );
+              if (cmsMatch) {
+                const parsedTraits = typeof cmsMatch.traits === "string" ? JSON.parse(cmsMatch.traits) : cmsMatch.traits;
+                cognitivePersona = createCognitivePersona(cmsMatch.name, cmsMatch.name, parsedTraits, {
+                  ageRange: cmsMatch.age_range || undefined,
+                });
+                // Attach CMS accessibility traits if stored
+                if (cmsMatch.accessibility_traits) {
+                  const at = typeof cmsMatch.accessibility_traits === "string" ? JSON.parse(cmsMatch.accessibility_traits) : cmsMatch.accessibility_traits;
+                  (cognitivePersona as any).accessibilityTraits = at;
+                }
+                console.log(`[empathy_audit] Found custom CMS persona: "${cmsMatch.name}" with ${Object.keys(parsedTraits).length} traits${cmsMatch.accessibility_traits ? ' + disability modeling' : ''}`);
+              }
+            }
+          }
+        } catch (e) {
+          console.debug(`[empathy_audit] CMS persona lookup failed: ${(e as Error).message}`);
+        }
+      }
+
+      if (cognitivePersona) {
+        // Wrap cognitive persona as accessibility persona, inferring traits from name + cognitive traits
+        const ct = (cognitivePersona as any).cognitiveTraits || {};
+        const name = personaName.toLowerCase();
+        const hasVisionHint = name.includes("vision") || name.includes("blind") || name.includes("elderly") || name.includes("magnif");
+        const hasMotorHint = name.includes("motor") || name.includes("tremor") || name.includes("parkinsons");
+        const hasCognitiveHint = name.includes("adhd") || name.includes("dyslexic") || name.includes("cognitive") || name.includes("memory");
+
+        persona = {
+          ...cognitivePersona,
+          accessibilityTraits: {
+            motorControl: hasMotorHint ? 0.3 : ct.motorControl ?? 1.0,
+            tremor: hasMotorHint,
+            reachability: hasMotorHint ? 0.4 : 1.0,
+            visionLevel: hasVisionHint ? 0.4 : ct.visionLevel ?? 1.0,
+            contrastSensitivity: hasVisionHint ? 0.5 : ct.contrastSensitivity ?? 1.0,
+            processingSpeed: ct.comprehension ?? (hasCognitiveHint ? 0.4 : 0.8),
+            attentionSpan: ct.patience ?? (hasCognitiveHint ? 0.3 : 0.7),
+            fatigueSusceptibility: hasVisionHint || hasMotorHint ? 0.7 : 0.3,
+          },
+        } as any;
+        // If the name hints at a disability, treat it as a disability persona for routing
+        isDisabilityPersona = hasVisionHint || hasMotorHint || hasCognitiveHint;
+        console.log(`[empathy_audit] "${disability}" wrapped as ${isDisabilityPersona ? "disability" : "general"} persona (vision=${hasVisionHint}, motor=${hasMotorHint}, cognitive=${hasCognitiveHint})`);
+      } else {
+        // Return an explicit error instead of silently skipping
+        console.error(`[empathy_audit] Persona "${disability}" not found in any registry (built-in, custom, CMS)`);
+        results.push({
+          persona: personaName,
+          disabilityType: disability,
+          goalAchieved: false,
+          empathyScore: 0,
+          barriers: [],
+          wcagViolations: [],
+          journey: [],
+          screenshotPath: null,
+          error: `Persona "${disability}" not found. Use list_cognitive_personas to see available personas, or create one with persona_create_from_description.`,
+        } as any);
+        continue;
+      }
     }
 
-    let browser: Browser | null = null;
-    try {
-      browser = await chromium.launch({ headless });
-      const context = await browser.newContext({
-        viewport: { width: 1920, height: 1080 },
-      });
-      const page = await context.newPage();
+    // TypeScript guard — persona is guaranteed non-null after continue above
+    const resolvedPersona = persona!;
 
+    // Use externally provided page or launch a new browser
+    const externalPage = options.page;
+    let browser: CBrowser | null = null;
+    try {
+      let page: import("playwright").Page;
+      if (externalPage) {
+        page = externalPage;
+      } else {
+        browser = new CBrowser({
+          headless,
+          persistent: false,
+          ...(options.device ? { device: options.device.toLowerCase() } : {}),
+        });
+        await browser.launch();
+        page = await browser.getPage();
+      }
+
+      const auditScope = options.scope || "viewport";
       const result = await simulateAccessibilityJourney(
-        page,
+        page as any,
         url,
         goal,
-        persona,
+        resolvedPersona,
+        auditScope,
         maxSteps,
-        maxTime
+        maxTime,
+        wcagLevel
       );
+
+      // v18.28.0: Run attention analysis FIRST so we can pass page-specific data to perceptual transport
+      let attentionData: { entropy: number; concentration: number; transportCost: number } | undefined;
+      try {
+        const { join: joinAttn } = await import("path");
+        const { tmpdir: tmpdirAttn } = await import("os");
+        const { unlinkSync: ulAttn } = await import("fs");
+        const attnScreenshot = joinAttn(tmpdirAttn(), `empathy-attn-${Date.now()}.png`);
+        await page.screenshot({ path: attnScreenshot, fullPage: false });
+
+        const attnAnalysis = await analyzeAttention(attnScreenshot, personaName, 16);
+        attentionData = {
+          entropy: attnAnalysis.entropy,
+          concentration: attnAnalysis.concentration,
+          transportCost: attnAnalysis.transportCost,
+        };
+        (result as any).attentionAnalysis = {
+          alignmentScore: attnAnalysis.alignmentScore,
+          entropy: attnAnalysis.entropy,
+          concentration: attnAnalysis.concentration,
+          transportCost: attnAnalysis.transportCost,
+          topAttentionAreas: attnAnalysis.attentionCompetitors,
+          computeTimeMs: Math.round(attnAnalysis.computeTimeMs),
+        };
+
+        try { ulAttn(attnScreenshot); } catch {}
+      } catch (e) {
+        console.debug(`[empathy_audit] Attention analysis failed: ${(e as Error).message}`);
+      }
+
+      // v18.26.0: Screenshot-based perceptual transport analysis
+      // Now receives attention data for page-specific differentiation
+      try {
+        const { join } = await import("path");
+        const { tmpdir } = await import("os");
+        const { unlinkSync } = await import("fs");
+        const screenshotPath = join(tmpdir(), `empathy-screenshot-${Date.now()}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: false });
+
+        const perceptualAnalysis = await analyzePerceptualTransport(screenshotPath, personaName, attentionData, (resolvedPersona as any).accessibilityTraits);
+
+        // Attach perceptual metrics to the result
+        (result as any).perceptualTransport = {
+          informationLoss: perceptualAnalysis.informationLoss,
+          attentionMismatch: perceptualAnalysis.attentionMismatch,
+          motorCost: perceptualAnalysis.motorCost,
+          cognitiveLoad: perceptualAnalysis.cognitiveLoad,
+          perceptualScore: perceptualAnalysis.perceptualScore,
+          transportDistance: perceptualAnalysis.transportDistance,
+          computeTimeMs: perceptualAnalysis.computeTimeMs,
+        };
+
+        // Blend perceptual score into empathy score (30% perceptual, 70% barrier-based)
+        const blendedScore = Math.round(
+          result.empathyScore * 0.7 + perceptualAnalysis.perceptualScore * 0.3
+        );
+        (result as any).empathyScoreBarrierOnly = result.empathyScore;
+        result.empathyScore = blendedScore;
+
+        // scoreContext.explanation was built for the pre-blend score and then
+        // left attached to the blended one, so its deductions summed to
+        // empathyScoreBarrierOnly while sitting beside a different headline
+        // (observed: deductions of 11 explaining 89, printed next to
+        // empathyScore 91). Record the blend so the arithmetic reconciles
+        // end to end, and say which number the deductions explain. (2026-07-28)
+        const ctxToUpdate = (result as any).scoreContext;
+        if (ctxToUpdate) {
+          ctxToUpdate.explainsScore = "empathyScoreBarrierOnly";
+          ctxToUpdate.barrierOnlyScore = (result as any).empathyScoreBarrierOnly;
+          ctxToUpdate.perceptualScore = perceptualAnalysis.perceptualScore;
+          ctxToUpdate.blendWeights = { barrier: 0.7, perceptual: 0.3 };
+          ctxToUpdate.finalScore = blendedScore;
+          ctxToUpdate.explanation =
+            `${ctxToUpdate.explanation} || Headline empathyScore ${blendedScore} = ` +
+            `barrier-only ${(result as any).empathyScoreBarrierOnly} x 0.7 + ` +
+            `perceptual ${perceptualAnalysis.perceptualScore} x 0.3. ` +
+            `The deductions above explain the barrier-only score, not the headline.`;
+        }
+
+        try { unlinkSync(screenshotPath); } catch {}
+      } catch (e) {
+        // Perceptual analysis is optional — don't fail the audit if it errors
+        console.debug(`[empathy_audit] Perceptual transport analysis failed: ${(e as Error).message}`);
+      }
+
+      // v18.27.0: Cognitive load estimation via optimal transport
+      try {
+        const pageMetrics = await extractPageMetrics(page);
+        const otProfile = buildOTCognitiveProfile(personaName, resolvedPersona.cognitiveTraits as unknown as Record<string, number> || {});
+        const cogLoad = estimateCognitiveLoad(otProfile, pageMetrics);
+
+        // Three separate models each produce a number called "cognitive load",
+        // and all three ship in the same response with nothing to distinguish
+        // them: one example.com audit returned 70%, 34% and 4% for the same
+        // persona on the same page. They are not redundant — they measure
+        // different things — so name them and their sources rather than picking
+        // an arbitrary winner. (2026-07-28)
+        (result as any).cognitiveLoadReadings = {
+          note: "Three models, three scales. These are not expected to agree; use the one matching your question.",
+          visualComplexity: {
+            value: (result as any).scoreContext?.visualComplexityCognitiveLoad,
+            source: "computePerceptualScore",
+            measures: "visual complexity vs the persona's noise tolerance; this is the figure that deducts from the empathy score",
+          },
+          perceptualTransport: {
+            value: (result as any).perceptualTransport?.cognitiveLoad,
+            source: "computePerceptualAnalysis (screenshot Wasserstein)",
+            measures: "how much visual information this persona loses versus a typical viewer",
+          },
+          opticalTransport: {
+            value: Math.round(cogLoad.totalLoad * 100) / 100,
+            source: "estimateCognitiveLoad (optimal transport over page metrics)",
+            measures: "modelled working-memory demand of the page for this persona's traits",
+          },
+        };
+
+        (result as any).cognitiveLoad = {
+          totalLoad: Math.round(cogLoad.totalLoad * 100) / 100,
+          overloaded: cogLoad.overloaded,
+          bottleneck: cogLoad.bottleneck,
+          breakdown: Object.fromEntries(
+            Object.entries(cogLoad.breakdown).map(([k, v]) => [k, Math.round(v * 100) / 100])
+          ),
+          pageMetrics: {
+            informationDensity: Math.round(pageMetrics.informationDensity * 100) / 100,
+            visualComplexity: Math.round(pageMetrics.visualComplexity * 100) / 100,
+            interactiveElements: pageMetrics.interactiveElementCount,
+            animationLevel: Math.round(pageMetrics.animationLevel * 100) / 100,
+            choiceCount: pageMetrics.choiceCount,
+          },
+        };
+      } catch (e) {
+        console.debug(`[empathy_audit] Cognitive load estimation failed: ${(e as Error).message}`);
+      }
+
+      // v18.28.0: Attention analysis already ran above (before perceptual transport)
+
+      // v18.35.0: Flag non-disability personas
+      if (!isDisabilityPersona) {
+        (result as any).isDisabilityPersona = false;
+        // getDisabilityType() derives labels like "Cognitive (ADHD/Memory)" from
+        // trait thresholds alone (workingMemory < 0.5), so a wrapped general
+        // persona such as first-timer (workingMemory 0.4) was reported as having
+        // a disability while this very flag said it did not. Overwrite only an
+        // actual disability label: personas already carrying a general one keep
+        // their existing wording, so report text does not churn for cases that
+        // were already correct. Kept a string rather than null because types.ts
+        // declares disabilityType: string and formatEmpathyAuditReport() reads
+        // .length on it. (2026-07-28)
+        const stamped = (result as any).disabilityType;
+        if (typeof stamped === "string" && !/^general\b/i.test(stamped)) {
+          (result as any).disabilityType = "General UX (not a disability persona)";
+        }
+        (result as any).personaNote = `"${disability}" is not a disability persona. Barriers shown are general UX issues, not disability-specific. For disability testing, use: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia.`;
+      }
 
       results.push(result);
 
@@ -1416,7 +2762,8 @@ export async function runEmpathyAudit(
       allBarriers.push(...result.barriers);
 
     } finally {
-      if (browser) {
+      // Don't close browser if page was externally provided
+      if (browser && !externalPage) {
         await browser.close();
       }
     }

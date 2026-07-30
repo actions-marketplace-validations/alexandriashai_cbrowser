@@ -212,11 +212,18 @@ export function registerMarketingTools(server: McpServer): void {
   // marketing_personas_list - List marketing personas with value profiles
   // =========================================================================
 
-  server.tool(
-    "marketing_personas_list",
-    "List all available marketing personas with their Schwartz value profiles and Cialdini influence susceptibility scores. Use this to understand which personas to target in campaigns.",
-    {},
-    async () => {
+  server.registerTool("marketing_personas_list", {
+    title: "List Marketing Personas",
+    description: "List all available marketing personas with their Schwartz value profiles and Cialdini influence susceptibility scores. Use this to understand which personas to target in campaigns.",
+    inputSchema: {},
+    annotations: {
+      title: "List Marketing Personas",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       // Stub on local MCP
       if (!isEnabled) {
         return {
@@ -274,15 +281,22 @@ export function registerMarketingTools(server: McpServer): void {
   // marketing_campaign_create - Create a marketing campaign
   // =========================================================================
 
-  server.tool(
-    "marketing_campaign_create",
-    "Create a new marketing campaign for tracking cognitive journey results across personas. Returns campaign ID for use with marketing_campaign_report_result.",
-    {
+  server.registerTool("marketing_campaign_create", {
+    title: "Create Marketing Campaign",
+    description: "Create a new marketing campaign for tracking cognitive journey results across personas. Returns campaign ID for use with marketing_campaign_report_result.",
+    inputSchema: {
       name: z.string().describe("Unique campaign name (e.g., 'q1-signup-flow')"),
       url: z.string().url().describe("Target URL to analyze"),
       goal: z.string().describe("Goal to measure (e.g., 'Complete signup and reach dashboard')"),
     },
-    async ({ name, url, goal }) => {
+    annotations: {
+      title: "Create Marketing Campaign",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ name, url, goal }) => {
       // Stub on local MCP
       if (!isEnabled) {
         return {
@@ -357,10 +371,10 @@ export function registerMarketingTools(server: McpServer): void {
   // marketing_campaign_report_result - Report journey result to campaign
   // =========================================================================
 
-  server.tool(
-    "marketing_campaign_report_result",
-    "Report the result of a cognitive journey to a marketing campaign. Call this after completing a journey via cognitive_journey_init/update_state orchestration.",
-    {
+  server.registerTool("marketing_campaign_report_result", {
+    title: "Report Campaign Result",
+    description: "Report the result of a cognitive journey to a marketing campaign. Call this after completing a journey via cognitive_journey_init/update_state orchestration.",
+    inputSchema: {
       campaign_name: z.string().describe("Campaign name from marketing_campaign_create"),
       persona: z.string().describe("Persona name that completed the journey"),
       goal_achieved: z.boolean().describe("Whether the persona achieved the campaign goal"),
@@ -369,7 +383,14 @@ export function registerMarketingTools(server: McpServer): void {
       duration: z.number().optional().describe("Journey duration in seconds"),
       abandonment_reason: z.string().optional().describe("Reason for abandonment if goal not achieved"),
     },
-    async ({ campaign_name, persona, goal_achieved, steps, friction_points, duration, abandonment_reason }) => {
+    annotations: {
+      title: "Report Campaign Result",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ campaign_name, persona, goal_achieved, steps, friction_points, duration, abandonment_reason }) => {
       // Stub on local MCP
       if (!isEnabled) {
         return {
@@ -465,15 +486,22 @@ export function registerMarketingTools(server: McpServer): void {
   // marketing_campaign_run - Execute campaign with personas
   // =========================================================================
 
-  server.tool(
-    "marketing_campaign_run",
-    "Execute a marketing campaign by orchestrating cognitive journeys for specified personas. Returns instructions for running each journey. Use cognitive_journey_init/update_state to execute each journey, then report results with marketing_campaign_report_result.",
-    {
+  server.registerTool("marketing_campaign_run", {
+    title: "Run Marketing Campaign",
+    description: "Execute a marketing campaign by orchestrating cognitive journeys for specified personas. Returns instructions for running each journey. Use cognitive_journey_init/update_state to execute each journey, then report results with marketing_campaign_report_result.",
+    inputSchema: {
       campaign_name: z.string().describe("Campaign name from marketing_campaign_create"),
       personas: z.array(z.string()).optional().describe("Specific personas to run (default: all available)"),
       max_personas: z.number().int().positive().optional().describe("Maximum number of personas to run (default: 5)"),
     },
-    async ({ campaign_name, personas, max_personas }) => {
+    annotations: {
+      title: "Run Marketing Campaign",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ campaign_name, personas, max_personas }) => {
       // Stub on local MCP
       if (!isEnabled) {
         return {

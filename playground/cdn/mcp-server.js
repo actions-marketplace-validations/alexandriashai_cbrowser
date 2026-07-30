@@ -1,0 +1,3494 @@
+#!/usr/bin/env node
+/**
+ * CBrowser - Cognitive Browser Automation
+ * Copyright 2026 Alexandria Eden alexandria.shai.eden@gmail.com
+ * Learn more at https://cbrowser.ai - MIT License
+ */
+/**
+ * CBrowser MCP Server
+ *
+ * Exposes CBrowser browser automation tools via Model Context Protocol.
+ * Run with: cbrowser mcp-server
+ * Or: npx cbrowser mcp-server
+ */
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { CBrowser } from "./browser.js";
+import { ensureDirectories, getStatusInfo } from "./config.js";
+// Visual module imports
+import { runVisualRegression, runCrossBrowserTest, runResponsiveTest, runABComparison, crossBrowserDiff, captureVisualBaseline, listVisualBaselines, } from "./visual/index.js";
+// Testing module imports
+import { runNLTestSuite, parseNLTestSuite, dryRunNLTestSuite, repairTest, detectFlakyTests, generateCoverageMap, } from "./testing/index.js";
+// Analysis module imports
+import { huntBugs, runChaosTest, comparePersonas, findElementByIntent, runAgentReadyAudit, runCompetitiveBenchmark, runEmpathyAudit, } from "./analysis/index.js";
+import { listAccessibilityPersonas, getAccessibilityPersona } from "./personas.js";
+// Persona imports for cognitive journey
+import { getPersona, getAnyPersona, listPersonas, getCognitiveProfile, createCognitivePersona, saveCustomPersona, listEmotionalPersonas, getEmotionalPersona, isAgentPersonaObject, } from "./personas.js";
+// Emotional state functions (v13.1.0)
+import { createInitialEmotionalState, createEmotionalConfig, applyEmotionalTrigger, describeEmotionalState, shouldConsiderAbandonment, calculateAbandonmentModifier, calculateExplorationTendency, calculateDecisionSpeedModifier, } from "./cognitive/emotions.js";
+// Performance module imports
+import { capturePerformanceBaseline, detectPerformanceRegression, listPerformanceBaselines, } from "./performance/index.js";
+// Values system (Schwartz's 10 Universal Values)
+import { getPersonaValues, PERSONA_VALUE_PROFILES, rankInfluencePatternsForProfile, INFLUENCE_PATTERNS, } from "./values/index.js";
+// Version from package.json - single source of truth
+import { VERSION } from "./version.js";
+// Persona questionnaire imports
+import { generatePersonaQuestionnaire, buildTraitsFromAnswers, TRAIT_REFERENCE_MATRIX, deriveValuesFromTraits, } from "./persona-questionnaire.js";
+// Security tools (mcp-guardian)
+import { securityAuditHandler, } from "mcp-guardian";
+// ============================================================================
+// CRITICAL: Redirect console.log to stderr for MCP stdio transport
+// MCP uses stdout for JSON-RPC messages. Any console.log output corrupts
+// the protocol and causes "Unexpected token" JSON parsing errors in clients.
+// ============================================================================
+console.log = (...args) => console.error(...args);
+// Shared browser instance
+let browser = null;
+async function getBrowser() {
+    if (!browser) {
+        browser = new CBrowser({
+            headless: true,
+            persistent: true,
+        });
+    }
+    return browser;
+}
+/**
+ * v14.2.1: Retry wrapper for transient browser errors.
+ * v14.2.5: Fixed page context desync after error recovery.
+ * Retries operations that fail with common transient error patterns.
+ *
+ * v16.11.0: CRASH RESILIENCE PATTERN
+ * For tools that use context-level operations (setOffline, route interception),
+ * use an explicit try-catch + recovery pattern instead of withRetry:
+ *
+ *   try {
+ *     const result = await dangerousOperation();
+ *     return { content: [{ type: "text", text: JSON.stringify(result) }] };
+ *   } catch (error: any) {
+ *     try { await browser.recoverBrowser(); } catch { }
+ *     return { content: [{ type: "text", text: JSON.stringify({
+ *       error: error.message, recovered: true
+ *     }) }] };
+ *   }
+ *
+ * This ensures the MCP server never crashes from unhandled browser errors.
+ * See chaos_test for the reference implementation.
+ */
+async function withRetry(operation, options = {}) {
+    const maxRetries = options.maxRetries ?? 2;
+    const retryDelay = options.retryDelay ?? 500;
+    let lastError = null;
+    // v14.2.5: Capture current URL before operation to restore after recovery
+    let expectedUrl = null;
+    try {
+        const b = await getBrowser();
+        const page = await b.getPage();
+        expectedUrl = page.url();
+    }
+    catch {
+        // Can't get URL, proceed without context preservation
+    }
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            return await operation();
+        }
+        catch (e) {
+            lastError = e;
+            const errorMessage = lastError.message || "";
+            // Check if this is a transient error worth retrying
+            const isTransient = errorMessage.includes("Target closed") ||
+                errorMessage.includes("Execution context") ||
+                errorMessage.includes("Session closed") ||
+                errorMessage.includes("Connection refused") ||
+                errorMessage.includes("Browser disconnected");
+            if (!isTransient || attempt === maxRetries) {
+                throw lastError;
+            }
+            // Wait before retry with exponential backoff
+            await new Promise((r) => setTimeout(r, retryDelay * (attempt + 1)));
+            // Try to recover the browser before retrying
+            try {
+                const b = await getBrowser();
+                await b.recoverBrowser();
+                // v14.2.5: Verify page context matches expected URL after recovery
+                // This prevents desync where recovery loads a different saved session
+                if (expectedUrl && expectedUrl !== "about:blank") {
+                    const page = await b.getPage();
+                    const currentUrl = page.url();
+                    if (currentUrl !== expectedUrl && !currentUrl.startsWith(expectedUrl.split("?")[0])) {
+                        // Page recovered to wrong URL, navigate back
+                        await page.goto(expectedUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+                    }
+                }
+            }
+            catch {
+                // Recovery failed, will retry operation anyway
+            }
+        }
+    }
+    throw lastError;
+}
+const VALUES_QUESTIONS = [
+    {
+        id: "security", value: "security",
+        question: "How important is safety and stability to this persona?",
+        options: [
+            { value: 0.0, label: "Not Important", description: "Takes risks freely, ignores safety warnings" },
+            { value: 0.33, label: "Somewhat Important", description: "Considers safety but willing to take chances" },
+            { value: 0.67, label: "Important", description: "Prefers established, secure options" },
+            { value: 1.0, label: "Very Important", description: "Prioritizes safety above almost everything" },
+        ],
+    },
+    {
+        id: "stimulation", value: "stimulation",
+        question: "How much does this persona seek excitement and novelty?",
+        options: [
+            { value: 0.0, label: "Avoids", description: "Prefers predictable, calm experiences" },
+            { value: 0.33, label: "Occasionally", description: "Open to new things but not seeking them" },
+            { value: 0.67, label: "Seeks", description: "Actively looks for new and exciting experiences" },
+            { value: 1.0, label: "Craves", description: "Constantly seeking stimulation and novelty" },
+        ],
+    },
+    {
+        id: "achievement", value: "achievement",
+        question: "How driven is this persona by personal success and competence?",
+        options: [
+            { value: 0.0, label: "Not Driven", description: "Success is not a priority" },
+            { value: 0.33, label: "Moderately", description: "Likes to succeed but not at all costs" },
+            { value: 0.67, label: "Driven", description: "Works hard to demonstrate competence" },
+            { value: 1.0, label: "Highly Driven", description: "Success and achievement are paramount" },
+        ],
+    },
+    {
+        id: "conformity", value: "conformity",
+        question: "How much does this persona follow social expectations and norms?",
+        options: [
+            { value: 0.0, label: "Independent", description: "Makes own rules, ignores conventions" },
+            { value: 0.33, label: "Flexible", description: "Follows norms when convenient" },
+            { value: 0.67, label: "Compliant", description: "Generally follows social expectations" },
+            { value: 1.0, label: "Traditional", description: "Strongly adheres to social norms" },
+        ],
+    },
+    {
+        id: "hedonism", value: "hedonism",
+        question: "How much does this persona prioritize pleasure and enjoyment?",
+        options: [
+            { value: 0.0, label: "Practical", description: "Prioritizes function over pleasure" },
+            { value: 0.33, label: "Balanced", description: "Enjoys pleasure but not a priority" },
+            { value: 0.67, label: "Pleasure-Seeking", description: "Actively seeks enjoyable experiences" },
+            { value: 1.0, label: "Hedonistic", description: "Pleasure and enjoyment are top priorities" },
+        ],
+    },
+    {
+        id: "power", value: "power",
+        question: "How important is social status and influence to this persona?",
+        options: [
+            { value: 0.0, label: "Not Important", description: "Doesn't care about status or control" },
+            { value: 0.33, label: "Minor Concern", description: "Aware of status but not driven by it" },
+            { value: 0.67, label: "Important", description: "Values influence and recognition" },
+            { value: 1.0, label: "Critical", description: "Status and control are major motivators" },
+        ],
+    },
+    {
+        id: "tradition", value: "tradition",
+        question: "How much does this persona value cultural and family traditions?",
+        options: [
+            { value: 0.0, label: "Progressive", description: "Embraces change, questions traditions" },
+            { value: 0.33, label: "Moderate", description: "Respects traditions but open to change" },
+            { value: 0.67, label: "Traditional", description: "Values and maintains traditions" },
+            { value: 1.0, label: "Strongly Traditional", description: "Traditions are core to identity" },
+        ],
+    },
+    {
+        id: "benevolence", value: "benevolence",
+        question: "How much does this persona prioritize caring for close others?",
+        options: [
+            { value: 0.0, label: "Self-Focused", description: "Prioritizes own needs over others" },
+            { value: 0.33, label: "Balanced", description: "Cares for others when convenient" },
+            { value: 0.67, label: "Caring", description: "Actively helps and supports close others" },
+            { value: 1.0, label: "Devoted", description: "Others' welfare is a top priority" },
+        ],
+    },
+    {
+        id: "universalism", value: "universalism",
+        question: "How much does this persona care about broader social and environmental issues?",
+        options: [
+            { value: 0.0, label: "Narrow Focus", description: "Focuses on immediate concerns only" },
+            { value: 0.33, label: "Aware", description: "Somewhat concerned about broader issues" },
+            { value: 0.67, label: "Engaged", description: "Actively considers social/environmental impact" },
+            { value: 1.0, label: "Activist", description: "Deeply committed to social justice and environment" },
+        ],
+    },
+    {
+        id: "selfDirection", value: "selfDirection",
+        question: "How much does this persona value independence and autonomy?",
+        options: [
+            { value: 0.0, label: "Guided", description: "Prefers clear direction from others" },
+            { value: 0.33, label: "Moderate", description: "Likes some guidance but can be independent" },
+            { value: 0.67, label: "Independent", description: "Prefers making own choices" },
+            { value: 1.0, label: "Autonomous", description: "Strongly values independence and self-reliance" },
+        ],
+    },
+];
+const questionnaireSessionsMap = new Map();
+function getQuestionnaireSession(sessionId) {
+    return questionnaireSessionsMap.get(sessionId);
+}
+function setQuestionnaireSession(sessionId, session) {
+    questionnaireSessionsMap.set(sessionId, session);
+}
+function clearQuestionnaireSession(sessionId) {
+    questionnaireSessionsMap.delete(sessionId);
+}
+function getTraitHeader(trait) {
+    const headers = {
+        patience: "Patience", riskTolerance: "Risk", comprehension: "Comprehension",
+        persistence: "Persistence", curiosity: "Curiosity", workingMemory: "Memory",
+        readingTendency: "Reading", resilience: "Resilience", selfEfficacy: "Confidence",
+        satisficing: "Decisions", trustCalibration: "Trust", interruptRecovery: "Focus",
+        informationForaging: "Search Style", changeBlindness: "Awareness", anchoringBias: "Anchoring",
+        timeHorizon: "Time Focus", attributionStyle: "Attribution", metacognitivePlanning: "Planning",
+        proceduralFluency: "Procedures", transferLearning: "Transfer", authoritySensitivity: "Authority",
+        emotionalContagion: "Emotional", fearOfMissingOut: "FOMO", socialProofSensitivity: "Social Proof",
+        mentalModelRigidity: "Flexibility",
+    };
+    return headers[trait] || trait;
+}
+function convertToThirdPerson(question) {
+    return question
+        .replace(/\bdo you\b/gi, "does this persona")
+        .replace(/\bare you\b/gi, "is this persona")
+        .replace(/\byou're\b/gi, "this persona is")
+        .replace(/\byou've\b/gi, "they have")
+        .replace(/\byou'd\b/gi, "they would")
+        .replace(/\byour\b/gi, "their")
+        .replace(/\byou\b/gi, "they");
+}
+// Session storage (in-memory, cleared when server restarts)
+const comparisonSessions = new Map();
+// WCAG criteria reference for barrier mapping
+const WCAG_CRITERIA = {
+    "1.1.1": { level: "A", description: "Non-text Content" },
+    "1.3.1": { level: "A", description: "Info and Relationships" },
+    "1.4.1": { level: "A", description: "Use of Color" },
+    "1.4.3": { level: "AA", description: "Contrast (Minimum)" },
+    "1.4.4": { level: "AA", description: "Resize Text" },
+    "1.4.6": { level: "AAA", description: "Contrast (Enhanced)" },
+    "1.4.10": { level: "AA", description: "Reflow" },
+    "2.1.1": { level: "A", description: "Keyboard" },
+    "2.1.2": { level: "A", description: "No Keyboard Trap" },
+    "2.2.1": { level: "A", description: "Timing Adjustable" },
+    "2.2.2": { level: "A", description: "Pause, Stop, Hide" },
+    "2.4.1": { level: "A", description: "Bypass Blocks" },
+    "2.4.3": { level: "A", description: "Focus Order" },
+    "2.4.6": { level: "AA", description: "Headings and Labels" },
+    "2.4.7": { level: "AA", description: "Focus Visible" },
+    "2.5.5": { level: "AAA", description: "Target Size" },
+    "2.5.8": { level: "AA", description: "Target Size (Minimum)" },
+    "3.3.1": { level: "A", description: "Error Identification" },
+    "3.3.2": { level: "A", description: "Labels or Instructions" },
+    "4.1.2": { level: "A", description: "Name, Role, Value" },
+};
+function getWcagCriteriaForBarrier(barrierType) {
+    switch (barrierType) {
+        case "motor_precision":
+            return ["2.5.5", "2.5.8"];
+        case "visual_clarity":
+            return ["1.4.3", "1.4.6", "1.4.4"];
+        case "cognitive_load":
+            return ["2.4.6", "3.3.2"];
+        case "temporal":
+            return ["2.2.1", "2.2.2"];
+        case "sensory":
+            return ["1.1.1", "1.4.1"];
+        case "contrast":
+            return ["1.4.3", "1.4.6"];
+        case "touch_target":
+            return ["2.5.5", "2.5.8"];
+        case "timing":
+            return ["2.2.1", "2.2.2"];
+        default:
+            return [];
+    }
+}
+const empathyAuditSessions = new Map();
+// Cleanup old sessions (older than 1 hour)
+function cleanupOldSessions() {
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    for (const [id, session] of comparisonSessions) {
+        if (session.createdAt < oneHourAgo) {
+            comparisonSessions.delete(id);
+        }
+    }
+    for (const [id, session] of empathyAuditSessions) {
+        if (session.createdAt < oneHourAgo) {
+            empathyAuditSessions.delete(id);
+        }
+    }
+}
+// Helper: Get barrier hints based on persona traits
+function getBarrierHintsForPersona(persona) {
+    const hints = [];
+    const traits = persona.accessibilityTraits;
+    if (traits?.motorControl !== undefined && traits.motorControl < 0.5) {
+        hints.push("Watch for small click targets (<44px), precise hover requirements, drag-and-drop interactions");
+    }
+    if (traits?.tremor) {
+        hints.push("Test for accidental double-clicks, cursor jitter tolerance, need for 'undo' options");
+    }
+    if (traits?.visionLevel !== undefined && traits.visionLevel < 0.5) {
+        hints.push("Check contrast ratios, text scaling support, zoom behavior at 200-300%");
+    }
+    if (traits?.colorBlindness) {
+        hints.push(`Check for color-only information (${traits.colorBlindness} colorblindness), ensure status indicators have non-color cues`);
+    }
+    if (traits?.processingSpeed !== undefined && traits.processingSpeed < 0.5) {
+        hints.push("Watch for time limits, auto-advancing content, complex multi-step processes");
+    }
+    if (traits?.attentionSpan !== undefined && traits.attentionSpan < 0.5) {
+        hints.push("Note distracting animations, long forms, lack of progress indicators");
+    }
+    // Check for hearing-related disability
+    const disabilityType = persona.disabilityType || "";
+    const personaName = persona.name || "";
+    if (disabilityType.includes("hearing") || disabilityType.includes("deaf") || personaName.includes("deaf") || personaName.includes("hearing")) {
+        hints.push("Check for audio-only content, video captions, visual alerts for audio notifications");
+    }
+    if (hints.length === 0) {
+        hints.push("Observe general usability and any unexpected difficulties");
+    }
+    return hints;
+}
+// Helper: Get remediation suggestion for barrier type
+function getRemediationForBarrier(barrierType, element) {
+    const remediations = {
+        motor_precision: `Increase target size to at least 44x44px for "${element}". Add generous padding and spacing.`,
+        visual_clarity: `Improve contrast ratio to at least 4.5:1 for "${element}". Ensure text scales properly.`,
+        cognitive_load: `Simplify "${element}" - reduce options, add clear labels, provide inline help.`,
+        temporal: `Remove or extend time limits on "${element}". Allow users to pause/extend deadlines.`,
+        sensory: `Add text alternative for "${element}". Don't rely on color alone to convey information.`,
+        contrast: `Increase contrast ratio for "${element}" to at least 4.5:1 (3:1 for large text).`,
+        touch_target: `Increase touch target size for "${element}" to minimum 44x44px (WCAG 2.5.8).`,
+        timing: `Extend or remove timing constraints on "${element}". Provide pause/stop controls.`,
+    };
+    return remediations[barrierType] || `Review "${element}" for accessibility improvements.`;
+}
+// Helper: Derive disability type from persona traits
+function getDisabilityTypeFromPersona(persona) {
+    const traits = persona.accessibilityTraits;
+    if (traits?.tremor)
+        return "Motor impairment (tremor)";
+    if (traits?.visionLevel !== undefined && traits.visionLevel < 0.5)
+        return "Low vision";
+    if (traits?.colorBlindness)
+        return `Color blindness (${traits.colorBlindness})`;
+    if (persona.cognitiveTraits?.workingMemory !== undefined && persona.cognitiveTraits.workingMemory < 0.5)
+        return "Cognitive (ADHD/Memory)";
+    if (traits?.processingSpeed !== undefined && traits.processingSpeed < 0.6)
+        return "Cognitive (Processing)";
+    // Fallback to name-based detection
+    if (persona.name.includes("deaf") || persona.name.includes("hearing"))
+        return "Hearing impairment";
+    if (persona.name.includes("motor"))
+        return "Motor impairment";
+    if (persona.name.includes("vision") || persona.name.includes("blind"))
+        return "Vision impairment";
+    if (persona.name.includes("cognitive") || persona.name.includes("adhd"))
+        return "Cognitive";
+    if (persona.name.includes("elderly"))
+        return "Age-related impairments";
+    if (persona.name.includes("dyslexic"))
+        return "Dyslexia";
+    return "General accessibility";
+}
+// Helper: Generate recommendations from empathy audit
+function generateEmpathyRecommendations(session) {
+    const recommendations = [];
+    // Check success rate
+    const successRate = session.personaResults.filter(r => r.goalAchieved).length / session.personaResults.length;
+    if (successRate < 0.5) {
+        recommendations.push("CRITICAL: Less than 50% of disability personas could complete the goal. Fundamental accessibility improvements needed.");
+    }
+    else if (successRate < 0.8) {
+        recommendations.push("Several disability personas struggled to complete the goal. Review barriers by persona type.");
+    }
+    // Check for critical barriers
+    const criticalBarriers = session.barriers.filter(b => b.severity === "critical");
+    if (criticalBarriers.length > 0) {
+        recommendations.push(`${criticalBarriers.length} critical barriers found. Address these first as they prevent task completion.`);
+    }
+    // Check WCAG violations by level
+    const levelAViolations = Array.from(session.wcagViolations).filter(c => WCAG_CRITERIA[c]?.level === "A");
+    if (levelAViolations.length > 0) {
+        recommendations.push(`${levelAViolations.length} WCAG Level A violations (minimum compliance). These are legally required in most jurisdictions.`);
+    }
+    // Persona-specific recommendations
+    const worstPersona = session.personaResults.sort((a, b) => a.empathyScore - b.empathyScore)[0];
+    if (worstPersona && worstPersona.empathyScore < 50) {
+        recommendations.push(`"${worstPersona.persona}" (${worstPersona.disabilityType}) had the worst experience (score: ${worstPersona.empathyScore}). Prioritize improvements for this user group.`);
+    }
+    if (recommendations.length === 0) {
+        recommendations.push("Good accessibility foundation. Continue testing with real users with disabilities for deeper insights.");
+    }
+    return recommendations;
+}
+const collectedTools = [];
+/**
+ * Register all CBrowser tools on an MCP server instance.
+ * Internal function - use createMcpServer() for the public API.
+ */
+async function registerCBrowserTools() {
+    // Auto-initialize all data directories on server start
+    ensureDirectories();
+    // Clear collected tools for fresh registration
+    collectedTools.length = 0;
+    const server = new McpServer({
+        name: "cbrowser",
+        version: VERSION,
+    });
+    // Wrap server.tool to collect tool definitions
+    const originalTool = server.tool.bind(server);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    server.tool = (name, description, ...rest) => {
+        collectedTools.push({ name, description });
+        return originalTool(name, description, ...rest);
+    };
+    // =========================================================================
+    // Navigation Tools
+    // =========================================================================
+    server.tool("navigate", "Navigate to a URL and take a screenshot", {
+        url: z.string().url().describe("The URL to navigate to"),
+    }, async ({ url }) => {
+        // v14.2.1: Wrap with retry for transient errors
+        return await withRetry(async () => {
+            const b = await getBrowser();
+            const result = await b.navigate(url);
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({
+                            success: true,
+                            url: result.url,
+                            title: result.title,
+                            loadTime: result.loadTime,
+                            screenshot: result.screenshot,
+                        }, null, 2),
+                    },
+                ],
+            };
+        });
+    });
+    // =========================================================================
+    // Interaction Tools
+    // =========================================================================
+    server.tool("click", "Click an element on the page using text, selector, or description. Use verbose=true for detailed debug info on failure.", {
+        selector: z.string().describe("Element to click (text content, CSS selector, or description)"),
+        force: z.boolean().optional().describe("Bypass safety checks for destructive actions"),
+        verbose: z.boolean().optional().describe("Return available elements and AI suggestions on failure"),
+    }, async ({ selector, force, verbose }) => {
+        // v14.2.1: Wrap with retry for transient errors
+        return await withRetry(async () => {
+            const b = await getBrowser();
+            const result = await b.click(selector, { force, verbose });
+            const response = {
+                success: result.success,
+                message: result.message,
+                screenshot: result.screenshot,
+            };
+            if (verbose && !result.success) {
+                if (result.availableElements)
+                    response.availableElements = result.availableElements;
+                if (result.aiSuggestion)
+                    response.aiSuggestion = result.aiSuggestion;
+                if (result.debugScreenshot)
+                    response.debugScreenshot = result.debugScreenshot;
+            }
+            return {
+                content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+            };
+        });
+    });
+    server.tool("smart_click", "Click with auto-retry and self-healing selectors. v11.8.0: Added confidence gating - only reports success if healed selector has >= 60% confidence.", {
+        selector: z.string().describe("Element to click"),
+        maxRetries: z.number().optional().default(3).describe("Maximum retry attempts"),
+        dismissOverlays: z.boolean().optional().default(false).describe("Dismiss overlays before clicking"),
+    }, async ({ selector, maxRetries, dismissOverlays }) => {
+        const b = await getBrowser();
+        const result = await b.smartClick(selector, { maxRetries, dismissOverlays });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        success: result.success,
+                        attempts: result.attempts.length,
+                        finalSelector: result.finalSelector,
+                        message: result.message,
+                        aiSuggestion: result.aiSuggestion,
+                        // v11.8.0: Confidence gating fields
+                        confidence: result.confidence,
+                        healed: result.healed,
+                        healReason: result.healReason,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("dismiss_overlay", "Detect and dismiss modal overlays (cookie consent, age verification, newsletter popups). Constitutional Yellow zone.", {
+        type: z.enum(["auto", "cookie", "age-verify", "newsletter", "custom"]).optional().default("auto").describe("Overlay type to detect"),
+        customSelector: z.string().optional().describe("Custom CSS selector for overlay close button"),
+    }, async ({ type, customSelector }) => {
+        const b = await getBrowser();
+        const result = await b.dismissOverlay({ type, customSelector });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        dismissed: result.dismissed,
+                        overlaysFound: result.overlaysFound,
+                        overlaysDismissed: result.overlaysDismissed,
+                        details: result.details,
+                        suggestion: result.suggestion,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("fill", "Fill a form field with text. Use verbose=true for detailed debug info on failure.", {
+        selector: z.string().describe("Input field to fill (name, placeholder, label, or selector)"),
+        value: z.string().describe("Value to enter"),
+        verbose: z.boolean().optional().describe("Return available inputs and AI suggestions on failure"),
+    }, async ({ selector, value, verbose }) => {
+        // v14.2.1: Wrap with retry for transient errors
+        return await withRetry(async () => {
+            const b = await getBrowser();
+            const result = await b.fill(selector, value, { verbose });
+            const response = {
+                success: result.success,
+                message: result.message,
+            };
+            if (verbose && !result.success) {
+                if (result.availableInputs)
+                    response.availableInputs = result.availableInputs;
+                if (result.aiSuggestion)
+                    response.aiSuggestion = result.aiSuggestion;
+                if (result.debugScreenshot)
+                    response.debugScreenshot = result.debugScreenshot;
+            }
+            return {
+                content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
+            };
+        });
+    });
+    server.tool("scroll", "Scroll the page in a direction. Use when content might be below the fold or to navigate long pages.", {
+        direction: z.enum(["down", "up", "top", "bottom"]).default("down").describe("Scroll direction: down (400px), up (400px), top (page start), bottom (page end)"),
+        amount: z.number().optional().describe("Custom scroll amount in pixels (only for up/down)"),
+    }, async ({ direction, amount }) => {
+        const b = await getBrowser();
+        const page = await b.getPage();
+        try {
+            const scrollAmount = amount || 400;
+            switch (direction) {
+                case "top":
+                    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "smooth" }));
+                    break;
+                case "bottom":
+                    await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
+                    break;
+                case "up":
+                    await page.evaluate((amt) => window.scrollBy({ top: -amt, behavior: "smooth" }), scrollAmount);
+                    break;
+                case "down":
+                default:
+                    await page.evaluate((amt) => window.scrollBy({ top: amt, behavior: "smooth" }), scrollAmount);
+                    break;
+            }
+            // Wait for scroll animation
+            await new Promise(r => setTimeout(r, 300));
+            // Get new scroll position
+            const scrollY = await page.evaluate(() => window.scrollY);
+            const scrollHeight = await page.evaluate(() => document.body.scrollHeight);
+            const viewportHeight = await page.evaluate(() => window.innerHeight);
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            success: true,
+                            direction,
+                            scrollPosition: scrollY,
+                            scrollHeight,
+                            viewportHeight,
+                            atTop: scrollY === 0,
+                            atBottom: scrollY + viewportHeight >= scrollHeight - 10,
+                        }, null, 2),
+                    }],
+            };
+        }
+        catch (error) {
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            success: false,
+                            error: error instanceof Error ? error.message : String(error),
+                        }, null, 2),
+                    }],
+            };
+        }
+    });
+    // =========================================================================
+    // Extraction Tools
+    // =========================================================================
+    server.tool("screenshot", "Take a screenshot of the current page", {
+        path: z.string().optional().describe("Optional path to save the screenshot"),
+    }, async ({ path }) => {
+        // v14.2.1: Wrap with retry for transient errors
+        return await withRetry(async () => {
+            const b = await getBrowser();
+            const file = await b.screenshot(path);
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({ screenshot: file }, null, 2),
+                    },
+                ],
+            };
+        });
+    });
+    server.tool("extract", "Extract data from the page", {
+        what: z.enum(["links", "headings", "forms", "images", "text"]).describe("What to extract"),
+    }, async ({ what }) => {
+        // v14.2.1: Wrap with retry for transient errors
+        return await withRetry(async () => {
+            const b = await getBrowser();
+            const result = await b.extract(what);
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(result.data, null, 2),
+                    },
+                ],
+            };
+        });
+    });
+    // =========================================================================
+    // Assertion Tools
+    // =========================================================================
+    server.tool("assert", "Assert a condition using natural language", {
+        assertion: z.string().describe("Natural language assertion like \"page contains 'Welcome'\" or \"title is 'Home'\""),
+    }, async ({ assertion }) => {
+        const b = await getBrowser();
+        const result = await b.assert(assertion);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        passed: result.passed,
+                        message: result.message,
+                        actual: result.actual,
+                        expected: result.expected,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Analysis Tools
+    // =========================================================================
+    server.tool("analyze_page", "Analyze page structure for forms, buttons, links", {}, async () => {
+        const b = await getBrowser();
+        const analysis = await b.analyzePage();
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        title: analysis.title,
+                        forms: analysis.forms.length,
+                        buttons: analysis.buttons.length,
+                        links: analysis.links.length,
+                        hasLogin: analysis.hasLogin,
+                        hasSearch: analysis.hasSearch,
+                        hasNavigation: analysis.hasNavigation,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("generate_tests", "Generate test scenarios for a page", {
+        url: z.string().url().optional().describe("URL to analyze (uses current page if not provided)"),
+    }, async ({ url }) => {
+        const b = await getBrowser();
+        const result = await b.generateTests(url);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        testsGenerated: result.tests.length,
+                        tests: result.tests.map(t => ({
+                            name: t.name,
+                            description: t.description,
+                            steps: t.steps.length,
+                        })),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Session Tools
+    // =========================================================================
+    server.tool("save_session", "Save browser session (cookies, storage) for later use", {
+        name: z.string().describe("Name for the saved session"),
+    }, async ({ name }) => {
+        const b = await getBrowser();
+        await b.saveSession(name);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({ success: true, sessionName: name }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("load_session", "Load a previously saved session", {
+        name: z.string().describe("Name of the session to load"),
+    }, async ({ name }) => {
+        const b = await getBrowser();
+        const result = await b.loadSession(name);
+        // v11.8.0: Return flat structure, not nested
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(result, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("list_sessions", "List all saved sessions with metadata (name, domain, cookies count, localStorage keys, created date, size)", {}, async () => {
+        const b = await getBrowser();
+        const sessions = b.listSessionsDetailed();
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({ sessions }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("delete_session", "Delete a saved session by name", {
+        name: z.string().describe("Name of the session to delete"),
+    }, async ({ name }) => {
+        const b = await getBrowser();
+        const deleted = b.deleteSession(name);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({ success: deleted, name, message: deleted ? `Session '${name}' deleted` : `Session '${name}' not found` }),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Self-Healing Tools
+    // =========================================================================
+    server.tool("heal_stats", "Get self-healing selector cache statistics", {}, async () => {
+        // v14.2.1: Wrap with retry for transient errors
+        return await withRetry(async () => {
+            const b = await getBrowser();
+            const stats = b.getSelectorCacheStats();
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify(stats, null, 2),
+                    },
+                ],
+            };
+        });
+    });
+    // =========================================================================
+    // Visual Testing Tools (v7.0.0+)
+    // =========================================================================
+    server.tool("visual_baseline", "Capture a visual baseline for a URL", {
+        url: z.string().url().describe("URL to capture baseline for"),
+        name: z.string().describe("Name for the baseline"),
+    }, async ({ url, name }) => {
+        const result = await captureVisualBaseline(url, name, {});
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        success: true,
+                        name: result.name,
+                        url: result.url,
+                        timestamp: result.timestamp,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("visual_regression", "Run AI visual regression test against a baseline", {
+        url: z.string().url().describe("URL to test"),
+        baselineName: z.string().describe("Name of baseline to compare against"),
+    }, async ({ url, baselineName }) => {
+        const result = await runVisualRegression(url, baselineName);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        passed: result.passed,
+                        similarityScore: result.analysis?.similarityScore,
+                        summary: result.analysis?.summary,
+                        changes: result.analysis?.changes?.length || 0,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("cross_browser_test", "Test page rendering across multiple browsers", {
+        url: z.string().url().describe("URL to test"),
+        browsers: z.array(z.enum(["chromium", "firefox", "webkit"])).optional().describe("Browsers to test"),
+    }, async ({ url, browsers }) => {
+        const result = await runCrossBrowserTest(url, { browsers });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        url: result.url,
+                        overallStatus: result.overallStatus,
+                        summary: result.summary,
+                        screenshotCount: result.screenshots.length,
+                        comparisonCount: result.comparisons.length,
+                        ...(result.missingBrowsers?.length ? { missingBrowsers: result.missingBrowsers } : {}),
+                        ...(result.availableBrowsers ? { availableBrowsers: result.availableBrowsers } : {}),
+                        ...(result.suggestion ? { suggestion: result.suggestion } : {}),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("cross_browser_diff", "Quick diff of page metrics across browsers", {
+        url: z.string().url().describe("URL to compare"),
+        browsers: z.array(z.enum(["chromium", "firefox", "webkit"])).optional().describe("Browsers to compare"),
+    }, async ({ url, browsers }) => {
+        const result = await crossBrowserDiff(url, browsers);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        url: result.url,
+                        browsers: result.browsers,
+                        differences: result.differences,
+                        metrics: result.metrics,
+                        ...(result.missingBrowsers?.length ? { missingBrowsers: result.missingBrowsers } : {}),
+                        ...(result.availableBrowsers ? { availableBrowsers: result.availableBrowsers } : {}),
+                        ...(result.suggestion ? { suggestion: result.suggestion } : {}),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("responsive_test", "Test page across different viewport sizes", {
+        url: z.string().url().describe("URL to test"),
+        viewports: z.array(z.string()).optional().describe("Viewport presets (mobile, tablet, desktop, etc.)"),
+    }, async ({ url, viewports }) => {
+        const result = await runResponsiveTest(url, { viewports });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        url: result.url,
+                        overallStatus: result.overallStatus,
+                        summary: result.summary,
+                        viewportsCount: result.screenshots.length,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("ab_comparison", "Compare two URLs visually (staging vs production)", {
+        urlA: z.string().url().describe("First URL (e.g., staging)"),
+        urlB: z.string().url().describe("Second URL (e.g., production)"),
+        labelA: z.string().optional().describe("Label for first URL"),
+        labelB: z.string().optional().describe("Label for second URL"),
+    }, async ({ urlA, urlB, labelA, labelB }) => {
+        const labels = labelA && labelB ? { a: labelA, b: labelB } : undefined;
+        const result = await runABComparison(urlA, urlB, { labels });
+        return {
+            content: [
+                {
+                    type: "text",
+                    // v11.11.0: Include full differences for structured diff (stress test fix)
+                    text: JSON.stringify({
+                        overallStatus: result.overallStatus,
+                        similarityScore: result.analysis?.similarityScore,
+                        summary: result.summary,
+                        // v11.11.0: Return detailed differences instead of just count
+                        differences: result.differences.slice(0, 10).map(d => ({
+                            type: d.type,
+                            severity: d.severity,
+                            description: d.description,
+                            affectedSide: d.affectedSide,
+                        })),
+                        differenceCount: result.differences.length,
+                        // v11.11.0: Include page structure comparison summary
+                        structureSummary: {
+                            a: {
+                                headings: result.screenshots.a.structure?.headings?.length || 0,
+                                links: result.screenshots.a.structure?.links?.length || 0,
+                                forms: result.screenshots.a.structure?.forms || 0,
+                                buttons: result.screenshots.a.structure?.buttons?.length || 0,
+                            },
+                            b: {
+                                headings: result.screenshots.b.structure?.headings?.length || 0,
+                                links: result.screenshots.b.structure?.links?.length || 0,
+                                forms: result.screenshots.b.structure?.forms || 0,
+                                buttons: result.screenshots.b.structure?.buttons?.length || 0,
+                            },
+                        },
+                        duration: result.duration,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Testing Tools (v6.0.0+)
+    // =========================================================================
+    server.tool("nl_test_file", "Run natural language test suite from a file. Returns step-level results with enriched error info, partial matches, and suggestions.", {
+        filepath: z.string().describe("Path to the test file"),
+        dryRun: z.boolean().optional().describe("Parse and display steps without executing"),
+        fuzzyMatch: z.boolean().optional().describe("Use case-insensitive fuzzy matching for assertions"),
+    }, async ({ filepath, dryRun, fuzzyMatch }) => {
+        const fs = await import("fs");
+        if (!fs.existsSync(filepath)) {
+            return { content: [{ type: "text", text: JSON.stringify({ error: `Test file not found: ${filepath}` }) }] };
+        }
+        const fileContent = fs.readFileSync(filepath, "utf-8");
+        const suiteName = filepath.split("/").pop()?.replace(/\.[^.]+$/, "") || "Test Suite";
+        const suite = parseNLTestSuite(fileContent, suiteName);
+        if (dryRun) {
+            const dryResult = dryRunNLTestSuite(suite);
+            return { content: [{ type: "text", text: JSON.stringify(dryResult, null, 2) }] };
+        }
+        const result = await runNLTestSuite(suite, { fuzzyMatch: fuzzyMatch || false });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        name: result.name,
+                        total: result.summary.total,
+                        passed: result.summary.passed,
+                        failed: result.summary.failed,
+                        passRate: `${result.summary.passRate.toFixed(1)}%`,
+                        // v11.6.0: Step-level statistics for better granularity
+                        totalSteps: result.summary.totalSteps,
+                        passedSteps: result.summary.passedSteps,
+                        failedSteps: result.summary.failedSteps,
+                        stepPassRate: result.summary.stepPassRate ? `${result.summary.stepPassRate.toFixed(1)}%` : undefined,
+                        duration: result.duration,
+                        recommendations: result.recommendations,
+                        testResults: result.testResults.map(t => ({
+                            name: t.name,
+                            passed: t.passed,
+                            duration: t.duration,
+                            error: t.error,
+                            steps: t.stepResults.map(s => ({
+                                instruction: s.instruction,
+                                parsed: s.parsed,
+                                passed: s.passed,
+                                duration: s.duration,
+                                error: s.error,
+                                actualValue: s.actualValue,
+                            })),
+                        })),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("nl_test_inline", "Run natural language tests from inline content. Returns step-level results with enriched error info, partial matches, and suggestions.", {
+        content: z.string().describe("Test content with instructions like 'go to https://...' and 'click login'"),
+        name: z.string().optional().describe("Name for the test suite"),
+        dryRun: z.boolean().optional().describe("Parse and display steps without executing"),
+        fuzzyMatch: z.boolean().optional().describe("Use case-insensitive fuzzy matching for assertions"),
+    }, async ({ content, name, dryRun, fuzzyMatch }) => {
+        const suite = parseNLTestSuite(content, name || "Inline Test");
+        if (dryRun) {
+            const dryResult = dryRunNLTestSuite(suite);
+            return { content: [{ type: "text", text: JSON.stringify(dryResult, null, 2) }] };
+        }
+        const result = await runNLTestSuite(suite, { fuzzyMatch: fuzzyMatch || false });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        name: result.name,
+                        total: result.summary.total,
+                        passed: result.summary.passed,
+                        failed: result.summary.failed,
+                        passRate: `${result.summary.passRate.toFixed(1)}%`,
+                        // v11.6.0: Step-level statistics for better granularity
+                        totalSteps: result.summary.totalSteps,
+                        passedSteps: result.summary.passedSteps,
+                        failedSteps: result.summary.failedSteps,
+                        stepPassRate: result.summary.stepPassRate ? `${result.summary.stepPassRate.toFixed(1)}%` : undefined,
+                        duration: result.duration,
+                        recommendations: result.recommendations,
+                        testResults: result.testResults.map(t => ({
+                            name: t.name,
+                            passed: t.passed,
+                            duration: t.duration,
+                            error: t.error,
+                            steps: t.stepResults.map(s => ({
+                                instruction: s.instruction,
+                                parsed: s.parsed,
+                                passed: s.passed,
+                                duration: s.duration,
+                                error: s.error,
+                                actualValue: s.actualValue,
+                            })),
+                        })),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("repair_test", "AI-powered test repair for broken tests", {
+        testName: z.string().describe("Name for the test"),
+        steps: z.array(z.string()).describe("Test step instructions"),
+        autoApply: z.boolean().optional().describe("Automatically apply repairs"),
+    }, async ({ testName, steps, autoApply }) => {
+        const testCase = {
+            name: testName,
+            steps: steps.map(instruction => ({
+                instruction,
+                action: "unknown",
+            })),
+        };
+        const result = await repairTest(testCase, { autoApply: autoApply || false });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        originalTest: result.originalTest.name,
+                        failedSteps: result.failedSteps,
+                        repairedSteps: result.repairedSteps,
+                        repairedTestPasses: result.repairedTestPasses,
+                        repairs: result.failureAnalyses.map(a => ({
+                            step: a.step.instruction,
+                            error: a.error,
+                            suggestion: a.suggestions[0]?.suggestedInstruction || "No suggestion",
+                        })),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("detect_flaky_tests", "Detect flaky/unreliable tests by running multiple times", {
+        testContent: z.string().describe("Test content to analyze"),
+        runs: z.number().optional().default(5).describe("Number of times to run each test"),
+        threshold: z.number().optional().default(20).describe("Flakiness threshold percentage"),
+    }, async ({ testContent, runs, threshold }) => {
+        const suite = parseNLTestSuite(testContent, "Flaky Test Analysis");
+        const result = await detectFlakyTests(suite, { runs, flakinessThreshold: threshold });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        suiteName: result.suiteName,
+                        totalTests: result.summary.totalTests,
+                        stablePass: result.summary.stablePassTests,
+                        stableFail: result.summary.stableFailTests,
+                        flakyTests: result.summary.flakyTests,
+                        overallFlakiness: `${result.summary.overallFlakinessScore.toFixed(1)}%`,
+                        analyses: result.testAnalyses.map(a => ({
+                            test: a.testName,
+                            classification: a.classification,
+                            passRate: `${((a.passCount / a.totalRuns) * 100).toFixed(0)}%`,
+                            flakiness: `${a.flakinessScore}%`,
+                        })),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("coverage_map", "Generate test coverage map for a site", {
+        baseUrl: z.string().url().describe("Base URL to analyze"),
+        testFiles: z.array(z.string()).describe("Array of test file paths"),
+        maxPages: z.number().optional().default(100).describe("Maximum pages to crawl"),
+    }, async ({ baseUrl, testFiles, maxPages }) => {
+        const result = await generateCoverageMap(baseUrl, testFiles, { maxPages });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        totalPages: result.sitePages.length,
+                        testedPages: result.testedPages.length,
+                        untestedPages: result.analysis.untestedPages,
+                        overallCoverage: `${result.analysis.coveragePercent.toFixed(1)}%`,
+                        gaps: result.gaps.slice(0, 10).map(g => ({
+                            url: g.page.url,
+                            priority: g.priority,
+                            reason: g.reason,
+                        })),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Analysis Tools (v4.0.0+)
+    // =========================================================================
+    server.tool("hunt_bugs", "Autonomous bug hunting - crawl and find issues. Returns bugs with severity, selector, and actionable recommendation for each issue found.", {
+        url: z.string().url().describe("Starting URL to hunt from"),
+        maxPages: z.number().optional().default(10).describe("Maximum pages to visit"),
+        timeout: z.number().optional().default(60000).describe("Timeout in milliseconds"),
+    }, async ({ url, maxPages, timeout }) => {
+        const b = await getBrowser();
+        const result = await huntBugs(b, url, { maxPages, timeout });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        pagesVisited: result.pagesVisited,
+                        bugsFound: result.bugs.length,
+                        duration: result.duration,
+                        bugs: result.bugs.slice(0, 10).map(bug => ({
+                            type: bug.type,
+                            severity: bug.severity,
+                            description: bug.description,
+                            url: bug.url,
+                            selector: bug.selector,
+                            recommendation: bug.recommendation,
+                        })),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("chaos_test", "Inject failures and test resilience", {
+        url: z.string().url().describe("URL to test"),
+        networkLatency: z.number().optional().describe("Simulate network latency (ms)"),
+        offline: z.boolean().optional().describe("Simulate offline mode"),
+        blockUrls: z.array(z.string()).optional().describe("URL patterns to block"),
+    }, async ({ url, networkLatency, offline, blockUrls }) => {
+        const b = await getBrowser();
+        try {
+            const result = await runChaosTest(b, url, { networkLatency, offline, blockUrls });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({
+                            passed: result.passed,
+                            errors: result.errors,
+                            duration: result.duration,
+                            // v16.11.0: Include impact analysis in response
+                            impact: result.impact,
+                        }, null, 2),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            // v16.11.0: Graceful error handling for chaos test crashes
+            // Attempt browser recovery to prevent server crash
+            try {
+                await b.recoverBrowser();
+            }
+            catch {
+                // Browser recovery failed, but continue with error response
+            }
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({
+                            passed: false,
+                            errors: [`Chaos test crashed: ${error.message}`],
+                            duration: 0,
+                            impact: {
+                                loadTimeMs: 0,
+                                blockedResources: [],
+                                failedResources: [],
+                                delayedResources: [],
+                                pageCompleted: false,
+                                pageInteractive: false,
+                                consoleErrors: 0,
+                                degradationSummary: ["Test crashed - browser recovered"],
+                            },
+                            recovered: true,
+                        }, null, 2),
+                    },
+                ],
+            };
+        }
+    });
+    server.tool("compare_personas", "Compare how different user personas experience a journey. REQUIRES API KEY for internal simulation. For API-free usage over remote MCP, use compare_personas_init + browser tools + compare_personas_record_result + compare_personas_summarize instead.", {
+        url: z.string().url().describe("Starting URL"),
+        goal: z.string().describe("Goal to accomplish"),
+        personas: z.array(z.string()).describe("Persona names to compare"),
+    }, async ({ url, goal, personas }) => {
+        try {
+            const result = await comparePersonas({
+                startUrl: url,
+                goal,
+                personas,
+            });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({
+                            url: result.url,
+                            goal: result.goal,
+                            personasCompared: result.personas.length,
+                            summary: result.summary,
+                        }, null, 2),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes("API key")) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: JSON.stringify({
+                                error: "API key required for all-in-one compare_personas",
+                                solution: "Use the API-free session bridge pattern instead:",
+                                steps: [
+                                    "1. Call compare_personas_init with url, goal, personas",
+                                    "2. For each persona, use browser tools (navigate, click, fill) to attempt the goal",
+                                    "3. Call cognitive_journey_update_state after each action to track cognitive state",
+                                    "4. Call compare_personas_record_result when each persona completes (success or abandon)",
+                                    "5. Call compare_personas_summarize to get the comparison report",
+                                ],
+                                note: "Claude orchestrates the simulation - no API key needed when YOU are the brain!",
+                            }, null, 2),
+                        },
+                    ],
+                };
+            }
+            throw error;
+        }
+    });
+    server.tool("find_element_by_intent", "AI-powered semantic element finding with ARIA-first selector strategy. Prioritizes aria-label > role > semantic HTML > ID > name > class. Returns selectorType, accessibilityScore (0-1), and alternatives. Use verbose=true for enriched failure responses.", {
+        intent: z.string().describe("Natural language description like 'the cheapest product' or 'login form'"),
+        verbose: z.boolean().optional().describe("Include alternative matches with confidence scores and AI suggestions"),
+    }, async ({ intent, verbose }) => {
+        const b = await getBrowser();
+        const result = await findElementByIntent(b, intent, { verbose });
+        if (result && result.confidence > 0) {
+            return {
+                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            };
+        }
+        // No match or zero-confidence verbose result
+        return {
+            content: [{ type: "text", text: JSON.stringify(result || { found: false, message: "No matching element found" }, null, 2) }],
+        };
+    });
+    // =========================================================================
+    // Cognitive Simulation Tools (v8.3.0)
+    // =========================================================================
+    server.tool("cognitive_journey_init", "Initialize a cognitive user journey simulation. Returns the persona's cognitive profile, initial state, and abandonment thresholds. The actual simulation is driven by the LLM using browser tools (navigate, click, fill, screenshot) while tracking cognitive state.", {
+        persona: z.string().describe("Persona name (e.g., 'first-timer', 'elderly-user', 'power-user') or custom description"),
+        goal: z.string().describe("What the simulated user is trying to accomplish"),
+        startUrl: z.string().url().describe("Starting URL for the journey"),
+        customTraits: z.object({
+            // Core 7 traits
+            patience: z.number().min(0).max(1).optional().describe("How long before giving up (0=impatient, 1=very patient)"),
+            riskTolerance: z.number().min(0).max(1).optional().describe("Willingness to click unfamiliar elements (0=cautious, 1=adventurous)"),
+            comprehension: z.number().min(0).max(1).optional().describe("UI/UX understanding speed (0=confused easily, 1=grasps quickly)"),
+            persistence: z.number().min(0).max(1).optional().describe("Retry same approach vs try different (0=explores, 1=persists)"),
+            curiosity: z.number().min(0).max(1).optional().describe("Tendency to explore vs stay focused (0=focused, 1=exploratory)"),
+            workingMemory: z.number().min(0).max(1).optional().describe("Remembers what was tried (0=forgets, 1=remembers all)"),
+            readingTendency: z.number().min(0).max(1).optional().describe("Reads content vs scans for CTAs (0=scans, 1=reads everything)"),
+            // v16.11.0: Extended traits (18 more = 25 total)
+            resilience: z.number().min(0).max(1).optional().describe("Emotional recovery after setbacks (0=gives up, 1=bounces back)"),
+            selfEfficacy: z.number().min(0).max(1).optional().describe("Belief in ability to complete task (0=doubts self, 1=confident)"),
+            satisficing: z.number().min(0).max(1).optional().describe("Accepts 'good enough' vs seeks optimal (0=optimizes, 1=satisfices)"),
+            trustCalibration: z.number().min(0).max(1).optional().describe("Trust in website/CTAs (0=skeptical, 1=trusting)"),
+            interruptRecovery: z.number().min(0).max(1).optional().describe("Recovers from distractions (0=loses place, 1=resumes smoothly)"),
+            informationForaging: z.number().min(0).max(1).optional().describe("Efficiency finding info (0=scattered, 1=systematic)"),
+            changeBlindness: z.number().min(0).max(1).optional().describe("Notices UI changes (0=misses changes, 1=notices all)"),
+            anchoringBias: z.number().min(0).max(1).optional().describe("Influenced by first info seen (0=ignores, 1=anchors heavily)"),
+            timeHorizon: z.number().min(0).max(1).optional().describe("Short vs long-term focus (0=immediate, 1=future-oriented)"),
+            attributionStyle: z.number().min(0).max(1).optional().describe("Blames self vs external for failures (0=external, 1=internal)"),
+            metacognitivePlanning: z.number().min(0).max(1).optional().describe("Plans approach before acting (0=impulsive, 1=strategic)"),
+            proceduralFluency: z.number().min(0).max(1).optional().describe("Follows multi-step processes (0=struggles, 1=follows easily)"),
+            transferLearning: z.number().min(0).max(1).optional().describe("Applies past learning to new contexts (0=compartmentalized, 1=transfers)"),
+            authoritySensitivity: z.number().min(0).max(1).optional().describe("Responds to authority cues (0=ignores, 1=defers to authority)"),
+            emotionalContagion: z.number().min(0).max(1).optional().describe("Affected by page emotional tone (0=immune, 1=absorbs mood)"),
+            fearOfMissingOut: z.number().min(0).max(1).optional().describe("Responds to scarcity/urgency (0=immune, 1=strongly affected)"),
+            socialProofSensitivity: z.number().min(0).max(1).optional().describe("Influenced by reviews/testimonials (0=ignores, 1=strongly influenced)"),
+            mentalModelRigidity: z.number().min(0).max(1).optional().describe("Adapts mental models (0=flexible, 1=rigid expectations)"),
+        }).optional().describe("Override specific cognitive traits (25 available)"),
+    }, async ({ persona: personaName, goal, startUrl, customTraits }) => {
+        // Get or create persona
+        // v16.14.1: Use getAnyPersona to find personas in ALL registries
+        const existingPersona = getAnyPersona(personaName);
+        let personaObj;
+        // v17.0.0: Check for agent personas - cognitive journeys don't support them yet
+        if (existingPersona && isAgentPersonaObject(existingPersona)) {
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            error: "Agent personas not supported for cognitive journeys",
+                            message: `"${personaName}" is an AI agent persona. Cognitive journeys simulate human behavior and require human personas. Use a human persona instead, or use agent-ready-audit for AI agent testing.`,
+                            suggestedPersonas: ["first-timer", "power-user", "mobile-user"],
+                        }, null, 2),
+                    }],
+            };
+        }
+        if (!existingPersona) {
+            // Create from description
+            personaObj = createCognitivePersona(personaName, personaName, customTraits || {});
+        }
+        else if (customTraits) {
+            // v16.11.0: Full 25-trait default set (was only 7, causing trait dropout)
+            const defaultTraits = {
+                // Core 7 traits
+                patience: 0.5,
+                riskTolerance: 0.5,
+                comprehension: 0.5,
+                persistence: 0.5,
+                curiosity: 0.5,
+                workingMemory: 0.5,
+                readingTendency: 0.5,
+                // Tier 1: Core (5 more)
+                resilience: 0.5,
+                selfEfficacy: 0.5,
+                satisficing: 0.5,
+                trustCalibration: 0.5,
+                interruptRecovery: 0.5,
+                // Tier 2-6: Extended (13 more)
+                informationForaging: 0.5,
+                changeBlindness: 0.3,
+                anchoringBias: 0.5,
+                timeHorizon: 0.5,
+                attributionStyle: 0.5,
+                metacognitivePlanning: 0.5,
+                proceduralFluency: 0.5,
+                transferLearning: 0.5,
+                authoritySensitivity: 0.5,
+                emotionalContagion: 0.5,
+                fearOfMissingOut: 0.5,
+                socialProofSensitivity: 0.5,
+                mentalModelRigidity: 0.5,
+            };
+            personaObj = {
+                ...existingPersona,
+                cognitiveTraits: {
+                    ...defaultTraits,
+                    ...(existingPersona.cognitiveTraits || {}),
+                    ...customTraits,
+                },
+            };
+        }
+        else {
+            personaObj = existingPersona;
+        }
+        // Get cognitive profile
+        const profile = getCognitiveProfile(personaObj);
+        // Initial cognitive state
+        const initialState = {
+            patienceRemaining: 1.0,
+            confusionLevel: 0.0,
+            frustrationLevel: 0.0,
+            goalProgress: 0.0,
+            confidenceLevel: 0.5,
+            currentMood: "neutral",
+            memory: {
+                pagesVisited: [startUrl],
+                actionsAttempted: [],
+                errorsEncountered: [],
+                backtrackCount: 0,
+            },
+            timeElapsed: 0,
+            stepCount: 0,
+        };
+        // Abandonment thresholds (adjusted by persona traits)
+        const traits = profile.traits;
+        const thresholds = {
+            patienceMin: 0.1,
+            confusionMax: traits.comprehension < 0.4 ? 0.6 : 0.8, // Lower comprehension = lower tolerance
+            frustrationMax: traits.patience < 0.3 ? 0.7 : 0.85, // Impatient = lower tolerance
+            maxStepsWithoutProgress: traits.persistence > 0.7 ? 15 : 10,
+            loopDetectionThreshold: 3,
+            timeLimit: traits.patience > 0.7 ? 180 : (traits.patience < 0.3 ? 60 : 120),
+        };
+        // Navigate to start URL
+        const b = await getBrowser();
+        await b.navigate(startUrl);
+        // v16.12.0: Include persona values for influence pattern analysis
+        const personaValues = getPersonaValues(personaObj.name);
+        const influencePatterns = personaValues
+            ? rankInfluencePatternsForProfile(personaValues).slice(0, 5) // Top 5 most effective patterns
+            : undefined;
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        persona: {
+                            name: personaObj.name,
+                            description: personaObj.description,
+                            demographics: personaObj.demographics,
+                            values: personaValues ? {
+                                schwartz: {
+                                    selfDirection: personaValues.selfDirection,
+                                    stimulation: personaValues.stimulation,
+                                    hedonism: personaValues.hedonism,
+                                    achievement: personaValues.achievement,
+                                    power: personaValues.power,
+                                    security: personaValues.security,
+                                    conformity: personaValues.conformity,
+                                    tradition: personaValues.tradition,
+                                    benevolence: personaValues.benevolence,
+                                    universalism: personaValues.universalism,
+                                },
+                                higherOrder: {
+                                    openness: personaValues.openness,
+                                    selfEnhancement: personaValues.selfEnhancement,
+                                    conservation: personaValues.conservation,
+                                    selfTranscendence: personaValues.selfTranscendence,
+                                },
+                                sdt: {
+                                    autonomyNeed: personaValues.autonomyNeed,
+                                    competenceNeed: personaValues.competenceNeed,
+                                    relatednessNeed: personaValues.relatednessNeed,
+                                },
+                                maslowLevel: personaValues.maslowLevel,
+                            } : undefined,
+                            influenceSusceptibility: influencePatterns?.map(ip => ({
+                                pattern: ip.pattern.name,
+                                susceptibility: ip.susceptibility,
+                            })),
+                        },
+                        cognitiveProfile: profile,
+                        initialState,
+                        abandonmentThresholds: thresholds,
+                        goal,
+                        startUrl,
+                        instructions: `
+COGNITIVE JOURNEY SIMULATION INSTRUCTIONS:
+
+You are now simulating a "${personaObj.name}" user with these cognitive traits:
+- Patience: ${profile.traits.patience.toFixed(2)} ${profile.traits.patience < 0.3 ? "(impatient - will give up quickly)" : profile.traits.patience > 0.7 ? "(patient - will persist)" : "(moderate)"}
+- Risk Tolerance: ${profile.traits.riskTolerance.toFixed(2)} ${profile.traits.riskTolerance < 0.3 ? "(cautious - hesitates)" : profile.traits.riskTolerance > 0.7 ? "(bold - clicks freely)" : "(moderate)"}
+- Comprehension: ${profile.traits.comprehension.toFixed(2)} ${profile.traits.comprehension < 0.3 ? "(struggles with UI)" : profile.traits.comprehension > 0.7 ? "(expert at UI patterns)" : "(moderate)"}
+- Reading Tendency: ${profile.traits.readingTendency.toFixed(2)} ${profile.traits.readingTendency < 0.3 ? "(scans only)" : profile.traits.readingTendency > 0.7 ? "(reads everything)" : "(selective reader)"}
+
+Attention Pattern: ${profile.attentionPattern}
+Decision Style: ${profile.decisionStyle}
+
+GOAL: "${goal}"
+
+SIMULATION LOOP:
+1. PERCEIVE - Use screenshot/snapshot to see the page. Filter by attention pattern.
+2. COMPREHEND - Interpret elements as this persona would (lower comprehension = more confusion)
+3. DECIDE - Choose action based on traits. Generate inner monologue.
+4. EXECUTE - Use click/fill/navigate tools.
+5. EVALUATE - Update cognitive state after each action:
+   - patienceRemaining -= 0.02 + (frustrationLevel × 0.05)
+   - confusionLevel changes based on UI clarity
+   - frustrationLevel increases on failures
+6. CHECK ABANDONMENT - If thresholds exceeded, end journey with appropriate message.
+7. LOOP - Return to PERCEIVE until goal achieved or abandoned.
+
+ABANDONMENT TRIGGERS:
+- Patience < ${thresholds.patienceMin}: "This is taking too long. I give up."
+- Confusion > ${thresholds.confusionMax} for 30s: "I have no idea what to do."
+- Frustration > ${thresholds.frustrationMax}: "This is so frustrating!"
+- No progress after ${thresholds.maxStepsWithoutProgress} steps: "I'm not getting anywhere."
+- Same page ${thresholds.loopDetectionThreshold}x: "I keep ending up here."
+- Time > ${thresholds.timeLimit}s: "I've spent too long on this."
+
+INNER MONOLOGUE EXAMPLES (${personaObj.name}):
+${profile.traits.patience < 0.3 ? '- "Come ON. Why is this taking so long?"' : '- "Let me take my time to figure this out..."'}
+${profile.traits.riskTolerance < 0.3 ? '- "I don\'t know what this button does. What if I click the wrong thing?"' : '- "This looks relevant, let me click it."'}
+${profile.traits.comprehension < 0.4 ? '- "What does this mean? I don\'t understand these icons."' : '- "Ah, I see - that\'s the settings menu."'}
+
+Begin the simulation now. Narrate your thoughts as this persona.
+`,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("cognitive_journey_update_state", "Update the cognitive state during a journey simulation. Call this after each action to track mental state.", {
+        currentState: z.object({
+            patienceRemaining: z.number().describe("Remaining patience (0-1, depletes over time)"),
+            confusionLevel: z.number().describe("Current confusion (0-1, high triggers abandonment)"),
+            frustrationLevel: z.number().describe("Current frustration (0-1, high triggers abandonment)"),
+            goalProgress: z.number().describe("Progress toward goal (0-1)"),
+            confidenceLevel: z.number().describe("Self-confidence in completing task (0-1)"),
+            currentMood: z.enum(["neutral", "hopeful", "confused", "frustrated", "defeated", "relieved"]).describe("Current emotional state"),
+            stepCount: z.number().describe("Number of actions taken"),
+            timeElapsed: z.number().describe("Seconds elapsed since journey start"),
+        }).describe("Current cognitive state"),
+        actionResult: z.object({
+            success: z.boolean().describe("Whether the last action succeeded"),
+            wasConfusing: z.boolean().optional().describe("Whether the UI was confusing"),
+            progressMade: z.boolean().optional().describe("Whether progress was made toward goal"),
+            wentBack: z.boolean().optional().describe("Whether user went back/undid action"),
+        }).describe("Result of the last action"),
+        personaTraits: z.object({
+            patience: z.number().describe("Base patience trait (0-1)"),
+            riskTolerance: z.number().describe("Willingness to try new things (0-1)"),
+            comprehension: z.number().describe("UI understanding ability (0-1)"),
+            persistence: z.number().describe("Tendency to retry same approach (0-1)"),
+        }).describe("Persona traits affecting state changes"),
+    }, async ({ currentState, actionResult, personaTraits }) => {
+        // Calculate new state based on action result
+        let newPatienceRemaining = currentState.patienceRemaining - 0.02;
+        let newConfusionLevel = currentState.confusionLevel;
+        let newFrustrationLevel = currentState.frustrationLevel;
+        let newConfidenceLevel = currentState.confidenceLevel;
+        let newMood = currentState.currentMood;
+        // Apply frustration decay on patience
+        newPatienceRemaining -= currentState.frustrationLevel * 0.05;
+        if (actionResult.success) {
+            // Success reduces confusion and frustration
+            newConfusionLevel = Math.max(0, newConfusionLevel - 0.1);
+            newFrustrationLevel = Math.max(0, newFrustrationLevel - 0.05);
+            if (actionResult.progressMade) {
+                newConfidenceLevel = Math.min(1, newConfidenceLevel + 0.1);
+                if (newMood === "confused" || newMood === "frustrated") {
+                    newMood = "hopeful";
+                }
+            }
+        }
+        else {
+            // Failure increases frustration
+            newFrustrationLevel = Math.min(1, newFrustrationLevel + 0.2);
+            if (newFrustrationLevel > 0.7) {
+                newMood = "frustrated";
+            }
+            if (newFrustrationLevel > 0.8 && personaTraits.persistence < 0.5) {
+                newMood = "defeated";
+            }
+        }
+        if (actionResult.wasConfusing) {
+            // Confusion builds based on comprehension
+            newConfusionLevel = Math.min(1, newConfusionLevel + (1 - personaTraits.comprehension) * 0.15);
+            if (newConfusionLevel > 0.5 && newMood !== "frustrated") {
+                newMood = "confused";
+            }
+        }
+        if (actionResult.wentBack) {
+            newConfidenceLevel = Math.max(0, newConfidenceLevel - 0.15);
+        }
+        const newState = {
+            patienceRemaining: Math.max(0, newPatienceRemaining),
+            confusionLevel: newConfusionLevel,
+            frustrationLevel: newFrustrationLevel,
+            confidenceLevel: newConfidenceLevel,
+            currentMood: newMood,
+            stepCount: currentState.stepCount + 1,
+            timeElapsed: currentState.timeElapsed + 2, // Estimate 2s per step
+        };
+        // Check abandonment conditions
+        let shouldAbandon = false;
+        let abandonmentReason;
+        let abandonmentMessage;
+        if (newState.patienceRemaining < 0.1) {
+            shouldAbandon = true;
+            abandonmentReason = "patience";
+            abandonmentMessage = "This is taking too long. I give up.";
+        }
+        else if (newState.frustrationLevel > 0.85) {
+            shouldAbandon = true;
+            abandonmentReason = "frustration";
+            abandonmentMessage = "This is so frustrating! I'm done.";
+        }
+        else if (newState.confusionLevel > 0.8 && currentState.confusionLevel > 0.8) {
+            shouldAbandon = true;
+            abandonmentReason = "confusion";
+            abandonmentMessage = "I have no idea what I'm supposed to do here.";
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        newState,
+                        shouldAbandon,
+                        abandonmentReason,
+                        abandonmentMessage,
+                        stateChange: {
+                            patienceDelta: newState.patienceRemaining - currentState.patienceRemaining,
+                            confusionDelta: newState.confusionLevel - currentState.confusionLevel,
+                            frustrationDelta: newState.frustrationLevel - currentState.frustrationLevel,
+                        },
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("list_cognitive_personas", "List all available personas with their cognitive traits (includes accessibility and emotional personas)", {}, async () => {
+        // v16.11.0: Include all persona types - BUILTIN + ACCESSIBILITY + EMOTIONAL
+        const builtinNames = listPersonas();
+        const accessibilityNames = listAccessibilityPersonas();
+        // Built-in personas (power-user, first-timer, etc.)
+        const builtinPersonas = builtinNames.map(name => {
+            const p = getPersona(name);
+            if (!p)
+                return null;
+            const profile = getCognitiveProfile(p);
+            // v16.12.0: Include Schwartz values for each persona
+            const values = getPersonaValues(p.name);
+            return {
+                name: p.name,
+                description: p.description,
+                category: "builtin",
+                demographics: p.demographics,
+                cognitiveTraits: profile.traits,
+                attentionPattern: profile.attentionPattern,
+                decisionStyle: profile.decisionStyle,
+                values: values ? {
+                    schwartz: {
+                        selfDirection: values.selfDirection,
+                        stimulation: values.stimulation,
+                        hedonism: values.hedonism,
+                        achievement: values.achievement,
+                        power: values.power,
+                        security: values.security,
+                        conformity: values.conformity,
+                        tradition: values.tradition,
+                        benevolence: values.benevolence,
+                        universalism: values.universalism,
+                    },
+                    higherOrder: {
+                        openness: values.openness,
+                        selfEnhancement: values.selfEnhancement,
+                        conservation: values.conservation,
+                        selfTranscendence: values.selfTranscendence,
+                    },
+                    sdt: {
+                        autonomyNeed: values.autonomyNeed,
+                        competenceNeed: values.competenceNeed,
+                        relatednessNeed: values.relatednessNeed,
+                    },
+                    maslowLevel: values.maslowLevel,
+                } : undefined,
+            };
+        }).filter(Boolean);
+        // Accessibility personas (motor-tremor, low-vision, adhd, etc.)
+        const accessibilityPersonas = accessibilityNames.map(name => {
+            const p = getAccessibilityPersona(name);
+            if (!p)
+                return null;
+            // v16.11.0: Compute disabilityType and barrierTypes from accessibilityTraits
+            const traits = p.accessibilityTraits;
+            let disabilityType = "General accessibility";
+            const barrierTypes = [];
+            if (traits?.tremor) {
+                disabilityType = "Motor impairment (tremor)";
+                barrierTypes.push("motor_precision", "touch_target");
+            }
+            if (traits?.visionLevel !== undefined && traits.visionLevel < 0.5) {
+                disabilityType = "Low vision";
+                barrierTypes.push("visual_clarity", "contrast");
+            }
+            if (traits?.colorBlindness) {
+                disabilityType = `Color blindness (${traits.colorBlindness})`;
+                barrierTypes.push("sensory");
+            }
+            if (traits?.processingSpeed !== undefined && traits.processingSpeed < 0.6) {
+                disabilityType = "Cognitive (Processing)";
+                barrierTypes.push("cognitive_load", "temporal");
+            }
+            if (traits?.attentionSpan !== undefined && traits.attentionSpan < 0.5) {
+                if (!disabilityType.includes("Cognitive")) {
+                    disabilityType = "Cognitive (ADHD/Attention)";
+                }
+                barrierTypes.push("cognitive_load");
+            }
+            // Name-based fallback
+            if (disabilityType === "General accessibility") {
+                if (p.name.includes("deaf") || p.name.includes("hearing"))
+                    disabilityType = "Hearing impairment";
+                else if (p.name.includes("motor"))
+                    disabilityType = "Motor impairment";
+                else if (p.name.includes("vision") || p.name.includes("blind"))
+                    disabilityType = "Vision impairment";
+                else if (p.name.includes("cognitive") || p.name.includes("adhd"))
+                    disabilityType = "Cognitive";
+            }
+            // v16.12.0: Include Schwartz values for accessibility personas
+            const values = getPersonaValues(p.name);
+            return {
+                name: p.name,
+                description: p.description,
+                category: "accessibility",
+                disabilityType,
+                demographics: p.demographics,
+                cognitiveTraits: p.cognitiveTraits || {},
+                barrierTypes: [...new Set(barrierTypes)], // Deduplicate
+                values: values ? {
+                    schwartz: {
+                        selfDirection: values.selfDirection,
+                        stimulation: values.stimulation,
+                        hedonism: values.hedonism,
+                        achievement: values.achievement,
+                        power: values.power,
+                        security: values.security,
+                        conformity: values.conformity,
+                        tradition: values.tradition,
+                        benevolence: values.benevolence,
+                        universalism: values.universalism,
+                    },
+                    higherOrder: {
+                        openness: values.openness,
+                        selfEnhancement: values.selfEnhancement,
+                        conservation: values.conservation,
+                        selfTranscendence: values.selfTranscendence,
+                    },
+                    sdt: {
+                        autonomyNeed: values.autonomyNeed,
+                        competenceNeed: values.competenceNeed,
+                        relatednessNeed: values.relatednessNeed,
+                    },
+                    maslowLevel: values.maslowLevel,
+                } : undefined,
+            };
+        }).filter(Boolean);
+        const allPersonas = [...builtinPersonas, ...accessibilityPersonas];
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        personas: allPersonas,
+                        count: allPersonas.length,
+                        categories: {
+                            builtin: builtinPersonas.length,
+                            accessibility: accessibilityPersonas.length,
+                        },
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Persona Questionnaire Tools (v16.5.0)
+    // Research-based persona generation via questionnaire
+    // =========================================================================
+    server.tool("persona_questionnaire_get", "Get the persona questionnaire for building a custom persona. Returns research-backed questions that map to cognitive traits. Use comprehensive=true for all 25 traits, or leave false for 8 core traits. v16.12.0: Now includes category question for value safeguards.", {
+        comprehensive: z.boolean().optional().default(false).describe("Include all 25 traits (true) or just 8 core traits (false)"),
+        traits: z.array(z.string()).optional().describe("Specific trait names to include (overrides comprehensive)"),
+        includeCategory: z.boolean().optional().default(true).describe("Include category selection question for value safeguards"),
+    }, async ({ comprehensive, traits, includeCategory }) => {
+        const { generatePersonaQuestionnaire, formatForAskUserQuestion, CATEGORY_QUESTION, CATEGORY_VALUE_PRESETS, } = await import("./persona-questionnaire.js");
+        const questions = generatePersonaQuestionnaire({
+            comprehensive,
+            traits: traits,
+        });
+        const formatted = formatForAskUserQuestion(questions);
+        // v16.12.0: Include category question and value presets
+        const categoryInfo = includeCategory ? {
+            categoryQuestion: CATEGORY_QUESTION,
+            categoryPresets: CATEGORY_VALUE_PRESETS.map(p => ({
+                category: p.category,
+                description: p.description,
+                valueStrategy: p.valueStrategy,
+                guidance: p.guidance,
+            })),
+        } : undefined;
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        instructions: `
+PERSONA CREATION WORKFLOW (v16.12.0):
+
+1. FIRST: Ask the category question to determine value assignment strategy:
+   - Cognitive disabilities (ADHD, autism) → specific values from neuroscience
+   - Physical disabilities (motor, mobility) → security/autonomy shifts only
+   - Sensory differences (color-blind, deaf) → neutral values (perception ≠ motivation)
+   - Emotional traits (anxious, confident) → trait-based psychology values
+   - General → population baseline
+
+2. THEN: Ask the trait questions to build cognitive profile
+
+3. FINALLY: Call persona_questionnaire_build with:
+   - name, description, answers (from trait questions)
+   - category (from category question)
+   - The tool will apply appropriate value safeguards based on category
+
+This ensures personas are grounded in research, not stereotypes.
+`.trim(),
+                        categoryInfo,
+                        questionCount: questions.length,
+                        questions: formatted,
+                        rawQuestions: questions,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("persona_category_guidance", "Get research-based guidance for a specific persona category. Explains what values are appropriate and why, with citations. Use before building a persona to understand category constraints.", {
+        category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).describe("Persona category to get guidance for"),
+    }, async ({ category }) => {
+        const { getCategoryValuePreset, COGNITIVE_SUBTYPES, } = await import("./persona-questionnaire.js");
+        const preset = getCategoryValuePreset(category);
+        // Get subtypes if cognitive
+        const subtypes = category === "cognitive"
+            ? Object.entries(COGNITIVE_SUBTYPES).map(([name, info]) => ({
+                name,
+                values: info.values,
+                researchBasis: info.researchBasis,
+            }))
+            : undefined;
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        category,
+                        description: preset.description,
+                        valueStrategy: preset.valueStrategy,
+                        guidance: preset.guidance,
+                        defaultValues: preset.defaultValues,
+                        researchBasis: preset.researchBasis,
+                        subtypes,
+                        safeguards: {
+                            cognitive: "Use specific values based on the neurobiological profile (e.g., ADHD = high stimulation). NOT stereotyping - grounded in dopamine/reward research.",
+                            physical: "Apply security ↑ and autonomyNeed ↑ shifts for predictable interfaces. Don't change core personality values.",
+                            sensory: "Use neutral (0.5) values. Sensory perception ≠ motivational psychology. Color-blindness doesn't make someone more/less achievement-oriented.",
+                            emotional: "Apply trait-based values from personality psychology (e.g., anxiety = high security-seeking).",
+                            general: "Use population baselines. Specific characteristics come from cognitive traits, not disability-based value shifts.",
+                        }[category],
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("persona_questionnaire_build", "Build a custom persona from questionnaire answers with category-aware value safeguards. Answers map trait names to values (0-1). Category determines value assignment strategy: cognitive disabilities get specific values, physical get security/autonomy shifts, sensory-only get neutral values.", {
+        name: z.string().describe("Name for the new persona"),
+        description: z.string().describe("Description of the persona"),
+        answers: z.record(z.string(), z.number()).describe("Map of trait names to values (0-1), e.g. {patience: 0.25, riskTolerance: 0.75}"),
+        category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).optional().describe("Persona category for value safeguards. Auto-detected from name/description if not provided."),
+        valueOverrides: z.record(z.string(), z.number()).optional().describe("Override specific Schwartz values (0-1), e.g. {security: 0.8, stimulation: 0.3}"),
+        save: z.boolean().optional().default(true).describe("Save the persona to disk for future use"),
+    }, async ({ name, description, answers, category, valueOverrides, save }) => {
+        const { buildTraitsFromAnswers, getTraitLabel, getTraitBehaviors, detectPersonaCategory, buildValuesFromCategory, validateCategoryValues, getCognitiveSubtypeValues, } = await import("./persona-questionnaire.js");
+        // v16.12.0: Detect category if not provided
+        const detectedCategory = category || detectPersonaCategory(name, description);
+        // Build traits from answers with research-based correlations
+        const traits = buildTraitsFromAnswers(answers);
+        // v16.12.0: Build values based on category with safeguards
+        // v16.14.0: Pass traits for trait_based categories (general, emotional)
+        // Check for cognitive subtype (e.g., adhd-combined, autism-spectrum)
+        const subtypeValues = getCognitiveSubtypeValues(name);
+        const categoryResult = buildValuesFromCategory(detectedCategory, subtypeValues?.values || valueOverrides, traits // v16.14.0: Pass traits for trait-based value derivation
+        );
+        // Validate that values match category guidelines
+        const warnings = validateCategoryValues(detectedCategory, categoryResult.values);
+        // Create the persona
+        const persona = createCognitivePersona(name, description, traits, {});
+        // Save if requested
+        let savedPath;
+        if (save) {
+            savedPath = saveCustomPersona(persona);
+        }
+        // Generate behavioral summary for key traits
+        const traitSummary = {};
+        for (const [trait, value] of Object.entries(traits)) {
+            if (value !== 0.5) { // Only include non-default traits
+                traitSummary[trait] = {
+                    value: value,
+                    label: getTraitLabel(trait, value),
+                    behaviors: getTraitBehaviors(trait, value),
+                };
+            }
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        success: true,
+                        persona: {
+                            name: persona.name,
+                            description: persona.description,
+                            demographics: persona.demographics,
+                        },
+                        cognitiveTraits: traits,
+                        traitSummary,
+                        // v16.12.0: Category-aware values
+                        category: {
+                            detected: detectedCategory,
+                            strategy: categoryResult.valueStrategy,
+                            guidance: categoryResult.guidance,
+                        },
+                        values: categoryResult.values,
+                        researchBasis: subtypeValues
+                            ? [...categoryResult.researchBasis, subtypeValues.researchBasis]
+                            : categoryResult.researchBasis,
+                        // v16.14.0: Show how traits influenced values for trait_based categories
+                        valueDerivations: categoryResult.derivations && categoryResult.derivations.length > 0
+                            ? categoryResult.derivations
+                            : undefined,
+                        warnings: warnings.length > 0 ? warnings : undefined,
+                        savedPath,
+                        usage: `Use persona "${name}" with cognitive-journey or other commands`,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("persona_trait_lookup", "Look up behavioral descriptions for specific trait values. Useful for understanding what a trait value means in practice.", {
+        trait: z.string().describe("Trait name (e.g., 'patience', 'riskTolerance')"),
+        value: z.number().min(0).max(1).describe("Trait value (0-1)"),
+    }, async ({ trait, value }) => {
+        const { getTraitReference, getTraitLabel, getTraitBehaviors } = await import("./persona-questionnaire.js");
+        const reference = getTraitReference(trait);
+        if (!reference) {
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({
+                            error: `Unknown trait: ${trait}`,
+                            availableTraits: [
+                                "patience", "riskTolerance", "comprehension", "persistence", "curiosity",
+                                "workingMemory", "readingTendency", "resilience", "selfEfficacy", "satisficing",
+                                "trustCalibration", "interruptRecovery", "informationForaging", "changeBlindness",
+                                "anchoringBias", "timeHorizon", "attributionStyle", "metacognitivePlanning",
+                                "proceduralFluency", "transferLearning", "authoritySensitivity", "emotionalContagion",
+                                "fearOfMissingOut", "socialProofSensitivity", "mentalModelRigidity"
+                            ],
+                        }, null, 2),
+                    },
+                ],
+            };
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        trait: reference.name,
+                        description: reference.description,
+                        researchBasis: reference.researchBasis,
+                        value,
+                        label: getTraitLabel(trait, value),
+                        behaviors: getTraitBehaviors(trait, value),
+                        allLevels: reference.levels,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Values System Tools (v16.12.0)
+    // Schwartz's 10 Universal Values, Self-Determination Theory, Maslow
+    // =========================================================================
+    server.tool("persona_values_list", "List all Schwartz's 10 Universal Values with their meanings, plus higher-order values, Self-Determination Theory needs, and Maslow levels. Use this to understand the values framework before looking up specific personas.", {}, async () => {
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        schwartzValues: {
+                            selfDirection: { range: "0-1", meaning: "Independent thought, creativity, freedom. High: values autonomy and exploration. Low: prefers guidance and structure." },
+                            stimulation: { range: "0-1", meaning: "Excitement, novelty, challenge. High: seeks variety and new experiences. Low: prefers routine and predictability." },
+                            hedonism: { range: "0-1", meaning: "Pleasure, sensuous gratification. High: prioritizes enjoyment and comfort. Low: prioritizes duty over pleasure." },
+                            achievement: { range: "0-1", meaning: "Personal success through competence. High: driven to excel and demonstrate capability. Low: content without external validation." },
+                            power: { range: "0-1", meaning: "Social status, prestige, control. High: seeks influence over others/resources. Low: indifferent to status hierarchies." },
+                            security: { range: "0-1", meaning: "Safety, harmony, stability. High: risk-averse, needs predictability. Low: comfortable with uncertainty." },
+                            conformity: { range: "0-1", meaning: "Restraint of actions that harm others. High: follows social rules carefully. Low: independent of social expectations." },
+                            tradition: { range: "0-1", meaning: "Respect for customs, heritage. High: values cultural/religious practices. Low: questions or ignores tradition." },
+                            benevolence: { range: "0-1", meaning: "Welfare of close others. High: prioritizes helping friends/family. Low: more self-focused." },
+                            universalism: { range: "0-1", meaning: "Tolerance, social justice, environment. High: cares about all people and nature. Low: focused on in-group." },
+                        },
+                        higherOrderValues: {
+                            openness: { formula: "(selfDirection + stimulation) / 2", meaning: "Openness to change - receptivity to new ideas and experiences" },
+                            selfEnhancement: { formula: "(achievement + power) / 2", meaning: "Focus on personal success and dominance" },
+                            conservation: { formula: "(security + conformity + tradition) / 3", meaning: "Preservation of stability and traditional practices" },
+                            selfTranscendence: { formula: "(benevolence + universalism) / 2", meaning: "Concern for welfare of others and nature" },
+                        },
+                        selfDeterminationTheory: {
+                            autonomyNeed: { range: "0-1", meaning: "Need for choice and self-direction (Deci & Ryan, 1985)" },
+                            competenceNeed: { range: "0-1", meaning: "Need to feel capable and effective" },
+                            relatednessNeed: { range: "0-1", meaning: "Need for connection and belonging" },
+                        },
+                        maslowLevels: [
+                            { level: "physiological", meaning: "Basic survival needs (food, water, shelter)" },
+                            { level: "safety", meaning: "Security, stability, freedom from fear" },
+                            { level: "belonging", meaning: "Social connection, love, acceptance" },
+                            { level: "esteem", meaning: "Achievement, recognition, respect" },
+                            { level: "self-actualization", meaning: "Self-fulfillment, reaching potential" },
+                        ],
+                        researchBasis: {
+                            schwartz: "Schwartz, S. H. (1992, 2012). Theory of Basic Human Values. DOI: 10.1016/S0065-2601(08)60281-6",
+                            sdt: "Deci, E. L., & Ryan, R. M. (1985, 2000). Self-Determination Theory. DOI: 10.1037/0003-066X.55.1.68",
+                            maslow: "Maslow, A. H. (1943). A Theory of Human Motivation. DOI: 10.1037/h0054346",
+                        },
+                        usage: "Use persona_values_lookup with a persona name to see these values for a specific persona, and list_influence_patterns to see which persuasion patterns work on which values.",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("persona_values_lookup", "Look up the values profile for a persona (Schwartz's 10 Universal Values, SDT needs, Maslow level). Values describe WHO the persona is at a deeper motivational level, informing influence susceptibility.", {
+        persona: z.string().describe("Persona name (e.g., 'first-timer', 'power-user', 'anxious-user')"),
+        includeInfluencePatterns: z.boolean().optional().default(true).describe("Include ranked influence patterns this persona is susceptible to"),
+    }, async ({ persona, includeInfluencePatterns }) => {
+        const values = getPersonaValues(persona);
+        if (!values) {
+            // List available personas with values
+            const availablePersonas = PERSONA_VALUE_PROFILES.map(p => p.personaName);
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({
+                            error: `No values profile found for persona: ${persona}`,
+                            availablePersonas,
+                            note: "Values are defined for all built-in personas. Custom personas can have values added via the questionnaire.",
+                        }, null, 2),
+                    },
+                ],
+            };
+        }
+        // Find rationale for this persona
+        const profile = PERSONA_VALUE_PROFILES.find(p => p.personaName.toLowerCase() === persona.toLowerCase());
+        // Calculate influence susceptibility if requested
+        let influencePatterns;
+        if (includeInfluencePatterns) {
+            const ranked = rankInfluencePatternsForProfile(values);
+            influencePatterns = ranked.slice(0, 7).map(r => ({
+                pattern: r.pattern.name,
+                susceptibility: r.susceptibility,
+                description: r.pattern.description,
+            }));
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        persona,
+                        rationale: profile?.rationale,
+                        schwartzValues: {
+                            selfDirection: { value: values.selfDirection, meaning: "Independent thought, creativity, freedom" },
+                            stimulation: { value: values.stimulation, meaning: "Excitement, novelty, challenge" },
+                            hedonism: { value: values.hedonism, meaning: "Pleasure, sensuous gratification" },
+                            achievement: { value: values.achievement, meaning: "Personal success through competence" },
+                            power: { value: values.power, meaning: "Social status, prestige, control" },
+                            security: { value: values.security, meaning: "Safety, harmony, stability" },
+                            conformity: { value: values.conformity, meaning: "Restraint of actions that harm others" },
+                            tradition: { value: values.tradition, meaning: "Respect for customs, heritage" },
+                            benevolence: { value: values.benevolence, meaning: "Welfare of close others" },
+                            universalism: { value: values.universalism, meaning: "Tolerance, social justice, environment" },
+                        },
+                        higherOrderValues: {
+                            openness: { value: values.openness, meaning: "(selfDirection + stimulation) / 2" },
+                            selfEnhancement: { value: values.selfEnhancement, meaning: "(achievement + power) / 2" },
+                            conservation: { value: values.conservation, meaning: "(security + conformity + tradition) / 3" },
+                            selfTranscendence: { value: values.selfTranscendence, meaning: "(benevolence + universalism) / 2" },
+                        },
+                        selfDeterminationTheory: {
+                            autonomyNeed: { value: values.autonomyNeed, meaning: "Need for choice and control" },
+                            competenceNeed: { value: values.competenceNeed, meaning: "Need to feel capable" },
+                            relatednessNeed: { value: values.relatednessNeed, meaning: "Need for connection" },
+                        },
+                        maslowLevel: {
+                            level: values.maslowLevel,
+                            meaning: values.maslowLevel === "physiological" ? "Basic survival needs"
+                                : values.maslowLevel === "safety" ? "Security and stability"
+                                    : values.maslowLevel === "belonging" ? "Social connection and love"
+                                        : values.maslowLevel === "esteem" ? "Achievement and recognition"
+                                            : "Self-fulfillment and growth",
+                        },
+                        influencePatterns,
+                        researchBasis: {
+                            schwartz: "Schwartz, S. H. (1992, 2012). Theory of Basic Human Values. DOI: 10.1016/S0065-2601(08)60281-6",
+                            sdt: "Deci, E. L., & Ryan, R. M. (1985, 2000). Self-Determination Theory. DOI: 10.1037/0003-066X.55.1.68",
+                            maslow: "Maslow, A. H. (1943). A Theory of Human Motivation. DOI: 10.1037/h0054346",
+                        },
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("list_influence_patterns", "List all research-backed influence/persuasion patterns and which persona values make someone susceptible to each pattern. Based on Cialdini, Kahneman, and behavioral economics research.", {}, async () => {
+        // INFLUENCE_PATTERNS is an array of InfluencePattern objects
+        const patterns = INFLUENCE_PATTERNS.map(pattern => ({
+            name: pattern.name,
+            description: pattern.description,
+            researchBasis: pattern.researchBasis,
+            targetValues: pattern.targetValues,
+            mechanism: pattern.mechanism,
+            examples: pattern.examples,
+        }));
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        count: patterns.length,
+                        patterns,
+                        usage: "Use persona_values_lookup to see which patterns a specific persona is susceptible to",
+                        note: "These patterns describe psychological influence mechanisms. Use ethically for UX optimization, not manipulation.",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Persona Comparison Session Bridge (API-free via Claude orchestration)
+    // =========================================================================
+    server.tool("compare_personas_init", "Initialize a multi-persona comparison session. Returns all persona profiles and initial states. Claude orchestrates the journeys using browser tools + cognitive_journey_update_state, then records results. NO API KEY NEEDED - Claude is the brain.", {
+        url: z.string().url().describe("Starting URL for all journeys"),
+        goal: z.string().describe("Goal to accomplish"),
+        personas: z.array(z.string()).describe("Persona names to compare (e.g., ['first-timer', 'elderly-user', 'power-user'])"),
+    }, async ({ url, goal, personas: personaNames }) => {
+        // Cleanup old sessions
+        cleanupOldSessions();
+        // Generate session ID
+        const sessionId = `cmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // Build persona profiles
+        // v16.14.1: Use getAnyPersona to find personas in ALL registries
+        // (builtin, accessibility, emotional, custom) - fixes name mismatch bug
+        // v17.0.0: Filter out agent personas - cognitive journeys don't support them
+        const personas = personaNames
+            .filter(name => {
+            const persona = getAnyPersona(name);
+            if (persona && isAgentPersonaObject(persona)) {
+                console.warn(`[CBrowser] Skipping agent persona "${name}" - not supported for persona comparison`);
+                return false;
+            }
+            return true;
+        })
+            .map(name => {
+            const existingPersona = getAnyPersona(name);
+            let personaObj;
+            if (!existingPersona) {
+                // Only create generic stub if persona truly doesn't exist
+                personaObj = createCognitivePersona(name, name, {});
+            }
+            else {
+                // Safe cast - we filtered out agent personas above
+                personaObj = existingPersona;
+            }
+            const profile = getCognitiveProfile(personaObj);
+            // Initial cognitive state
+            const initialState = {
+                patienceRemaining: 1.0,
+                confusionLevel: 0.0,
+                frustrationLevel: 0.0,
+                goalProgress: 0.0,
+                confidenceLevel: 0.5,
+                currentMood: "neutral",
+                memory: {
+                    pagesVisited: [url],
+                    actionsAttempted: [],
+                    errorsEncountered: [],
+                    backtrackCount: 0,
+                },
+                timeElapsed: 0,
+                stepCount: 0,
+            };
+            // Abandonment thresholds
+            const traits = profile.traits;
+            const thresholds = {
+                patienceMin: 0.1,
+                confusionMax: traits.comprehension < 0.4 ? 0.6 : 0.8,
+                frustrationMax: traits.patience < 0.3 ? 0.7 : 0.85,
+                maxStepsWithoutProgress: traits.persistence > 0.7 ? 15 : 10,
+                loopDetectionThreshold: 3,
+                timeLimit: traits.patience > 0.7 ? 180 : (traits.patience < 0.3 ? 60 : 120),
+            };
+            return {
+                name,
+                description: personaObj.description || name,
+                profile,
+                initialState,
+                thresholds,
+            };
+        });
+        // Store session
+        const session = {
+            id: sessionId,
+            url,
+            goal,
+            personas,
+            results: [],
+            createdAt: Date.now(),
+        };
+        comparisonSessions.set(sessionId, session);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        sessionId,
+                        url,
+                        goal,
+                        personaCount: personas.length,
+                        personas: personas.map(p => ({
+                            name: p.name,
+                            description: p.description,
+                            cognitiveTraits: p.profile.traits,
+                            attentionPattern: p.profile.attentionPattern,
+                            decisionStyle: p.profile.decisionStyle,
+                            initialState: p.initialState,
+                            thresholds: p.thresholds,
+                        })),
+                        instructions: "For each persona: 1) Use browser tools (navigate, click, fill) to attempt the goal. 2) Call cognitive_journey_update_state after each action. 3) Call compare_personas_record_result when done (success or abandon). 4) After all personas, call compare_personas_summarize.",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("compare_personas_record_result", "Record the journey result for a persona in the comparison session. Call this when a persona's journey is complete (success or abandonment).", {
+        sessionId: z.string().describe("Session ID from compare_personas_init"),
+        persona: z.string().describe("Persona name"),
+        goalAchieved: z.boolean().describe("Whether the goal was accomplished"),
+        abandonmentReason: z.enum(["patience", "confusion", "frustration", "no_progress", "loop", "timeout"]).optional().describe("Why the persona abandoned (if goalAchieved is false)"),
+        finalState: z.object({
+            patienceRemaining: z.number().describe("Final patience level (0-1)"),
+            confusionLevel: z.number().describe("Final confusion level (0-1)"),
+            frustrationLevel: z.number().describe("Final frustration level (0-1)"),
+            stepCount: z.number().describe("Total number of actions taken"),
+            timeElapsed: z.number().describe("Total seconds elapsed"),
+        }).describe("Final cognitive state"),
+        frictionPoints: z.array(z.object({
+            type: z.string().describe("Type of friction (e.g., 'navigation', 'form', 'loading')"),
+            description: z.string().describe("Description of the friction point"),
+        })).optional().describe("Friction points encountered during journey"),
+    }, async ({ sessionId, persona, goalAchieved, abandonmentReason, finalState, frictionPoints }) => {
+        const session = comparisonSessions.get(sessionId);
+        if (!session) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: "Session not found", sessionId }) }],
+            };
+        }
+        // Add result
+        session.results.push({
+            persona,
+            goalAchieved,
+            abandonmentReason,
+            finalState: {
+                ...finalState,
+                goalProgress: goalAchieved ? 1.0 : 0.5,
+                confidenceLevel: goalAchieved ? 0.9 : 0.3,
+                currentMood: goalAchieved ? "relieved" : "defeated",
+                memory: {
+                    pagesVisited: [],
+                    actionsAttempted: [],
+                    errorsEncountered: [],
+                    backtrackCount: 0,
+                },
+            },
+            stepCount: finalState.stepCount,
+            timeElapsed: finalState.timeElapsed,
+            frictionPoints: frictionPoints || [],
+        });
+        const remaining = session.personas.length - session.results.length;
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        recorded: true,
+                        persona,
+                        goalAchieved,
+                        resultCount: session.results.length,
+                        totalPersonas: session.personas.length,
+                        remaining,
+                        nextStep: remaining > 0
+                            ? `Run journey for ${remaining} more persona(s), then call compare_personas_summarize`
+                            : "All personas complete. Call compare_personas_summarize to get the comparison report.",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("compare_personas_summarize", "Generate the final comparison summary after all persona journeys are complete. Returns rankings, insights, and recommendations.", {
+        sessionId: z.string().describe("Session ID from compare_personas_init"),
+    }, async ({ sessionId }) => {
+        const session = comparisonSessions.get(sessionId);
+        if (!session) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: "Session not found", sessionId }) }],
+            };
+        }
+        if (session.results.length === 0) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: "No results recorded yet", sessionId }) }],
+            };
+        }
+        // Generate summary (deterministic aggregation)
+        const successfulResults = session.results.filter(r => r.goalAchieved);
+        const failedResults = session.results.filter(r => !r.goalAchieved);
+        const sortedByTime = [...successfulResults].sort((a, b) => a.timeElapsed - b.timeElapsed);
+        const sortedBySteps = [...successfulResults].sort((a, b) => a.stepCount - b.stepCount);
+        const sortedByFriction = [...session.results].sort((a, b) => b.frictionPoints.length - a.frictionPoints.length);
+        // Collect all friction points
+        const allFrictionPoints = session.results.flatMap(r => r.frictionPoints.map(fp => fp.type));
+        const frictionCounts = allFrictionPoints.reduce((acc, fp) => {
+            acc[fp] = (acc[fp] || 0) + 1;
+            return acc;
+        }, {});
+        const commonFriction = Object.entries(frictionCounts)
+            .filter(([_, count]) => count > 1)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([fp]) => fp);
+        // Generate recommendations
+        const recommendations = [];
+        // Abandonment analysis
+        const abandonedByPatience = failedResults.filter(r => r.abandonmentReason === "patience");
+        const abandonedByFrustration = failedResults.filter(r => r.abandonmentReason === "frustration");
+        const abandonedByConfusion = failedResults.filter(r => r.abandonmentReason === "confusion");
+        if (abandonedByPatience.length > 0) {
+            recommendations.push(`${abandonedByPatience.length} persona(s) abandoned due to PATIENCE exhaustion: ${abandonedByPatience.map(r => r.persona).join(", ")} - consider shorter flows`);
+        }
+        if (abandonedByFrustration.length > 0) {
+            recommendations.push(`${abandonedByFrustration.length} persona(s) abandoned due to FRUSTRATION: ${abandonedByFrustration.map(r => r.persona).join(", ")} - review error messages and feedback`);
+        }
+        if (abandonedByConfusion.length > 0) {
+            recommendations.push(`${abandonedByConfusion.length} persona(s) abandoned due to CONFUSION: ${abandonedByConfusion.map(r => r.persona).join(", ")} - improve UI clarity and labeling`);
+        }
+        if (sortedByFriction[0]?.frictionPoints.length > 0) {
+            recommendations.push(`"${sortedByFriction[0].persona}" experienced the most friction (${sortedByFriction[0].frictionPoints.length} points)`);
+        }
+        // Calculate averages
+        const avgTime = session.results.reduce((sum, r) => sum + r.timeElapsed, 0) / session.results.length;
+        const avgSteps = session.results.reduce((sum, r) => sum + r.stepCount, 0) / session.results.length;
+        const summary = {
+            sessionId,
+            url: session.url,
+            goal: session.goal,
+            timestamp: new Date().toISOString(),
+            totalPersonas: session.personas.length,
+            successCount: successfulResults.length,
+            failureCount: failedResults.length,
+            successRate: `${Math.round((successfulResults.length / session.results.length) * 100)}%`,
+            fastestPersona: sortedByTime[0]?.persona || "N/A",
+            slowestPersona: sortedByTime[sortedByTime.length - 1]?.persona || "N/A",
+            fewestSteps: sortedBySteps[0]?.persona || "N/A",
+            mostFriction: sortedByFriction[0]?.persona || "N/A",
+            leastFriction: sortedByFriction[sortedByFriction.length - 1]?.persona || "N/A",
+            avgCompletionTime: Math.round(avgTime),
+            avgSteps: Math.round(avgSteps),
+            commonFrictionPoints: commonFriction,
+            recommendations,
+            results: session.results.map(r => ({
+                persona: r.persona,
+                success: r.goalAchieved,
+                abandonmentReason: r.abandonmentReason,
+                timeElapsed: r.timeElapsed,
+                stepCount: r.stepCount,
+                frictionCount: r.frictionPoints.length,
+                finalPatience: Math.round(r.finalState.patienceRemaining * 100) + "%",
+                finalFrustration: Math.round(r.finalState.frustrationLevel * 100) + "%",
+                finalConfusion: Math.round(r.finalState.confusionLevel * 100) + "%",
+            })),
+        };
+        // Clean up session after summarizing
+        comparisonSessions.delete(sessionId);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(summary, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Empathy Audit Session Bridge (API-free via Claude orchestration)
+    // =========================================================================
+    server.tool("empathy_audit_init", "Initialize an accessibility empathy audit session. Returns disability persona profiles with traits, barrier detection hints, and WCAG criteria. Claude orchestrates the audit using browser tools, then records barriers. NO API KEY NEEDED - Claude is the brain.", {
+        url: z.string().url().describe("URL to audit"),
+        goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
+        disabilities: z.array(z.string()).optional().describe("Disability personas to test. Available: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia"),
+        wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level to check against"),
+    }, async ({ url, goal, disabilities, wcagLevel }) => {
+        // Cleanup old sessions
+        cleanupOldSessions();
+        // Generate session ID
+        const sessionId = `empathy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        // Get disability personas
+        const disabilityList = disabilities || listAccessibilityPersonas();
+        const personas = disabilityList.map(name => {
+            const persona = getAccessibilityPersona(name);
+            if (!persona) {
+                const customPersona = {
+                    name,
+                    disabilityType: "unknown",
+                    description: `Custom disability persona: ${name}`,
+                    accessibilityTraits: {},
+                };
+                return customPersona;
+            }
+            // Build the session persona object first, then compute disabilityType
+            const sessionPersona = {
+                name: persona.name,
+                disabilityType: "", // Will be computed below
+                description: persona.description,
+                accessibilityTraits: persona.accessibilityTraits,
+                cognitiveTraits: persona.cognitiveTraits,
+            };
+            // Compute disability type from traits
+            sessionPersona.disabilityType = getDisabilityTypeFromPersona(sessionPersona);
+            return sessionPersona;
+        });
+        // Store session
+        const session = {
+            id: sessionId,
+            url,
+            goal,
+            wcagLevel: wcagLevel || "AA",
+            personas,
+            currentPersonaIndex: 0,
+            barriers: [],
+            wcagViolations: new Set(),
+            personaResults: [],
+            createdAt: Date.now(),
+        };
+        empathyAuditSessions.set(sessionId, session);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        sessionId,
+                        url,
+                        goal,
+                        wcagLevel: session.wcagLevel,
+                        personaCount: personas.length,
+                        personas: personas.map(p => ({
+                            name: p.name,
+                            disabilityType: p.disabilityType,
+                            description: p.description,
+                            accessibilityTraits: p.accessibilityTraits,
+                            barrierHints: getBarrierHintsForPersona(p),
+                        })),
+                        wcagCriteria: Object.entries(WCAG_CRITERIA)
+                            .filter(([_, v]) => {
+                            if (session.wcagLevel === "A")
+                                return v.level === "A";
+                            if (session.wcagLevel === "AA")
+                                return v.level === "A" || v.level === "AA";
+                            return true; // AAA includes all
+                        })
+                            .map(([code, v]) => ({ code, ...v })),
+                        instructions: "For each persona: 1) Use browser tools to attempt the goal while noting difficulties. 2) Call empathy_audit_record_barrier for each barrier encountered. 3) Call empathy_audit_complete_persona when done. 4) After all personas, call empathy_audit_summarize.",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("empathy_audit_record_barrier", "Record an accessibility barrier found during the empathy audit. Call this when you observe something that would be difficult for the current disability persona.", {
+        sessionId: z.string().describe("Session ID from empathy_audit_init"),
+        persona: z.string().describe("Persona name experiencing this barrier"),
+        barrierType: z.enum(["motor_precision", "visual_clarity", "cognitive_load", "temporal", "sensory", "contrast", "touch_target", "timing"]).describe("Type of accessibility barrier"),
+        element: z.string().describe("CSS selector or description of the problematic element"),
+        description: z.string().describe("Description of the barrier and its impact"),
+        severity: z.enum(["minor", "major", "critical"]).describe("How severely this impacts the user"),
+    }, async ({ sessionId, persona, barrierType, element, description, severity }) => {
+        const session = empathyAuditSessions.get(sessionId);
+        if (!session) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: "Session not found. Call empathy_audit_init first." }) }],
+            };
+        }
+        // Get WCAG criteria for this barrier type
+        const wcagCriteria = getWcagCriteriaForBarrier(barrierType);
+        wcagCriteria.forEach(c => session.wcagViolations.add(c));
+        const barrier = {
+            type: barrierType,
+            element,
+            description,
+            affectedPersonas: [persona],
+            wcagCriteria,
+            severity: severity,
+            remediation: getRemediationForBarrier(barrierType, element),
+        };
+        session.barriers.push(barrier);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        recorded: true,
+                        sessionId,
+                        totalBarriers: session.barriers.length,
+                        wcagViolations: Array.from(session.wcagViolations),
+                        barrier: {
+                            type: barrier.type,
+                            severity: barrier.severity,
+                            wcagCriteria: barrier.wcagCriteria.map(c => ({
+                                code: c,
+                                description: WCAG_CRITERIA[c]?.description || "Unknown",
+                            })),
+                            remediation: barrier.remediation,
+                        },
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("empathy_audit_complete_persona", "Mark a persona's journey as complete. Call this after finishing the audit for one disability persona.", {
+        sessionId: z.string().describe("Session ID from empathy_audit_init"),
+        persona: z.string().describe("Persona name that completed"),
+        goalAchieved: z.boolean().describe("Whether the goal was accomplished"),
+        stepCount: z.number().describe("Number of steps/actions taken"),
+        notes: z.string().optional().describe("Additional observations about this persona's experience"),
+    }, async ({ sessionId, persona, goalAchieved, stepCount, notes }) => {
+        const session = empathyAuditSessions.get(sessionId);
+        if (!session) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: "Session not found." }) }],
+            };
+        }
+        // Get barriers for this persona
+        const personaBarriers = session.barriers.filter(b => b.affectedPersonas.includes(persona));
+        const personaWcag = new Set();
+        personaBarriers.forEach(b => b.wcagCriteria.forEach(c => personaWcag.add(c)));
+        // Calculate empathy score (heuristic)
+        const barrierPenalty = personaBarriers.reduce((sum, b) => {
+            const severityWeight = { minor: 5, major: 15, critical: 30 };
+            return sum + (severityWeight[b.severity] || 10);
+        }, 0);
+        const empathyScore = Math.max(0, Math.min(100, 100 - barrierPenalty - (goalAchieved ? 0 : 20)));
+        const result = {
+            persona,
+            disabilityType: session.personas.find(p => p.name === persona)?.disabilityType || "unknown",
+            goalAchieved,
+            barriers: personaBarriers,
+            wcagViolations: Array.from(personaWcag),
+            stepCount,
+            empathyScore,
+            notes,
+        };
+        session.personaResults.push(result);
+        session.currentPersonaIndex++;
+        const remaining = session.personas.length - session.personaResults.length;
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        recorded: true,
+                        sessionId,
+                        persona,
+                        empathyScore,
+                        barriersFound: personaBarriers.length,
+                        wcagViolations: result.wcagViolations,
+                        completedPersonas: session.personaResults.length,
+                        totalPersonas: session.personas.length,
+                        remaining,
+                        nextStep: remaining > 0
+                            ? `Audit ${remaining} more persona(s), then call empathy_audit_summarize`
+                            : "All personas complete. Call empathy_audit_summarize for the final report.",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("empathy_audit_summarize", "Generate the final empathy audit summary after all personas have completed. Returns scores, barriers, WCAG violations, and remediation priorities.", {
+        sessionId: z.string().describe("Session ID from empathy_audit_init"),
+    }, async ({ sessionId }) => {
+        const session = empathyAuditSessions.get(sessionId);
+        if (!session) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: "Session not found." }) }],
+            };
+        }
+        if (session.personaResults.length === 0) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: "No persona results recorded. Complete at least one persona journey first." }) }],
+            };
+        }
+        // Calculate overall score
+        const overallScore = Math.round(session.personaResults.reduce((sum, r) => sum + r.empathyScore, 0) / session.personaResults.length);
+        // Determine grade
+        const grade = overallScore >= 90 ? "A" : overallScore >= 80 ? "B" : overallScore >= 70 ? "C" : overallScore >= 60 ? "D" : "F";
+        // Aggregate barriers by type
+        const barriersByType = {};
+        session.barriers.forEach(b => {
+            barriersByType[b.type] = (barriersByType[b.type] || 0) + 1;
+        });
+        // Prioritize remediation
+        const remediationPriority = session.barriers
+            .sort((a, b) => {
+            const severityOrder = { critical: 0, major: 1, minor: 2 };
+            return (severityOrder[a.severity] || 2) - (severityOrder[b.severity] || 2);
+        })
+            .slice(0, 10)
+            .map((b, i) => ({
+            priority: i + 1,
+            type: b.type,
+            element: b.element,
+            severity: b.severity,
+            remediation: b.remediation,
+            wcagCriteria: b.wcagCriteria,
+        }));
+        const summary = {
+            sessionId,
+            url: session.url,
+            goal: session.goal,
+            wcagLevel: session.wcagLevel,
+            timestamp: new Date().toISOString(),
+            overallScore,
+            grade,
+            totalBarriers: session.barriers.length,
+            totalWcagViolations: session.wcagViolations.size,
+            wcagViolations: Array.from(session.wcagViolations).map(c => ({
+                code: c,
+                level: WCAG_CRITERIA[c]?.level || "?",
+                description: WCAG_CRITERIA[c]?.description || "Unknown",
+            })),
+            barriersByType,
+            personaResults: session.personaResults.map(r => {
+                // v16.7.2: Separate barrier types from element counts
+                const uniqueTypes = new Set(r.barriers.map(b => b.type));
+                return {
+                    persona: r.persona,
+                    disabilityType: r.disabilityType,
+                    goalAchieved: r.goalAchieved,
+                    empathyScore: r.empathyScore,
+                    barrierTypeCount: uniqueTypes.size, // Unique barrier categories
+                    barrierTypes: Array.from(uniqueTypes),
+                    affectedElements: r.barriers.length, // Raw element count
+                    wcagViolationCount: r.wcagViolations.length,
+                };
+            }),
+            remediationPriority,
+            recommendations: generateEmpathyRecommendations(session),
+        };
+        // Clean up session
+        empathyAuditSessions.delete(sessionId);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(summary, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Performance Tools (v6.4.0+)
+    // =========================================================================
+    server.tool("perf_baseline", "Capture performance baseline for a URL", {
+        url: z.string().url().describe("URL to capture baseline for"),
+        name: z.string().describe("Name for the baseline"),
+        runs: z.number().optional().default(3).describe("Number of runs to average"),
+    }, async ({ url, name, runs }) => {
+        const result = await capturePerformanceBaseline(url, { name, runs });
+        // v16.11.0: Return all available metrics, not just core 4
+        const m = result.metrics;
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        name: result.name,
+                        url: result.url,
+                        // Core Web Vitals
+                        coreWebVitals: {
+                            lcp: m.lcp,
+                            lcpRating: m.lcpRating,
+                            fid: m.fid,
+                            fidRating: m.fidRating,
+                            cls: m.cls,
+                            clsRating: m.clsRating,
+                        },
+                        // Additional timing metrics
+                        timingMetrics: {
+                            fcp: m.fcp,
+                            fcpRating: m.fcpRating,
+                            ttfb: m.ttfb,
+                            ttfbRating: m.ttfbRating,
+                            tti: m.tti,
+                            tbt: m.tbt,
+                            domContentLoaded: m.domContentLoaded,
+                            load: m.load,
+                        },
+                        // Resource metrics
+                        resourceMetrics: {
+                            resourceCount: m.resourceCount,
+                            transferSize: m.transferSize,
+                        },
+                        // Flat copy for backward compatibility
+                        metrics: {
+                            lcp: m.lcp,
+                            fcp: m.fcp,
+                            ttfb: m.ttfb,
+                            cls: m.cls,
+                        },
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("perf_regression", "Detect performance regression against baseline with configurable sensitivity. Uses dual thresholds: both percentage AND absolute change must be exceeded. Profiles: strict (perf envs, FCP 10%/50ms), normal (default, FCP 20%/100ms), ci (automated pipelines, FCP 25%/150ms), lenient (dev, FCP 30%/200ms).", {
+        url: z.string().url().describe("URL to test"),
+        baselineName: z.string().describe("Name of baseline to compare against"),
+        sensitivity: z.enum(["strict", "normal", "ci", "lenient"]).optional().default("normal").describe("Sensitivity profile: strict (perf testing), normal (local dev), ci (automated pipelines), lenient (development)"),
+        thresholdLcp: z.number().optional().describe("Override LCP threshold percentage"),
+    }, async ({ url, baselineName, sensitivity, thresholdLcp }) => {
+        const result = await detectPerformanceRegression(url, baselineName, {
+            sensitivity,
+            thresholds: thresholdLcp ? { lcp: thresholdLcp } : undefined,
+        });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        passed: result.passed,
+                        sensitivity: result.sensitivity,
+                        notes: result.notes,
+                        regressions: result.regressions,
+                        currentMetrics: result.currentMetrics,
+                        baseline: result.baseline.name,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("list_baselines", "List all saved baselines (visual and performance)", {}, async () => {
+        const visualBaselines = await listVisualBaselines();
+        const perfBaselines = await listPerformanceBaselines();
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        visual: visualBaselines,
+                        performance: perfBaselines,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Agent-Ready Audit, Competitive Benchmark, Accessibility Empathy (v8.0.0)
+    // =========================================================================
+    server.tool("agent_ready_audit", "Audit a website for AI-agent friendliness. Analyzes findability, stability, accessibility, and semantics. Returns score (0-100), grade (A-F), issues, and remediation recommendations.", {
+        url: z.string().url().describe("URL to audit"),
+    }, async ({ url }) => {
+        const result = await runAgentReadyAudit(url, { headless: true });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        url: result.url,
+                        score: result.score,
+                        grade: result.grade,
+                        summary: result.summary,
+                        topIssues: result.issues.slice(0, 5),
+                        topRecommendations: result.recommendations.slice(0, 5),
+                        duration: result.duration,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("competitive_benchmark", "Compare UX across competitor sites. Runs identical cognitive journeys on multiple sites and generates head-to-head comparison with rankings, friction analysis, and recommendations.", {
+        sites: z.array(z.string().url()).describe("Array of URLs to compare"),
+        goal: z.string().describe("Task goal (e.g., 'sign up for free trial')"),
+        persona: z.string().optional().default("first-timer").describe("Persona to use"),
+        maxSteps: z.number().optional().default(30).describe("Max steps per site"),
+        maxTime: z.number().optional().default(180).describe("Max time per site in seconds"),
+    }, async ({ sites, goal, persona, maxSteps, maxTime }) => {
+        const result = await runCompetitiveBenchmark({
+            sites: sites.map((url) => ({ url })),
+            goal,
+            persona,
+            maxSteps,
+            maxTime,
+            headless: true,
+        });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        goal: result.goal,
+                        persona: result.persona,
+                        ranking: result.ranking,
+                        comparison: result.comparison,
+                        recommendations: result.recommendations.slice(0, 5),
+                        duration: result.duration,
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("empathy_audit", "Simulate how people with disabilities experience a site. REQUIRES API KEY for internal simulation. For API-free usage over remote MCP, use empathy_audit_init + browser tools + empathy_audit_record_barrier + empathy_audit_complete_persona + empathy_audit_summarize instead.", {
+        url: z.string().url().describe("URL to audit"),
+        goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
+        disabilities: z.array(z.string()).optional().describe("Disability personas to test. Available: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia"),
+        wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
+        maxSteps: z.number().optional().default(20).describe("Max steps per persona"),
+        maxTime: z.number().optional().default(120).describe("Max time per persona in seconds"),
+    }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime }) => {
+        try {
+            // Default to all if not specified
+            const disabilityList = disabilities || listAccessibilityPersonas();
+            const result = await runEmpathyAudit(url, {
+                goal,
+                disabilities: disabilityList,
+                wcagLevel,
+                maxSteps,
+                maxTime,
+                headless: true,
+            });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: JSON.stringify({
+                            url: result.url,
+                            goal: result.goal,
+                            overallScore: result.overallScore,
+                            resultsSummary: result.results.map((r) => {
+                                // v14.2.5: barrierCount now shows unique barrier types (not element count)
+                                const uniqueTypes = new Set(r.barriers.map(b => b.type));
+                                return {
+                                    persona: r.persona,
+                                    disabilityType: r.disabilityType,
+                                    goalAchieved: r.goalAchieved,
+                                    empathyScore: r.empathyScore,
+                                    barrierCount: uniqueTypes.size, // v14.2.5: Changed to unique types
+                                    barrierTypes: Array.from(uniqueTypes),
+                                    totalBarrierElements: r.barriers.length, // v14.2.5: Raw element count
+                                    wcagViolationCount: r.wcagViolations.length,
+                                };
+                            }),
+                            allWcagViolations: result.allWcagViolations,
+                            topBarriers: result.topBarriers.slice(0, 5), // v11.11.0: Deduplicated by type
+                            topRemediation: result.combinedRemediation.slice(0, 5),
+                            duration: result.duration,
+                        }, null, 2),
+                    },
+                ],
+            };
+        }
+        catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            if (errorMessage.includes("API key")) {
+                return {
+                    content: [
+                        {
+                            type: "text",
+                            text: JSON.stringify({
+                                error: "API key required for all-in-one empathy_audit",
+                                solution: "Use the API-free session bridge pattern instead:",
+                                steps: [
+                                    "1. Call empathy_audit_init with url, goal, disabilities, wcagLevel",
+                                    "2. For each disability persona, use browser tools to attempt the goal",
+                                    "3. Call empathy_audit_record_barrier when you observe accessibility barriers",
+                                    "4. Call empathy_audit_complete_persona when each persona finishes",
+                                    "5. Call empathy_audit_summarize to get the final audit report",
+                                ],
+                                note: "Claude orchestrates the audit - no API key needed when YOU are the brain!",
+                                availablePersonas: listAccessibilityPersonas(),
+                            }, null, 2),
+                        },
+                    ],
+                };
+            }
+            throw error;
+        }
+    });
+    // =========================================================================
+    // Diagnostics Tools
+    // =========================================================================
+    server.tool("status", "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, self-healing cache statistics, and MCP tool count", {}, async () => {
+        // v18.22.0: Include tool count for self-diagnosis of tool discrepancies
+        const info = await getStatusInfo(VERSION, collectedTools.length);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(info, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Browser Management Tools (v11.8.0)
+    // =========================================================================
+    server.tool("browser_health", "Check if the browser is healthy and responsive. Use this before operations if you suspect the browser may have crashed.", {}, async () => {
+        const b = await getBrowser();
+        const result = await b.isBrowserHealthy();
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(result, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("browser_recover", "Attempt to recover from a browser crash by restarting the browser process. Use this when browser_health returns unhealthy.", {
+        restoreUrl: z.string().url().optional().describe("URL to restore after recovery (uses last known URL if not provided)"),
+        maxAttempts: z.number().optional().default(3).describe("Maximum recovery attempts"),
+    }, async ({ restoreUrl, maxAttempts }) => {
+        const b = await getBrowser();
+        const result = await b.recoverBrowser({ restoreUrl, maxAttempts });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify(result, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("reset_browser", "Reset the browser to a clean state. Clears all cookies, localStorage, sessionStorage, and browser state. Use this when you need a fresh browser environment.", {}, async () => {
+        const b = await getBrowser();
+        await b.reset();
+        // Relaunch for immediate use
+        await b.launch();
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        success: true,
+                        message: "Browser reset to clean state and relaunched",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Emotional State Manipulation Tools (v13.1.0)
+    // =========================================================================
+    server.tool("get_emotional_state", "Get the current emotional state of a cognitive journey. Returns the dominant emotion, valence, arousal, and all emotion intensities.", {
+        persona: z.string().describe("The persona name to get emotional state for"),
+    }, async ({ persona }) => {
+        // Create initial emotional state based on persona traits
+        const personaData = getPersona(persona);
+        if (!personaData) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: `Persona not found: ${persona}` }) }],
+            };
+        }
+        const emotionalState = createInitialEmotionalState(personaData.cognitiveTraits);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        persona,
+                        emotionalState,
+                        description: describeEmotionalState(emotionalState),
+                        abandonmentRisk: calculateAbandonmentModifier(emotionalState),
+                        explorationTendency: calculateExplorationTendency(emotionalState),
+                        decisionSpeedModifier: calculateDecisionSpeedModifier(emotionalState),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("trigger_emotional_event", "Simulate an emotional trigger event on a persona's state. Returns the updated emotional state after the trigger.", {
+        persona: z.string().describe("The persona name"),
+        trigger: z.enum([
+            "success", "failure", "error", "progress", "setback",
+            "waiting", "discovery", "completion", "confusion_onset",
+            "clarity", "time_pressure", "recovery"
+        ]).describe("The emotional trigger to apply"),
+        severity: z.number().min(0).max(2).optional().default(1).describe("Severity multiplier (0-2, default 1)"),
+        description: z.string().optional().describe("Custom description for the event"),
+    }, async ({ persona, trigger, severity, description }) => {
+        const personaData = getPersona(persona);
+        if (!personaData) {
+            return {
+                content: [{ type: "text", text: JSON.stringify({ error: `Persona not found: ${persona}` }) }],
+            };
+        }
+        const initialState = createInitialEmotionalState(personaData.cognitiveTraits);
+        const config = createEmotionalConfig(personaData.cognitiveTraits);
+        const { state, event } = applyEmotionalTrigger(initialState, trigger, config, 1, { severity, description });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        trigger,
+                        event,
+                        previousState: {
+                            dominant: initialState.dominant,
+                            valence: initialState.valence.toFixed(2),
+                            arousal: initialState.arousal.toFixed(2),
+                        },
+                        newState: state,
+                        description: describeEmotionalState(state),
+                        shouldConsiderAbandonment: shouldConsiderAbandonment(state),
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    server.tool("list_emotional_personas", "List all available emotional personas designed for testing emotional response patterns.", {}, async () => {
+        const emotionalPersonas = listEmotionalPersonas();
+        const personaDetails = emotionalPersonas.map(name => {
+            const p = getEmotionalPersona(name);
+            return {
+                name,
+                description: p?.description || "",
+                keyTraits: p?.cognitiveTraits ? {
+                    resilience: p.cognitiveTraits.resilience,
+                    patience: p.cognitiveTraits.patience,
+                    selfEfficacy: p.cognitiveTraits.selfEfficacy,
+                } : undefined,
+            };
+        });
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: JSON.stringify({
+                        count: emotionalPersonas.length,
+                        personas: personaDetails,
+                        note: "Use these personas with cognitive_journey_init for emotion-sensitive testing",
+                    }, null, 2),
+                },
+            ],
+        };
+    });
+    // =========================================================================
+    // Persona Creation Tools (v17.3.0)
+    // =========================================================================
+    server.tool("persona_create_start", "Start creating a custom persona. YOU MUST USE YOUR AskUserQuestion TOOL to present the choice to the user.", {
+        persona_name: z.string().describe("Name for the new persona"),
+        comprehensive: z.boolean().optional().describe("Include all 25 traits (true) or just core 8 traits (false)"),
+    }, async ({ persona_name, comprehensive = false }) => {
+        const sessionId = "local-session";
+        const existingSession = getQuestionnaireSession(sessionId);
+        if (existingSession) {
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            warning: "A questionnaire session is already in progress",
+                            existing_persona: existingSession.personaName,
+                            progress: `${existingSession.currentIndex}/${existingSession.questions.length} questions answered`,
+                            options: ["Use persona_create_questionnaire_answer to continue", "Use persona_create_cancel to discard"],
+                        }, null, 2),
+                    }],
+            };
+        }
+        const traitCount = comprehensive ? 25 : 8;
+        const totalQuestions = traitCount + VALUES_QUESTIONS.length;
+        return {
+            content: [{
+                    type: "text",
+                    text: `ACTION REQUIRED: Use your AskUserQuestion tool to ask the user:
+
+Question: "How would you like to create the '${persona_name}' persona?"
+Header: "Create Mode"
+
+Options:
+1. "Fill out questionnaire (Recommended)" - Answer ${totalQuestions} questions about this persona's cognitive traits and values.
+2. "Describe the persona" - Provide a text description and I'll infer appropriate trait and value settings.
+
+After the user chooses:
+- If "questionnaire": Call persona_create_questionnaire_start with persona_name="${persona_name}" and comprehensive=${comprehensive}
+- If "describe": Ask the user to describe the persona, then call persona_create_from_description
+
+IMPORTANT: Do NOT show this text to the user. USE AskUserQuestion to present the choice interactively.`,
+                }],
+        };
+    });
+    server.tool("persona_create_questionnaire_start", "Start the questionnaire mode for persona creation. YOU MUST USE AskUserQuestion to present each question interactively.", {
+        persona_name: z.string().describe("Name for the new persona"),
+        comprehensive: z.boolean().optional().describe("Include all 25 traits (default: false)"),
+    }, async ({ persona_name, comprehensive = false }) => {
+        const sessionId = "local-session";
+        const rawQuestions = generatePersonaQuestionnaire({ comprehensive });
+        const session = {
+            personaName: persona_name,
+            questions: rawQuestions,
+            valueQuestions: VALUES_QUESTIONS,
+            answers: {},
+            valueAnswers: {},
+            currentIndex: 0,
+            phase: "traits",
+            comprehensive,
+            startedAt: Date.now(),
+            lastQuestionAskedAt: Date.now(),
+        };
+        setQuestionnaireSession(sessionId, session);
+        const firstQuestion = rawQuestions[0];
+        const thirdPersonQuestion = convertToThirdPerson(firstQuestion.question);
+        const totalQuestions = rawQuestions.length + VALUES_QUESTIONS.length;
+        return {
+            content: [{
+                    type: "text",
+                    text: `ACTION REQUIRED: Use your AskUserQuestion tool to ask about the "${persona_name}" persona.
+
+Question 1 of ${totalQuestions} (Trait: ${firstQuestion.trait})
+"${thirdPersonQuestion}"
+
+Header: "${getTraitHeader(firstQuestion.trait)}"
+
+Options:
+${firstQuestion.options.map((o, i) => `${i + 1}. "${o.label}" - ${o.description}`).join("\n")}
+
+After the user selects an option, call persona_create_questionnaire_answer with answer_value.
+
+IMPORTANT: Use AskUserQuestion - do NOT just display this text.`,
+                }],
+        };
+    });
+    server.tool("persona_create_questionnaire_answer", "Submit an answer for the current questionnaire question.", {
+        answer_value: z.number().min(0).max(1).describe("The value selected (0.0, 0.25, 0.33, 0.67, 0.75, or 1.0)"),
+    }, async ({ answer_value }) => {
+        const sessionId = "local-session";
+        const session = getQuestionnaireSession(sessionId);
+        if (!session) {
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            error: "No questionnaire session in progress",
+                            instruction: "Start a new questionnaire with persona_create_questionnaire_start",
+                        }, null, 2),
+                    }],
+            };
+        }
+        const totalQuestions = session.questions.length + session.valueQuestions.length;
+        const now = Date.now();
+        if (session.phase === "traits") {
+            const currentQuestion = session.questions[session.currentIndex];
+            session.answers[currentQuestion.trait] = answer_value;
+            session.currentIndex++;
+            if (session.currentIndex >= session.questions.length) {
+                session.phase = "values";
+                session.currentIndex = 0;
+            }
+        }
+        else {
+            const currentValueQ = session.valueQuestions[session.currentIndex];
+            session.valueAnswers[currentValueQ.value] = answer_value;
+            session.currentIndex++;
+        }
+        session.lastQuestionAskedAt = now;
+        if (session.phase === "values" && session.currentIndex >= session.valueQuestions.length) {
+            const traits = buildTraitsFromAnswers(session.answers);
+            const derivedResult = deriveValuesFromTraits(traits);
+            const derivedValues = derivedResult.values;
+            const values = {
+                selfDirection: session.valueAnswers.selfDirection ?? derivedValues.selfDirection ?? 0.5,
+                stimulation: session.valueAnswers.stimulation ?? derivedValues.stimulation ?? 0.5,
+                hedonism: session.valueAnswers.hedonism ?? derivedValues.hedonism ?? 0.5,
+                achievement: session.valueAnswers.achievement ?? derivedValues.achievement ?? 0.5,
+                power: session.valueAnswers.power ?? derivedValues.power ?? 0.5,
+                security: session.valueAnswers.security ?? derivedValues.security ?? 0.5,
+                conformity: session.valueAnswers.conformity ?? derivedValues.conformity ?? 0.5,
+                tradition: session.valueAnswers.tradition ?? derivedValues.tradition ?? 0.5,
+                benevolence: session.valueAnswers.benevolence ?? derivedValues.benevolence ?? 0.5,
+                universalism: session.valueAnswers.universalism ?? derivedValues.universalism ?? 0.5,
+            };
+            const personaName = session.personaName;
+            const duration = Date.now() - session.startedAt;
+            clearQuestionnaireSession(sessionId);
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            questionnaire_complete: true,
+                            persona_name: personaName,
+                            duration_seconds: Math.round(duration / 1000),
+                            traits,
+                            values,
+                            instruction: "Persona has been created with traits AND values. Use with cognitive_journey_init.",
+                        }, null, 2),
+                    }],
+            };
+        }
+        const answeredCount = session.phase === "traits"
+            ? session.currentIndex
+            : session.questions.length + session.currentIndex;
+        if (session.phase === "traits") {
+            const nextQuestion = session.questions[session.currentIndex];
+            const thirdPersonQuestion = convertToThirdPerson(nextQuestion.question);
+            setQuestionnaireSession(sessionId, session);
+            return {
+                content: [{
+                        type: "text",
+                        text: `ACTION REQUIRED: Use your AskUserQuestion tool.
+
+Question ${answeredCount + 1} of ${totalQuestions} (Trait: ${nextQuestion.trait})
+"${thirdPersonQuestion}"
+
+Header: "${getTraitHeader(nextQuestion.trait)}"
+
+Options:
+${nextQuestion.options.map((o, i) => `${i + 1}. "${o.label}" - ${o.description}`).join("\n")}
+
+Progress: ${Math.round((answeredCount / totalQuestions) * 100)}% complete`,
+                    }],
+            };
+        }
+        else {
+            const nextValueQ = session.valueQuestions[session.currentIndex];
+            setQuestionnaireSession(sessionId, session);
+            return {
+                content: [{
+                        type: "text",
+                        text: `ACTION REQUIRED: Use your AskUserQuestion tool.
+
+Question ${answeredCount + 1} of ${totalQuestions} (Value: ${nextValueQ.value})
+"${nextValueQ.question}"
+
+Header: "${nextValueQ.value.charAt(0).toUpperCase() + nextValueQ.value.slice(1)}"
+
+Options:
+${nextValueQ.options.map((o, i) => `${i + 1}. "${o.label}" - ${o.description}`).join("\n")}
+
+Progress: ${Math.round((answeredCount / totalQuestions) * 100)}% complete`,
+                    }],
+            };
+        }
+    });
+    server.tool("persona_create_from_description", "Create a persona from a text description. Returns trait reference for manual inference.", {
+        persona_name: z.string().describe("Name for the new persona"),
+        description: z.string().describe("Text description of the persona"),
+    }, async ({ persona_name, description }) => {
+        const traitInfo = TRAIT_REFERENCE_MATRIX.map(trait => ({
+            name: trait.name,
+            description: trait.description,
+            levels: trait.levels.map(l => ({ value: l.value, label: l.label, behaviors: l.behaviors.slice(0, 2) })),
+        }));
+        return {
+            content: [{
+                    type: "text",
+                    text: JSON.stringify({
+                        mode: "manual_inference",
+                        persona_name,
+                        user_description: description,
+                        instruction: "Based on the description, infer trait values (0.0-1.0) and return via persona_create_submit_traits.",
+                        trait_reference: traitInfo,
+                        follow_up_tool: "persona_create_submit_traits",
+                    }, null, 2),
+                }],
+        };
+    });
+    server.tool("persona_create_submit_traits", "Submit manually inferred traits for a persona.", {
+        persona_name: z.string().describe("Name for the persona"),
+        traits: z.record(z.string(), z.number().min(0).max(1)).describe("Object with trait names as keys and values 0.0-1.0"),
+        values: z.record(z.string(), z.number().min(0).max(1)).optional().describe("Optional Schwartz values"),
+    }, async ({ persona_name, traits, values }) => {
+        const coreTraits = ["patience", "riskTolerance", "comprehension"];
+        const missingCore = coreTraits.filter(t => !(t in traits));
+        if (missingCore.length > 0) {
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            error: `Missing core traits: ${missingCore.join(", ")}`,
+                            instruction: "Include at least patience, riskTolerance, and comprehension",
+                        }, null, 2),
+                    }],
+            };
+        }
+        const fullTraits = buildTraitsFromAnswers(traits);
+        const derivedResult = deriveValuesFromTraits(fullTraits);
+        const derivedValues = derivedResult.values;
+        const fullValues = {
+            selfDirection: values?.selfDirection ?? derivedValues.selfDirection ?? 0.5,
+            stimulation: values?.stimulation ?? derivedValues.stimulation ?? 0.5,
+            hedonism: derivedValues.hedonism ?? 0.5,
+            achievement: values?.achievement ?? derivedValues.achievement ?? 0.5,
+            power: derivedValues.power ?? 0.5,
+            security: values?.security ?? derivedValues.security ?? 0.5,
+            conformity: values?.conformity ?? derivedValues.conformity ?? 0.5,
+            tradition: derivedValues.tradition ?? 0.5,
+            benevolence: derivedValues.benevolence ?? 0.5,
+            universalism: derivedValues.universalism ?? 0.5,
+        };
+        return {
+            content: [{
+                    type: "text",
+                    text: JSON.stringify({
+                        persona_name,
+                        traits: fullTraits,
+                        values: fullValues,
+                        provided_traits: Object.keys(traits).length,
+                        defaulted_traits: Object.keys(fullTraits).length - Object.keys(traits).length,
+                        instruction: "Persona traits AND values are ready. Use with cognitive_journey_init.",
+                    }, null, 2),
+                }],
+        };
+    });
+    server.tool("persona_create_cancel", "Cancel the current questionnaire session.", {}, async () => {
+        const sessionId = "local-session";
+        const session = getQuestionnaireSession(sessionId);
+        if (!session) {
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({ message: "No questionnaire session to cancel" }, null, 2),
+                    }],
+            };
+        }
+        const personaName = session.personaName;
+        const progress = session.currentIndex;
+        clearQuestionnaireSession(sessionId);
+        return {
+            content: [{
+                    type: "text",
+                    text: JSON.stringify({
+                        cancelled: true,
+                        persona_name: personaName,
+                        progress_lost: `${progress} answers discarded`,
+                        instruction: "Questionnaire cancelled. Use persona_create_start to begin a new persona.",
+                    }, null, 2),
+                }],
+        };
+    });
+    server.tool("persona_traits_list", "List all available cognitive traits with their descriptions and value levels.", {
+        format: z.enum(["summary", "detailed"]).optional().describe("Summary (names only) or detailed (with levels)"),
+    }, async ({ format = "summary" }) => {
+        if (format === "summary") {
+            const traits = TRAIT_REFERENCE_MATRIX.map(t => ({
+                name: t.name,
+                description: t.description,
+            }));
+            return {
+                content: [{
+                        type: "text",
+                        text: JSON.stringify({ count: traits.length, traits }, null, 2),
+                    }],
+            };
+        }
+        const traits = TRAIT_REFERENCE_MATRIX.map(t => ({
+            name: t.name,
+            description: t.description,
+            researchBasis: t.researchBasis,
+            levels: t.levels.map(l => ({
+                value: l.value,
+                label: l.label,
+                behaviors: l.behaviors,
+            })),
+        }));
+        return {
+            content: [{
+                    type: "text",
+                    text: JSON.stringify({ count: traits.length, traits }, null, 2),
+                }],
+        };
+    });
+    // =========================================================================
+    // Security Tools (mcp-guardian integration)
+    // =========================================================================
+    server.tool("security_audit", "Audit MCP tool definitions for potential prompt injection attacks. Scans tool descriptions for cross-tool instructions, privilege escalation attempts, and data exfiltration patterns. Returns detailed report of any security issues found.", {
+        config_path: z
+            .string()
+            .optional()
+            .describe("Path to claude_desktop_config.json. If not provided, scans the current CBrowser server's tools."),
+        format: z
+            .enum(["json", "text"])
+            .optional()
+            .default("json")
+            .describe("Output format: json (structured) or text (human-readable)"),
+        async_scan: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe("If true, connects to MCP servers to scan their tools (slower but more accurate)."),
+    }, async (params) => {
+        // If no config_path provided, scan CBrowser's own tools
+        const options = {
+            ...params,
+            // Pass collected CBrowser tools for self-scan when no config_path
+            ...(params.config_path ? {} : {
+                tools: collectedTools.map(t => ({ name: t.name, description: t.description, schema: {} })),
+                serverName: "cbrowser",
+            }),
+        };
+        return await securityAuditHandler(options);
+    });
+    return server;
+}
+/**
+ * Create and configure the MCP server with all CBrowser tools.
+ * Returns the server instance before connecting, allowing Enterprise
+ * or other packages to add additional tools.
+ *
+ * @example
+ * ```typescript
+ * import { createMcpServer } from 'cbrowser';
+ *
+ * const server = await createMcpServer();
+ * // Add custom tools here
+ * server.tool('my_custom_tool', 'Description', {}, async () => { ... });
+ * // Then connect
+ * await connectMcpServer(server);
+ * ```
+ */
+export async function createMcpServer() {
+    return registerCBrowserTools();
+}
+/**
+ * Connect an MCP server via stdio transport and set up shutdown handling.
+ * Use after createMcpServer() and adding any custom tools.
+ */
+export async function connectMcpServer(server) {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    // Handle shutdown
+    process.on("SIGINT", async () => {
+        if (browser) {
+            await browser.close();
+        }
+        process.exit(0);
+    });
+}
+export async function startMcpServer() {
+    const server = await createMcpServer();
+    await connectMcpServer(server);
+}
+// Run if called directly
+if (process.argv[1]?.endsWith("mcp-server.js") || process.argv[1]?.endsWith("mcp-server.ts")) {
+    startMcpServer().catch(console.error);
+}
+//# sourceMappingURL=mcp-server.js.map

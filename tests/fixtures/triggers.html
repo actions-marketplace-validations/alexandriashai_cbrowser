@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recording fixture — trigger timeline</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101018; color: #f2f2f7; font: 16px/1.4 system-ui, sans-serif; }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; }
+  #box { width: 140px; height: 140px; background: #d64545; }
+  #clock { font-size: 28px; font-variant-numeric: tabular-nums; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <main>
+    <div id="box"></div>
+    <div id="clock">0.00</div>
+    <div id="late" class="hidden">LATE ELEMENT</div>
+    <div id="doomed">DOOMED ELEMENT</div>
+  </main>
+  <script>
+    // A fixed timeline the trigger tests key off:
+    //   t=0.6s  #late appears        (--until-element / --after-element)
+    //   t=1.2s  #doomed disappears   (--until-element-gone)
+    //   t=1.8s  animation stops      (--until-idle)
+    // Also logs to the console and issues a fetch mid-capture so the manifest's
+    // per-frame console/network attribution has something real to bind.
+    var start = performance.now();
+    var box = document.getElementById('box');
+    var clock = document.getElementById('clock');
+    var late = document.getElementById('late');
+    var doomed = document.getElementById('doomed');
+    var flags = { late: false, doomed: false, logged: false, fetched: false, stopped: false };
+
+    console.log('capture-fixture: script start');
+
+    function tick(now) {
+      var t = (now - start) / 1000;
+
+      // After the quiesce point NOTHING repaints - not the box, not the clock.
+      // A fixture whose clock keeps ticking is never idle, and --until-idle
+      // would correctly refuse to fire on it.
+      if (!flags.stopped) {
+        clock.textContent = t.toFixed(2);
+        box.style.transform = 'translateX(' + (Math.sin(t * Math.PI / 20) * 100).toFixed(2) + 'px) rotate(' + (t * 180) + 'deg)';
+      }
+      if (t > 0.6 && !flags.late) { flags.late = true; late.classList.remove('hidden'); }
+      if (t > 0.9 && !flags.logged) { flags.logged = true; console.warn('capture-fixture: midpoint warning'); }
+      if (t > 1.0 && !flags.fetched) {
+        flags.fetched = true;
+        // A real subresource request: data: URLs never reach the network stack,
+        // so they produce no request event to attribute to a frame.
+        var probe = new Image();
+        probe.src = 'static.html?capture-fixture-network=' + Date.now();
+      }
+      if (t > 1.2 && !flags.doomed) { flags.doomed = true; doomed.classList.add('hidden'); }
+      if (t > 1.8 && !flags.stopped) { flags.stopped = true; clock.textContent = 'IDLE'; }
+
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

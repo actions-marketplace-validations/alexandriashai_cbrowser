@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>ISC-23 probe</title>
+<style>html,body{margin:0;height:100%;background:#111;color:#eee;font:16px system-ui}
+#b{width:120px;height:120px;background:#c33}</style></head>
+<body><div id="b"></div><div id="c">0</div>
+<script>
+// Logs at KNOWN page-relative offsets, each also carrying the absolute clock.
+var t0 = Date.now();
+function log(label){ console.log(label + ' pageOffset=' + (Date.now()-t0) + ' wall=' + Date.now()); }
+setTimeout(function(){log('EARLY_LOG');}, 300);
+setTimeout(function(){log('MID_WARN');}, 900);
+setTimeout(function(){log('LATE_ERROR');}, 1600);
+setTimeout(function(){log('VERY_LATE');}, 2600);
+var s=performance.now(), b=document.getElementById('b'), c=document.getElementById('c');
+(function tick(n){var t=(n-s)/1000;c.textContent=t.toFixed(2);b.style.transform='rotate('+(t*180)+'deg)';requestAnimationFrame(tick);})(s);
+</script></body></html>

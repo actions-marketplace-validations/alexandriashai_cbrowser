@@ -19,24 +19,34 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    # Last-resort backstop, and it must sit ABOVE the sum of the step ceilings.
+    #
+    # It was 30, which was under gate(20) + release(8) + setup. That ordering is
+    # the wrong way round: when a step runs long the JOB cap fires first and the
+    # run is CANCELLED, which names no culprit — exactly what happened on
+    # bbd2743, where it read as "the release is broken" rather than "one step
+    # hung". Step timeouts are the diagnostic layer; this is only the net beneath
+    # them, so it is set high enough that a step always fails first, by name.
+    # (2026-07-29)
+    timeout-minutes: 40
     # Skip release for commits that are just version bumps
     if: "!startsWith(github.event.head_commit.message, 'chore: release')"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
@@ -46,22 +56,69 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Run tests
-        run: bun test || true  # Don't fail release on test issues
+      # THIS IS THE GATE. It was advisory until 2026-07-26 (`bun test || true` plus
+      # `continue-on-error: true`) under a comment claiming "the Tests workflow is the real
+      # gate". That claim was false: test.yml runs on push, release.yml is
+      # workflow_dispatch and never depended on it, so nothing stopped a release on a red
+      # suite — v18.72.6 reached npm while this very step reported failure.
+      #
+      # A hang must block too, rather than be swallowed; that was the other half of the old
+      # problem. timeout-minutes bounds it, and without continue-on-error a timeout now
+      # fails the release instead of quietly costing 20 minutes. 20 minutes against a
+      # ~9-minute local suite leaves headroom for a slower runner without inviting a hang.
+      - name: Run tests (release gate)
+        run: bun run test:gate
+        timeout-minutes: 20
+
+      # The quarantined browser tests deliberately do NOT run here.
+      #
+      # They had an advisory step in this job for exactly one release attempt,
+      # which taught the lesson: `continue-on-error` covers a step that FAILS, not
+      # a step that HANGS. The quarantined set hung its full 10-minute timeout,
+      # the job then hit the runner's 30-minute ceiling, and the release was
+      # cancelled — so an "advisory, does not block" step blocked the release.
+      #
+      # Visibility was the reason for putting it here, and visibility is already
+      # covered: the Tests workflow runs `bun test --coverage` over the FULL suite
+      # on every push to main, browser tests included. Running them twice bought
+      # nothing and cost the release. (2026-07-27)
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # BOUNDED, because this step is where an unbounded hook can hide.
+      #
+      # release-it runs its own `before:init` hooks from .release-it.json, and
+      # those run INSIDE this step — outside the careful timeout accounting
+      # above. That is not hypothetical: `before:init` used to include
+      # `bun test || true`, a THIRD test invocation which
+      #   - ran the full suite in ONE process, the exact configuration
+      #     scripts/test-split.sh exists to avoid,
+      #   - was unbounded, so no step timeout applied to it, and
+      #   - discarded its own result via `|| true`, so it could never prevent a
+      #     bad release — only cost time.
+      # On 2026-07-29 (bbd2743) the gate step passed and THIS step then ate the
+      # remaining budget until the job hit the 30-minute ceiling and was
+      # CANCELLED. A cancelled job is worse than a failed one: it names no
+      # culprit, and it looked like the release itself was broken.
+      #
+      # The hook is now `bun run build` only. The timeout below is the structural
+      # half of the fix: whatever a future hook does, a hang fails THIS step by
+      # name in a few minutes instead of silently consuming the job. release-it's
+      # real work — bump, changelog, commit, tag, push, npm publish, GitHub
+      # release — is minutes at most. (2026-07-29)
       - name: Release (dry run)
         if: github.event.inputs.dry_run == 'true'
+        timeout-minutes: 8
         run: npx release-it --ci --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release
         if: github.event.inputs.dry_run != 'true'
+        timeout-minutes: 8
         run: npx release-it --ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

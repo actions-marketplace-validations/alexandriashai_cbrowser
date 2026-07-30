@@ -369,3 +369,75 @@ export function generateEmotionVisualizationSection(
     </div>
   `;
 }
+
+// ============================================================================
+// Cookie domain resolution
+// ============================================================================
+
+/**
+ * Extract the hostname from a URL string.
+ *
+ * @param url - A URL string (e.g. "https://example.com/path").
+ * @returns The hostname (e.g. "example.com"), or null if `url` is not parseable.
+ */
+export function hostFromUrl(url: string): string | null {
+  try {
+    return new URL(url).hostname || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the domain a cookie should be scoped to, given optional `--domain`
+ * and `--url` flags. Precedence: explicit `--domain` > host derived from
+ * `--url` > "localhost".
+ *
+ * Before this existed, `cookie set <name> <value> --url https://site` set the
+ * cookie on the hardcoded default "localhost" — so the value landed on the
+ * wrong origin and the real site still read as anonymous. Pure + total so the
+ * defaulting is unit-testable without a browser.
+ */
+export function resolveCookieDomain(explicitDomain?: string, url?: string): string {
+  if (explicitDomain) return explicitDomain;
+  if (url) {
+    const host = hostFromUrl(url);
+    if (host) return host;
+  }
+  return "localhost";
+}
+
+// ============================================================================
+// Chromium SingletonLock staleness (persistent-profile wedge recovery)
+// ============================================================================
+
+/**
+ * Parse the process id embedded in a Chromium `SingletonLock` symlink target.
+ * On Linux the lock is a symlink whose target is `"<hostname>-<pid>"`; a hard
+ * kill (SIGKILL) leaves the symlink pointing at a now-dead pid, which wedges
+ * the next `launchPersistentContext` until the lock is removed by hand.
+ *
+ * @param target - The symlink target string (e.g. "myhost-12345").
+ * @returns The pid, or null if no positive trailing integer is parseable.
+ */
+export function parseSingletonLockPid(target: string): number | null {
+  const m = /-(\d+)$/.exec(target.trim());
+  if (!m) return null;
+  const pid = Number(m[1]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * Decide whether a Chromium SingletonLock is STALE (safe to remove): true ONLY
+ * when its target names a pid that is provably not alive. Conservative — an
+ * unparseable target or a live pid returns false, so a lock held by a running
+ * browser is never removed. `isPidAlive` is injected for testability.
+ */
+export function isStaleSingletonLock(
+  target: string,
+  isPidAlive: (pid: number) => boolean,
+): boolean {
+  const pid = parseSingletonLockPid(target);
+  if (pid === null) return false;
+  return !isPidAlive(pid);
+}

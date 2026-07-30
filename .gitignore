@@ -61,3 +61,22 @@ temp/
 # Personal prep files (not part of project)
 SHOW-HN-DRAFT.md
 HN-RESPONSE-PREP.md
+.test-fixtures/
+
+# Research data — not for public distribution
+research/
+
+# PAI / oh-my-claudecode artifacts (personal AI infrastructure)
+skills/
+.omc/
+.claude/
+CLAUDE.md
+AGENTS.md
+**/AGENTS.md
+**/CLAUDE.md
+
+# Lock files (npm users use package-lock, bun users regenerate)
+bun.lock
+
+# Browser state
+browser-state/

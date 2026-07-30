@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Mixed change magnitudes</title>
+<style>html,body{margin:0;height:100%;background:#101018;color:#eee;font:16px system-ui}
+#c{position:absolute;left:12px;top:12px;font:20px monospace}
+#flash{position:absolute;inset:0;background:#fff;opacity:0;transition:none}</style></head>
+<body><div id="c">0</div><div id="flash"></div>
+<script>
+// Two magnitudes on ONE timeline:
+//  - a small corner counter ticks every 250ms  -> change_points (sensitive)
+//  - a full-screen flash at 1.0s and 2.0s       -> key_frames    (notable, sparse)
+var n=0; setInterval(function(){document.getElementById('c').textContent=(++n);}, 250);
+function flash(){var f=document.getElementById('flash');f.style.opacity='0.85';setTimeout(function(){f.style.opacity='0';},120);}
+setTimeout(flash,1000); setTimeout(flash,2000);
+</script></body></html>

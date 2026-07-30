@@ -122,7 +122,7 @@ When a selector fails:
 
 ## Audit Trail Format
 
-Every session generates an audit log:
+Every session generates an audit log (wired 2026-07-26; before that the audit module had zero call sites and no log was written):
 
 ```json
 {

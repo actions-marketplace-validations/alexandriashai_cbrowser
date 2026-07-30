@@ -12,7 +12,10 @@
  * Flips CBrowser's "workaround" detections into "fix this" recommendations.
  */
 
-import { chromium, type Page, type Browser } from "playwright";
+import { type Page, type Browser } from "playwright";
+import { VERSION } from "../version.js";
+import { CBrowser } from "../browser.js";
+import { launchWithLightpandaFallback, isLightpandaConfigured } from "../lightpanda.js";
 import type {
   AgentReadyAuditResult,
   AgentReadyIssue,
@@ -145,7 +148,7 @@ async function detectUnlabeledElements(ctx: DetectionContext): Promise<void> {
   const unlabeledButtons = await page.$$eval(
     'button:not([aria-label]):not([aria-labelledby]), [role="button"]:not([aria-label]):not([aria-labelledby])',
     (elements) => elements.map(el => ({
-      selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '') + (el.className ? `.${el.className.split(' ')[0]}` : ''),
+      selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '') + (el.className ? `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}` : ''),
       text: el.textContent?.trim() || '',
       html: el.outerHTML.slice(0, 200),
     })).filter(el => !el.text) // Only those without visible text
@@ -292,7 +295,7 @@ async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
         const tag = el.tagName.toLowerCase();
         const id = el.id ? `#${el.id}` : '';
         const className = el.className && typeof el.className === 'string'
-          ? `.${el.className.split(' ')[0]}`
+          ? `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}`
           : '';
 
         results.push({
@@ -337,7 +340,7 @@ async function detectClickableDivs(ctx: DetectionContext): Promise<void> {
   const clickableDivs = await page.$$eval(
     'div[onclick], span[onclick], div[data-action], span[data-action], [style*="cursor: pointer"]:not(button):not(a):not([role="button"])',
     (elements) => elements.map(el => ({
-      selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '') + (el.className && typeof el.className === 'string' ? `.${el.className.split(' ')[0]}` : ''),
+      selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '') + (el.className && typeof el.className === 'string' ? `.${String((el.className as unknown as { baseVal?: string })?.baseVal ?? el.className ?? "").split(' ')[0]}` : ''),
       hasOnclick: el.hasAttribute('onclick'),
       hasRole: el.hasAttribute('role'),
       text: el.textContent?.trim().slice(0, 50) || '',
@@ -398,7 +401,14 @@ async function detectBadLinks(ctx: DetectionContext): Promise<void> {
     'a:not([href]), a[href=""], a[href="#"], a[href^="javascript:"]',
     (elements) => elements.map(el => ({
       selector: `a${el.id ? `#${el.id}` : ''}`,
+      // Display copy only. fullText is what the code example must use, or the
+      // suggested markup silently shortens the link's visible label.
       text: el.textContent?.trim().slice(0, 30) || '',
+      fullText: el.textContent?.trim().slice(0, 200) || '',
+      // Real markup for the patch's `before`. Captured here because this is
+      // where DOM access legitimately happens; patch templates are pure.
+      outerHTML: (el.outerHTML || '').slice(0, 600),
+      outerHTMLTruncated: (el.outerHTML || '').length > 600,
       href: el.getAttribute('href') || '',
     }))
   );
@@ -409,9 +419,11 @@ async function detectBadLinks(ctx: DetectionContext): Promise<void> {
       severity: "low",
       element: link.selector,
       description: `Link with ${link.href ? 'javascript:' : 'no'} href acts as button`,
+      elementHtml: link.outerHTML,
+      elementHtmlTruncated: link.outerHTMLTruncated,
       detectionMethod: "link-href-check",
       recommendation: "Use <button> for actions, <a href> for navigation",
-      codeExample: `<!-- For actions, use button: -->\n<button onclick="...">${link.text || 'Action'}</button>\n\n<!-- For navigation, use proper href: -->\n<a href="/path">${link.text || 'Link'}</a>`,
+      codeExample: `<!-- For actions, use button: -->\n<button onclick="...">${link.fullText || 'Action'}</button>\n\n<!-- For navigation, use proper href: -->\n<a href="/path">${link.fullText || 'Link'}</a>`,
     });
   }
 }
@@ -445,7 +457,14 @@ async function detectLowFindabilityElements(ctx: DetectionContext): Promise<void
 
       return {
         selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+        // Truncated copy, for human-readable descriptions ONLY. Never build
+        // suggested markup from this — see fullText. (2026-07-29)
         text: text.slice(0, 30),
+        // The real text, for code examples. Capped generously to bound payload
+        // size without amputating a normal link label.
+        fullText: text.slice(0, 200),
+        outerHTML: (el.outerHTML || '').slice(0, 600),
+        outerHTMLTruncated: (el.outerHTML || '').length > 600,
         findabilityScore,
         suggestions: {
           needsId: !hasId,
@@ -462,17 +481,690 @@ async function detectLowFindabilityElements(ctx: DetectionContext): Promise<void
       severity: "low",
       element: el.selector,
       description: `Element lacks stable selectors (score: ${el.findabilityScore}/10)`,
+      elementHtml: el.outerHTML,
+      elementHtmlTruncated: el.outerHTMLTruncated,
       detectionMethod: "findability-score-check",
       recommendation: el.suggestions.needsTestId
         ? "Add data-testid for stable automation selectors"
         : el.suggestions.needsAriaLabel
           ? "Add aria-label for accessibility and findability"
           : "Add unique id or data-testid",
-      codeExample: `<button data-testid="submit-form" aria-label="Submit form">${el.text || '...'}</button>`,
+      // Built from fullText, not the 30-char display copy. Using the truncated
+      // text here produced a patch that REWROTE the element's visible content:
+      //   <a data-testid="sign-up-for-pro-and-get-500-bo"
+      //      aria-label="Sign up for Pro and get 500 bo">Sign up for Pro and get 500 bo</a>
+      // Applying that silently amputates the link label on the live page. The
+      // recommendation is "add a data-testid / aria-label", so the example must
+      // leave the text exactly as it is. (2026-07-29)
+      codeExample: (() => {
+        const tag = el.selector.split('#')[0].split('.')[0] || 'button';
+        const full = el.fullText || '';
+        // A testid is a slug, so truncating THIS is correct and expected.
+        const testId = (full || tag).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 40) || tag;
+        const label = full || `${tag} action`;
+        // Attribute values are quoted, so any quote or angle bracket in the page
+        // text would otherwise emit malformed HTML.
+        const attr = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<${tag} data-testid="${attr(testId)}" aria-label="${attr(label)}">${full || '...'}</${tag}>`;
+      })(),
     });
   }
 
   summary.totalElements += poorSelectors.length;
+}
+
+// ============================================================================
+// AI-Specific Detection Functions (v17.0.0)
+// ============================================================================
+
+/**
+ * Detect machine-readable metadata (JSON-LD, OpenGraph, Twitter Cards, landmarks)
+ * @since 17.0.0
+ */
+async function detectMachineMetadata(ctx: DetectionContext): Promise<void> {
+  const { page, issues, summary } = ctx;
+
+  const metadata = await page.evaluate(() => {
+    // Check for JSON-LD
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    const hasJsonLd = jsonLdScripts.length > 0;
+    let jsonLdValid = true;
+    jsonLdScripts.forEach(script => {
+      try {
+        JSON.parse(script.textContent || '');
+      } catch {
+        jsonLdValid = false;
+      }
+    });
+
+    // Check for OpenGraph tags
+    const ogTags = document.querySelectorAll('meta[property^="og:"]');
+    const hasOg = ogTags.length > 0;
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    const ogDescription = document.querySelector('meta[property="og:description"]');
+
+    // Check for Twitter Cards
+    const twitterTags = document.querySelectorAll('meta[name^="twitter:"]');
+    const hasTwitter = twitterTags.length > 0;
+
+    // Check for semantic landmarks
+    const hasMain = !!document.querySelector('main, [role="main"]');
+    const hasNav = !!document.querySelector('nav, [role="navigation"]');
+    const hasHeader = !!document.querySelector('header, [role="banner"]');
+    const hasFooter = !!document.querySelector('footer, [role="contentinfo"]');
+
+    return {
+      jsonLd: { present: hasJsonLd, valid: jsonLdValid, count: jsonLdScripts.length },
+      og: { present: hasOg, hasTitle: !!ogTitle, hasDescription: !!ogDescription, count: ogTags.length },
+      twitter: { present: hasTwitter, count: twitterTags.length },
+      landmarks: { main: hasMain, nav: hasNav, header: hasHeader, footer: hasFooter },
+    };
+  });
+
+  // Track metadata count
+  let metadataCount = 0;
+  if (metadata.jsonLd.present) metadataCount++;
+  if (metadata.og.present) metadataCount++;
+  if (metadata.twitter.present) metadataCount++;
+  summary.machineMetadataCount = metadataCount;
+
+  // Report missing JSON-LD
+  if (!metadata.jsonLd.present) {
+    issues.push({
+      category: "semantics",
+      severity: "medium",
+      subcategory: "machine-metadata",
+      element: "head",
+      description: "No JSON-LD structured data found",
+      detectionMethod: "json-ld-check",
+      recommendation: "Add JSON-LD schema markup for better AI agent understanding",
+      codeExample: `<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "name": "Page Title",
+  "description": "Page description"
+}
+</script>`,
+    });
+  } else if (!metadata.jsonLd.valid) {
+    issues.push({
+      category: "semantics",
+      severity: "high",
+      subcategory: "machine-metadata",
+      element: "script[type='application/ld+json']",
+      description: "Invalid JSON-LD (malformed JSON)",
+      detectionMethod: "json-ld-check",
+      recommendation: "Fix JSON syntax errors in structured data",
+    });
+  }
+
+  // Report missing OpenGraph
+  if (!metadata.og.present) {
+    issues.push({
+      category: "semantics",
+      severity: "low",
+      subcategory: "machine-metadata",
+      element: "head",
+      description: "No OpenGraph meta tags found",
+      detectionMethod: "og-check",
+      recommendation: "Add OpenGraph tags for better content previews",
+      codeExample: `<meta property="og:title" content="Page Title">
+<meta property="og:description" content="Page description">
+<meta property="og:image" content="https://example.com/image.jpg">`,
+    });
+  }
+
+  // Report missing landmarks
+  const missingLandmarks: string[] = [];
+  if (!metadata.landmarks.main) missingLandmarks.push("main");
+  if (!metadata.landmarks.nav) missingLandmarks.push("nav");
+
+  if (missingLandmarks.length > 0) {
+    issues.push({
+      category: "accessibility",
+      severity: "medium",
+      subcategory: "machine-metadata",
+      element: "body",
+      description: `Missing semantic landmarks: ${missingLandmarks.join(", ")}`,
+      detectionMethod: "landmark-check",
+      recommendation: "Add semantic landmark elements for page structure",
+      codeExample: `<header role="banner">...</header>
+<nav role="navigation">...</nav>
+<main role="main">...</main>
+<footer role="contentinfo">...</footer>`,
+    });
+  }
+}
+
+/**
+ * Detect navigation patterns (breadcrumbs, skip links, heading hierarchy)
+ * @since 17.0.0
+ */
+async function detectNavigationPatterns(ctx: DetectionContext): Promise<void> {
+  const { page, issues, summary } = ctx;
+
+  const navPatterns = await page.evaluate(() => {
+    // Check for breadcrumbs
+    const breadcrumbNav = document.querySelector('nav[aria-label*="breadcrumb" i], nav[aria-label*="Breadcrumb" i], [role="navigation"][aria-label*="breadcrumb" i]');
+    // Microdata only. A JSON-LD BreadcrumbList lives inside a
+    // <script type="application/ld+json"> as TEXT, so no selector can see it and
+    // sites that ship one were told "No breadcrumb navigation found" —
+    // cbrowser.ai itself among them. (2026-07-29)
+    const breadcrumbSchema = document.querySelector('[itemtype*="BreadcrumbList"]');
+
+    const hasJsonLdBreadcrumb = (() => {
+      const blocks = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+      for (const block of blocks) {
+        try {
+          const parsed = JSON.parse(block.textContent || "");
+          // A block may be one object, an array of them, or an @graph wrapper.
+          const stack: unknown[] = [parsed];
+          while (stack.length) {
+            const node = stack.pop();
+            if (!node || typeof node !== "object") continue;
+            if (Array.isArray(node)) { stack.push(...node); continue; }
+            const obj = node as Record<string, unknown>;
+            const t = obj["@type"];
+            if (t === "BreadcrumbList" || (Array.isArray(t) && t.includes("BreadcrumbList"))) return true;
+            if (Array.isArray(obj["@graph"])) stack.push(...(obj["@graph"] as unknown[]));
+          }
+        } catch { /* a malformed block is not a breadcrumb */ }
+      }
+      return false;
+    })();
+
+    const hasBreadcrumbs = !!breadcrumbNav || !!breadcrumbSchema || hasJsonLdBreadcrumb;
+
+    // Check for skip links
+    const skipLinks = document.querySelectorAll('a[href^="#"]:first-child, a[href^="#main"], a[href^="#content"], .skip-link, .skip-to-content');
+    const hasSkipLink = skipLinks.length > 0;
+
+    // Check heading hierarchy
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+    const headingLevels = headings.map(h => parseInt(h.tagName[1]));
+    let hierarchyValid = true;
+    let hierarchyIssue = '';
+    const h1Count = headingLevels.filter(l => l === 1).length;
+
+    if (h1Count === 0) {
+      hierarchyValid = false;
+      hierarchyIssue = 'No H1 found';
+    } else if (h1Count > 1) {
+      hierarchyValid = false;
+      hierarchyIssue = `Multiple H1 elements (${h1Count})`;
+    }
+
+    // Check for skipped levels (e.g., h1 -> h3)
+    for (let i = 1; i < headingLevels.length; i++) {
+      if (headingLevels[i] > headingLevels[i - 1] + 1) {
+        hierarchyValid = false;
+        hierarchyIssue = `Skipped heading level (h${headingLevels[i - 1]} to h${headingLevels[i]})`;
+        break;
+      }
+    }
+
+    // Check page title
+    const pageTitle = document.title?.trim();
+
+    return {
+      breadcrumbs: hasBreadcrumbs,
+      skipLink: hasSkipLink,
+      headings: { valid: hierarchyValid, issue: hierarchyIssue, count: headings.length },
+      pageTitle: { present: !!pageTitle, length: pageTitle?.length || 0 },
+    };
+  });
+
+  // Track navigation aids
+  let navAidsCount = 0;
+  if (navPatterns.breadcrumbs) navAidsCount++;
+  if (navPatterns.skipLink) navAidsCount++;
+  summary.navigationAidsCount = navAidsCount;
+
+  // Report missing breadcrumbs (only for multi-page sites with depth)
+  if (!navPatterns.breadcrumbs) {
+    issues.push({
+      category: "findability",
+      severity: "low",
+      subcategory: "navigation-patterns",
+      element: "nav",
+      description: "No breadcrumb navigation found",
+      detectionMethod: "breadcrumb-check",
+      recommendation: "Add breadcrumb navigation for hierarchical sites",
+      codeExample: `<nav aria-label="Breadcrumb">
+  <ol>
+    <li><a href="/">Home</a></li>
+    <li><a href="/section">Section</a></li>
+    <li aria-current="page">Current Page</li>
+  </ol>
+</nav>`,
+    });
+  }
+
+  // Report missing skip link
+  if (!navPatterns.skipLink) {
+    issues.push({
+      category: "accessibility",
+      severity: "medium",
+      subcategory: "navigation-patterns",
+      element: "body",
+      description: "No skip-to-content link found",
+      detectionMethod: "skip-link-check",
+      recommendation: "Add a skip link for keyboard navigation",
+      codeExample: `<a href="#main-content" class="skip-link">Skip to main content</a>
+<!-- CSS: .skip-link { position: absolute; left: -10000px; } .skip-link:focus { left: 0; } -->`,
+    });
+  }
+
+  // Report heading hierarchy issues
+  if (!navPatterns.headings.valid) {
+    issues.push({
+      category: "semantics",
+      severity: "medium",
+      subcategory: "navigation-patterns",
+      element: "h1-h6",
+      description: `Heading hierarchy issue: ${navPatterns.headings.issue}`,
+      detectionMethod: "heading-hierarchy-check",
+      recommendation: "Use a single H1 and maintain proper heading order (h1 → h2 → h3)",
+    });
+  }
+
+  // Report missing or short page title
+  if (!navPatterns.pageTitle.present) {
+    issues.push({
+      category: "findability",
+      severity: "high",
+      subcategory: "navigation-patterns",
+      element: "title",
+      description: "Page has no title",
+      detectionMethod: "page-title-check",
+      recommendation: "Add a descriptive <title> element",
+    });
+  } else if (navPatterns.pageTitle.length < 10) {
+    issues.push({
+      category: "findability",
+      severity: "low",
+      subcategory: "navigation-patterns",
+      element: "title",
+      description: "Page title is very short (< 10 chars)",
+      detectionMethod: "page-title-check",
+      recommendation: "Use a more descriptive page title",
+    });
+  }
+}
+
+/**
+ * Detect actionable elements (action verbs on buttons, aria-describedby)
+ * @since 17.0.0
+ */
+async function detectActionableElements(ctx: DetectionContext): Promise<void> {
+  const { page, issues } = ctx;
+
+  const actionAnalysis = await page.evaluate(() => {
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], input[type="button"]'));
+
+    // Generic/weak button labels
+    const genericLabels = ['submit', 'click', 'ok', 'yes', 'no', 'go', 'next', 'back', 'continue', 'send', 'done'];
+    // Strong action verbs
+    const actionVerbs = ['add', 'create', 'save', 'delete', 'remove', 'edit', 'update', 'download', 'upload', 'share', 'copy', 'search', 'filter', 'sort', 'buy', 'subscribe', 'register', 'login', 'logout', 'sign'];
+
+    const weakButtons: Array<{ selector: string; text: string }> = [];
+    let elementsWithDescribedBy = 0;
+
+    buttons.forEach(btn => {
+      const text = (btn.textContent?.trim() || btn.getAttribute('value') || btn.getAttribute('aria-label') || '').toLowerCase();
+      const words = text.split(/\s+/);
+
+      // Check if button uses generic label without action verb
+      const isGeneric = words.some(w => genericLabels.includes(w)) && !words.some(w => actionVerbs.some(v => w.startsWith(v)));
+
+      if (isGeneric && text.length < 20) {
+        weakButtons.push({
+          selector: btn.tagName.toLowerCase() + (btn.id ? `#${btn.id}` : ''),
+          text: text.slice(0, 30),
+        });
+      }
+
+      // Track aria-describedby usage
+      if (btn.hasAttribute('aria-describedby')) {
+        elementsWithDescribedBy++;
+      }
+    });
+
+    return {
+      weakButtons: weakButtons.slice(0, 5), // Limit to avoid noise
+      totalButtons: buttons.length,
+      elementsWithDescribedBy,
+    };
+  });
+
+  // Report buttons with generic labels
+  for (const btn of actionAnalysis.weakButtons) {
+    issues.push({
+      category: "findability",
+      severity: "low",
+      subcategory: "actionable-elements",
+      element: btn.selector,
+      description: `Button with generic label: "${btn.text}"`,
+      detectionMethod: "action-verb-check",
+      recommendation: "Use specific action verbs (e.g., 'Save Changes' instead of 'Submit')",
+      codeExample: `<!-- Instead of: -->
+<button>Submit</button>
+<!-- Use: -->
+<button>Save Changes</button>
+<button>Create Account</button>
+<button>Download Report</button>`,
+    });
+  }
+}
+
+/**
+ * Detect content-to-navigation ratio
+ * @since 17.0.0
+ */
+async function detectContentChrome(ctx: DetectionContext): Promise<void> {
+  const { page, issues } = ctx;
+
+  const ratio = await page.evaluate(() => {
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const viewportArea = viewport.width * viewport.height;
+
+    // Calculate nav/header/footer area
+    let chromeArea = 0;
+    const chromeElements = document.querySelectorAll('nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], [role="complementary"]');
+
+    chromeElements.forEach(el => {
+      const rect = el.getBoundingClientRect();
+      // Only count visible elements in viewport
+      if (rect.width > 0 && rect.height > 0 && rect.top < viewport.height) {
+        const visibleHeight = Math.min(rect.bottom, viewport.height) - Math.max(rect.top, 0);
+        const visibleWidth = Math.min(rect.right, viewport.width) - Math.max(rect.left, 0);
+        if (visibleHeight > 0 && visibleWidth > 0) {
+          chromeArea += visibleWidth * visibleHeight;
+        }
+      }
+    });
+
+    // Calculate main content area
+    let mainArea = 0;
+    const mainEl = document.querySelector('main, [role="main"], article, .content, #content, #main');
+    if (mainEl) {
+      const rect = mainEl.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        const visibleHeight = Math.min(rect.bottom, viewport.height) - Math.max(rect.top, 0);
+        const visibleWidth = Math.min(rect.right, viewport.width) - Math.max(rect.left, 0);
+        if (visibleHeight > 0 && visibleWidth > 0) {
+          mainArea = visibleWidth * visibleHeight;
+        }
+      }
+    }
+
+    const chromeRatio = chromeArea / viewportArea;
+    const contentRatio = mainArea / viewportArea;
+
+    return {
+      chromeRatio: Math.round(chromeRatio * 100),
+      contentRatio: Math.round(contentRatio * 100),
+      viewportArea,
+    };
+  });
+
+  // Flag excessive chrome (> 50% of viewport)
+  if (ratio.chromeRatio > 50) {
+    issues.push({
+      category: "findability",
+      severity: "medium",
+      subcategory: "content-chrome",
+      element: "viewport",
+      description: `Navigation/chrome occupies ${ratio.chromeRatio}% of above-fold viewport`,
+      detectionMethod: "content-chrome-check",
+      recommendation: "Reduce navigation prominence or use collapsible menus",
+    });
+  }
+}
+
+/**
+ * Detect API exposure (links to /api/ endpoints, GraphQL hints)
+ * @since 17.0.0
+ */
+async function detectApiExposure(ctx: DetectionContext): Promise<void> {
+  const { page, issues, summary } = ctx;
+
+  const apiInfo = await page.evaluate(() => {
+    const pageSource = document.documentElement.outerHTML;
+
+    // Look for /api/ patterns in links and scripts
+    const apiPatterns = pageSource.match(/["'](\/api\/[^"']*|https?:\/\/[^"']*\/api\/[^"']*)["']/gi) || [];
+    const uniqueApiPaths = [...new Set(apiPatterns.map(p => p.replace(/["']/g, '').split('?')[0]))];
+
+    // Look for GraphQL hints
+    const hasGraphQL = /graphql|__schema|__typename/i.test(pageSource);
+    const graphqlEndpoint = pageSource.match(/["'](\/graphql|https?:\/\/[^"']*graphql[^"']*)["']/i);
+
+    return {
+      apiEndpoints: uniqueApiPaths.slice(0, 10),
+      hasGraphQL,
+      graphqlEndpoint: graphqlEndpoint ? graphqlEndpoint[1] : null,
+    };
+  });
+
+  summary.apiEndpointsCount = apiInfo.apiEndpoints.length;
+
+  // API exposure is a POSITIVE signal for agent friendliness — do NOT add to issues.
+  // The summary.apiEndpointsCount is still tracked for informational display.
+}
+
+/**
+ * Detect /llms.txt presence
+ * @since 17.0.0
+ */
+async function detectLlmsTxt(ctx: DetectionContext): Promise<void> {
+  const { page, issues, summary } = ctx;
+
+  try {
+    const pageUrl = new URL(page.url());
+    const llmsTxtUrl = `${pageUrl.origin}/llms.txt`;
+
+    // Use page context to fetch (same cookies/auth)
+    const response = await page.context().request.get(llmsTxtUrl, {
+      timeout: 5000,
+      failOnStatusCode: false,
+    });
+
+    const status = response.status();
+    summary.hasLlmsTxt = status === 200;
+
+    if (status === 200) {
+      const content = await response.text();
+      const lines = content.split('\n').filter(l => l.trim());
+
+      // Basic validation
+      const hasTitle = lines.some(l => l.startsWith('#'));
+      const hasLinks = lines.some(l => l.includes('[') && l.includes(']('));
+
+      if (!hasTitle || !hasLinks) {
+        issues.push({
+          category: "semantics",
+          severity: "low",
+          subcategory: "llms-txt",
+          element: "/llms.txt",
+          description: "llms.txt exists but may be incomplete (missing headers or links)",
+          detectionMethod: "llms-txt-check",
+          recommendation: "Add markdown headers (#) and links ([text](url)) to llms.txt",
+        });
+      }
+      // No issue if llms.txt is present and valid - it's a positive signal
+    } else if (status === 404) {
+      issues.push({
+        category: "semantics",
+        severity: "low",
+        subcategory: "llms-txt",
+        element: "/llms.txt",
+        description: "No /llms.txt found (recommended for AI agent documentation)",
+        detectionMethod: "llms-txt-check",
+        recommendation: "Add /llms.txt to help AI agents understand your site",
+        codeExample: `# Site Name
+
+> Brief description of the site
+
+## Documentation
+- [Getting Started](/docs/start)
+- [API Reference](/api)
+
+## Important Pages
+- [Pricing](/pricing)
+- [Contact](/contact)`,
+      });
+    }
+  } catch {
+    // Silently handle fetch errors - don't penalize for network issues
+    summary.hasLlmsTxt = false;
+  }
+}
+
+/**
+ * Detect state persistence patterns (CSRF tokens, session indicators)
+ * @since 17.0.0
+ */
+async function detectStatePersistence(ctx: DetectionContext): Promise<void> {
+  const { page, issues } = ctx;
+
+  const stateInfo = await page.evaluate(() => {
+    // Look for CSRF tokens
+    const csrfInputs = document.querySelectorAll('input[name*="csrf" i], input[name*="token" i], input[name="_token"], input[name="authenticity_token"]');
+    const csrfMeta = document.querySelector('meta[name*="csrf" i]');
+    const hasCsrf = csrfInputs.length > 0 || !!csrfMeta;
+
+    // Look for session indicators in forms
+    const hiddenInputs = document.querySelectorAll('input[type="hidden"]');
+    const sessionIndicators = Array.from(hiddenInputs).filter(input => {
+      const name = input.getAttribute('name')?.toLowerCase() || '';
+      return name.includes('session') || name.includes('state') || name.includes('nonce');
+    });
+
+    // Look for forms that might have non-idempotent actions
+    const forms = document.querySelectorAll('form');
+    const postForms = Array.from(forms).filter(f => f.method.toLowerCase() === 'post');
+
+    return {
+      hasCsrf,
+      csrfCount: csrfInputs.length + (csrfMeta ? 1 : 0),
+      sessionIndicators: sessionIndicators.length,
+      postFormCount: postForms.length,
+    };
+  });
+
+  // CSRF tokens are good security practice — do NOT penalize score.
+  // Just note their presence for informational purposes (no issue pushed).
+
+  if (stateInfo.sessionIndicators > 0) {
+    issues.push({
+      category: "stability",
+      severity: "low",
+      subcategory: "state-persistence",
+      element: "input[type='hidden']",
+      description: `${stateInfo.sessionIndicators} session state indicator(s) in forms`,
+      detectionMethod: "session-check",
+      recommendation: "Document required session state for programmatic form submission",
+    });
+  }
+}
+
+/**
+ * Detect dynamic content patterns (loading states, infinite scroll, lazy load)
+ * @since 17.0.0
+ */
+async function detectDynamicContent(ctx: DetectionContext): Promise<void> {
+  const { page, issues, summary } = ctx;
+
+  const dynamicInfo = await page.evaluate(() => {
+    // Look for loading indicators
+    const loadingIndicators = document.querySelectorAll('[class*="loading" i], [class*="spinner" i], [class*="skeleton" i], [aria-busy="true"], [data-loading]');
+
+    // Look for infinite scroll patterns
+    const infiniteScrollHints = document.querySelectorAll('[data-infinite], [class*="infinite" i], [class*="load-more" i]');
+
+    // Look for lazy-load images
+    const lazyImages = document.querySelectorAll('img[loading="lazy"], img[data-src], img[data-lazy]');
+
+    // Check for intersection observer usage (common for infinite scroll)
+    const hasIntersectionObserver = typeof IntersectionObserver !== 'undefined';
+
+    // Look for "Load More" buttons
+    const loadMoreButtons = Array.from(document.querySelectorAll('button, a')).filter(el => {
+      const text = el.textContent?.toLowerCase() || '';
+      return text.includes('load more') || text.includes('show more') || text.includes('view more');
+    });
+
+    return {
+      loadingIndicators: loadingIndicators.length,
+      infiniteScrollHints: infiniteScrollHints.length,
+      lazyImages: lazyImages.length,
+      loadMoreButtons: loadMoreButtons.length,
+      hasIntersectionObserver,
+    };
+  });
+
+  const dynamicCount =
+    (dynamicInfo.loadingIndicators > 0 ? 1 : 0) +
+    (dynamicInfo.infiniteScrollHints > 0 ? 1 : 0) +
+    (dynamicInfo.lazyImages > 5 ? 1 : 0) +
+    (dynamicInfo.loadMoreButtons > 0 ? 1 : 0);
+
+  summary.dynamicContentCount = dynamicCount;
+
+  // Report infinite scroll as a potential challenge for agents
+  if (dynamicInfo.infiniteScrollHints > 0 || dynamicInfo.loadMoreButtons > 0) {
+    issues.push({
+      category: "stability",
+      severity: "medium",
+      subcategory: "dynamic-content",
+      element: "body",
+      description: "Infinite scroll or load-more pattern detected",
+      detectionMethod: "infinite-scroll-check",
+      recommendation: "Provide pagination alternative or API endpoint for programmatic access",
+    });
+  }
+
+  // Report loading indicators
+  if (dynamicInfo.loadingIndicators > 3) {
+    issues.push({
+      category: "stability",
+      severity: "low",
+      subcategory: "dynamic-content",
+      element: "body",
+      description: `${dynamicInfo.loadingIndicators} loading indicator(s) found - agents should wait for content`,
+      detectionMethod: "loading-state-check",
+      recommendation: "Use aria-busy and loading states consistently for better agent detection",
+    });
+  }
+}
+
+/**
+ * Detect CAPTCHA scripts that block AI agent automation
+ * @since 17.1.0
+ */
+async function detectCaptcha(ctx: DetectionContext): Promise<void> {
+  const { page, issues } = ctx;
+
+  const captchaScripts = await page.$$eval('script[src], iframe[src]', (els) => {
+    const captchaPatterns = ['recaptcha', 'hcaptcha', 'turnstile', 'captcha'];
+    return els.filter(el => {
+      const src = el.getAttribute('src') || '';
+      return captchaPatterns.some(p => src.toLowerCase().includes(p));
+    }).map(el => ({ tag: el.tagName, src: el.getAttribute('src') }));
+  });
+
+  if (captchaScripts.length > 0) {
+    issues.push({
+      category: "findability",
+      severity: "high",
+      element: captchaScripts[0].tag,
+      description: `CAPTCHA detected (${captchaScripts[0].src?.split('/').pop()}) — blocks AI agent automation`,
+      detectionMethod: "captcha-check",
+      recommendation: 'Provide an API or authenticated bypass for automated agents',
+    });
+  }
 }
 
 // ============================================================================
@@ -608,7 +1300,7 @@ ISSUES BY CATEGORY
 * Methodology and research sources: docs/METHODOLOGY.md
   Key sources: Nielsen Norman Group (severity scale), WCAG 2.1, WebAIM
 
-Generated by CBrowser v8.0.0 - Agent-Ready Audit
+Generated by CBrowser v${VERSION} - Agent-Ready Audit
 `;
 
   return report;
@@ -954,10 +1646,143 @@ export function generateAgentReadyHtmlReport(result: AgentReadyAuditResult): str
   </div>
 
   <p style="color: #64748b; text-align: center; margin-top: 2rem;">
-    Generated by CBrowser v8.0.0 - Agent-Ready Audit
+    Generated by CBrowser v${VERSION} - Agent-Ready Audit
   </p>
 </body>
 </html>`;
+}
+
+// ============================================================================
+// SPA Hydration Detection (v18.22.0)
+// ============================================================================
+
+/**
+ * Detected SPA framework
+ */
+type SpaFramework = "react" | "vue" | "angular" | "svelte" | "next" | "nuxt" | "unknown";
+
+/**
+ * Detect which SPA framework a page uses
+ */
+async function detectSpaFramework(page: import("playwright").Page): Promise<SpaFramework> {
+  return page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const win = window as any;
+
+    // React detection
+    if (
+      win.__REACT_DEVTOOLS_GLOBAL_HOOK__ ||
+      document.querySelector("[data-reactroot]") ||
+      document.querySelector("[data-react-helmet]") ||
+      document.getElementById("__next") // Next.js
+    ) {
+      return document.getElementById("__next") ? "next" : "react";
+    }
+
+    // Vue detection
+    if (
+      win.__VUE__ ||
+      document.querySelector("[data-v-]") ||
+      document.getElementById("__nuxt") // Nuxt
+    ) {
+      return document.getElementById("__nuxt") ? "nuxt" : "vue";
+    }
+
+    // Angular detection
+    if (
+      win.ng ||
+      document.querySelector("[ng-version]") ||
+      document.querySelector("app-root")
+    ) {
+      return "angular";
+    }
+
+    // Svelte detection
+    if (document.querySelector("[class^='svelte-']")) {
+      return "svelte";
+    }
+
+    return "unknown";
+  });
+}
+
+/**
+ * Wait for SPA framework to hydrate and render dynamic content
+ */
+async function waitForSpaHydration(
+  page: import("playwright").Page,
+  options: { timeout?: number } = {}
+): Promise<{ framework: SpaFramework; hydrationTime: number }> {
+  const startTime = Date.now();
+  const timeout = options.timeout ?? 5000;
+
+  const framework = await detectSpaFramework(page);
+
+  // Framework-specific hydration wait strategies
+  try {
+    switch (framework) {
+      case "react":
+      case "next":
+        // Wait for React to finish rendering (no pending state updates)
+        await page.waitForFunction(
+          () => {
+            // Check for loading indicators
+            const loadingElements = document.querySelectorAll(
+              '[class*="loading"], [class*="skeleton"], [class*="spinner"], [aria-busy="true"]'
+            );
+            return loadingElements.length === 0;
+          },
+          { timeout }
+        );
+        break;
+
+      case "vue":
+      case "nuxt":
+        // Wait for Vue to finish hydration
+        await page.waitForFunction(
+          () => {
+            // Vue adds data-v- attributes after hydration
+            const hydratedElements = document.querySelectorAll("[data-v-]");
+            // Also check for loading states
+            const loadingElements = document.querySelectorAll(
+              '[class*="loading"], [class*="skeleton"], [aria-busy="true"]'
+            );
+            return hydratedElements.length > 0 && loadingElements.length === 0;
+          },
+          { timeout }
+        );
+        break;
+
+      case "angular":
+        // Wait for Angular to stabilize
+        await page.waitForFunction(
+          () => {
+            // Angular removes ng-pending after hydration
+            const pending = document.querySelector("[ng-pending]");
+            return !pending;
+          },
+          { timeout }
+        );
+        break;
+
+      default:
+        // Generic SPA wait - wait for no network activity and no loading indicators
+        await page.waitForLoadState("networkidle", { timeout }).catch(() => {
+          // If networkidle times out, continue anyway
+        });
+    }
+  } catch {
+    // If framework-specific wait times out, fall back to basic wait
+    await page.waitForTimeout(Math.min(2000, timeout));
+  }
+
+  // Additional wait for dynamic content that might load after initial hydration
+  await page.waitForTimeout(500);
+
+  return {
+    framework,
+    hydrationTime: Date.now() - startTime,
+  };
 }
 
 // ============================================================================
@@ -966,23 +1791,88 @@ export function generateAgentReadyHtmlReport(result: AgentReadyAuditResult): str
 
 export async function runAgentReadyAudit(
   url: string,
-  _options: AgentReadyAuditOptions = {}
+  options: AgentReadyAuditOptions = {}
 ): Promise<AgentReadyAuditResult> {
   const startTime = Date.now();
+  const overallTimeout = options.timeout ?? 60000;
+  const navigationTimeout = options.navigationTimeout ?? 30000;
   let browser: Browser | null = null;
 
-  try {
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-    });
-    const page = await context.newPage();
+  // Wrap entire operation in timeout
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`Audit timed out after ${overallTimeout}ms`)), overallTimeout);
+  });
 
-    // Navigate to URL
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+  const auditPromise = async (): Promise<AgentReadyAuditResult> => {
+    // If a pre-existing page is provided, skip browser launch + navigation
+    const externalPage = options.page;
+    try {
+      let page: Page;
+      if (externalPage) {
+        page = externalPage;
+        // Skip navigation — caller already navigated
+      } else if (options.useLightpanda && isLightpandaConfigured()) {
+        const result = await launchWithLightpandaFallback({
+          headless: true,
+          explicitOptIn: true,
+          operation: "agent-ready-audit",
+        });
+        browser = result.browser;
+        if (result.isLightpanda) {
+          console.log("🐼 Using Lightpanda for audit (11x faster)");
+        }
+        const context = await browser.newContext({
+          viewport: { width: 1920, height: 1080 },
+          ...(options.locale ? { locale: options.locale } : {}),
+        });
+        page = await context.newPage();
+      } else {
+        const cbrowser = new CBrowser({
+          headless: options.headless ?? true,
+          persistent: false,
+          ...(options.proxy ? { proxy: options.proxy } : {}),
+          ...(options.locale ? { locale: options.locale } : {}),
+          ...(options.device ? { device: options.device.toLowerCase() } : {}),
+        });
+        await cbrowser.launch();
+        browser = (cbrowser as any).browser;
+        page = await cbrowser.getPage();
+      }
 
-    // Wait for dynamic content
-    await page.waitForTimeout(2000);
+      // Navigate to URL (skip if external page provided — already navigated)
+      if (!externalPage) try {
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: navigationTimeout });
+      } catch (navError) {
+        const errMsg = navError instanceof Error ? navError.message : String(navError);
+        if (errMsg.includes("ERR_TUNNEL_CONNECTION_FAILED") || errMsg.includes("ERR_PROXY_CONNECTION_FAILED")) {
+          throw new Error(
+            `Proxy tunnel rejected by ${url}. The target site is blocking proxy/VPN connections. ` +
+            `This is the site's anti-bot defense, not a CBrowser issue.\n\n` +
+            `Recommendations:\n` +
+            `1. Re-run without the proxy/geo-region to test from your direct IP\n` +
+            `2. Try a different geo region — the site may block specific IP ranges\n` +
+            `3. Some sites (Stripe, GitHub, banking) aggressively block residential proxies`
+          );
+        }
+        if (errMsg.includes("ERR_NETWORK_CHANGED") && options.proxy) {
+          throw new Error(
+            `Network changed during proxy connection to ${url}. The residential proxy IP may have rotated mid-request.\n\n` +
+            `Recommendations:\n` +
+            `1. Retry — residential proxy IPs rotate and the next one may work\n` +
+            `2. Re-run without the proxy to test from your direct IP`
+          );
+        }
+        throw navError;
+      }
+
+      // v18.22.0: SPA mode - detect framework and wait for hydration
+      if (!externalPage) {
+        if (options.spaMode) {
+          await waitForSpaHydration(page, { timeout: 5000 });
+        } else {
+          await page.waitForTimeout(1000);
+        }
+      }
 
     // Initialize detection context
     const issues: AgentReadyIssue[] = [];
@@ -994,6 +1884,12 @@ export async function runAgentReadyAudit(
       stickyOverlays: 0,
       customDropdowns: 0,
       elementsWithoutText: 0,
+      // AI-specific counters (v17.0.0)
+      machineMetadataCount: 0,
+      navigationAidsCount: 0,
+      hasLlmsTxt: false,
+      apiEndpointsCount: 0,
+      dynamicContentCount: 0,
     };
 
     const ctx: DetectionContext = { page, issues, summary };
@@ -1007,8 +1903,22 @@ export async function runAgentReadyAudit(
     await detectBadLinks(ctx);
     await detectLowFindabilityElements(ctx);
 
-    // Update summary
-    summary.problematicElements = issues.length;
+    // AI-specific detection functions (v17.0.0)
+    await detectMachineMetadata(ctx);
+    await detectNavigationPatterns(ctx);
+    await detectActionableElements(ctx);
+    await detectContentChrome(ctx);
+    await detectApiExposure(ctx);
+    await detectLlmsTxt(ctx);
+    await detectStatePersistence(ctx);
+    await detectDynamicContent(ctx);
+    await detectCaptcha(ctx);
+
+    // Update summary — count total interactive elements actually on the page
+    summary.totalElements = await page.evaluate(() => {
+      return document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex], img, [aria-label]').length;
+    }).catch(() => 0);
+    summary.problematicElements = Math.min(issues.length, summary.totalElements);
 
     // Calculate scores
     const score = calculateAgentReadyScore(issues);
@@ -1029,9 +1939,21 @@ export async function runAgentReadyAudit(
     };
 
     return result;
-  } finally {
-    if (browser) {
-      await browser.close();
+    } finally {
+      // Don't close browser if it was externally provided
+      if (browser && !externalPage) {
+        await browser.close();
+      }
     }
+  };
+
+  // Race between audit and timeout
+  try {
+    return await Promise.race<AgentReadyAuditResult>([auditPromise(), timeoutPromise]);
+  } catch (error) {
+    if (browser && !options.page) {
+      await (browser as Browser).close();
+    }
+    throw error;
   }
 }

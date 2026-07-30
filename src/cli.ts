@@ -12,9 +12,10 @@
  */
 
 import { CBrowser } from "./browser.js";
+import { parseArgs } from "./cli-args.js";
 
 // Analysis module imports
-import { executeNaturalLanguage, executeNaturalLanguageScript, huntBugs, runChaosTest, comparePersonas, formatComparisonReport, findElementByIntent, runAgentReadyAudit, formatAgentReadyReport, generateAgentReadyHtmlReport, runCompetitiveBenchmark, formatCompetitiveBenchmarkReport, generateCompetitiveBenchmarkHtmlReport, runEmpathyAudit, formatEmpathyAuditReport, generateEmpathyAuditHtmlReport } from "./analysis/index.js";
+import { executeNaturalLanguage, executeNaturalLanguageScript, huntBugs, runChaosTest, comparePersonas, formatComparisonReport, findElementByIntent, runAgentReadyAudit, formatAgentReadyReport, generateAgentReadyHtmlReport, runCompetitiveBenchmark, formatCompetitiveBenchmarkReport, generateCompetitiveBenchmarkHtmlReport, runEmpathyAudit, formatEmpathyAuditReport, generateEmpathyAuditHtmlReport, runWebMCPReadyAudit, generateWebMCPReadyHtmlReport, runAIReadinessBenchmark } from "./analysis/index.js";
 
 // Testing module imports
 import { parseNLInstruction, parseNLTestSuite, runNLTestSuite, formatNLTestReport, dryRunNLTestSuite, repairTestSuite, formatRepairReport, exportRepairedTest, detectFlakyTests, formatFlakyTestReport, generateCoverageMap, formatCoverageReport, generateCoverageHtmlReport, type NLTestSuiteOptions, type RepairTestOptions, type FlakyTestOptions } from "./testing/index.js";
@@ -24,6 +25,8 @@ import { capturePerformanceBaseline, listPerformanceBaselines, loadPerformanceBa
 
 // Visual module imports
 import { captureVisualBaseline, listVisualBaselines, getVisualBaseline, deleteVisualBaseline, runVisualRegression, runVisualRegressionSuite, formatVisualRegressionReport, generateVisualRegressionHtmlReport, runCrossBrowserTest, runCrossBrowserSuite, formatCrossBrowserReport, generateCrossBrowserHtmlReport, runResponsiveTest, runResponsiveSuite, formatResponsiveReport, generateResponsiveHtmlReport, listViewportPresets, runABComparison, runABSuite, formatABReport, generateABHtmlReport, crossBrowserDiff } from "./visual/index.js";
+// Phase 3 imports — used by CLI command handlers (to be wired up)
+// import { captureSmartBaseline, listSmartBaselines, deleteSmartBaseline, runSmartRegression, generateTransportMap, runRegressionWithTransportMap } from "./visual/index.js";
 import type { NLTestCase, NLTestSuiteResult, PerformanceRegressionThresholds, CoverageMapOptions, VisualTestSuite, VisualTestSuiteResult, SupportedBrowser, CrossBrowserSuite, CrossBrowserSuiteResult, ResponsiveSuite, ResponsiveSuiteResult, ViewportPreset, ABSuite, ABSuiteResult } from "./types.js";
 import {
   BUILTIN_PERSONAS,
@@ -38,7 +41,14 @@ import { DEVICE_PRESETS, LOCATION_PRESETS } from "./types.js";
 import { startMcpServer } from "./mcp-server.js";
 import { startRemoteMcpServer } from "./mcp-server-remote.js";
 import { startDaemon, stopDaemon, getDaemonStatus, isDaemonRunning, sendToDaemon, runDaemonServer } from "./daemon.js";
-import { getStatusInfo, formatStatus, getDataDir } from "./config.js";
+import { getStatusInfo, formatStatus, getDataDir, getPaths } from "./config.js";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolveCookieDomain, hostFromUrl } from "./utils.js";
+import { dirname, join, resolve } from "node:path";
+import { VideoCaptureSession, type CaptureFormat } from "./recording/engine.js";
+import { changeSignal, parseManifest, type RecordingTarget } from "./recording/types.js";
+import type { AutoCaptureResult, AutoCaptureSetting } from "./recording/auto-capture.js";
+import type { StartTrigger, StopTrigger } from "./recording/engine.js";
 import { printEnterpriseStatus } from "./stealth/index.js";
 import {
   runCognitiveJourney,
@@ -48,8 +58,28 @@ import {
   isApiKeyConfigured,
 } from "./cognitive/index.js";
 
+// Lightpanda integration (v18.20.0) - OPT-IN ONLY with security guardrails
+import {
+  getLightpandaStatus,
+  LIGHTPANDA_SETUP_GUIDE,
+  LIGHTPANDA_SECURITY_WARNING,
+  isLightpandaConfigured,
+  isSensitiveOperation,
+} from "./lightpanda.js";
+
 // Version from package.json - single source of truth
 import { VERSION } from "./version.js";
+
+// Accessible output system (v18.54.0)
+import {
+  detectOutputOptions,
+  setOutputOptions,
+  getOutputOptions,
+  installOutputWrappers,
+  emitJson,
+  emitJsonFallback,
+  type JsonOutput,
+} from "./output.js";
 
 // Node readline for interactive input
 import * as readline from "readline";
@@ -72,13 +102,20 @@ function readlineQuestion(prompt: string): Promise<string> {
   });
 }
 
-function showHelp(): void {
+/**
+ * The full help text.
+ *
+ * Returned rather than printed so `help <command>` can slice a single section
+ * out of it - one source of truth for both the global dump and per-command
+ * help, which is what stops the two drifting apart.
+ */
+function helpText(): string {
   // Pad version string to maintain banner alignment
   const versionStr = `CBrowser CLI v${VERSION}`;
   const padding = ' '.repeat(Math.max(0, (80 - 2 - versionStr.length) / 2));
   const rightPadding = ' '.repeat(Math.max(0, 80 - 2 - padding.length - versionStr.length));
 
-  console.log(`
+  return (`
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║${padding}${versionStr}${rightPadding}║
 ║    AI-powered browser automation with cross-browser visual testing          ║
@@ -90,6 +127,7 @@ function showHelp(): void {
 NAVIGATION
   navigate <url>              Navigate and take screenshot
   screenshot [path]           Take screenshot of current page
+    --no-restore                Don't reload saved URL (capture current state after interactions)
 
 INTERACTION
   click <selector>            Click element (tries text, label, role, CSS)
@@ -100,9 +138,46 @@ INTERACTION
     --url <url>               Navigate to URL first, then fill
     --verbose                 Show available inputs and AI suggestions on failure
     --debug-dir <dir>         Save debug screenshots to directory
+  hover <selector>            Hover over an element
+  press <key>                 Press a single key (Enter, Tab, Escape, Control+a)
+  type "<text>"               Type a string into the focused element
+    --delay <ms>              Per-character delay (default: 50)
+  drag <source> <target>      Drag one element onto another
+  upload <selector> <file>    Set a file input's value
+    --url <url>               Navigate to URL first
+    For sequences, chords or held modifiers, see 'cbrowser help keyboard'.
 
 EXTRACTION
   extract <what>              Extract data (links, images, headings, forms)
+
+SCRIPTING
+  evaluate "<js>"             Run JavaScript in the page and print the result
+    --file <path>             Read the script from a file instead of argv
+    --arg <json>              Argument for the script (repeatable, JSON-typed)
+    --json                    Always print JSON
+    --raw                     Print the raw value, unquoted
+    --wait-for <selector>     Wait for the selector before evaluating
+    --expect-truthy           Exit 1 when the result is falsy (CI assertion)
+    Examples:
+      cbrowser evaluate "document.title"
+      cbrowser evaluate --file check.js --arg '"#main"' --expect-truthy
+      cbrowser evaluate "(sel) => !!document.querySelector(sel)" --arg '"nav"'
+
+KEYBOARD
+  keyboard <token> [token...]  Send a key sequence: chords, keys and text
+    --selector <sel>          Focus this element first
+    --delay <ms>              Delay between steps (default: 50)
+    --hold <mod>              Hold a modifier across the whole sequence
+    --repeat <n>              Repeat the whole sequence n times
+    --text                    Treat every token as literal text (for "+" in text)
+    A token with modifiers is a chord (Control+A); a known key name is that key
+    (Enter, Tab, ArrowLeft); anything else is typed as literal text. Unknown
+    key names are rejected, not typed. For a single key use 'press', for a
+    single string use 'type'.
+    Examples:
+      cbrowser keyboard "Control+A" "Delete" "Hello world"
+      cbrowser keyboard "ArrowRight" --repeat 5 --hold Shift
+      cbrowser keyboard "Tab" "Tab" "Enter" --selector "#email" --delay 120
 
 SITE EXPLORATION (Free, heuristic-based)
   explore <persona>           Quick autonomous exploration using built-in heuristics
@@ -113,6 +188,10 @@ SITE EXPLORATION (Free, heuristic-based)
 
 COGNITIVE JOURNEY (API-powered, realistic user simulation)
   cognitive-journey           Simulate a real user with emotions, patience, and abandonment
+    --capture                 Record the run to GIF/WebP/video
+    --capture-fps <n>         Capture frame rate (default: 10)
+    --capture-format <list>   gif,webp,webm,mp4 (default: gif)
+    --capture-out <dir>       Capture output directory
     --persona <name>          Persona name or description (default: first-timer)
     --start <url>             Starting URL (required)
     --goal <goal>             Goal statement (required)
@@ -164,6 +243,10 @@ NATURAL LANGUAGE TEST SUITES (v6.1.0)
     --fuzzy-match              Use case-insensitive fuzzy matching for assertions
     --step-through             Pause before each step for interactive execution
   test-suite --inline "..."    Run inline test (semicolon-separated steps)
+    --capture                 Record the run to GIF/WebP/video
+    --capture-fps <n>         Capture frame rate (default: 10)
+    --capture-format <list>   gif,webp,webm,mp4 (default: gif)
+    --capture-out <dir>       Capture output directory
     Examples:
       cbrowser test-suite login-flow.txt --html
       cbrowser test-suite --inline "go to https://example.com ; click login ; verify url contains /dashboard"
@@ -342,6 +425,36 @@ AI VISUAL REGRESSION (v7.0.0)
   ai-visual show <name>       Show baseline details
   ai-visual delete <name>     Delete a baseline
 
+SMART BASELINES & TRANSPORT MAP (v18.0.0)
+  smart-baseline capture <url>  Capture consensus baseline from multiple screenshots
+    --name <name>             Baseline name (required)
+    --captures <n>            Number of screenshots to take (default: 5)
+    --delay <ms>              Delay between captures (default: 1500)
+    --selector <sel>          Capture specific element
+    --device <device>         Device emulation
+    --outlier-threshold <n>   Outlier rejection threshold in stddev (default: 2.0)
+    Examples:
+      cbrowser smart-baseline capture "https://example.com" --name homepage
+      cbrowser smart-baseline capture "https://example.com" --name hero --captures 10
+
+  smart-baseline test <url> <name>  Test against smart baseline
+    --threshold <n>           Override adaptive threshold (0-1)
+    --transport-map           Also generate visual transport map
+    Examples:
+      cbrowser smart-baseline test "https://staging.example.com" homepage
+      cbrowser smart-baseline test "https://staging.example.com" homepage --transport-map
+
+  smart-baseline list         List all smart baselines
+  smart-baseline delete <name>  Delete a smart baseline
+
+  transport-map <baseline> <current>  Generate visual transport map between two screenshots
+    --cell-size <n>           Grid cell size in pixels (default: 32)
+    --output <file.svg>       Save SVG to file
+    --hotspots <n>            Number of hotspots to identify (default: 5)
+    Examples:
+      cbrowser transport-map baseline.png current.png
+      cbrowser transport-map baseline.png current.png --cell-size 16 --output changes.svg
+
 CROSS-BROWSER VISUAL TESTING (v7.3.0)
   cross-browser <url>         Compare visual rendering across browsers
     --browsers <list>         Browsers to test: chromium,firefox,webkit (default: all)
@@ -430,49 +543,77 @@ A/B VISUAL COMPARISON (v7.3.0)
       "options": { "sensitivity": "medium" }
     }
 
-ACCESSIBILITY (v2.5.0)
-  a11y audit                  Run WCAG accessibility audit
-    --url <url>               Navigate to URL first
-  a11y audit [url]            Audit a specific URL
+AI FRIENDLINESS - Audit sites for AI agent compatibility
+══════════════════════════════════════════════════════════════════════════════
 
-AGENT-READY AUDIT (v8.0.0)
-  agent-ready-audit <url>     Audit site for AI-agent friendliness
+  agent-ready-audit <url>     Audit site for AI-agent friendliness (A-F grade)
+    --headless                Run in headless mode (default: true)
     --output <file>           Save JSON report to file
     --html                    Generate HTML report
+    Grades sites on: Findability (35%), Stability (30%),
+                     Accessibility (20%), Semantics (15%)
     Examples:
       cbrowser agent-ready-audit "https://example.com"
       cbrowser agent-ready-audit "https://example.com" --html --output report.json
 
-COMPETITIVE UX BENCHMARK (v8.0.0)
-  competitive-benchmark       Compare UX across competitor sites
-    --sites <list>            Comma-separated site URLs (required)
-    --goal <goal>             Task goal (required)
-    --persona <name>          Persona to use (default: first-timer)
-    --max-steps <n>           Max steps per site (default: 30)
-    --max-time <sec>          Max time per site in seconds (default: 180)
+  ai-benchmark                Compare AI-friendliness across multiple sites
+    --urls <list>             Comma-separated URLs to benchmark (required)
     --output <file>           Save JSON report to file
     --html                    Generate HTML report
+    Runs agent-ready-audit on each URL and produces ranked comparison.
     Examples:
-      cbrowser competitive-benchmark \\
-        --sites "https://yoursite.com,https://competitor-a.com" \\
-        --goal "sign up for free trial" \\
-        --html
+      cbrowser ai-benchmark --urls "https://site1.com,https://site2.com,https://site3.com"
+      cbrowser ai-benchmark --urls "https://amazon.com,https://ebay.com" --html
 
-ACCESSIBILITY EMPATHY AUDIT (v8.0.0)
   empathy-audit <url>         Simulate disability experience on site
     --goal <goal>             Task goal (required)
-    --disabilities <list>     Disability personas (comma-separated)
+    --personas <list>         Disability personas (comma-separated)
     --wcag-level <level>      WCAG level: A, AA, AAA (default: AA)
     --output <file>           Save JSON report to file
     --html                    Generate HTML report
-    Available disability personas:
+    Available personas:
       motor-impairment-tremor, low-vision-magnified, cognitive-adhd,
       dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia
     Examples:
       cbrowser empathy-audit "https://example.com" \\
         --goal "complete checkout" \\
-        --disabilities "motor-impairment-tremor,low-vision-magnified" \\
-        --html
+        --personas "motor-impairment-tremor,cognitive-adhd" --html
+
+  webmcp-ready <url>          Audit MCP server for WebMCP compatibility
+    --api-key <key>           API key for authenticated servers
+    --oauth-token <token>     OAuth token for OAuth-protected servers
+    --timeout <ms>            Request timeout (default: 30000)
+    --output <file>           Save JSON report to file
+    --html                    Generate HTML report
+    6-tier evaluation: Server (25%), Tools (20%), Instrumentation (15%),
+                       Consistency (15%), Agent Opts (15%), Docs (10%)
+    Examples:
+      cbrowser webmcp-ready "https://demo.cbrowser.ai/mcp"
+      cbrowser webmcp-ready "https://your-server.com/mcp" --api-key KEY --html
+
+  hunt-bugs <url>             Automatically find UX bugs on a page
+    --max-pages <n>           Max pages to crawl (default: 10)
+    --timeout <ms>            Timeout in ms (default: 60000)
+    Examples:
+      cbrowser hunt-bugs "https://example.com"
+
+  competitive-benchmark       Compare UX across competitor sites
+    --sites <list>            Comma-separated site URLs (required)
+    --goal <goal>             Task goal (required)
+    --persona <name>          Persona to use (default: first-timer)
+    --max-steps <n>           Max steps per site (default: 30)
+    --max-time <sec>          Max time per site (default: 180)
+    --output <file>           Save JSON report to file
+    --html                    Generate HTML report
+    Examples:
+      cbrowser competitive-benchmark \\
+        --sites "https://yoursite.com,https://competitor.com" \\
+        --goal "sign up for free trial" --html
+
+ACCESSIBILITY (v2.5.0)
+  a11y audit                  Run WCAG accessibility audit
+    --url <url>               Navigate to URL first
+  a11y audit [url]            Audit a specific URL
 
 TEST RECORDING (v2.5.0)
   record start                Start recording interactions
@@ -481,6 +622,44 @@ TEST RECORDING (v2.5.0)
   record save <name>          Save recorded test
   record list                 List saved recordings
   record generate <name>      Generate Playwright test code
+
+SCREEN CAPTURE (video/GIF — distinct from 'record', which captures actions)
+  capture start <url>         Capture the screen to GIF/WebP/video
+    --fps <n>                 Target frames per second (default: 10)
+    --duration <5s>           Auto-stop after this long (5s, 2m, 1500ms)
+    --viewport <WxH>          Viewport size, e.g. 1280x720
+    --region <x,y,w,h>        Capture a fixed region instead of the viewport
+    --element <selector>      Track an element; crop follows it as it moves
+    --element-padding <n>     Expand the element box by n CSS px per side
+    --device <name>           Device preset, e.g. iphone-15 ('capture status'
+                              lists them on a bad value)
+    --format <list>           gif,webp,webm,mp4 (default: gif)
+    --quality <1-100>         JPEG quality of captured frames (default: 80)
+    --max-frames <n>          Stop retaining frames after n (default: 3000)
+    --contact-sheet           Also write one JPEG summarising the whole capture
+    --attention-overlay       Paint the predicted-attention map over every frame
+                              (adds ~0.5-1s per frame; uses the live DOM)
+    --overlay-persona <name>  Persona weighting the overlay (default: first-timer)
+    --overlay-goal <text>     Goal string weighting goal-relevance in the overlay
+    --after <event>           Start on load|domcontentloaded|networkidle
+    --after-element <sel>     Start when the element is present and visible
+    --after-delay <500ms>     Extra delay after the start trigger
+    --until-element <sel>     Stop when the element appears
+    --until-element-gone <sel>  Stop when the element disappears
+    --until-idle <800ms>      Stop after this long with NO part of the page
+                              changing. A page with a clock or ticker is always
+                              changing and will run to --timeout instead.
+    --timeout <30s>           Trigger wait budget (default: 30s); a trigger that
+                              never fires stops the capture, writes a manifest
+                              with trigger_timeout, and exits non-zero
+    --out <dir>               Output directory
+                              (default: ~/.cbrowser/videos/<session>/<name>)
+    --name <slug>             Capture name
+  capture stop                Stop the running screen capture
+  capture status              Show the running or most recent capture
+    Note: capture is event-driven — a page that never repaints emits no frames,
+    and the still stretches are reported as frame_gaps rather than padded out.
+    mp4 needs a full ffmpeg (CBROWSER_FFMPEG_PATH); the bundled one does webm.
 
 TEST EXPORT (v2.5.0)
   export junit <name> [output]   Export test results as JUnit XML
@@ -493,6 +672,14 @@ WEBHOOKS (v2.5.0)
   webhook list                List configured webhooks
   webhook delete <name>       Delete a webhook
   webhook test <name>         Send test notification
+
+PERSONA QUESTIONNAIRE
+  persona-questionnaire start        Build a persona from a behavioural questionnaire
+    --comprehensive                  All 25 traits (default: 8 core traits)
+    --name <name>                    Persona name (prompted if omitted)
+    --output <file>                  Save answers to JSON
+  persona-questionnaire list-traits  List available traits with descriptions
+  persona-questionnaire lookup       Look up behaviours for a trait value
 
 PARALLEL EXECUTION (v2.5.0)
   parallel devices <url>      Run same URL across multiple devices
@@ -598,12 +785,34 @@ API CONFIGURATION (v8.0.0)
   config set-api-key <key>    Set Anthropic API key for cognitive journeys
   config show-api-key         Show configured API key (masked)
   config remove-api-key       Remove stored API key
-  config set-model <model>    Set Claude model (default: claude-sonnet-4-20250514)
+  config set-model <model>    Set Claude model (default: claude-sonnet-5)
+
+LIGHTPANDA (v18.20.0) - High-Performance Headless Browser (OPT-IN ONLY)
+  lightpanda-status           Check Lightpanda availability and configuration
+  lightpanda-setup            Show setup instructions with security warnings
+    ⚠️ SECURITY NOTICE:
+      • Lightpanda is BETA software with no security audit
+      • Cloud mode exposes traffic to lightpanda.io servers
+      • NEVER use for auth, credentials, or payments
+      • Requires explicit --lightpanda flag (not automatic)
+    Environment Variables:
+      LIGHTPANDA_ENDPOINT     WebSocket endpoint (e.g., ws://127.0.0.1:9222)
+      LIGHTPANDA_TOKEN        Cloud API token (⚠️ data visible to lightpanda.io)
+    Examples:
+      cbrowser lightpanda-status
+      cbrowser screenshot https://example.com --lightpanda
+      cbrowser agent-ready-audit https://example.com --lightpanda
 
 DIAGNOSTICS
   version, -v, --version      Show version number
   status                      Show environment status and diagnostics
                               Displays data directories, browsers, config, heal cache
+  doctor                      Check environment health (Node, Playwright, API key)
+
+ACCESSIBILITY
+  --no-color                  Disable all color output (also respects NO_COLOR env var)
+  --plain                     Disable emoji, box-drawing, and unicode decorations
+  --json-output               Output structured JSON (for scripts and screen readers)
 
 STORAGE & CLEANUP
   storage                     Show storage usage statistics
@@ -621,9 +830,12 @@ OPTIONS
   --locale <locale>           Browser locale (e.g., en-US, fr-FR)
   --timezone <tz>             Timezone (e.g., America/New_York)
   --record-video              Enable video recording
-  --force                     Bypass red zone safety checks
+  --force                     Bypass red zone safety checks (CLI only; over MCP,
+                              zone enforcement is opt-in via CBROWSER_ENFORCE_RED_ZONE
+                              because MCP has no force affordance)
   --headless                  Run browser in headless mode
   --no-persistent             Disable persistent browser context (default: enabled)
+  --no-restore                Skip session URL restoration (preserves page state after interactions)
 
 ENVIRONMENT VARIABLES
   CBROWSER_DATA_DIR           Custom data directory (default: ~/.cbrowser)
@@ -666,28 +878,1449 @@ EXAMPLES
 `);
 }
 
-function parseArgs(args: string[]): { command: string; args: string[]; options: Record<string, string | boolean> } {
-  const command = args[0] || "help";
-  const restArgs: string[] = [];
-  const options: Record<string, string | boolean> = {};
+function showHelp(): void {
+  console.log(helpText());
+}
 
-  for (let i = 1; i < args.length; i++) {
-    if (args[i].startsWith("--")) {
-      const key = args[i].slice(2);
-      const next = args[i + 1];
+/**
+ * Commands that are aliases of another command in the dispatch switch.
+ *
+ * `help <alias>` resolves to the target's section: an alias that denies having
+ * help is the worst answer of all, because the user has no way to learn it IS
+ * an alias. Kept honest by the test that walks every `case` label in the
+ * dispatch switch and asserts it resolves.
+ */
+const COMMAND_ALIASES: Record<string, string> = {
+  eval: "evaluate",
+  "chaos-test": "chaos",
+  "generate-tests": "generate",
+  journey: "explore",
+};
 
-      if (next && !next.startsWith("--")) {
-        options[key] = next;
-        i++;
-      } else {
-        options[key] = true;
+/** Escape a string for safe use inside a RegExp. */
+function escapeForRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** A named block of the help text: its heading, its lines, and the commands it documents. */
+interface HelpSection {
+  heading: string;
+  lines: string[];
+  commands: Set<string>;
+}
+
+/**
+ * Split the help text into its top-level sections.
+ *
+ * A heading is an unindented line in caps; everything up to the next heading
+ * belongs to it. Command names are the first token of each two-space-indented
+ * entry, which is how `help <command>` finds the section to print.
+ */
+function parseHelpSections(): HelpSection[] {
+  const sections: HelpSection[] = [];
+  let current: HelpSection | null = null;
+
+  for (const line of helpText().split("\n")) {
+    // Headings are the only unindented prose in the help text: entries are
+    // indented at least two spaces, and the banner and rule lines are drawn
+    // with box characters. Matching on "looks uppercase" instead would miss
+    // headings like "VISUAL REGRESSION (v2.5.0)".
+    const isHeading =
+      /^[A-Za-z]/.test(line) &&
+      line.trim().length > 0 &&
+      !/^[\u2550-\u256c]+$/.test(line.trim());
+
+    if (isHeading) {
+      current = { heading: line.trim(), lines: [line], commands: new Set() };
+      sections.push(current);
+      continue;
+    }
+    if (!current) continue;
+
+    current.lines.push(line);
+    const entry = /^ {2}(\S+)/.exec(line);
+    if (entry) current.commands.add(entry[1]);
+  }
+
+  return sections;
+}
+
+/**
+ * Print help for a single command.
+ *
+ * Returns false when nothing matches, so the caller can exit non-zero - an
+ * unknown command that silently printed something would be the same
+ * accepted-and-ignored failure mode as a silently dropped flag.
+ */
+function showCommandHelp(command: string): boolean {
+  const sections = parseHelpSections();
+
+  const target = COMMAND_ALIASES[command];
+  if (target) {
+    console.log(`'${command}' is an alias for '${target}'.\n`);
+    return showCommandHelp(target);
+  }
+
+  const matches = sections.filter((s) => s.commands.has(command));
+
+  if (matches.length === 0) {
+    // A command can be real but documented inside another command's entry (an
+    // example line, a "see also"), so before declaring it unknown, look for it
+    // anywhere in the help text and point at the section that mentions it.
+    // Saying "no help section" about a command that exists is its own small
+    // version of lying to the user.
+    const mentions = sections.filter((s) =>
+      s.lines.some((line) => new RegExp(`(^|\\s|')${escapeForRegExp(command)}(\\s|$|'|"|,)`).test(line)),
+    );
+
+    if (mentions.length > 0) {
+      console.log(`'${command}' has no section of its own; it is documented under:`);
+      for (const section of mentions.slice(0, 3)) {
+        console.log(`\n${section.heading}`);
+        for (const line of section.lines.slice(1)) {
+          if (new RegExp(`(^|\\s|')${escapeForRegExp(command)}(\\s|$|'|"|,)`).test(line)) {
+            console.log(line);
+          }
+        }
       }
+      console.log(`\nFull section: cbrowser help ${[...mentions[0].commands][0] ?? ""}`.trimEnd());
+      return true;
+    }
+
+    const known = [...new Set(sections.flatMap((s) => [...s.commands]))].sort();
+    const close = known.filter((c) => c.startsWith(command) || command.startsWith(c) || c.includes(command));
+
+    console.error(`No help section for '${command}'.`);
+    if (close.length > 0) {
+      console.error(`Did you mean: ${close.slice(0, 8).join(", ")}?`);
     } else {
-      restArgs.push(args[i]);
+      console.error(`Run 'cbrowser help' for the full command list.`);
+    }
+    return false;
+  }
+
+  for (const section of matches) {
+    // Trailing blank lines belong to the gap before the next section.
+    const lines = [...section.lines];
+    while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+    console.log(lines.join("\n"));
+    console.log("");
+  }
+  return true;
+}
+
+// parseArgs moved to ./cli-args.ts so it can be unit-tested (cli.ts self-executes).
+
+
+// =========================================================================
+// Flag validation — one gate, before dispatch
+// =========================================================================
+
+/**
+ * Flags accepted by every command, consumed by the shared browser setup in
+ * main() rather than by any individual case.
+ */
+/**
+ * Commands that act on the live page and would therefore be wrong to run
+ * against a second browser while the daemon holds the first. Anything listed
+ * here must either be daemon-routed or refuse to run.
+ */
+const DRIVES_THE_PAGE = [
+  "navigate", "click", "fill", "hover", "screenshot", "extract", "run",
+  "keyboard", "press", "type", "evaluate", "eval", "drag", "upload",
+  "smart-click", "dismiss-overlay", "assert",
+];
+
+const GLOBAL_FLAGS = [
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose", "help", "no-color", "quiet", "json",
+];
+
+/**
+ * Declared options per command.
+ *
+ * This exists because "accepted and ignored" showed up eight times in this
+ * build - each time a flag reached a code path that never read it, and the
+ * command cheerfully exited 0. Per-command vigilance did not hold, so the rule
+ * moved here: argv is validated against the command's declared set BEFORE
+ * dispatch, and an undeclared flag never reaches an execution path.
+ *
+ * Commands absent from this map are not validated yet; see UNVALIDATED_REASON.
+ * Lists for the large pre-existing commands are supersets derived from the
+ * flags their case blocks actually read - deliberately permissive, since a
+ * false rejection of a working flag would be a worse defect than the one being
+ * fixed. They are still tight enough to catch a typo or an invented flag.
+ */
+const COMMAND_FLAGS: Record<string, string[]> = {
+  capture: [
+    "fps", "duration", "format", "out", "name", "quality", "max-frames",
+    "viewport", "region", "element", "element-padding", "contact-sheet",
+    "attention-overlay", "overlay-persona", "overlay-goal",
+    "after", "after-element", "after-delay",
+    "until-element", "until-element-gone", "until-idle", "timeout",
+  ],
+  evaluate: ["file", "arg", "json", "raw", "wait-for", "expect-truthy"],
+  eval: ["file", "arg", "json", "raw", "wait-for", "expect-truthy"],
+  keyboard: ["delay", "selector", "hold", "repeat", "text"],
+  "test-suite": [
+    "capture", "capture-fps", "capture-format", "capture-out",
+    "api-key", "auto-apply", "comprehensive", "concurrency", "continue-on-failure",
+    "delay", "disabilities", "dry-run", "exclude", "fuzzy-match", "goal",
+    "html", "include", "inline", "length", "lightpanda", "max-pages", "max-steps",
+    "max-time", "min-coverage", "name", "no-vision", "oauth-token", "output",
+    "persona", "retries", "runs", "screenshot-on-failure", "sensitivity",
+    "sitemap", "sites", "start", "step-through", "tests", "threshold",
+    "threshold-cls", "threshold-fcp", "threshold-lcp", "threshold-tbt",
+    "threshold-ttfb", "threshold-tti", "timeout", "trait", "urls", "value",
+    "verify", "wcag-level", "geolocation", "geo-region",
+  ],
+  "cognitive-journey": [
+    "capture", "capture-fps", "capture-format", "capture-out",
+    "api-key", "comprehensive", "concurrency", "disabilities", "goal", "html",
+    "length", "lightpanda", "max-steps", "max-time", "name", "no-vision",
+    "oauth-token", "output", "persona", "sites", "start", "timeout", "trait",
+    "urls", "value", "wcag-level", "geolocation", "geo-region", "vision",
+    "trace", "replay-trace",
+  ],
+};
+
+/**
+ * Why the rest are not covered yet: cbrowser has ~90 commands whose flag sets
+ * are not declared anywhere machine-readable, and inventing a list for a
+ * command I have not exercised risks rejecting a flag that works today. Each
+ * entry above was derived from that command's own code and then exercised.
+ * Extending coverage is one line per command plus a run to confirm it.
+ */
+const UNVALIDATED_REASON =
+  "not yet declared - see COMMAND_FLAGS in src/cli.ts";
+
+/**
+ * Reject undeclared flags before the command runs.
+ *
+ * Fails on the FIRST invalid flag with the command's full accepted set, so a
+ * typo is a one-command fix rather than a guessing game.
+ */
+function validateCommandFlags(command: string, options: Record<string, string | boolean>): void {
+  const declared = COMMAND_FLAGS[command];
+  if (!declared) return; // UNVALIDATED_REASON
+
+  const allowed = new Set([...declared, ...GLOBAL_FLAGS]);
+  const unknown = Object.keys(options).filter((flag) => !allowed.has(flag));
+  if (unknown.length === 0) return;
+
+  for (const flag of unknown) {
+    const hint = flag.startsWith("record")
+      ? " (did you mean --capture?)"
+      : flag.startsWith("capture") ? " (capture options are --capture, --capture-fps, --capture-format, --capture-out)" : "";
+    console.error(`Error: '${command}' does not support --${flag}${hint}`);
+  }
+  console.error(`  Accepted: ${[...declared].sort().map((f) => `--${f}`).join(" ")}`);
+  console.error(`  Plus globals: ${GLOBAL_FLAGS.map((f) => `--${f}`).join(" ")}`);
+  process.exit(1);
+}
+
+// =========================================================================
+// Screen capture (capture start/stop/status)
+//
+// Distinct from the `record` command, which records user ACTIONS for test
+// generation. This captures PIXELS into a GIF/WebP/video.
+// =========================================================================
+
+/** Where the active-capture pointer lives, so `capture stop` can find it. */
+function captureStatePath(): string {
+  return join(getPaths().videosDir, "active.json");
+}
+
+interface ActiveCapture {
+  pid: number;
+  slug: string;
+  outDir: string;
+  url?: string;
+  startedAt: string;
+}
+
+/** Parse "5s", "2m", "1500ms" or a bare millisecond count. */
+function parseDurationMs(input: string): number {
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m)?$/i.exec(input.trim());
+  if (!match) {
+    throw new Error(`Invalid duration "${input}" - use 5s, 2m, 1500ms or a millisecond count`);
+  }
+  const value = parseFloat(match[1]);
+  const unit = (match[2] || "ms").toLowerCase();
+  const ms = unit === "s" ? value * 1000 : unit === "m" ? value * 60_000 : value;
+  if (ms <= 0) throw new Error(`Invalid duration "${input}" - must be greater than zero`);
+  return Math.round(ms);
+}
+
+/** Parse "gif,webp,mp4" into validated formats. */
+function parseFormats(input: string): CaptureFormat[] {
+  const allowed: CaptureFormat[] = ["gif", "webp", "mp4", "webm"];
+  const parsed = input.split(",").map((f) => f.trim().toLowerCase()).filter(Boolean);
+  const bad = parsed.filter((f) => !allowed.includes(f as CaptureFormat));
+  if (bad.length > 0) {
+    throw new Error(`Unknown format(s): ${bad.join(", ")}. Supported: ${allowed.join(", ")}`);
+  }
+  if (parsed.length === 0) throw new Error("--format requires at least one format");
+  return parsed as CaptureFormat[];
+}
+
+/** Parse "1280x720". */
+function parseViewportSize(input: string): { width: number; height: number } {
+  const match = /^(\d+)x(\d+)$/i.exec(input.trim());
+  if (!match) throw new Error(`Invalid viewport "${input}" - use WIDTHxHEIGHT, e.g. 1280x720`);
+  const width = parseInt(match[1], 10);
+  const height = parseInt(match[2], 10);
+  if (width <= 0 || height <= 0) {
+    throw new Error(`Invalid viewport "${input}" - width and height must be positive`);
+  }
+  return { width, height };
+}
+
+/** Parse "390x844,1280x800" into one or more viewport sizes. */
+function parseViewportList(input: string): { width: number; height: number }[] {
+  const parts = input.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) throw new Error("--viewport requires at least one WIDTHxHEIGHT");
+  return parts.map(parseViewportSize);
+}
+
+/** Parse "x,y,width,height" in CSS pixels. */
+function parseRegion(input: string): { x: number; y: number; width: number; height: number } {
+  const parts = input.split(",").map((p) => p.trim());
+  if (parts.length !== 4) {
+    throw new Error(`Invalid --region "${input}" - use x,y,width,height (4 comma-separated numbers)`);
+  }
+  const [x, y, width, height] = parts.map(Number);
+  for (const [name, value] of [["x", x], ["y", y], ["width", width], ["height", height]] as const) {
+    if (!Number.isFinite(value)) {
+      throw new Error(`Invalid --region "${input}" - ${name} is not a number ("${parts[["x", "y", "width", "height"].indexOf(name)]}")`);
+    }
+  }
+  if (width <= 0 || height <= 0) {
+    throw new Error(`Invalid --region "${input}" - width and height must be positive (got ${width}x${height})`);
+  }
+  return { x, y, width, height };
+}
+
+/**
+ * Flags `capture start` understands. Anything outside this set is rejected
+ * rather than ignored: a flag that is accepted and silently dropped returns a
+ * confident "✓" for a capture the user did not ask for, which is worse than
+ * an error. The globals are the ones the CLI itself consumes before dispatch.
+ */
+const CAPTURE_FLAGS = new Set([
+  // capture-specific
+  "fps", "duration", "format", "out", "name", "quality", "max-frames",
+  "viewport", "region", "element", "element-padding",
+  "contact-sheet", "attention-overlay", "overlay-persona", "overlay-goal",
+  "after", "after-element", "after-delay",
+  "until-element", "until-element-gone", "until-idle", "timeout",
+  // globals honoured by the shared CBrowser construction
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose",
+]);
+
+/**
+ * Resolve `--device` to a real preset key, or exit naming the bad value.
+ *
+ * CBrowser silently ignores an unknown device name (browser.ts: the preset
+ * lookup is inside the `if`), which would hand back a 1280x800 desktop capture
+ * for `--device "iPhone 14"` and call it success. Spaces and case are
+ * normalised so "iPhone 15" finds "iphone-15".
+ */
+function resolveDevicePreset(value: string): string {
+  const normalised = value.trim().toLowerCase().replace(/\s+/g, "-");
+  if (DEVICE_PRESETS[normalised]) return normalised;
+
+  const known = Object.keys(DEVICE_PRESETS);
+  const stem = normalised.replace(/-?\d+.*$/, "");
+  const close = known.filter((k) => k.startsWith(stem) && stem.length > 0);
+
+  console.error(`Error: unknown --device "${value}"`);
+  if (close.length > 0) console.error(`  Did you mean: ${close.join(", ")}?`);
+  console.error(`  Available presets: ${known.join(", ")}`);
+  process.exit(1);
+}
+
+/** Reject any flag `capture start` cannot honour, naming it. */
+function assertCaptureFlagsSupported(options: Record<string, string | boolean>): void {
+  const unknown = Object.keys(options).filter((flag) => !CAPTURE_FLAGS.has(flag));
+  if (unknown.length === 0) return;
+
+  console.error(`Error: 'capture start' does not support ${unknown.map((f) => `--${f}`).join(", ")}`);
+  console.error(`  Supported: ${[...CAPTURE_FLAGS].map((f) => `--${f}`).join(" ")}`);
+  process.exit(1);
+}
+
+/**
+ * Build the start/stop triggers from the trigger flags.
+ *
+ * Triggers compose: `--after-element .modal --after-delay 200ms --duration 3s`
+ * waits for the modal, waits another 200ms, then records for three seconds.
+ */
+function buildCaptureTriggers(options: Record<string, string | boolean>): {
+  startTrigger?: StartTrigger;
+  startDelayMs?: number;
+  stopTrigger?: StopTrigger;
+  triggerTimeoutMs?: number;
+} {
+  const LIFECYCLE = ["load", "domcontentloaded", "networkidle"] as const;
+
+  let startTrigger: StartTrigger | undefined;
+  if (typeof options.after === "string" && typeof options["after-element"] === "string") {
+    console.error("Error: --after and --after-element are mutually exclusive - pick one");
+    process.exit(1);
+  }
+  if (typeof options.after === "string") {
+    const event = options.after.trim().toLowerCase();
+    if (!LIFECYCLE.includes(event as typeof LIFECYCLE[number])) {
+      console.error(`Error: --after must be one of ${LIFECYCLE.join(", ")} (got "${options.after}")`);
+      process.exit(1);
+    }
+    startTrigger = { kind: "lifecycle", event: event as typeof LIFECYCLE[number] };
+  } else if (typeof options["after-element"] === "string") {
+    startTrigger = { kind: "element", selector: options["after-element"] };
+  } else if (options.after !== undefined || options["after-element"] !== undefined) {
+    console.error("Error: --after / --after-element require a value");
+    process.exit(1);
+  }
+
+  const startDelayMs = typeof options["after-delay"] === "string"
+    ? parseDurationMs(options["after-delay"])
+    : undefined;
+
+  const stopFlags = ["until-element", "until-element-gone", "until-idle"].filter(
+    (f) => options[f] !== undefined,
+  );
+  if (stopFlags.length > 1) {
+    console.error(`Error: ${stopFlags.map((f) => `--${f}`).join(" and ")} are mutually exclusive - pick one`);
+    process.exit(1);
+  }
+
+  let stopTrigger: StopTrigger | undefined;
+  if (typeof options["until-element"] === "string") {
+    stopTrigger = { kind: "element-appears", selector: options["until-element"] };
+  } else if (typeof options["until-element-gone"] === "string") {
+    stopTrigger = { kind: "element-disappears", selector: options["until-element-gone"] };
+  } else if (typeof options["until-idle"] === "string") {
+    stopTrigger = { kind: "idle", idleMs: parseDurationMs(options["until-idle"]) };
+  } else if (stopFlags.length === 1) {
+    console.error(`Error: --${stopFlags[0]} requires a value`);
+    process.exit(1);
+  }
+
+  const triggerTimeoutMs = typeof options.timeout === "string"
+    ? parseDurationMs(options.timeout)
+    : undefined;
+
+  return { startTrigger, startDelayMs, stopTrigger, triggerTimeoutMs };
+}
+
+/**
+ * Build the capture target from the target flags.
+ *
+ * The three targets are mutually exclusive; asking for two is a contradiction
+ * the CLI cannot silently resolve, so it errors instead of picking one.
+ */
+function buildCaptureTarget(options: Record<string, string | boolean>): RecordingTarget {
+  const hasRegion = typeof options.region === "string";
+  const hasElement = typeof options.element === "string";
+
+  if (hasRegion && hasElement) {
+    console.error("Error: --region and --element are mutually exclusive - pick one");
+    process.exit(1);
+  }
+
+  if (typeof options["element-padding"] !== "undefined" && !hasElement) {
+    console.error("Error: --element-padding only applies with --element");
+    process.exit(1);
+  }
+
+  if (hasRegion) {
+    return { kind: "region", rect: parseRegion(options.region as string) };
+  }
+
+  if (hasElement) {
+    const selector = options.element as string;
+    if (selector.trim() === "") {
+      console.error("Error: --element requires a selector");
+      process.exit(1);
+    }
+    const padding = options["element-padding"] !== undefined ? Number(options["element-padding"]) : 0;
+    if (!Number.isFinite(padding) || padding < 0) {
+      console.error(`Error: --element-padding must be a non-negative number (got "${String(options["element-padding"])}")`);
+      process.exit(1);
+    }
+    return { kind: "element", selector, padding };
+  }
+
+  return { kind: "viewport" };
+}
+
+/**
+ * Run a screencast capture to completion in this process.
+ *
+ * Capture is single-process by necessity: the browser profile is locked by
+ * whoever launched it, so a second CLI invocation cannot attach to a running
+ * capture's page. `capture stop` therefore signals this process rather than
+ * doing any capture work of its own.
+ */
+async function runCaptureStart(
+  browser: CBrowser,
+  url: string | undefined,
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  assertCaptureFlagsSupported(options);
+
+  // A capture with no end condition needs somewhere to live that outlasts this
+  // process. The daemon owns the browser, so the capture runs there and later
+  // commands drive the same page into the same recording.
+  const openEnded = options.duration === undefined
+    && options["until-element"] === undefined
+    && options["until-element-gone"] === undefined
+    && options["until-idle"] === undefined;
+
+  if (openEnded) {
+    if (await isDaemonRunning()) {
+      await runCaptureStartViaDaemon(url, options);
+      return;
+    }
+    console.error("Error: an open-ended capture needs the daemon, which is not running.");
+    console.error("  Without it the capture would live and die inside this one process, so");
+    console.error("  'capture stop' from another shell and any later click/fill/navigate");
+    console.error("  would never reach it.");
+    console.error("");
+    console.error("  Start it:      cbrowser daemon start");
+    console.error("  Or bound it:   --duration 5s | --until-element <sel> | --until-idle 800ms");
+    process.exit(1);
+  }
+
+  const fps = options.fps !== undefined ? Number(options.fps) : undefined;
+  if (fps !== undefined && (!Number.isFinite(fps) || fps <= 0)) {
+    console.error(`Error: --fps must be a positive number (got "${String(options.fps)}")`);
+    process.exit(1);
+  }
+
+  const quality = options.quality !== undefined ? Number(options.quality) : undefined;
+  if (quality !== undefined && (!Number.isInteger(quality) || quality < 1 || quality > 100)) {
+    console.error(`Error: --quality must be an integer from 1 to 100 (got "${String(options.quality)}")`);
+    process.exit(1);
+  }
+
+  const maxFrames = options["max-frames"] !== undefined ? Number(options["max-frames"]) : undefined;
+  if (maxFrames !== undefined && (!Number.isInteger(maxFrames) || maxFrames < 1)) {
+    console.error(`Error: --max-frames must be a positive integer (got "${String(options["max-frames"])}")`);
+    process.exit(1);
+  }
+
+  // Normalise in place so the browser built below gets a key it recognises.
+  if (typeof options.device === "string") options.device = resolveDevicePreset(options.device);
+
+  const durationMs = typeof options.duration === "string" ? parseDurationMs(options.duration) : undefined;
+  const format = typeof options.format === "string" ? parseFormats(options.format) : undefined;
+  const outDir = typeof options.out === "string" ? resolve(options.out) : undefined;
+
+  if (url) await browser.navigate(url);
+  const page = await browser.getPage();
+
+  // Multiple viewports run as separate, sequential captures. Sequential rather
+  // than concurrent by design: one page cannot be two sizes at once, so
+  // overlapping them would interleave frames from different viewports into one
+  // stream. Each run gets its own slug, directory and manifest.
+  const viewports = typeof options.viewport === "string" ? parseViewportList(options.viewport) : [];
+  if (viewports.length > 1) {
+    if (durationMs === undefined && !options["until-element"] && !options["until-element-gone"] && !options["until-idle"]) {
+      console.error("Error: --viewport with more than one size needs --duration or a stop trigger, so each run can end on its own");
+      process.exit(1);
+    }
+    for (const viewport of viewports) {
+      await page.setViewportSize(viewport);
+      console.log(`\n── viewport ${viewport.width}x${viewport.height} ──`);
+      // Each viewport gets its OWN directory. Sharing one --out would let the
+      // second run overwrite the first run's manifest.json and frames/ while
+      // both GIFs survived - keeping the human artifact and destroying the AI
+      // artifact, which inverts this feature's whole premise.
+      await runOneCapture(
+        browser, page, options,
+        `${slugFor(options)}-${viewport.width}x${viewport.height}`,
+        typeof options.out === "string"
+          ? join(resolve(options.out), `${viewport.width}x${viewport.height}`)
+          : undefined,
+      );
+    }
+    return;
+  }
+
+  await runOneCapture(browser, page, options, slugFor(options));
+}
+
+/** The capture name, defaulted to a timestamp slug. */
+function slugFor(options: Record<string, string | boolean>): string {
+  return typeof options.name === "string" ? options.name : `capture-${Date.now()}`;
+}
+
+/** Run exactly one capture to completion and report it. */
+async function runOneCapture(
+  browser: CBrowser,
+  page: Awaited<ReturnType<CBrowser["getPage"]>>,
+  options: Record<string, string | boolean>,
+  slug: string,
+  outDirOverride?: string,
+): Promise<void> {
+  const fps = options.fps !== undefined ? Number(options.fps) : undefined;
+  const quality = options.quality !== undefined ? Number(options.quality) : undefined;
+  const maxFrames = options["max-frames"] !== undefined ? Number(options["max-frames"]) : undefined;
+  const durationMs = typeof options.duration === "string" ? parseDurationMs(options.duration) : undefined;
+  const format = typeof options.format === "string" ? parseFormats(options.format) : undefined;
+  const outDir = outDirOverride ?? (typeof options.out === "string" ? resolve(options.out) : undefined);
+
+  const target = buildCaptureTarget(options);
+  const triggers = buildCaptureTriggers(options);
+  const engine = options.browser === "firefox" ? "firefox" : options.browser === "webkit" ? "webkit" : "chromium";
+  // Output lives under paths.videosDir, session-scoped.
+  //
+  // videosDir over recordingsDir: `recordings/` is the legacy action-recording
+  // store (`record save` writes *.json there, and status counts them), so
+  // video artifacts in the same tree would be two features sharing a folder.
+  // videosDir over screenshotsDir: screenshot retention deletes whole session
+  // directories after an hour by default, which would silently delete the
+  // user's GIF. The session segment is what stops concurrent captures from
+  // colliding, the same isolation rule screenshots already use.
+  const paths = getPaths();
+  const session = new VideoCaptureSession(page, engine, join(paths.videosDir, paths.sessionId));
+
+  await session.start({
+    fps, durationMs, outDir, format, slug, target, quality, maxFrames,
+    contactSheet: options["contact-sheet"] === true || typeof options["contact-sheet"] === "string",
+    // Overlay the model's predicted-attention map on every frame. Opt-in: it
+    // costs one attention pass per frame. DOM is read from the live page at
+    // stop, so this is the full 35/65 model, not bottom-up contrast alone.
+    ...(options["attention-overlay"]
+      ? {
+          saliencyOverlay: {
+            ...(typeof options["overlay-persona"] === "string" ? { persona: options["overlay-persona"] } : {}),
+            ...(typeof options["overlay-goal"] === "string" ? { goal: options["overlay-goal"] } : {}),
+          },
+        }
+      : {}),
+    ...triggers,
+    // Element tracking resolves through the browser's existing nine-strategy
+    // resolver rather than a second one living in the capture engine.
+    resolveElement: (selector) => browser.resolveElementLocator(selector),
+  });
+  const status = session.status();
+
+  mkdirSync(dirname(captureStatePath()), { recursive: true });
+  const active: ActiveCapture = {
+    pid: process.pid,
+    slug: status.slug,
+    outDir: status.outDir,
+    url: typeof options.url === "string" ? options.url : undefined,
+    startedAt: new Date().toISOString(),
+  };
+  writeFileSync(captureStatePath(), JSON.stringify(active, null, 2));
+
+  console.log(`🎥 Capturing ${status.captureMethod === "cdp-screencast" ? "via CDP screencast" : "via screenshot loop"}`);
+  console.log(`  Output: ${status.outDir}`);
+  if (triggers.startTrigger) {
+    console.log(`  Waited for: ${triggers.startTrigger.kind === "lifecycle" ? triggers.startTrigger.event : triggers.startTrigger.selector}`);
+  }
+  if (target.kind === "region") {
+    const r = target.rect;
+    console.log(`  Region: ${r.width}x${r.height} at (${r.x}, ${r.y})`);
+  } else if (target.kind === "element") {
+    console.log(`  Element: ${target.selector}${target.padding ? ` +${target.padding}px padding` : ""}`);
+  }
+  if (durationMs) {
+    console.log(`  Duration: ${durationMs}ms (auto-stops)`);
+  } else {
+    console.log(`  Stop with 'cbrowser capture stop' (or Ctrl-C in this terminal)`);
+  }
+
+  // A signal from `capture stop`, or an interactive Ctrl-C, finalises the same
+  // way the duration timer does; stop() is idempotent so they cannot collide.
+  let finished = false;
+  const finish = async (): Promise<void> => {
+    if (finished) return;
+    finished = true;
+    const result = await session.stop();
+
+    if (existsSync(captureStatePath())) unlinkSync(captureStatePath());
+
+    finishCaptureCommand(result);
+  };
+
+  process.on("SIGINT", () => { void finish().then(() => process.exit(process.exitCode ?? 0)); });
+  process.on("SIGTERM", () => { void finish().then(() => process.exit(process.exitCode ?? 0)); });
+
+  // Wait for whichever ends the capture first: the duration timer, a stop
+  // trigger, an explicit `capture stop` signal, or the safety cap. Waiting on
+  // the duration alone would sleep straight through a stop trigger.
+  const capMs = 10 * 60_000;
+  let hitCap = false;
+  await Promise.race([
+    session.finished,
+    new Promise((r) => setTimeout(r, durationMs !== undefined ? durationMs + 500 : capMs))
+      .then(() => { hitCap = durationMs === undefined; }),
+  ]);
+  if (hitCap) console.log(`\n⚠️  Reached the ${capMs / 60_000}-minute capture cap`);
+  await finish();
+}
+
+/**
+ * The one place a capture command ends.
+ *
+ * Printing the artifacts, reporting encoder failures and setting the exit code
+ * were duplicated across the direct and daemon paths, and the duplicate drifted
+ * immediately: the daemon path printed a "✗" and exited 0. Every capture path
+ * funnels through here so "how a capture command ends" has a single definition.
+ */
+function finishCaptureCommand(result: {
+  manifestPath: string;
+  manifest: {
+    frames: unknown[];
+    duration_ms: number;
+    actual_fps: number;
+    target_fps: number;
+    artifacts: Record<string, string>;
+    frame_gaps?: { gap_ms: number }[];
+    trigger_timeout?: boolean;
+    start_trigger?: string | null;
+    stop_trigger?: string | null;
+  };
+  encodeErrors: Record<string, string>;
+}): void {
+  const m = result.manifest;
+
+  if (m.trigger_timeout) {
+    console.error(`\n✗ Capture trigger timed out`);
+  } else {
+    console.log(`\n✓ Capture stopped`);
+  }
+  if (m.start_trigger) console.log(`  Start trigger: ${m.start_trigger}`);
+  if (m.stop_trigger) console.log(`  Stop trigger: ${m.stop_trigger}`);
+
+  console.log(`  Frames: ${m.frames.length} (${m.actual_fps.toFixed(1)} fps actual vs ${m.target_fps} requested)`);
+  console.log(`  Duration: ${m.duration_ms}ms`);
+  if (m.frame_gaps && m.frame_gaps.length > 0) {
+    const worst = Math.max(...m.frame_gaps.map((g) => g.gap_ms));
+    console.log(`  Frame gaps: ${m.frame_gaps.length} (largest ${Math.round(worst)}ms - the page was not repainting)`);
+  }
+  console.log(`  Manifest: ${result.manifestPath}`);
+  for (const [fmt, rel] of Object.entries(m.artifacts)) {
+    console.log(`  ${fmt.toUpperCase()}: ${join(dirname(result.manifestPath), rel)}`);
+  }
+  for (const [fmt, message] of Object.entries(result.encodeErrors)) {
+    console.error(`  ✗ ${fmt}: ${message}`);
+  }
+
+  // A requested format that could not be encoded, or a trigger that never
+  // fired, is a failed run even though the frames and manifest survive.
+  if (Object.keys(result.encodeErrors).length > 0 || m.trigger_timeout) process.exitCode = 1;
+}
+
+/**
+ * Fail a capture command with a message. Centralised for the same reason as
+ * finishCaptureCommand: a "✗" printed with a zero exit is a lie a script
+ * cannot detect.
+ */
+function failCaptureCommand(message: string): never {
+  console.error(`✗ ${message}`);
+  process.exit(1);
+}
+
+/**
+ * Start a capture inside the daemon and return immediately.
+ *
+ * The capture keeps running after this process exits, which is what lets a
+ * later `cbrowser click` or `cbrowser fill` appear in the recording.
+ */
+async function runCaptureStartViaDaemon(
+  url: string | undefined,
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  const target = buildCaptureTarget(options);
+  const triggers = buildCaptureTriggers(options);
+  const slug = slugFor(options);
+
+  const response = await sendToDaemon("captureStart", {
+    url,
+    engine: options.browser === "firefox" ? "firefox" : options.browser === "webkit" ? "webkit" : "chromium",
+    options: {
+      fps: options.fps !== undefined ? Number(options.fps) : undefined,
+      quality: options.quality !== undefined ? Number(options.quality) : undefined,
+      maxFrames: options["max-frames"] !== undefined ? Number(options["max-frames"]) : undefined,
+      format: typeof options.format === "string" ? parseFormats(options.format) : undefined,
+      outDir: typeof options.out === "string" ? resolve(options.out) : undefined,
+      contactSheet: options["contact-sheet"] === true,
+      slug,
+      target,
+      ...triggers,
+    },
+  });
+
+  if (!response.success) failCaptureCommand(response.error ?? "daemon refused the capture");
+
+  const status = response.result as { slug: string; outDir: string; captureMethod: string };
+  console.log(`🎥 Capturing in the daemon (${status.captureMethod})`);
+  console.log(`  Name: ${status.slug}`);
+  console.log(`  Output: ${status.outDir}`);
+  console.log("");
+  console.log("  The capture is live and this shell is free. Commands you run now drive");
+  console.log("  the same page and appear in the recording:");
+  console.log("    cbrowser navigate <url> / click <sel> / fill <sel> <value>");
+  console.log("  Finish with: cbrowser capture stop");
+}
+
+/** Stop the daemon's capture and report it. */
+async function runCaptureStopViaDaemon(): Promise<void> {
+  const response = await sendToDaemon("captureStop", {});
+  if (!response.success) failCaptureCommand(response.error ?? "daemon could not stop the capture");
+
+  finishCaptureCommand(response.result as Parameters<typeof finishCaptureCommand>[0]);
+}
+
+/** Signal the running capture process and wait for its manifest to land. */
+async function runCaptureStop(): Promise<void> {
+  // The daemon owns any open-ended capture, so ask it first.
+  if (await isDaemonRunning()) {
+    const status = await sendToDaemon("captureStatus", {});
+    const state = (status.result as { state?: string } | undefined)?.state;
+    if (status.success && state === "recording") {
+      await runCaptureStopViaDaemon();
+      return;
     }
   }
 
-  return { command, args: restArgs, options };
+  const statePath = captureStatePath();
+  if (!existsSync(statePath)) {
+    console.error("No active capture. A capture is stopped from the process that started it.");
+    process.exit(1);
+  }
+
+  const active: ActiveCapture = JSON.parse(readFileSync(statePath, "utf-8"));
+  try {
+    // SIGTERM rather than SIGINT: a capture launched into the background by a
+    // non-interactive shell inherits SIGINT as ignored, so an interrupt never
+    // reaches the handler and the capture dies without writing its manifest.
+    process.kill(active.pid, "SIGTERM");
+  } catch {
+    console.error(`Capture process ${active.pid} is gone; clearing stale state.`);
+    unlinkSync(statePath);
+    process.exit(1);
+  }
+
+  const manifestPath = join(active.outDir, "manifest.json");
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (existsSync(manifestPath)) {
+      console.log(`✓ Capture stopped: ${active.slug}`);
+      console.log(`  Manifest: ${manifestPath}`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  console.error(`Signalled process ${active.pid} but no manifest appeared at ${manifestPath} within 60s`);
+  process.exit(1);
+}
+
+/** Report the active capture, or the most recent finished one. */
+async function runCaptureStatus(): Promise<void> {
+  if (await isDaemonRunning()) {
+    const response = await sendToDaemon("captureStatus", {});
+    const status = response.result as {
+      state?: string; slug?: string; frames?: number; elapsedMs?: number;
+      outDir?: string; captureMethod?: string; manifestPath?: string;
+    } | undefined;
+
+    if (response.success && status && status.state === "recording") {
+      console.log("🎥 Capture in progress (in the daemon)");
+      console.log(`  Name: ${status.slug}`);
+      console.log(`  Frames so far: ${status.frames}`);
+      console.log(`  Elapsed: ${status.elapsedMs}ms`);
+      console.log(`  Method: ${status.captureMethod}`);
+      console.log(`  Output: ${status.outDir}`);
+      console.log("  Stop with: cbrowser capture stop");
+      return;
+    }
+    if (response.success && status && status.state === "stopped" && status.manifestPath) {
+      console.log("No capture in progress. The daemon's most recent:");
+      console.log(`  Name: ${status.slug}`);
+      console.log(`  Frames: ${status.frames}`);
+      console.log(`  Manifest: ${status.manifestPath}`);
+      return;
+    }
+  }
+
+  const statePath = captureStatePath();
+  if (existsSync(statePath)) {
+    const active: ActiveCapture = JSON.parse(readFileSync(statePath, "utf-8"));
+    let alive = true;
+    try { process.kill(active.pid, 0); } catch { alive = false; }
+
+    if (alive) {
+      const frames = existsSync(join(active.outDir, "frames"))
+        ? readdirSync(join(active.outDir, "frames")).length
+        : 0;
+      console.log(`🎥 Capture in progress`);
+      console.log(`  Name: ${active.slug}`);
+      console.log(`  PID: ${active.pid}`);
+      console.log(`  Started: ${active.startedAt}`);
+      console.log(`  Frames so far: ${frames}`);
+      console.log(`  Output: ${active.outDir}`);
+      return;
+    }
+    console.log(`⚠️  Stale state file for a dead process (${active.pid}); last output: ${active.outDir}`);
+    return;
+  }
+
+  const recordingsDir = getPaths().videosDir;
+  if (!existsSync(recordingsDir)) {
+    console.log("No captures yet");
+    return;
+  }
+  // Captures live at videos/<session>/<slug>; earlier builds wrote
+  // videos/<slug> and recordings/<slug>, so look one level either way.
+  const candidates: string[] = [];
+  for (const entry of readdirSync(recordingsDir)) {
+    const entryPath = join(recordingsDir, entry);
+    if (!statSync(entryPath).isDirectory()) continue;
+    candidates.push(join(entryPath, "manifest.json"));
+    for (const nested of readdirSync(entryPath)) {
+      const nestedPath = join(entryPath, nested);
+      if (statSync(nestedPath).isDirectory()) candidates.push(join(nestedPath, "manifest.json"));
+    }
+  }
+  const manifests = candidates
+    .filter((p) => existsSync(p))
+    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+
+  if (manifests.length === 0) {
+    console.log("No captures yet");
+    return;
+  }
+
+  const manifest = parseManifest(readFileSync(manifests[0], "utf-8"));
+  console.log(`No capture in progress. Most recent:`);
+  console.log(`  Name: ${manifest.slug}`);
+  console.log(`  Started: ${manifest.started_at}`);
+  console.log(`  Frames: ${manifest.frames.length} over ${manifest.duration_ms}ms (${manifest.actual_fps.toFixed(1)} fps)`);
+  console.log(`  Capture: ${manifest.capture_method}`);
+
+  // changeSignal() rather than the optional fields directly: it maps a v1
+  // manifest's change_points onto keyFrames, which is exact rather than a
+  // guess (v1 computed them at the 0.9 bar that v2 calls key_frames). Reading
+  // the raw field would report "no key frames" for a file that has them.
+  const signal = changeSignal(manifest);
+  console.log(`  Key frames: ${signal.keyFrames.length}${signal.keyFrames.length > 0 ? ` (${signal.keyFrames.slice(0, 8).join(", ")}${signal.keyFrames.length > 8 ? ", ..." : ""})` : ""}`);
+  console.log(
+    `  Change points: ${signal.changePoints.length}` +
+      (signal.saturated ? ` — saturated, use key frames instead` : ""),
+  );
+  console.log(`  Artifacts: ${Object.entries(manifest.artifacts).map(([k, v]) => `${k} -> ${v}`).join(", ") || "none"}`);
+  console.log(`  Manifest: ${manifests[0]}`);
+}
+
+
+/**
+ * Reject capture-namespace flags a wrapped run cannot honour.
+ *
+ * Deliberately narrower than the allowlists on `capture`/`evaluate`/`keyboard`:
+ * `test-suite` and `cognitive-journey` have large, long-established flag sets
+ * that I cannot enumerate with confidence, and a wrong allowlist would reject
+ * flags that work today. So this rejects only what it can be sure about - any
+ * unrecognised `--capture*` flag, plus the two spellings people actually
+ * reached for before `--capture` existed.
+ */
+function assertCaptureNamespaceFlags(command: string, options: Record<string, string | boolean>): void {
+  const valid = new Set(["capture", "capture-fps", "capture-format", "capture-out"]);
+  const wrong = Object.keys(options).filter((f) => f.startsWith("capture") && !valid.has(f));
+
+  // `--record-video` is a real flag on `explore` (an older, separate feature
+  // that saves a Playwright video). It is NOT a flag here, and silently
+  // ignoring it is what let this whole class survive.
+  const aliases = ["record", "record-video"].filter((f) => options[f] !== undefined);
+
+  if (wrong.length === 0 && aliases.length === 0) return;
+
+  for (const flag of wrong) {
+    console.error(`Error: '${command}' does not support --${flag}`);
+  }
+  for (const flag of aliases) {
+    console.error(`Error: '${command}' does not support --${flag}; use --capture`);
+  }
+  console.error(`  Capture flags: ${[...valid].map((f) => `--${f}`).join(" ")}`);
+  process.exit(1);
+}
+
+/**
+ * Build the `AutoCaptureSetting` for a wrapped run (test-suite, journey).
+ *
+ * Returns undefined when no capture flag was given, so a run that does not ask
+ * for a recording behaves exactly as before.
+ */
+function buildAutoCaptureSetting(
+  options: Record<string, string | boolean>,
+  defaultName: string,
+): AutoCaptureSetting {
+  const asked = options.capture === true || typeof options.capture === "string";
+  const detailFlags = ["capture-fps", "capture-format", "capture-out"].filter(
+    (f) => options[f] !== undefined,
+  );
+
+  if (!asked) {
+    if (detailFlags.length > 0) {
+      console.error(`Error: ${detailFlags.map((f) => `--${f}`).join(", ")} require --capture`);
+      process.exit(1);
+    }
+    return undefined;
+  }
+
+  const fps = options["capture-fps"] !== undefined ? Number(options["capture-fps"]) : undefined;
+  if (fps !== undefined && (!Number.isFinite(fps) || fps <= 0)) {
+    console.error(`Error: --capture-fps must be a positive number (got "${String(options["capture-fps"])}")`);
+    process.exit(1);
+  }
+
+  return {
+    name: defaultName,
+    fps,
+    format: typeof options["capture-format"] === "string" ? parseFormats(options["capture-format"]) : undefined,
+    outDir: typeof options["capture-out"] === "string" ? resolve(options["capture-out"]) : undefined,
+  };
+}
+
+/** Report where a wrapped run's recording landed, or why it failed. */
+function reportAutoCapture(capture: AutoCaptureResult | undefined): void {
+  if (!capture) return;
+
+  if (capture.error) {
+    console.error(`\n🎥 Capture failed: ${capture.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`\n🎥 Capture: ${capture.frames} frames${capture.durationMs ? ` over ${capture.durationMs}ms` : ""}${capture.actualFps ? ` (${capture.actualFps.toFixed(1)} fps)` : ""}`);
+  if (capture.manifestPath) console.log(`   Manifest: ${capture.manifestPath}`);
+  for (const [fmt, rel] of Object.entries(capture.artifacts ?? {})) {
+    console.log(`   ${fmt.toUpperCase()}: ${join(capture.outDir, rel)}`);
+  }
+}
+
+// =========================================================================
+// evaluate — run JavaScript in the page
+// =========================================================================
+
+/** Flags `evaluate` understands; anything else is rejected rather than ignored. */
+const EVALUATE_FLAGS = new Set([
+  "file", "arg", "json", "raw", "wait-for", "expect-truthy",
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose",
+]);
+
+/**
+ * Collect a repeatable flag's values.
+ *
+ * parseArgs keeps only the last value for a repeated flag, so `--arg` is
+ * re-read from argv here. Without this, `--arg 1 --arg 2` would silently pass
+ * a single argument.
+ */
+function repeatedFlag(name: string): string[] {
+  const values: string[] = [];
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === `--${name}` && argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) {
+      values.push(argv[i + 1]);
+      i++;
+    }
+  }
+  return values;
+}
+
+/**
+ * Evaluate a script in the page, accepting all three shapes people write.
+ *
+ * `--file` exists because multi-line scripts die in shell quoting, so it has to
+ * accept real scripts - `const`, `let`, an explicit `return` - not only a
+ * single expression. The source is compiled inside the page as a function
+ * body: a bare expression gets an implicit return, a statement body keeps its
+ * own, and a function/arrow literal is called with the arguments.
+ */
+async function evaluateScript(
+  page: Awaited<ReturnType<CBrowser["getPage"]>>,
+  script: string,
+  args: unknown[],
+): Promise<unknown> {
+  const source = script.trim();
+
+  // A function or arrow literal is called with the arguments directly.
+  const isCallable = /^(async\s+)?function\b/.test(source) || /=>/.test(source);
+
+  return page.evaluate(
+    (payload: { src: string; a: unknown[]; callable: boolean }) => {
+      if (payload.callable) {
+        const fn = (0, eval)(`(${payload.src})`);
+        return fn(...payload.a);
+      }
+
+      // Compile in the page, trying the three shapes people write, in order.
+      // Deciding by regex was wrong twice: `({a:1}).a` starts with "(" but is
+      // not a function, and a statement body with no `return` silently produced
+      // undefined. Letting the JS parser decide is the only reliable test.
+      // `new Function` is typed as the bare `Function`, which accepts any callable and
+      // gives no signature to check a call against - including a class, which would throw
+      // at runtime when invoked without `new`. Every function built below has the same
+      // shape, so state it once and cast to it.
+      type Compiled = (args: unknown[]) => unknown;
+
+      const compile = (src: string): Compiled => {
+        // 1. A bare expression: implicit return.
+        try {
+          return new Function("args", `return (${src});`) as Compiled;
+        } catch { /* not an expression */ }
+
+        // 2. Statements with no explicit return: return the final expression,
+        //    which is what a REPL and the old one-arg form both did.
+        if (!/\breturn\b/.test(src)) {
+          const trimmed = src.replace(/;\s*$/, "");
+          const split = Math.max(trimmed.lastIndexOf(";"), trimmed.lastIndexOf("\n"));
+          if (split > -1) {
+            const head = trimmed.slice(0, split + 1);
+            const tail = trimmed.slice(split + 1).trim();
+            if (tail) {
+              try {
+                return new Function("args", `${head}\nreturn (${tail});`) as Compiled;
+              } catch { /* the tail is not an expression either */ }
+            }
+          }
+        }
+
+        // 3. Statements as written. Any syntax error surfaces from here, which
+        //    is the error the user should actually see.
+        return new Function("args", src) as Compiled;
+      };
+
+      return compile(payload.src)(payload.a);
+    },
+    { src: source, a: args, callable: isCallable },
+  );
+}
+
+/**
+ * Run JavaScript in the page.
+ *
+ * The bare `evaluate "<js>"` form is unchanged. Everything else is additive:
+ * a script from a file (shell quoting mangles multi-line scripts), JSON
+ * arguments (so a script is reusable instead of string-interpolated), an
+ * explicit output mode, and an assertion mode for CI.
+ */
+async function runEvaluate(
+  browser: CBrowser,
+  args: string[],
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  const unknown = Object.keys(options).filter((f) => !EVALUATE_FLAGS.has(f));
+  if (unknown.length > 0) {
+    console.error(`Error: 'evaluate' does not support ${unknown.map((f) => `--${f}`).join(", ")}`);
+    console.error(`  Supported: ${[...EVALUATE_FLAGS].map((f) => `--${f}`).join(" ")}`);
+    process.exit(1);
+  }
+
+  if (options.json === true && options.raw === true) {
+    console.error("Error: --json and --raw are mutually exclusive - pick one");
+    process.exit(1);
+  }
+
+  const fromFile = typeof options.file === "string";
+  if (fromFile && args[0]) {
+    console.error("Error: pass the script as an argument OR --file, not both");
+    process.exit(1);
+  }
+
+  let script: string;
+  if (fromFile) {
+    const path = resolve(options.file as string);
+    if (!existsSync(path)) {
+      console.error(`Error: script file not found: ${path}`);
+      process.exit(1);
+    }
+    script = readFileSync(path, "utf-8");
+  } else if (args[0]) {
+    script = args[0];
+    // The URL goes in --url, not positionally, and getting that wrong used to
+    // produce a baffling error instead of a useful one: "https://example.com"
+    // compiles as the label `https:` followed by `//example.com` as a comment,
+    // which swallows the rest of the generated line and reports
+    // `SyntaxError: Unexpected token '}'` from deep inside the page. Nothing in
+    // that message points at the real mistake. (2026-07-29)
+    if (/^https?:\/\/\S+$/i.test(script.trim())) {
+      console.error(`Error: that looks like a URL, not JavaScript: ${script.trim()}`);
+      console.error(`  The script is the positional argument; the page goes in --url:`);
+      console.error(`    cbrowser evaluate "document.title" --url "${script.trim()}"`);
+      process.exit(1);
+    }
+  } else {
+    console.error('Usage: cbrowser evaluate "<javascript>" | --file <path>');
+    console.error("  Run 'cbrowser help evaluate' for options");
+    process.exit(1);
+  }
+
+  // Arguments arrive as JSON so types survive: --arg 3 is a number, --arg '"3"'
+  // is a string. A malformed value names itself rather than reaching the page.
+  const rawArgs = repeatedFlag("arg");
+  const evalArgs = rawArgs.map((raw, i) => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      console.error(`Error: --arg #${i + 1} is not valid JSON: ${raw}`);
+      console.error(`  Strings need quotes the shell will keep, e.g. --arg '"text"'`);
+      process.exit(1);
+    }
+  });
+
+  if (options.url) await browser.navigate(options.url as string);
+  const page = await browser.getPage();
+
+  if (typeof options["wait-for"] === "string") {
+    try {
+      await page.waitForSelector(options["wait-for"], { timeout: 30_000 });
+    } catch {
+      console.error(`✗ Timed out waiting for selector: ${options["wait-for"]}`);
+      process.exit(1);
+    }
+  }
+
+  let result: unknown;
+  try {
+    result = await evaluateScript(page, script, evalArgs);
+  } catch (e) {
+    const error = e as Error;
+    console.error(`✗ ${error.message}`);
+    // The page-side stack is the part that says WHERE in the script it broke.
+    if (error.stack) console.error(error.stack.split("\n").slice(1).join("\n"));
+    process.exit(1);
+  }
+
+  if (options.raw === true) {
+    console.log(String(result));
+  } else if (options.json === true) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    // Legacy default, kept so the existing one-arg form behaves identically.
+    console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2));
+  }
+
+  if (options["expect-truthy"] === true && !result) {
+    console.error(`✗ Expected a truthy result, got ${JSON.stringify(result)}`);
+    process.exit(1);
+  }
+}
+
+// =========================================================================
+// keyboard — sequences, chords and held modifiers
+// =========================================================================
+
+/** Modifier names Playwright accepts in a chord. */
+const KEYBOARD_MODIFIERS = ["Control", "Shift", "Alt", "Meta", "ControlOrMeta"];
+
+/**
+ * Named keys Playwright accepts. Anything not here and not a single character
+ * is rejected: silently typing an unrecognised key name as literal text is how
+ * `--element` and `--device` used to fail.
+ */
+const KEYBOARD_NAMED_KEYS = [
+  "Enter", "Tab", "Escape", "Backspace", "Delete", "Insert", "Space",
+  "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+  "Home", "End", "PageUp", "PageDown", "CapsLock", "ContextMenu",
+  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
+  ...KEYBOARD_MODIFIERS,
+];
+
+/** Levenshtein distance, capped early since only small distances matter here. */
+function editDistance(a: string, b: string): number {
+  if (Math.abs(a.length - b.length) > 1) return 99;
+
+  const rows: number[][] = Array.from({ length: a.length + 1 }, (_, i) =>
+    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  );
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      rows[i][j] = a[i - 1] === b[j - 1]
+        ? rows[i - 1][j - 1]
+        : 1 + Math.min(rows[i - 1][j - 1], rows[i - 1][j], rows[i][j - 1]);
+    }
+  }
+  return rows[a.length][b.length];
+}
+
+/** One step of a keyboard sequence. */
+type KeyboardStep =
+  | { kind: "chord"; key: string }
+  | { kind: "key"; key: string }
+  | { kind: "text"; text: string };
+
+/**
+ * Classify a token as a chord, a named key, or literal text.
+ *
+ * A token is a chord only when every `+`-separated part but the last is a known
+ * modifier - so "Control+A" is a chord and "a+b" or "1+1" is text.
+ */
+function parseKeyboardToken(token: string, literal = false): KeyboardStep {
+  // --text forces literal typing, which is how a string containing "+" is
+  // expressed now that "+" always means a chord.
+  if (literal) return { kind: "text", text: token };
+
+  // ANY interior "+" means the user intended a chord, so every segment is
+  // validated. The previous rule - chord only if every modifier was already
+  // valid - meant a typo like "Ctrl+NotAKey" failed the test and fell through
+  // to the literal-text branch, silently TYPING the typo into the page.
+  if (token.includes("+") && token.length > 1 && !token.startsWith("+") && !token.endsWith("+")) {
+    const parts = token.split("+");
+    const mods = parts.slice(0, -1);
+    const key = parts[parts.length - 1];
+
+    const badMods = mods.filter((m) => !KEYBOARD_MODIFIERS.includes(m));
+    if (badMods.length > 0) {
+      console.error(`Error: unknown modifier ${badMods.map((m) => `"${m}"`).join(", ")} in chord "${token}"`);
+      // The names people actually reach for. Suggested, never silently
+      // accepted - a wrong modifier that "worked" would hide the typo.
+      const ALIASES: Record<string, string> = {
+        ctrl: "Control", cmd: "Meta", command: "Meta", win: "Meta",
+        super: "Meta", option: "Alt", opt: "Alt", altgr: "Alt", ctl: "Control",
+      };
+      const suggestions = badMods
+        .map((m) => ALIASES[m.toLowerCase()] ?? KEYBOARD_MODIFIERS.find((k) => k.toLowerCase().startsWith(m.toLowerCase())))
+        .filter(Boolean);
+      if (suggestions.length > 0) console.error(`  Did you mean: ${suggestions.join(", ")}?`);
+      console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+      console.error(`  To type this as literal text, use --text.`);
+      process.exit(1);
+    }
+
+    if (key.length !== 1 && !KEYBOARD_NAMED_KEYS.includes(key)) {
+      console.error(`Error: unknown key "${key}" in chord "${token}"`);
+      console.error(`  Modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+      console.error(`  Named keys: ${KEYBOARD_NAMED_KEYS.filter((k) => !KEYBOARD_MODIFIERS.includes(k)).join(", ")}`);
+      console.error(`  To type this as literal text, use --text.`);
+      process.exit(1);
+    }
+    return { kind: "chord", key: token };
+  }
+
+  if (KEYBOARD_NAMED_KEYS.includes(token)) return { kind: "key", key: token };
+
+  // Case-insensitive matches are intent, not typos: "enter" means Enter.
+  const cased = KEYBOARD_NAMED_KEYS.find((k) => k.toLowerCase() === token.toLowerCase());
+  if (cased) return { kind: "key", key: cased };
+
+  // A near-miss on a real key name is a typo worth rejecting ("Delet",
+  // "ArrowLef"). Distance is measured against the actual key list rather than
+  // guessed from shape, so ordinary words to be typed ("Hello", "Replaced")
+  // are nowhere near a key name and pass through as text.
+  const near = KEYBOARD_NAMED_KEYS.filter((k) => editDistance(k.toLowerCase(), token.toLowerCase()) <= 1);
+  if (near.length > 0) {
+    console.error(`Error: unknown key name "${token}"`);
+    console.error(`  Did you mean: ${near.join(", ")}?`);
+    console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+    process.exit(1);
+  }
+
+  return { kind: "text", text: token };
+}
+
+/** Flags `keyboard` understands. */
+const KEYBOARD_FLAGS = new Set([
+  "delay", "selector", "hold", "repeat", "text",
+  "url", "browser", "device", "headless", "persistent", "restore",
+  "locale", "timezone", "geo", "verbose",
+]);
+
+/**
+ * Drive a keyboard sequence.
+ *
+ * Complements `press` (one key) and `type` (one string) rather than replacing
+ * them: this is for ordered sequences, chords, and modifiers held across
+ * several steps, which neither of those can express.
+ */
+async function runKeyboard(
+  browser: CBrowser,
+  args: string[],
+  options: Record<string, string | boolean>,
+): Promise<void> {
+  const unknown = Object.keys(options).filter((f) => !KEYBOARD_FLAGS.has(f));
+  if (unknown.length > 0) {
+    console.error(`Error: 'keyboard' does not support ${unknown.map((f) => `--${f}`).join(", ")}`);
+    console.error(`  Supported: ${[...KEYBOARD_FLAGS].map((f) => `--${f}`).join(" ")}`);
+    process.exit(1);
+  }
+
+  if (args.length === 0) {
+    console.error('Usage: cbrowser keyboard "<key|chord|text>" ["<key|chord|text>" ...]');
+    console.error("  Run 'cbrowser help keyboard' for options");
+    process.exit(1);
+  }
+
+  const delay = options.delay !== undefined ? Number(options.delay) : 50;
+  if (!Number.isFinite(delay) || delay < 0) {
+    console.error(`Error: --delay must be a non-negative number (got "${String(options.delay)}")`);
+    process.exit(1);
+  }
+
+  const repeat = options.repeat !== undefined ? Number(options.repeat) : 1;
+  if (!Number.isInteger(repeat) || repeat < 1) {
+    console.error(`Error: --repeat must be a positive integer (got "${String(options.repeat)}")`);
+    process.exit(1);
+  }
+
+  const hold = typeof options.hold === "string"
+    ? options.hold.split("+").map((m) => m.trim()).filter(Boolean)
+    : [];
+  for (const modifier of hold) {
+    if (!KEYBOARD_MODIFIERS.includes(modifier)) {
+      console.error(`Error: unknown --hold modifier "${modifier}"`);
+      console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+      process.exit(1);
+    }
+  }
+
+  // Parsed up-front so a bad token fails before any key reaches the page and
+  // leaves the form half-filled.
+  const literal = options.text === true;
+  const steps = args.map((token) => parseKeyboardToken(token, literal));
+
+  if (options.url) await browser.navigate(options.url as string);
+  const page = await browser.getPage();
+
+  if (typeof options.selector === "string") {
+    const locator = await browser.resolveElementLocator(options.selector);
+    if (!locator) {
+      console.error(`✗ No element matched selector: ${options.selector}`);
+      process.exit(1);
+    }
+    await locator.focus();
+  }
+
+  for (const modifier of hold) await page.keyboard.down(modifier);
+  try {
+    for (let pass = 0; pass < repeat; pass++) {
+      for (const step of steps) {
+        if (step.kind === "text") {
+          await page.keyboard.type(step.text, { delay: Math.min(delay, 50) });
+        } else {
+          await page.keyboard.press(step.key);
+        }
+        if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+  } finally {
+    // Released even if a step throws: a stuck modifier would corrupt every
+    // later command in the same persistent session.
+    for (const modifier of [...hold].reverse()) await page.keyboard.up(modifier);
+  }
+
+  const summary = steps
+    .map((s) => (s.kind === "text" ? `"${s.text}"` : s.key))
+    .join(" → ");
+  console.log(`✓ Keyboard: ${summary}${repeat > 1 ? ` (x${repeat})` : ""}${hold.length > 0 ? ` holding ${hold.join("+")}` : ""}`);
 }
 
 function formatBytes(bytes: number): string {
@@ -824,7 +2457,7 @@ function generateHtmlReport(comparison: any): string {
   </div>
 
   <p style="color: #999; text-align: center; margin-top: 2rem;">
-    Generated by CBrowser v6.0.0 - Multi-Persona Comparison
+    Generated by CBrowser v${VERSION} - Multi-Persona Comparison
   </p>
 </body>
 </html>`;
@@ -981,10 +2614,168 @@ function generateTestSuiteHtmlReport(result: NLTestSuiteResult): string {
   ` : ''}
 
   <p style="color: #999; text-align: center; margin-top: 2rem;">
-    Generated by CBrowser v6.1.0 - Natural Language Test Suites
+    Generated by CBrowser v${VERSION} - Natural Language Test Suites
   </p>
 </body>
 </html>`;
+}
+
+/**
+ * Doctor command — validates environment health with pass/fail checks.
+ * Checks: Node version, Playwright chromium, API key, data directory.
+ */
+async function runDoctor(outputOpts: import("./output.js").OutputOptions): Promise<void> {
+  const fs = await import("fs");
+  const { execSync } = await import("child_process");
+
+  interface DoctorCheck {
+    name: string;
+    status: "pass" | "fail" | "warn";
+    message: string;
+    fix?: string;
+  }
+
+  const checks: DoctorCheck[] = [];
+
+  // Check 1: Node.js version
+  const nodeVersion = process.versions.node;
+  const nodeMajor = parseInt(nodeVersion.split(".")[0], 10);
+  if (nodeMajor >= 18) {
+    checks.push({ name: "Node.js", status: "pass", message: `v${nodeVersion} (>= 18 required)` });
+  } else {
+    checks.push({
+      name: "Node.js",
+      status: "fail",
+      message: `v${nodeVersion} (>= 18 required)`,
+      fix: "Install Node.js 18+ from https://nodejs.org",
+    });
+  }
+
+  // Check 2: Playwright chromium — the binary must actually be on disk.
+  //
+  // This used to shell out to `npx playwright install --dry-run chromium`, which
+  // only PRINTS the install plan and exits 0 whether or not the browser exists —
+  // so the check could not go red. Demonstrated 2026-07-26: with
+  // PLAYWRIGHT_BROWSERS_PATH=/nonexistent-browsers-xyz the dry-run still exited 0
+  // and doctor still reported "Playwright Chromium: Installed". A health check
+  // that cannot fail is worse than no health check, because it is believed.
+  // executablePath() resolves the path Playwright would actually launch, so an
+  // absent browser now fails the way a missing browser should.
+  try {
+    const { chromium } = await import("playwright");
+    const exe = chromium.executablePath();
+    if (exe && existsSync(exe)) {
+      checks.push({ name: "Playwright Chromium", status: "pass", message: `Installed (${exe})` });
+    } else {
+      checks.push({
+        name: "Playwright Chromium",
+        status: "fail",
+        message: exe ? `Not on disk at ${exe}` : "Playwright reports no chromium executable path",
+        fix: "Run: npx playwright install chromium",
+      });
+    }
+  } catch (err) {
+    checks.push({
+      name: "Playwright Chromium",
+      status: "fail",
+      message: `Not installed or not resolvable (${err instanceof Error ? err.message : String(err)})`,
+      fix: "Run: npx playwright install chromium",
+    });
+  }
+
+  // Check 3: API key
+  const hasApiKey = isApiKeyConfigured();
+  if (hasApiKey) {
+    checks.push({ name: "Anthropic API Key", status: "pass", message: "Configured" });
+  } else {
+    checks.push({
+      name: "Anthropic API Key",
+      status: "warn",
+      message: "Not configured (cognitive features require it, basic commands work without it)",
+      fix: "Run: cbrowser config set-api-key <your-key>",
+    });
+  }
+
+  // Check 4: Data directory
+  const dataDir = getDataDir();
+  try {
+    await fs.promises.access(dataDir, fs.constants.W_OK);
+    checks.push({ name: "Data Directory", status: "pass", message: dataDir });
+  } catch {
+    checks.push({
+      name: "Data Directory",
+      status: "fail",
+      message: `${dataDir} (not writable)`,
+      fix: process.platform === "win32"
+        ? "Check directory permissions in Properties"
+        : `Run: sudo chown -R $USER:$USER ${dataDir}`,
+    });
+  }
+
+  // Output results
+  if (outputOpts.json) {
+    const jsonResult: import("./output.js").JsonOutput = {
+      success: checks.every(c => c.status !== "fail"),
+      command: "doctor",
+      data: { checks },
+      meta: { version: VERSION },
+    };
+    emitJson(jsonResult);
+    // Same rule as the human path below: a failed check must be visible to a
+    // shell, not only to a reader.
+    if (!jsonResult.success) process.exitCode = 1;
+    return;
+  }
+
+  const passSymbol = outputOpts.plain ? "[PASS]" : "✅";
+  const failSymbol = outputOpts.plain ? "[FAIL]" : "❌";
+  const warnSymbol = outputOpts.plain ? "[WARN]" : "⚠️";
+
+  console.log("");
+  console.log(outputOpts.plain
+    ? `CBrowser Doctor v${VERSION}`
+    : `🩺 CBrowser Doctor v${VERSION}`
+  );
+  console.log(outputOpts.plain ? "---" : "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+  for (const check of checks) {
+    const symbol = check.status === "pass" ? passSymbol
+      : check.status === "fail" ? failSymbol
+      : warnSymbol;
+    console.log(`${symbol} ${check.name}: ${check.message}`);
+    if (check.fix) {
+      console.log(`     Fix: ${check.fix}`);
+    }
+  }
+
+  console.log("");
+  const failCount = checks.filter(c => c.status === "fail").length;
+  const warnCount = checks.filter(c => c.status === "warn").length;
+
+  if (failCount === 0 && warnCount === 0) {
+    console.log(outputOpts.plain
+      ? "All checks passed. CBrowser is ready."
+      : "🎉 All checks passed. CBrowser is ready!"
+    );
+  } else if (failCount === 0) {
+    console.log(outputOpts.plain
+      ? `All critical checks passed. ${warnCount} warning(s).`
+      : `✅ All critical checks passed. ${warnCount} warning(s).`
+    );
+  } else {
+    console.log(outputOpts.plain
+      ? `${failCount} check(s) failed. Fix the issues above to use CBrowser.`
+      : `❌ ${failCount} check(s) failed. Fix the issues above to use CBrowser.`
+    );
+  }
+  console.log("");
+
+  // A health command that reports failures and still exits 0 cannot gate
+  // anything — `cbrowser doctor && deploy` would proceed on a broken
+  // environment, and the project ISA's own probe for this criterion is
+  // "doctor exits 0", which was unfalsifiable as a result. Failures now exit 1;
+  // warnings still exit 0, since a warning is not a broken environment.
+  if (failCount > 0) process.exitCode = 1;
 }
 
 function parseGeoLocation(location: string): { latitude: number; longitude: number } | null {
@@ -1007,9 +2798,45 @@ function parseGeoLocation(location: string): { latitude: number; longitude: numb
 async function main(): Promise<void> {
   const { command, args, options } = parseArgs(process.argv.slice(2));
 
-  if (command === "help" || options.help) {
+  // Initialize accessible output system (v18.54.0)
+  const outputOpts = detectOutputOptions(options);
+  setOutputOptions(outputOpts);
+  installOutputWrappers();
+
+  // --json-output must never leave stdout empty. Only two commands in this file
+  // call emitJson, so without this every other command printed nothing at all and
+  // still exited 0 — a CI step piping to jq saw empty input beside a success code.
+  // An exit hook rather than a call after main(): the command paths below exit
+  // through ~20 separate process.exit() sites, and a hook covers all of them.
+  if (outputOpts.json) {
+    process.on("exit", () => emitJsonFallback(command ?? "unknown", VERSION));
+  }
+
+  // `--help`/`-h` are aliases for `help`, matching how `--version`/`-v` alias
+  // `version` below. `help <command>` and `<command> --help` both narrow to a
+  // single section rather than dumping the whole manual.
+  const isHelpCommand = command === "help" || command === "--help" || command === "-h";
+  if (isHelpCommand || options.help) {
+    const topic = isHelpCommand
+      ? args[0] ?? (typeof options.help === "string" ? options.help : undefined)
+      : command;
+
+    if (topic) {
+      process.exit(showCommandHelp(topic) ? 0 : 1);
+    }
     showHelp();
     process.exit(0);
+  }
+
+  // One gate for every command in the registry, before anything executes.
+  validateCommandFlags(command, options);
+
+  // Doctor command - environment health check (v18.54.0)
+  if (command === "doctor") {
+    await runDoctor(outputOpts);
+    // Honour the exit code runDoctor set. A hard exit(0) here made the failure
+    // path unreachable from a shell no matter what the checks found.
+    process.exit(process.exitCode ?? 0);
   }
 
   // MCP Server mode - runs before browser instantiation
@@ -1092,7 +2919,7 @@ async function main(): Promise<void> {
         const model = args[1];
         if (!model) {
           console.error("Usage: cbrowser config set-model <model>");
-          console.error("Examples: claude-sonnet-4-20250514, claude-3-5-sonnet-20241022");
+          console.error("Examples: claude-sonnet-5, claude-haiku-4-5-20251001");
           process.exit(1);
         }
         const configPath = path.join(getDataDir(), "config.json");
@@ -1256,7 +3083,17 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
 
   // Check if daemon is running and use it for supported commands
   const daemonRunning = await isDaemonRunning();
-  if (daemonRunning && ["navigate", "click", "fill", "hover", "screenshot", "extract", "run"].includes(command)) {
+
+  // Commands that drive the page. When a daemon holds the browser these MUST
+  // go through it: run locally and they open a second browser, drive a
+  // different page, and report success for work the user cannot see - which is
+  // exactly what `keyboard` did during a live capture.
+  const INTERACTION_COMMANDS = [
+    "navigate", "click", "fill", "hover", "screenshot", "extract", "run",
+    "keyboard", "press", "type", "evaluate", "eval",
+  ];
+
+  if (daemonRunning && INTERACTION_COMMANDS.includes(command)) {
     console.log("🔌 Connected to running daemon");
 
     const daemonCommand = command;
@@ -1275,6 +3112,54 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
       case "fill":
         daemonArgs = { selector: args[0], value: args[1] };
         break;
+      case "keyboard": {
+        validateCommandFlags("keyboard", options);
+        if (args.length === 0) {
+          console.error('Usage: cbrowser keyboard "<key|chord|text>" ["<key|chord|text>" ...]');
+          process.exit(1);
+        }
+        // Tokens are validated HERE, before the request leaves: an unknown key
+        // must never reach an execution path, daemon-side or not.
+        const literal = options.text === true;
+        const steps = args.map((token) => parseKeyboardToken(token, literal));
+        const hold = typeof options.hold === "string"
+          ? options.hold.split("+").map((m) => m.trim()).filter(Boolean)
+          : [];
+        for (const modifier of hold) {
+          if (!KEYBOARD_MODIFIERS.includes(modifier)) {
+            console.error(`Error: unknown --hold modifier "${modifier}"`);
+            console.error(`  Valid modifiers: ${KEYBOARD_MODIFIERS.join(", ")}`);
+            process.exit(1);
+          }
+        }
+        daemonArgs = {
+          steps,
+          hold,
+          delay: options.delay !== undefined ? Number(options.delay) : 50,
+          repeat: options.repeat !== undefined ? Number(options.repeat) : 1,
+          selector: typeof options.selector === "string" ? options.selector : undefined,
+        };
+        break;
+      }
+      case "press":
+        daemonArgs = { key: args[0] };
+        break;
+      case "type":
+        daemonArgs = { text: args[0], delay: options.delay !== undefined ? Number(options.delay) : 50 };
+        break;
+      case "eval":
+      case "evaluate": {
+        validateCommandFlags(command, options);
+        const script = typeof options.file === "string"
+          ? readFileSync(resolve(options.file), "utf-8")
+          : args[0];
+        if (!script) {
+          console.error('Usage: cbrowser evaluate "<javascript>" | --file <path>');
+          process.exit(1);
+        }
+        daemonArgs = { body: `return (function(){ ${/\breturn\b/.test(script) ? script : `return (${script});`} })();`, args: [] };
+        break;
+      }
       case "screenshot": {
         let ssUrl: string | undefined;
         let ssPath: string | undefined = typeof options.output === "string" ? options.output : undefined;
@@ -1318,7 +3203,20 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
       console.error(`✗ Daemon error: ${result.error}`);
       process.exit(1);
     }
-    return;
+    // Every other command path ends with an explicit exit; this one returned,
+    // so a keep-alive socket to a busy daemon held the process open forever.
+    // That is what looked like `fill` deadlocking against a live capture: the
+    // command had already completed and printed its result.
+    process.exit(process.exitCode ?? 0);
+  }
+
+  // An interaction command that is NOT routed would drive a second browser.
+  if (daemonRunning && !INTERACTION_COMMANDS.includes(command) && DRIVES_THE_PAGE.includes(command)) {
+    console.error(`Error: '${command}' cannot run while the daemon holds the browser.`);
+    console.error(`  It would launch a second browser and drive a different page,`);
+    console.error(`  so its effects would not appear in a running capture.`);
+    console.error(`  Stop the daemon first: cbrowser daemon stop`);
+    process.exit(1);
   }
 
   // Parse browser type
@@ -1347,15 +3245,37 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
   // Default to headless for CLI usage, unless explicitly set to false
   const headless = options.headless !== false && options.headless !== "false";
 
+  // --no-restore: skip session URL restoration (preserves page state after interactions)
+  const skipRestore = options.restore === false || options.restore === "false";
+
+  // Device presets are validated before the browser is built, since that is
+  // where the name is consumed - an unknown name is silently dropped there.
+  if (command === "capture" && typeof options.device === "string") {
+    options.device = resolveDevicePreset(options.device);
+  }
+
+  // --viewport WxH overrides the configured viewport for this invocation.
+  let viewportOverride: { width: number; height: number } | undefined;
+  if (typeof options.viewport === "string") {
+    try {
+      viewportOverride = parseViewportList(options.viewport)[0];
+    } catch (e) {
+      console.error(`Error: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  }
+
   const browser = new CBrowser({
     browser: browserType,
     headless,
     device: options.device as string,
+    ...(viewportOverride ? { viewportWidth: viewportOverride.width, viewportHeight: viewportOverride.height } : {}),
     geolocation,
     locale: options.locale as string,
     timezone: options.timezone as string,
     recordVideo: options["record-video"] === true,
     persistent: persistentMode,
+    skipSessionRestore: skipRestore,
     verbose: true,
   });
 
@@ -1428,6 +3348,72 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           console.error(`✗ ${result.message}`);
           process.exit(1);
         }
+        break;
+      }
+
+      case "type": {
+        const text = args[0];
+        if (!text) {
+          console.error("Usage: cbrowser type \"text to type\" [--delay <ms>]");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        const delay = typeof options.delay === "number" ? options.delay : 50;
+        await page.keyboard.type(text, { delay });
+        console.log(`✓ Typed ${text.length} characters`);
+        break;
+      }
+
+      case "press": {
+        const key = args[0];
+        if (!key) {
+          console.error("Usage: cbrowser press <key> (e.g., Enter, Tab, Escape, Control+a)");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        await page.keyboard.press(key);
+        console.log(`✓ Pressed ${key}`);
+        break;
+      }
+
+      case "drag": {
+        const source = args[0];
+        const target = args[1];
+        if (!source || !target) {
+          console.error("Usage: cbrowser drag <source-selector> <target-selector>");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        await page.dragAndDrop(source, target);
+        console.log(`✓ Dragged ${source} → ${target}`);
+        break;
+      }
+
+      case "eval":
+      case "evaluate": {
+        await runEvaluate(browser, args, options);
+        break;
+      }
+
+      case "keyboard": {
+        await runKeyboard(browser, args, options);
+        break;
+      }
+
+      case "upload": {
+        const selector = args[0];
+        const filePath = args[1];
+        if (!selector || !filePath) {
+          console.error("Usage: cbrowser upload <selector> <file-path>");
+          process.exit(1);
+        }
+        if (options.url) await browser.navigate(options.url as string);
+        const page = await browser.getPage();
+        await page.locator(selector).setInputFiles(filePath);
+        console.log(`✓ Uploaded ${filePath} to ${selector}`);
         break;
       }
 
@@ -2144,13 +4130,48 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             break;
           }
 
+          case "cleanup": {
+            // Import the cleanup functions
+            const { listInvalidPersonas, cleanupInvalidPersonas } = await import("./personas.js");
+
+            const dryRun = options["dry-run"] === true;
+
+            if (dryRun) {
+              const invalid = listInvalidPersonas();
+              if (invalid.length === 0) {
+                console.log("✓ No invalid personas found.");
+              } else {
+                console.log(`\n⚠️  Found ${invalid.length} invalid persona(s):\n`);
+                for (const { name, reason } of invalid) {
+                  console.log(`  • ${name}`);
+                  console.log(`    Reason: ${reason}`);
+                }
+                console.log("\nRun 'cbrowser persona cleanup' (without --dry-run) to remove them.");
+              }
+            } else {
+              const removed = cleanupInvalidPersonas();
+              if (removed.length === 0) {
+                console.log("✓ No invalid personas found.");
+              } else {
+                console.log(`\n🧹 Removed ${removed.length} invalid persona(s):\n`);
+                for (const { name, reason } of removed) {
+                  console.log(`  ✗ ${name}`);
+                  console.log(`    Reason: ${reason}`);
+                }
+              }
+            }
+            break;
+          }
+
           default:
-            console.error("Usage: cbrowser persona [list|create|show|delete|export|import]");
+            console.error("Usage: cbrowser persona [list|create|show|delete|export|import|cleanup]");
             console.error("\nExamples:");
             console.error("  cbrowser persona list");
             console.error("  cbrowser persona create \"impatient developer\" --name dev-persona");
             console.error("  cbrowser persona show power-user");
             console.error("  cbrowser persona delete my-custom-persona");
+            console.error("  cbrowser persona cleanup --dry-run    # Preview invalid personas");
+            console.error("  cbrowser persona cleanup              # Remove invalid personas");
         }
         break;
       }
@@ -2428,7 +4449,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             if (options.url) {
               await browser.navigate(options.url as string);
             }
-            const domain = (options.domain as string) || "localhost";
+            const domain = resolveCookieDomain(options.domain as string | undefined, options.url as string | undefined);
             const path = (options.path as string) || "/";
             await browser.setCookies([{
               name,
@@ -2452,7 +4473,9 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             if (options.url) {
               await browser.navigate(options.url as string);
             }
-            await browser.deleteCookie(name, options.domain as string);
+            const delDomain = (options.domain as string | undefined)
+              ?? (options.url ? hostFromUrl(options.url as string) ?? undefined : undefined);
+            await browser.deleteCookie(name, delDomain);
             console.log(`✓ Cookie deleted: ${name}`);
             break;
           }
@@ -3500,6 +5523,31 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
       }
 
       // =========================================================================
+      // Screen Capture (video/GIF)
+      // =========================================================================
+
+      // Deliberately separate from `record` above: `record` captures user
+      // ACTIONS for test generation, `capture` captures PIXELS for video/GIF.
+      // They share nothing but a rough English synonym - do not unify them.
+      case "capture": {
+        switch (args[0]) {
+          case "start":
+            await runCaptureStart(browser, args[1] || (typeof options.url === "string" ? options.url : undefined), options);
+            break;
+          case "stop":
+            await runCaptureStop();
+            break;
+          case "status":
+            await runCaptureStatus();
+            break;
+          default:
+            console.error("Usage: cbrowser capture [start <url>|stop|status]");
+            process.exit(1);
+        }
+        break;
+      }
+
+      // =========================================================================
       // Test Export (Tier 2)
       // =========================================================================
 
@@ -4060,6 +6108,64 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
       }
 
       // =========================================================================
+      // Lightpanda Integration (v18.20.0) - OPT-IN ONLY
+      // =========================================================================
+
+      case "lightpanda-status": {
+        console.log("\n🐼 Lightpanda Status\n");
+
+        const status = await getLightpandaStatus();
+
+        if (!status.configured) {
+          console.log("❌ Not configured");
+          console.log("");
+          console.log("To enable Lightpanda, set one of these environment variables:");
+          console.log("  LIGHTPANDA_ENDPOINT=ws://127.0.0.1:9222  (local, recommended)");
+          console.log("  LIGHTPANDA_TOKEN=your-api-token          (cloud, ⚠️ data exposure)");
+          console.log("");
+          console.log("Run 'cbrowser lightpanda-setup' for full setup instructions.");
+        } else if (status.available) {
+          console.log("✅ Available and connected");
+          console.log(`   Endpoint: ${status.endpoint}`);
+          console.log(`   Mode: ${status.isCloud ? "Cloud ⚠️ (traffic via lightpanda.io)" : "Local (recommended)"}`);
+          console.log("");
+
+          // Show security warning for cloud mode
+          if (status.isCloud && status.securityWarning) {
+            console.log(status.securityWarning);
+            console.log("");
+          }
+
+          console.log("Usage (OPT-IN REQUIRED):");
+          console.log("  cbrowser screenshot https://example.com --lightpanda");
+          console.log("  cbrowser agent-ready-audit https://example.com --lightpanda");
+          console.log("");
+          console.log("Note: Lightpanda is NOT used automatically. The --lightpanda flag is required.");
+        } else {
+          console.log("⚠️  Configured but unavailable");
+          console.log(`   Endpoint: ${status.endpoint}`);
+          console.log(`   Error: ${status.error}`);
+          console.log("");
+          if (!status.isCloud) {
+            console.log("Make sure Lightpanda is running:");
+            console.log("  docker run -d -p 9222:9222 lightpanda/browser:nightly");
+          } else {
+            console.log("Check your API token and network connection.");
+          }
+        }
+
+        // Always show security notice
+        console.log("");
+        console.log(LIGHTPANDA_SECURITY_WARNING);
+        break;
+      }
+
+      case "lightpanda-setup": {
+        console.log(LIGHTPANDA_SETUP_GUIDE);
+        break;
+      }
+
+      // =========================================================================
       // Natural Language Test Suites (Tier 6)
       // =========================================================================
 
@@ -4220,12 +6326,15 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           break;
         }
 
+        assertCaptureNamespaceFlags("test-suite", options);
+
         const suiteOptions: NLTestSuiteOptions = {
           stepTimeout: options.timeout ? parseInt(options.timeout as string) : 30000,
           continueOnFailure: options["continue-on-failure"] === true,
           screenshotOnFailure: options["screenshot-on-failure"] !== false,
           headless,
           fuzzyMatch: options["fuzzy-match"] === true,
+          capture: buildAutoCaptureSetting(options, `test-suite-${suite.name.replace(/[^a-zA-Z0-9-_]+/g, "-").toLowerCase()}-${Date.now()}`),
         };
 
         const result = await runNLTestSuite(suite, suiteOptions);
@@ -4233,6 +6342,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         // Print formatted report
         const report = formatNLTestReport(result);
         console.log(report);
+        reportAutoCapture(result.capture);
 
         // Save JSON output if requested
         if (options.output) {
@@ -4857,6 +6967,8 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         console.log("");
 
         try {
+          assertCaptureNamespaceFlags("cognitive-journey", options);
+
           const result = await runCognitiveJourney({
             persona: personaName,
             goal,
@@ -4868,12 +6980,14 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             vision,
             customTraits, // Pass custom traits from env var
             location: locationOverride, // Pass location override
+            capture: buildAutoCaptureSetting(options, `journey-${personaName.replace(/[^a-zA-Z0-9-_]+/g, "-").toLowerCase()}-${Date.now()}`),
             onStep: verbose ? undefined : (step) => {
               process.stdout.write(`\r   Step ${step.step}: ${step.phase} (${step.state.currentMood})`);
             },
           });
 
           console.log("\n");
+          reportAutoCapture(result.capture as AutoCaptureResult | undefined);
 
           if (result.goalAchieved) {
             console.log(`✅ GOAL ACHIEVED in ${result.stepCount} steps (${result.totalTime.toFixed(1)}s)`);
@@ -4932,14 +7046,36 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         const url = args[0];
         if (!url) {
           console.error("Error: URL required");
-          console.error("Usage: cbrowser agent-ready-audit <url> [--html] [--output <file>]");
+          console.error("Usage: cbrowser agent-ready-audit <url> [--html] [--output <file>] [--lightpanda]");
           process.exit(1);
         }
 
-        console.log(`\n🤖 Running Agent-Ready Audit on ${url}...\n`);
+        const useLightpanda = options.lightpanda === true;
+        if (useLightpanda && !isLightpandaConfigured()) {
+          console.error("Error: --lightpanda flag requires LIGHTPANDA_ENDPOINT or LIGHTPANDA_TOKEN to be set");
+          console.error("Run 'cbrowser lightpanda-setup' for instructions.");
+          process.exit(1);
+        }
+
+        // Resolve geo proxy if --geo-region is specified
+        const geoRegion = options["geo-region"] as string | undefined;
+        let auditProxy: { server: string; username?: string; password?: string } | undefined;
+        if (geoRegion) {
+          const { getGeoProxy } = await import("./geo-proxy.js");
+          const geoProxy = getGeoProxy(geoRegion);
+          if (geoProxy) {
+            auditProxy = { server: geoProxy.server, username: geoProxy.username, password: geoProxy.password };
+          } else {
+            console.error(`Warning: geo-region "${geoRegion}" not configured. Run without proxy.`);
+          }
+        }
+
+        console.log(`\n🤖 Running Agent-Ready Audit on ${url}...${useLightpanda ? " (with Lightpanda)" : ""}${geoRegion ? ` (via ${geoRegion})` : ""}\n`);
 
         const result = await runAgentReadyAudit(url, {
           headless,
+          useLightpanda,
+          ...(auditProxy ? { proxy: auditProxy } : {}),
         });
 
         // Print formatted report
@@ -4958,6 +7094,236 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           const fs = await import("fs");
           const htmlReport = generateAgentReadyHtmlReport(result);
           const htmlPath = (options.output as string)?.replace(".json", ".html") || "agent-ready-report.html";
+          fs.writeFileSync(htmlPath, htmlReport);
+          console.log(`🌐 HTML report saved: ${htmlPath}`);
+        }
+
+        // Exit with error if grade is failing
+        if (result.grade === "F") {
+          process.exit(1);
+        }
+        break;
+      }
+
+      case "ai-benchmark": {
+        const urlsOption = options.urls as string;
+        if (!urlsOption) {
+          console.error("Error: --urls required");
+          console.error("Usage: cbrowser ai-benchmark --urls <url1,url2,...> [--output <file>] [--html]");
+          process.exit(1);
+        }
+
+        const urls = urlsOption.split(",").map(u => u.trim());
+        if (urls.length < 2) {
+          console.error("Error: At least 2 URLs required for benchmark comparison");
+          process.exit(1);
+        }
+
+        console.log(`\n🏁 Running AI Readiness Benchmark on ${urls.length} sites...\n`);
+
+        const result = await runAIReadinessBenchmark({
+          urls,
+          headless: options.headless !== false,
+          maxConcurrency: options.concurrency ? parseInt(options.concurrency as string) : 3,
+        });
+
+        // Print ranking table
+        console.log(`╔══════════════════════════════════════════════════════════════════════════════╗`);
+        console.log(`║  AI Readiness Benchmark Results                                              ║`);
+        console.log(`╠══════════════════════════════════════════════════════════════════════════════╣`);
+        console.log(`║  Rank  Site                          Score   Grade   Find  Stab  A11y  Sem  ║`);
+        console.log(`╠══════════════════════════════════════════════════════════════════════════════╣`);
+
+        for (const site of result.sites) {
+          const rank = result.ranking.find(r => r.site === site.siteName)?.rank || "-";
+          const score = site.score !== null ? site.score.toString().padStart(3) : "ERR";
+          const grade = site.grade || "-";
+          const find = site.scoreBreakdown?.findability?.toString().padStart(3) || "-";
+          const stab = site.scoreBreakdown?.stability?.toString().padStart(3) || "-";
+          const a11y = site.scoreBreakdown?.accessibility?.toString().padStart(3) || "-";
+          const sem = site.scoreBreakdown?.semantics?.toString().padStart(3) || "-";
+          const siteName = site.siteName.substring(0, 32).padEnd(32);
+          console.log(`║  ${String(rank).padStart(2)}    ${siteName}  ${score}     ${grade.padEnd(2)}      ${find}   ${stab}   ${a11y}   ${sem}  ║`);
+        }
+
+        console.log(`╚══════════════════════════════════════════════════════════════════════════════╝`);
+        console.log(`\nDuration: ${result.duration}ms`);
+
+        // Print best-in-class
+        if (result.comparison.bestOverall) {
+          console.log(`\n🏆 Best Overall: ${result.comparison.bestOverall}`);
+        }
+        if (result.comparison.bestFindability) {
+          console.log(`🔍 Best Findability: ${result.comparison.bestFindability}`);
+        }
+        if (result.comparison.bestStability) {
+          console.log(`🔒 Best Stability: ${result.comparison.bestStability}`);
+        }
+        if (result.comparison.bestAccessibility) {
+          console.log(`♿ Best Accessibility: ${result.comparison.bestAccessibility}`);
+        }
+        if (result.comparison.bestSemantics) {
+          console.log(`📋 Best Semantics: ${result.comparison.bestSemantics}`);
+        }
+
+        // Print recommendations
+        if (result.recommendations.length > 0) {
+          console.log(`\n📝 Recommendations:`);
+          for (const rec of result.recommendations.slice(0, 5)) {
+            console.log(`  • ${rec}`);
+          }
+        }
+
+        // Save JSON output if requested
+        if (options.output) {
+          const fs = await import("fs");
+          fs.writeFileSync(options.output as string, JSON.stringify(result, null, 2));
+          console.log(`\n📄 JSON report saved: ${options.output}`);
+        }
+
+        // Generate HTML report if requested
+        if (options.html) {
+          const fs = await import("fs");
+          const htmlPath = (options.output as string)?.replace(".json", ".html") || "ai-benchmark-report.html";
+
+          // Simple HTML table report
+          const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AI Readiness Benchmark Report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    h1 { color: #333; }
+    table { width: 100%; border-collapse: collapse; margin: 2rem 0; }
+    th, td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #ddd; }
+    th { background: #f5f5f5; font-weight: 600; }
+    .grade-A { color: #22c55e; font-weight: bold; }
+    .grade-B { color: #84cc16; font-weight: bold; }
+    .grade-C { color: #eab308; font-weight: bold; }
+    .grade-D { color: #f97316; font-weight: bold; }
+    .grade-F { color: #ef4444; font-weight: bold; }
+    .best { background: #f0fdf4; }
+    .timestamp { color: #666; font-size: 0.875rem; }
+  </style>
+</head>
+<body>
+  <h1>🏁 AI Readiness Benchmark Report</h1>
+  <p class="timestamp">Generated: ${result.timestamp} | Duration: ${result.duration}ms</p>
+
+  <h2>Rankings</h2>
+  <table>
+    <thead>
+      <tr><th>Rank</th><th>Site</th><th>Score</th><th>Grade</th><th>Findability</th><th>Stability</th><th>Accessibility</th><th>Semantics</th></tr>
+    </thead>
+    <tbody>
+      ${result.sites.map(site => {
+        const rank = result.ranking.find(r => r.site === site.siteName)?.rank || "-";
+        const isBest = result.comparison.bestOverall === site.siteName;
+        return `<tr class="${isBest ? 'best' : ''}">
+          <td>${rank}</td>
+          <td>${site.siteName}</td>
+          <td>${site.score ?? 'ERR'}</td>
+          <td class="grade-${site.grade || 'F'}">${site.grade || '-'}</td>
+          <td>${site.scoreBreakdown?.findability ?? '-'}</td>
+          <td>${site.scoreBreakdown?.stability ?? '-'}</td>
+          <td>${site.scoreBreakdown?.accessibility ?? '-'}</td>
+          <td>${site.scoreBreakdown?.semantics ?? '-'}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>
+
+  <h2>Best in Class</h2>
+  <ul>
+    ${result.comparison.bestOverall ? `<li>🏆 Overall: <strong>${result.comparison.bestOverall}</strong></li>` : ''}
+    ${result.comparison.bestFindability ? `<li>🔍 Findability: <strong>${result.comparison.bestFindability}</strong></li>` : ''}
+    ${result.comparison.bestStability ? `<li>🔒 Stability: <strong>${result.comparison.bestStability}</strong></li>` : ''}
+    ${result.comparison.bestAccessibility ? `<li>♿ Accessibility: <strong>${result.comparison.bestAccessibility}</strong></li>` : ''}
+    ${result.comparison.bestSemantics ? `<li>📋 Semantics: <strong>${result.comparison.bestSemantics}</strong></li>` : ''}
+  </ul>
+
+  ${result.recommendations.length > 0 ? `
+  <h2>Recommendations</h2>
+  <ul>
+    ${result.recommendations.map(r => `<li>${r}</li>`).join('')}
+  </ul>
+  ` : ''}
+
+  <footer style="margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #ddd; color: #666; font-size: 0.875rem;">
+    Generated by <a href="https://cbrowser.ai">CBrowser</a> v${(await import("./version.js")).VERSION}
+  </footer>
+</body>
+</html>`;
+
+          fs.writeFileSync(htmlPath, html);
+          console.log(`🌐 HTML report saved: ${htmlPath}`);
+        }
+
+        break;
+      }
+
+      case "webmcp-ready": {
+        const url = args[0];
+        if (!url) {
+          console.error("Error: URL required");
+          console.error("Usage: cbrowser webmcp-ready <url> [--api-key <key>] [--timeout <ms>] [--html] [--output <file>]");
+          process.exit(1);
+        }
+
+        console.log(`\n🔍 Running WebMCP Readiness Audit on ${url}...\n`);
+
+        const result = await runWebMCPReadyAudit(url, {
+          apiKey: options["api-key"] as string,
+          oauthToken: options["oauth-token"] as string,
+          timeout: options.timeout ? parseInt(options.timeout as string) : 30000,
+        });
+
+        // Print formatted summary
+        console.log(`╔══════════════════════════════════════════════════════════════╗`);
+        console.log(`║  WebMCP Readiness Audit Results                              ║`);
+        console.log(`╠══════════════════════════════════════════════════════════════╣`);
+        console.log(`║  URL: ${result.url.padEnd(54)}║`);
+        console.log(`║  Score: ${result.score}/100  Grade: ${result.grade.padEnd(42)}║`);
+        console.log(`║  Checks: ${result.summary.passedChecks}/${result.summary.totalChecks} passed  Duration: ${result.duration}ms${' '.repeat(Math.max(0, 24 - result.duration.toString().length))}║`);
+        console.log(`╚══════════════════════════════════════════════════════════════╝`);
+
+        console.log(`\n📊 Tier Scores:`);
+        for (const tier of result.tiers) {
+          const bar = '█'.repeat(Math.round(tier.score / 10)) + '░'.repeat(10 - Math.round(tier.score / 10));
+          console.log(`  ${tier.tier}. ${tier.name.padEnd(22)} ${bar} ${tier.score}%`);
+        }
+
+        if (result.issues.length > 0) {
+          console.log(`\n⚠️  Issues Found (${result.issues.length}):`);
+          for (const issue of result.issues.slice(0, 5)) {
+            const icon = issue.severity === 'critical' ? '🔴' : issue.severity === 'high' ? '🟠' : '🟡';
+            console.log(`  ${icon} [Tier ${issue.tier}] ${issue.issue}`);
+          }
+          if (result.issues.length > 5) {
+            console.log(`  ... and ${result.issues.length - 5} more issues`);
+          }
+        }
+
+        if (result.recommendations.length > 0) {
+          console.log(`\n💡 Top Recommendations:`);
+          for (const rec of result.recommendations.slice(0, 3)) {
+            console.log(`  • ${rec}`);
+          }
+        }
+
+        // Save JSON output if requested
+        if (options.output) {
+          const fs = await import("fs");
+          fs.writeFileSync(options.output as string, JSON.stringify(result, null, 2));
+          console.log(`\n📄 JSON report saved: ${options.output}`);
+        }
+
+        // Generate HTML report if requested
+        if (options.html) {
+          const fs = await import("fs");
+          const htmlPath = (options.output as string)?.replace(".json", ".html") || "webmcp-ready-report.html";
+          const htmlReport = generateWebMCPReadyHtmlReport(result);
           fs.writeFileSync(htmlPath, htmlReport);
           console.log(`🌐 HTML report saved: ${htmlPath}`);
         }
@@ -5323,11 +7689,44 @@ Examples:
   }
 
   // Explicitly exit after successful browser commands
-  // Persistent context may keep handles open that prevent natural exit
-  process.exit(0);
+  // Persistent context may keep handles open that prevent natural exit.
+  // Honour process.exitCode: a command that completed its work but had a part
+  // fail (a requested encoder missing, say) sets it, and a hardcoded exit(0)
+  // would report success for a run the caller can't detect as broken.
+  process.exit(process.exitCode ?? 0);
 }
 
 main().catch((error) => {
-  console.error("Error:", error.message);
+  const opts = getOutputOptions();
+
+  if (opts.json) {
+    const jsonError: JsonOutput = {
+      success: false,
+      command: process.argv[2] || "unknown",
+      error: {
+        code: error.code || "E999",
+        message: error.message,
+        howToFix: error.howToFix,
+        docUrl: error.docUrl,
+      },
+      meta: { version: VERSION },
+    };
+    emitJson(jsonError);
+    process.exit(1);
+  }
+
+  // Enriched error output with remediation guidance
+  if (error.howToFix) {
+    console.error("");
+    console.error(opts.plain ? `Error [${error.code}]: ${error.message}` : `❌ Error [${error.code}]: ${error.message}`);
+    console.error("");
+    console.error(opts.plain ? `How to fix: ${error.howToFix}` : `💡 How to fix: ${error.howToFix}`);
+    if (error.docUrl) {
+      console.error(opts.plain ? `Docs: ${error.docUrl}` : `📚 Docs: ${error.docUrl}`);
+    }
+    console.error("");
+  } else {
+    console.error("Error:", error.message);
+  }
   process.exit(1);
 });

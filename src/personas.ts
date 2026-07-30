@@ -15,8 +15,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
-import type { Persona, CognitiveTraits, CognitiveProfile, AttentionPatternType, DecisionStyleType } from "./types.js";
+import type { Persona, CognitiveTraits, CognitiveProfile, AttentionPatternType, DecisionStyleType, AgentPersona } from "./types.js";
 import { applyTraitCorrelations } from "./persona-questionnaire.js";
+import { AGENT_PERSONAS, isAgentPersona, getAgentPersona, listAgentPersonas, isAgentPersonaObject } from "./agent-personas.js";
 
 // ============================================================================
 // Custom Personas Storage
@@ -59,7 +60,12 @@ export function loadCustomPersonas(): Record<string, Persona> {
         const content = readFileSync(join(PERSONAS_DIR, file), "utf-8");
         let persona: Persona;
         if (file.endsWith(".json")) {
-          persona = JSON.parse(content) as Persona;
+          // Bare `as Persona` trusted arbitrary user-authored JSON to be complete.
+          // The YAML branch below already defaults `behaviors`, so give the JSON
+          // branch the same floor rather than letting a partial file reach
+          // getCognitiveProfile half-formed. (2026-07-28)
+          const parsed = JSON.parse(content) as Persona;
+          persona = { ...parsed, behaviors: parsed.behaviors ?? {} } as Persona;
         } else {
           // Simple YAML parsing for persona files
           const nameMatch = content.match(/^name:\s*(.+)$/m);
@@ -130,6 +136,120 @@ export function deleteCustomPersona(name: string): boolean {
  */
 export function isBuiltinPersona(name: string): boolean {
   return name in BUILTIN_PERSONAS;
+}
+
+// ============================================================================
+// Persona Validation & Cleanup (v18.22.0)
+// ============================================================================
+
+/**
+ * Known test artifact patterns that should be cleaned up.
+ */
+const TEST_ARTIFACT_PATTERNS = [
+  /^test-/i,
+  /^debug-/i,
+  /^temp-/i,
+  /multitasker/i,
+];
+
+/**
+ * Inappropriate content patterns (basic check).
+ */
+const INAPPROPRIATE_PATTERNS = [
+  /escort/i,
+  /adult\s*(content|entertainment|services)/i,
+];
+
+/**
+ * Check if a persona is invalid and should be filtered out.
+ *
+ * Detects:
+ * - Test artifacts (test-*, multitasker)
+ * - Personas with blank/default descriptions (just the slug name)
+ * - Personas with all traits at 0.5 (unset defaults)
+ * - Personas with inappropriate content
+ *
+ * @since 18.22.0
+ */
+export function isInvalidPersona(persona: Persona): { invalid: boolean; reason?: string } {
+  // Check for test artifact names
+  for (const pattern of TEST_ARTIFACT_PATTERNS) {
+    if (pattern.test(persona.name)) {
+      return { invalid: true, reason: `Test artifact pattern: ${persona.name}` };
+    }
+  }
+
+  // Check for blank description (matches the name exactly, or is generic)
+  const normalizedName = persona.name.toLowerCase().replace(/[-_]/g, "");
+  const normalizedDesc = (persona.description || "").toLowerCase().replace(/[-_]/g, "").trim();
+
+  if (!normalizedDesc || normalizedDesc === normalizedName || normalizedDesc === "custom persona") {
+    return { invalid: true, reason: "Blank or default description" };
+  }
+
+  // Check for inappropriate content in description
+  for (const pattern of INAPPROPRIATE_PATTERNS) {
+    if (pattern.test(persona.description || "")) {
+      return { invalid: true, reason: "Inappropriate content in description" };
+    }
+  }
+
+  // Check for all traits at 0.5 (default/unset) - suggests incomplete persona
+  if (persona.cognitiveTraits) {
+    const traits = persona.cognitiveTraits;
+    const traitValues = Object.values(traits).filter(v => typeof v === "number") as number[];
+    if (traitValues.length >= 5) {
+      const allDefault = traitValues.every(v => v === 0.5);
+      if (allDefault) {
+        return { invalid: true, reason: "All traits at default 0.5 (incomplete persona)" };
+      }
+    }
+  }
+
+  return { invalid: false };
+}
+
+/**
+ * Clean up invalid custom personas from disk.
+ *
+ * Returns the list of personas that were removed.
+ *
+ * @since 18.22.0
+ */
+export function cleanupInvalidPersonas(): Array<{ name: string; reason: string }> {
+  const customPersonas = loadCustomPersonas();
+  const removed: Array<{ name: string; reason: string }> = [];
+
+  for (const [name, persona] of Object.entries(customPersonas)) {
+    const { invalid, reason } = isInvalidPersona(persona);
+    if (invalid && reason) {
+      const deleted = deleteCustomPersona(name);
+      if (deleted) {
+        removed.push({ name, reason });
+      }
+    }
+  }
+
+  return removed;
+}
+
+/**
+ * List invalid custom personas without removing them (dry run).
+ *
+ * @since 18.22.0
+ */
+export function listInvalidPersonas(): Array<{ name: string; reason: string }> {
+  const customPersonas = loadCustomPersonas();
+  const invalid: Array<{ name: string; reason: string }> = [];
+
+  for (const [name, persona] of Object.entries(customPersonas)) {
+    const result = isInvalidPersona(persona);
+    if (result.invalid && result.reason) {
+      invalid.push({ name, reason: result.reason });
+    }
+  }
+
+  return invalid;
 }
 
 // ============================================================================
@@ -623,6 +743,17 @@ export function createCognitivePersona(
     workingMemory: traits.workingMemory ?? basePersona.cognitiveTraits?.workingMemory ?? 0.5,
     readingTendency: traits.readingTendency ?? basePersona.cognitiveTraits?.readingTendency ?? 0.5,
     resilience: traits.resilience ?? basePersona.cognitiveTraits?.resilience ?? 0.5,
+    // These four were absent from this hand-written enumeration, so a caller who
+    // explicitly supplied them had them silently dropped and re-defaulted to 0.5:
+    // persona_create_submit_traits -> createCognitivePersona -> cognitive_journey_init
+    // returned selfEfficacy 0.2 as 0.5, satisficing 0.7 as 0.5, trustCalibration
+    // 0.4 as 0.5, interruptRecovery 0.35 as 0.5. The other 22 survived, which is
+    // what made it look like a defaulting rule rather than an omission.
+    // (2026-07-28)
+    selfEfficacy: traits.selfEfficacy ?? basePersona.cognitiveTraits?.selfEfficacy ?? 0.5,
+    satisficing: traits.satisficing ?? basePersona.cognitiveTraits?.satisficing ?? 0.5,
+    trustCalibration: traits.trustCalibration ?? basePersona.cognitiveTraits?.trustCalibration ?? 0.5,
+    interruptRecovery: traits.interruptRecovery ?? basePersona.cognitiveTraits?.interruptRecovery ?? 0.5,
     // New traits (v15.0.0)
     informationForaging: traits.informationForaging ?? basePersona.cognitiveTraits?.informationForaging ?? 0.5,
     changeBlindness: traits.changeBlindness ?? basePersona.cognitiveTraits?.changeBlindness ?? 0.3,
@@ -637,7 +768,20 @@ export function createCognitivePersona(
     fearOfMissingOut: traits.fearOfMissingOut ?? basePersona.cognitiveTraits?.fearOfMissingOut ?? 0.5,
     socialProofSensitivity: traits.socialProofSensitivity ?? basePersona.cognitiveTraits?.socialProofSensitivity ?? 0.5,
     mentalModelRigidity: traits.mentalModelRigidity ?? basePersona.cognitiveTraits?.mentalModelRigidity ?? 0.5,
+    siteFamiliarity: traits.siteFamiliarity ?? basePersona.cognitiveTraits?.siteFamiliarity ?? 0.5,
   };
+
+  // Backstop for the failure mode above. The enumeration is kept because it
+  // documents each trait's fallback, but a hand-written list silently drops
+  // whatever it forgets — that is exactly how four traits went missing. Anything
+  // the caller supplied that the list does not name is carried through rather
+  // than discarded, so a future addition to CognitiveTraits degrades to
+  // "no documented default" instead of "silently reset". (2026-07-28)
+  for (const [key, value] of Object.entries(traits)) {
+    if (value !== undefined && !(key in cognitiveTraits)) {
+      (cognitiveTraits as unknown as Record<string, number>)[key] = value as number;
+    }
+  }
 
   // Update demographics if provided
   if (options.techLevel) {
@@ -684,7 +828,14 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     else if (pattern === "f-pattern") attentionPattern = "f-pattern";
     else if (pattern === "z-pattern") attentionPattern = "z-pattern";
   }
-  if (persona.behaviors.attentionPattern) {
+  // Optional-chained like humanBehavior above. loadCustomPersonas casts parsed
+  // JSON straight to Persona with no validation, so a persona file without a
+  // `behaviors` key threw here and took down every caller of this function —
+  // list_cognitive_personas returned "Cannot read properties of undefined
+  // (reading 'attentionPattern')" instead of listing anything. The loader's own
+  // try/catch intends to SKIP a bad file, but the throw happened later, outside
+  // it. (2026-07-28)
+  if (persona.behaviors?.attentionPattern) {
     attentionPattern = persona.behaviors.attentionPattern as AttentionPatternType;
   }
 
@@ -722,7 +873,7 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
       decisionStyle = "quick-tap";
     }
   }
-  if (persona.behaviors.decisionStyle) {
+  if (persona.behaviors?.decisionStyle) {
     decisionStyle = persona.behaviors.decisionStyle as DecisionStyleType;
   }
 
@@ -757,13 +908,14 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     fearOfMissingOut: 0.5,
     socialProofSensitivity: 0.5,
     mentalModelRigidity: 0.5,
+    siteFamiliarity: 0.5,
   };
 
   return {
     traits: traits ? { ...defaultTraits, ...traits } : defaultTraits,
     attentionPattern,
     decisionStyle,
-    innerVoiceTemplate: persona.behaviors.innerVoiceTemplate as string | undefined,
+    innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,
   };
 }
 
@@ -840,6 +992,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.2,      // Low - not swayed by urgency
       socialProofSensitivity: 0.3, // Low - evaluates on merits
       mentalModelRigidity: 0.8,   // High - adapts to new patterns
+      siteFamiliarity: 0.9,   // Very high - daily user, knows everything
     },
     context: {
       viewport: [1920, 1080],
@@ -920,6 +1073,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.6,      // Medium-high - susceptible to urgency
       socialProofSensitivity: 0.8, // High - relies heavily on reviews
       mentalModelRigidity: 0.3,   // Low - struggles when patterns break
+      siteFamiliarity: 0.0,  // Zero - brand new, never visited before
     },
     context: {
       viewport: [1280, 800],
@@ -994,6 +1148,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.7,      // High - push notifications, urgency
       socialProofSensitivity: 0.6, // Medium-high - app store ratings
       mentalModelRigidity: 0.6,   // Medium - adapts to mobile patterns
+      siteFamiliarity: 0.4,  // Low-medium - used desktop version before
     },
     context: {
       viewport: [375, 812], // iPhone X dimensions
@@ -1068,6 +1223,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.2,      // Low - methodical, not impulsive
       socialProofSensitivity: 0.5, // Medium - reviews are accessible info
       mentalModelRigidity: 0.6,   // Medium - adapts but needs time
+      siteFamiliarity: 0.3,  // Low - has visited but forgets layout
     },
     context: {
       viewport: [1280, 800],
@@ -1142,6 +1298,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.3,      // Low - not driven by urgency, confused by it
       socialProofSensitivity: 0.7, // High - relies on grandchildren's recommendations
       mentalModelRigidity: 0.2,   // Very low - rigid, struggles with novel UIs
+      siteFamiliarity: 0.5, // Medium - knows the basics
     },
     context: {
       viewport: [1280, 800],
@@ -1222,6 +1379,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.9,      // Very high - urgency works on them
       socialProofSensitivity: 0.5, // Medium - if it's quick to evaluate
       mentalModelRigidity: 0.7,   // High - adapts quickly, expects conventions
+      siteFamiliarity: 0.2, // Low - site structure feels different each visit
     },
     context: {
       viewport: [1280, 800],
@@ -1368,6 +1526,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.3,      // Not swayed, focused on completing
       socialProofSensitivity: 0.5,
       mentalModelRigidity: 0.5,
+      siteFamiliarity: 0.5, // Medium - regular user with motor challenges
     },
   },
 
@@ -1458,6 +1617,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.3,      // Not swayed - focused
       socialProofSensitivity: 0.5,
       mentalModelRigidity: 0.4,   // Adapts but needs time
+      siteFamiliarity: 0.3, // Low - magnification makes layout unfamiliar
     },
   },
 
@@ -1539,6 +1699,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.85,     // Very high - ADHD correlates with FOMO
       socialProofSensitivity: 0.5, // Medium - if interesting
       mentalModelRigidity: 0.7,   // High - adapts easily, novelty-seeking
+      siteFamiliarity: 0.3, // Low - doesn't retain site structure well
     },
   },
 
@@ -1620,6 +1781,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.5,
       socialProofSensitivity: 0.6, // Relies on visual reviews
       mentalModelRigidity: 0.6,   // Good adaptation
+      siteFamiliarity: 0.5, // Medium - knows sites but reading is hard
     },
   },
 
@@ -1699,6 +1861,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.4,
       socialProofSensitivity: 0.6, // Visual reviews/ratings
       mentalModelRigidity: 0.65,  // Good visual adaptation
+      siteFamiliarity: 0.5, // Medium - visual learner, remembers layout
     },
   },
 
@@ -1786,6 +1949,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.25,     // Low - not driven by urgency
       socialProofSensitivity: 0.7, // High - relies on family advice
       mentalModelRigidity: 0.15,  // Very low - rigid, struggles
+      siteFamiliarity: 0.2, // Low - forgets between visits
     },
   },
 
@@ -1868,6 +2032,362 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.4,
       socialProofSensitivity: 0.5,
       mentalModelRigidity: 0.65,  // Adapts with workarounds
+      siteFamiliarity: 0.6, // Medium-high - functional user
+    },
+  },
+
+  // =========================================================================
+  // v18.35.0: Research-backed cognitive disability personas
+  // =========================================================================
+
+  "autism-spectrum": {
+    name: "autism-spectrum",
+    // Research: Yaneva et al. (2018, Behaviour & Information Technology) — eye tracking shows
+    // autistic users produce more scattered scanpaths, fixate on more elements, make more
+    // transitions between areas. Visual complexity and low element distinguishability cause
+    // disproportionate difficulty. Yaneva et al. (2020, W4A) confirmed with Scanpath Trend Analysis.
+    // AASPIRE guidelines (Raymaker/Nicolaidis 2019) validated with 170 autistic adults.
+    //
+    // SPECTRUM NOTE: This persona models a high-functioning autistic adult. Findings should NOT
+    // be generalized to the full spectrum. Sensory sensitivity profiles vary enormously. Many
+    // autistic users are power users who need predictability and consistency, not simplification.
+    description: "Autistic adult user — needs predictable layouts, clear labels, reduced visual noise. Based on Yaneva et al. eye tracking research.",
+    demographics: {
+      age_range: "18-45",
+      tech_level: "intermediate",
+      device: "desktop",
+    },
+    behaviors: {
+      needs_predictable_layout: true,
+      sensitive_to_visual_clutter: true,
+      literal_interpretation: true,
+      prefers_explicit_labels: true,
+    },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 400, max: 1200 },
+        clickDelay: { min: 300, max: 900 },
+        typeSpeed: { min: 80, max: 180 },
+        readingSpeed: 180,
+        scrollPauseTime: { min: 400, max: 1200 },
+      },
+      errors: {
+        misClickRate: 0.12,
+        doubleClickAccidental: 0.05,
+        typoRate: 0.06,
+        backtrackRate: 0.25,  // Higher - revisits elements more often
+      },
+      mouse: {
+        curvature: 0.4,
+        jitter: 5,
+        overshoot: 0.1,
+        speed: "normal",
+      },
+      attention: {
+        pattern: "thorough",  // Examines many elements, not just CTAs
+        scrollBehavior: "chunked",
+        focusAreas: ["header", "text", "images"],  // Scans broadly
+        distractionRate: 0.45,  // Higher - fixates on task-irrelevant elements (Yaneva 2018)
+      },
+    },
+    context: {
+      viewport: [1920, 1080],
+    },
+    accessibilityTraits: {
+      processingSpeed: 0.55,    // Slightly slower on complex layouts
+      attentionSpan: 0.6,       // Can sustain focus on predictable tasks
+      fatigueSusceptibility: 0.5, // Moderate - sensory overload increases fatigue
+    },
+    cognitiveTraits: {
+      workingMemory: 0.6,       // Often good - detail-oriented (Happé & Frith 2006)
+      patience: 0.65,           // Moderate-high - persistent on structured tasks
+      persistence: 0.7,         // High on predictable tasks, drops on chaotic ones
+      curiosity: 0.4,           // Lower - prefers known patterns over exploration
+      riskTolerance: 0.2,       // Very low - avoids unfamiliar/ambiguous UI elements
+      readingTendency: 0.7,     // Reads labels carefully, literal interpretation
+      comprehension: 0.55,      // Good with clear labels, struggles with ambiguous ones
+      resilience: 0.4,          // Sensory overload erodes recovery (BRS)
+      selfEfficacy: 0.55,       // Moderate - confident on familiar interfaces
+      satisficing: 0.3,         // Low - seeks completeness, not "good enough"
+      trustCalibration: 0.3,    // Low - skeptical of vague claims, needs explicit info
+      interruptRecovery: 0.3,   // Low - context-switching is costly
+      informationForaging: 0.35, // Low - systematic not scent-following
+      changeBlindness: 0.3,     // Low - actually notices MORE changes than typical (detail focus)
+      anchoringBias: 0.75,      // High - strong anchoring to first interpretation
+      timeHorizon: 0.5,         // Medium - task-dependent
+      attributionStyle: 0.5,    // Medium - depends on interface clarity
+      metacognitivePlanning: 0.55, // Moderate - systematic when structure is clear
+      proceduralFluency: 0.6,   // Good on consistent multi-step flows
+      transferLearning: 0.35,   // Low - each new interface pattern requires relearning
+      authoritySensitivity: 0.4, // Low - evaluates logically, not by authority cues
+      emotionalContagion: 0.3,  // Low - less influenced by emotional UI tone
+      fearOfMissingOut: 0.2,    // Low - not driven by social urgency
+      socialProofSensitivity: 0.25, // Low - evaluates independently
+      mentalModelRigidity: 0.2, // Very low (rigid) - needs consistent patterns
+      siteFamiliarity: 0.4,     // Low-medium - remembers structure but needs consistency
+    },
+  },
+
+  "intellectual-disability": {
+    name: "intellectual-disability",
+    // Research: Karreman, van der Geest & Buursink (2007, J Applied Research in ID) — users
+    // completed tasks with accessible content but not standard content. Images, familiar words,
+    // and larger fonts measurably improved comprehension. Rocha et al. (2015, PMC4467236) —
+    // task complexity is the key variable: simple browsing succeeds, form filling struggles,
+    // financial transactions often fail. W3C COGA User Research module on Down Syndrome.
+    //
+    // SPECTRUM NOTE: Models mild-to-moderate intellectual disability. Most web usability research
+    // studied this range. Visual memory can be above average even when judgment is impaired.
+    // Do NOT assume users cannot learn — they can, with consistent, simple interfaces.
+    description: "User with mild intellectual disability — needs simple navigation, plain language, image support. Based on Karreman et al. and W3C COGA research.",
+    demographics: {
+      age_range: "18-55",
+      tech_level: "beginner",
+      device: "desktop",
+    },
+    behaviors: {
+      needs_simple_language: true,
+      needs_image_support: true,
+      repeated_clicking: true,
+      perceives_loading_as_error: true,
+    },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 800, max: 2500 },
+        clickDelay: { min: 500, max: 1500 },
+        typeSpeed: { min: 200, max: 500 },
+        readingSpeed: 80,   // Significantly slower
+        scrollPauseTime: { min: 800, max: 2000 },
+      },
+      errors: {
+        misClickRate: 0.2,
+        doubleClickAccidental: 0.15,  // Repeated clicking is documented
+        typoRate: 0.2,
+        backtrackRate: 0.35,
+      },
+      mouse: {
+        curvature: 0.7,
+        jitter: 10,
+        overshoot: 0.2,
+        speed: "slow",
+      },
+      attention: {
+        pattern: "f-pattern",
+        scrollBehavior: "chunked",
+        focusAreas: ["images", "header", "cta"],
+        distractionRate: 0.4,
+      },
+    },
+    context: {
+      viewport: [1280, 800],
+    },
+    accessibilityTraits: {
+      processingSpeed: 0.3,     // Slow - measurably longer task times
+      attentionSpan: 0.4,       // Moderate - sustained on simple tasks
+      fatigueSusceptibility: 0.7, // High - complexity causes rapid fatigue
+    },
+    cognitiveTraits: {
+      workingMemory: 0.2,       // Low - limited capacity
+      patience: 0.5,            // Medium - willing to try but confused
+      persistence: 0.4,         // Medium - retries but gives up on complexity
+      curiosity: 0.3,           // Low - prefers familiar paths
+      riskTolerance: 0.2,       // Very low - sticks to obvious elements
+      readingTendency: 0.3,     // Low - relies on images and icons
+      comprehension: 0.2,       // Low - needs plain language
+      resilience: 0.35,         // Low - errors are discouraging (BRS)
+      selfEfficacy: 0.3,        // Low - often blames self for failures
+      satisficing: 0.8,         // High - takes first option that seems right
+      trustCalibration: 0.7,    // High - trusts official-looking content readily
+      interruptRecovery: 0.15,  // Very low - loses place completely
+      informationForaging: 0.15, // Very low - no systematic search strategy
+      changeBlindness: 0.8,     // Very high - misses subtle changes
+      anchoringBias: 0.85,      // Very high - first interpretation persists
+      timeHorizon: 0.6,         // Medium - patient when not frustrated
+      attributionStyle: 0.8,    // High - self-blaming ("I'm stupid")
+      metacognitivePlanning: 0.1, // Very low - trial and error only
+      proceduralFluency: 0.2,   // Very low - multi-step flows are very hard
+      transferLearning: 0.15,   // Very low - each interface is new
+      authoritySensitivity: 0.9, // Very high - defers to official cues
+      emotionalContagion: 0.7,  // High - influenced by UI emotional tone
+      fearOfMissingOut: 0.3,    // Low - not driven by urgency
+      socialProofSensitivity: 0.6, // Medium - influenced by social cues
+      mentalModelRigidity: 0.1, // Extremely rigid - needs consistency
+      siteFamiliarity: 0.15,    // Very low - limited retention between visits
+    },
+  },
+
+  "aphasia-receptive": {
+    name: "aphasia-receptive",
+    // Research: W3C COGA Aphasia research module — language-dependent navigation creates
+    // barriers. Single-proposition sentences with keyword emphasis improve performance.
+    // Brandenburg et al. (PMC12336571) — bridging digital divide. Roper — usability testing
+    // from aphasia perspective showed many participants could not accomplish text-heavy tasks.
+    //
+    // SPECTRUM NOTE: This models RECEPTIVE (Wernicke's) aphasia — difficulty understanding
+    // language. Expressive aphasia (Broca's) has different barriers (text input, not comprehension).
+    // Aphasia does NOT imply intellectual impairment — reasoning and judgment are intact.
+    description: "User with receptive aphasia — struggles with text-heavy navigation, needs visual cues and simple sentences. Language comprehension is impaired, intelligence is not.",
+    demographics: {
+      age_range: "35-75",
+      tech_level: "intermediate",
+      device: "desktop",
+    },
+    behaviors: {
+      struggles_with_text_menus: true,
+      relies_on_icons: true,
+      needs_short_sentences: true,
+      avoids_text_heavy_pages: true,
+    },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 600, max: 2000 },
+        clickDelay: { min: 400, max: 1200 },
+        typeSpeed: { min: 300, max: 800 },  // Text input very difficult
+        readingSpeed: 60,  // Severely impaired language processing
+        scrollPauseTime: { min: 600, max: 1500 },
+      },
+      errors: {
+        misClickRate: 0.15,
+        doubleClickAccidental: 0.08,
+        typoRate: 0.3,  // Word-finding difficulties affect typing
+        backtrackRate: 0.4,  // High - misunderstands navigation labels
+      },
+      mouse: {
+        curvature: 0.5,
+        jitter: 6,
+        overshoot: 0.12,
+        speed: "normal",
+      },
+      attention: {
+        pattern: "skim",  // Scans for visual cues, not text
+        scrollBehavior: "chunked",
+        focusAreas: ["images", "cta", "header"],  // Visual over textual
+        distractionRate: 0.3,
+      },
+    },
+    context: {
+      viewport: [1920, 1080],
+    },
+    accessibilityTraits: {
+      processingSpeed: 0.35,    // Low for language tasks, normal for visual
+      attentionSpan: 0.6,       // Normal attention, impaired comprehension
+      fatigueSusceptibility: 0.6, // Language processing is exhausting
+    },
+    cognitiveTraits: {
+      workingMemory: 0.45,      // Moderate - verbal WM impaired, visual intact
+      patience: 0.55,           // Medium - used to difficulty, somewhat persistent
+      persistence: 0.5,         // Medium - tries but abandons text-heavy tasks
+      curiosity: 0.3,           // Low - new text-heavy pages are daunting
+      riskTolerance: 0.25,      // Low - unsure what labels mean
+      readingTendency: 0.15,    // Very low - avoids reading, seeks visual cues
+      comprehension: 0.25,      // Low for text, normal for visual/spatial layouts
+      resilience: 0.45,         // Medium - accustomed to communication barriers
+      selfEfficacy: 0.4,        // Low-medium - knows they can think, frustrated by language
+      satisficing: 0.7,         // High - takes first visual match
+      trustCalibration: 0.5,    // Medium - can't evaluate text-based trust signals
+      interruptRecovery: 0.3,   // Low - re-reading to recover context is very hard
+      informationForaging: 0.2, // Very low - can't follow text scent
+      changeBlindness: 0.5,     // Medium - notices visual changes, misses text changes
+      anchoringBias: 0.7,       // High - sticks to first visual interpretation
+      timeHorizon: 0.5,         // Medium
+      attributionStyle: 0.4,    // Low-medium - knows it's a language issue, not stupidity
+      metacognitivePlanning: 0.5, // Medium - reasoning is intact, planning is possible
+      proceduralFluency: 0.4,   // Low-medium - multi-step with text instructions is hard
+      transferLearning: 0.4,    // Low-medium - visual patterns transfer, text patterns don't
+      authoritySensitivity: 0.5,
+      emotionalContagion: 0.5,
+      fearOfMissingOut: 0.3,
+      socialProofSensitivity: 0.4,
+      mentalModelRigidity: 0.4, // Medium - adapts visually, not linguistically
+      siteFamiliarity: 0.25,    // Low - text-based nav makes sites feel unfamiliar each visit
+    },
+  },
+
+  "dyscalculia": {
+    name: "dyscalculia",
+    // Research: W3C COGA dyscalculia research module — difficulty with numbers, percentages,
+    // reference numbers, quantities. UK Government Design System (2022) — redesigning numerical
+    // presentation "doubled the number of customers who understood" bills/statements.
+    // UK Accessibility Blog (2025) — specific design patterns for dyscalculia.
+    // Estimated 3-7% of population (Butterworth 2005, Science).
+    //
+    // SPECTRUM NOTE: Dyscalculia affects numerical processing specifically. General reasoning,
+    // language, and spatial skills are typically normal or above. Users may be highly skilled
+    // with technology except when numbers are involved.
+    description: "User with dyscalculia — struggles with pricing, quantities, dates, percentages, and reference numbers. Non-numerical skills are normal.",
+    demographics: {
+      age_range: "18-55",
+      tech_level: "intermediate",
+      device: "desktop",
+    },
+    behaviors: {
+      struggles_with_pricing: true,
+      confuses_quantities: true,
+      difficulty_with_dates: true,
+      avoids_number_heavy_pages: true,
+    },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 350, max: 900 },
+        clickDelay: { min: 200, max: 500 },
+        typeSpeed: { min: 80, max: 160 },
+        readingSpeed: 220,  // Normal text reading speed
+        scrollPauseTime: { min: 300, max: 800 },
+      },
+      errors: {
+        misClickRate: 0.08,
+        doubleClickAccidental: 0.03,
+        typoRate: 0.15,  // Number entry errors
+        backtrackRate: 0.3,  // Re-checks numerical information
+      },
+      mouse: {
+        curvature: 0.4,
+        jitter: 4,
+        overshoot: 0.08,
+        speed: "normal",
+      },
+      attention: {
+        pattern: "skim",
+        scrollBehavior: "continuous",
+        focusAreas: ["text", "prices", "header"],
+        distractionRate: 0.2,
+      },
+    },
+    context: {
+      viewport: [1920, 1080],
+    },
+    accessibilityTraits: {
+      processingSpeed: 0.7,     // Normal for non-numerical tasks
+      attentionSpan: 0.7,       // Normal attention
+      fatigueSusceptibility: 0.4, // Moderate - number-heavy pages are tiring
+    },
+    cognitiveTraits: {
+      workingMemory: 0.5,       // Normal verbal, impaired numerical
+      patience: 0.5,            // Medium - frustrated by numbers, fine otherwise
+      persistence: 0.6,         // Medium-high - persistent on non-numerical tasks
+      curiosity: 0.6,           // Normal - explores freely until numbers appear
+      riskTolerance: 0.4,       // Low-medium - cautious with purchases/quantities
+      readingTendency: 0.65,    // Medium-high - reads text normally, skips number-heavy sections
+      comprehension: 0.65,      // Normal for text, low for numerical content
+      resilience: 0.5,          // Medium - used to numerical difficulty
+      selfEfficacy: 0.5,        // Medium - confident except with numbers
+      satisficing: 0.6,         // Medium - avoids comparing numerical options
+      trustCalibration: 0.5,    // Medium - can evaluate text-based trust, not numerical
+      interruptRecovery: 0.6,   // Normal
+      informationForaging: 0.55, // Medium - normal except for numerical scent
+      changeBlindness: 0.5,     // Normal
+      anchoringBias: 0.6,       // Medium - numerical anchoring is especially strong
+      timeHorizon: 0.5,         // Medium
+      attributionStyle: 0.5,    // Medium - knows it's a specific difficulty
+      metacognitivePlanning: 0.6, // Normal - good planning for non-numerical tasks
+      proceduralFluency: 0.55,  // Medium - struggles when steps involve numbers
+      transferLearning: 0.6,    // Normal for non-numerical patterns
+      authoritySensitivity: 0.5,
+      emotionalContagion: 0.5,
+      fearOfMissingOut: 0.5,
+      socialProofSensitivity: 0.5,
+      mentalModelRigidity: 0.6, // Medium - adapts well to non-numerical patterns
+      siteFamiliarity: 0.5,     // Medium - normal retention
     },
   },
 };
@@ -1973,6 +2493,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.6,      // Medium-high - anxiety about missing out
       socialProofSensitivity: 0.7, // High - seeks validation from others
       mentalModelRigidity: 0.4,   // Low-medium - struggles with unexpected
+      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1280, 800],
@@ -2051,6 +2572,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.3,      // Low - not swayed by urgency
       socialProofSensitivity: 0.4, // Low-medium - evaluates on merits
       mentalModelRigidity: 0.8,   // High - adapts easily
+      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1920, 1080],
@@ -2129,6 +2651,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.75,     // High - emotional FOMO
       socialProofSensitivity: 0.7, // High - seeks emotional validation
       mentalModelRigidity: 0.5,   // Medium
+      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1280, 800],
@@ -2207,6 +2730,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.1,      // Minimum - not driven by urgency
       socialProofSensitivity: 0.3, // Low - evaluates independently
       mentalModelRigidity: 0.7,   // High - adapts methodically
+      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1280, 800],
@@ -2246,7 +2770,7 @@ export function listEmotionalPersonas(): string[] {
  * @param name Persona name to look up
  * @returns Persona object or undefined if not found
  */
-export function getAnyPersona(name: string): Persona | AccessibilityPersona | undefined {
+export function getAnyPersona(name: string): Persona | AccessibilityPersona | AgentPersona | undefined {
   // 1. Check runtime-registered personas first (Enterprise extensions)
   if (RUNTIME_PERSONAS[name]) {
     return RUNTIME_PERSONAS[name];
@@ -2273,6 +2797,11 @@ export function getAnyPersona(name: string): Persona | AccessibilityPersona | un
     return EMOTIONAL_PERSONAS[name];
   }
 
+  // 6. Check agent personas (v17.0.0)
+  if (AGENT_PERSONAS[name]) {
+    return AGENT_PERSONAS[name];
+  }
+
   return undefined;
 }
 
@@ -2286,10 +2815,11 @@ export function listAllPersonas(): string[] {
   const builtinNames = Object.keys(BUILTIN_PERSONAS);
   const accessibilityNames = Object.keys(ACCESSIBILITY_PERSONAS);
   const emotionalNames = Object.keys(EMOTIONAL_PERSONAS);
+  const agentNames = Object.keys(AGENT_PERSONAS);
   const customNames = Object.keys(loadCustomPersonas());
 
   // Combine and dedupe (runtime first for Enterprise priority)
-  return [...new Set([...runtimeNames, ...builtinNames, ...accessibilityNames, ...emotionalNames, ...customNames])];
+  return [...new Set([...runtimeNames, ...builtinNames, ...accessibilityNames, ...emotionalNames, ...agentNames, ...customNames])];
 }
 
 /**
@@ -2303,3 +2833,10 @@ export function registerPersonas(personas: Persona[]): void {
     RUNTIME_PERSONAS[persona.name] = persona;
   }
 }
+
+// ============================================================================
+// Agent Personas Re-exports (v17.0.0)
+// ============================================================================
+
+// Re-export agent personas for convenience
+export { AGENT_PERSONAS, isAgentPersona, getAgentPersona, listAgentPersonas, isAgentPersonaObject };

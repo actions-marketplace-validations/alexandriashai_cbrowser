@@ -13,6 +13,7 @@ import {
   listPersonas,
   getCognitiveProfile,
   createCognitivePersona,
+  isAgentPersonaObject,
 } from "../../personas.js";
 import { listAccessibilityPersonas, getAccessibilityPersona } from "../../personas.js";
 import { getPersonaValues, rankInfluencePatternsForProfile } from "../../values/index.js";
@@ -26,16 +27,51 @@ import type {
 } from "../../types.js";
 
 /**
+ * Fetch custom personas from CMS for the current account.
+ * Uses the API key from the session to authenticate.
+ */
+async function fetchCustomPersonasFromCMS(apiKey?: string): Promise<Array<{
+  name: string; slug: string; description: string; traits: Record<string, number>; values?: Record<string, number>; source: string;
+}>> {
+  if (!apiKey?.startsWith("cbk_")) return [];
+  const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+  try {
+    const res = await fetch(`${cmsUrl}/api/personas`, {
+      headers: { "Authorization": `Bearer ${apiKey}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as { personas: Array<{
+      name: string; slug: string; description: string; traits: string; schwartz_values?: string; source: string;
+    }> };
+    return data.personas.map(p => ({
+      name: p.name,
+      slug: p.slug,
+      description: p.description,
+      traits: typeof p.traits === "string" ? JSON.parse(p.traits) : p.traits,
+      values: p.schwartz_values ? (typeof p.schwartz_values === "string" ? JSON.parse(p.schwartz_values) : p.schwartz_values) : undefined,
+      source: p.source,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// Global API key for the current session (set by the remote server context)
+let _sessionApiKey: string | undefined;
+export function setSessionApiKey(key: string | undefined) { _sessionApiKey = key; }
+export function getSessionApiKey(): string | undefined { return _sessionApiKey; }
+
+/**
  * Register cognitive simulation tools (3 tools: cognitive_journey_init, cognitive_journey_update_state, list_cognitive_personas)
  */
 export function registerCognitiveTools(
   server: McpServer,
-  { getBrowser }: ToolRegistrationContext
+  { getBrowser, getBrowserByToken }: ToolRegistrationContext
 ): void {
-  server.tool(
-    "cognitive_journey_init",
-    "Initialize a cognitive user journey simulation. Returns the persona's cognitive profile, initial state, and abandonment thresholds. The actual simulation is driven by the LLM using browser tools (navigate, click, fill, screenshot) while tracking cognitive state.",
-    {
+  server.registerTool("cognitive_journey_init", {
+    title: "Initialize Cognitive Journey",
+    description: "Initialize a cognitive user journey simulation. Returns the persona's cognitive profile, initial state, and abandonment thresholds. The actual simulation is driven by the LLM using browser tools (navigate, click, fill, screenshot) while tracking cognitive state.",
+    inputSchema: {
       persona: z.string().describe("Persona name (e.g., 'first-timer', 'elderly-user', 'power-user') or custom description"),
       goal: z.string().describe("What the simulated user is trying to accomplish"),
       startUrl: z.string().url().describe("Starting URL for the journey"),
@@ -65,7 +101,8 @@ export function registerCognitiveTools(
         fearOfMissingOut: z.number().min(0).max(1).optional(),
         socialProofSensitivity: z.number().min(0).max(1).optional(),
         mentalModelRigidity: z.number().min(0).max(1).optional(),
-      }).optional().describe("Override specific cognitive traits (25 available)"),
+        siteFamiliarity: z.number().min(0).max(1).optional(),
+      }).optional().describe("Override specific cognitive traits (26 available, including siteFamiliarity: 0=brand new visitor, 1=daily user)"),
       location: z.object({
         timezone: z.string().optional().describe("IANA timezone (e.g., 'America/New_York', 'Europe/London')"),
         locale: z.string().optional().describe("BCP 47 locale (e.g., 'en-US', 'de-DE')"),
@@ -75,13 +112,81 @@ export function registerCognitiveTools(
           accuracy: z.number().optional(),
         }).optional().describe("Geographic coordinates for geolocation-dependent features"),
       }).optional().describe("Override persona's location settings (timezone, locale, geolocation)"),
+      waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
+      waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
     },
-    async ({ persona: personaName, goal, startUrl, customTraits, location }) => {
+    annotations: {
+      title: "Initialize Cognitive Journey",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ persona: personaName, goal, startUrl, customTraits, location, waitAfterLoad, waitForSelector }) => {
       const existingPersona = getAnyPersona(personaName);
       let personaObj: Persona | AccessibilityPersona;
 
+      // v17.0.0: Check for agent personas - cognitive journeys don't support them yet
+      if (existingPersona && isAgentPersonaObject(existingPersona)) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "Agent personas not supported for cognitive journeys",
+              message: `"${personaName}" is an AI agent persona. Cognitive journeys simulate human behavior and require human personas.`,
+              suggestedPersonas: ["first-timer", "power-user", "mobile-user"],
+            }, null, 2),
+          }],
+        };
+      }
+
       if (!existingPersona) {
-        personaObj = createCognitivePersona(personaName, personaName, customTraits || {});
+        // v18.54.0: Check CMS for account-scoped custom personas before creating a generic one
+        const cmsPersonas = await fetchCustomPersonasFromCMS(_sessionApiKey);
+        const cmsMatch = cmsPersonas.find(p => p.slug === personaName || p.name.toLowerCase() === personaName.toLowerCase());
+        if (cmsMatch) {
+          // Build persona directly with ALL CMS traits — skip createCognitivePersona
+          // which runs generatePersonaFromDescription and can normalize values
+          const basePersona = createCognitivePersona(cmsMatch.name, cmsMatch.description, {});
+          // Overwrite cognitiveTraits completely with CMS values (no defaults, no normalization)
+          basePersona.cognitiveTraits = { ...basePersona.cognitiveTraits, ...cmsMatch.traits } as typeof basePersona.cognitiveTraits;
+
+          // Register Schwartz values so saliency engine + journey engine can use them
+          if (cmsMatch.values) {
+            try {
+              const { registerPersonaValues, createPersonaValues } = await import("../../values/index.js");
+              const pv = createPersonaValues(
+                {
+                  selfDirection: cmsMatch.values.selfDirection ?? 0.5,
+                  stimulation: cmsMatch.values.stimulation ?? 0.5,
+                  hedonism: cmsMatch.values.hedonism ?? 0.5,
+                  achievement: cmsMatch.values.achievement ?? 0.5,
+                  power: cmsMatch.values.power ?? 0.5,
+                  security: cmsMatch.values.security ?? 0.5,
+                  conformity: cmsMatch.values.conformity ?? 0.5,
+                  tradition: cmsMatch.values.tradition ?? 0.5,
+                  benevolence: cmsMatch.values.benevolence ?? 0.5,
+                  universalism: cmsMatch.values.universalism ?? 0.5,
+                },
+                {
+                  autonomyNeed: cmsMatch.values.autonomyNeed ?? 0.5,
+                  competenceNeed: cmsMatch.values.competenceNeed ?? 0.5,
+                  relatednessNeed: cmsMatch.values.relatednessNeed ?? 0.5,
+                },
+                "esteem"
+              );
+              registerPersonaValues([{
+                personaName: cmsMatch.slug || cmsMatch.name,
+                values: pv,
+                rationale: "Custom persona values from CMS",
+              }]);
+            } catch { /* values registration failed — proceed without */ }
+          }
+
+          personaObj = basePersona;
+        } else {
+          personaObj = createCognitivePersona(personaName, personaName, customTraits || {});
+        }
       } else if (customTraits) {
         const defaultTraits: CognitiveTraits = {
           patience: 0.5,
@@ -109,6 +214,7 @@ export function registerCognitiveTools(
           fearOfMissingOut: 0.5,
           socialProofSensitivity: 0.5,
           mentalModelRigidity: 0.5,
+          siteFamiliarity: 0.5,
         };
         personaObj = {
           ...existingPersona,
@@ -151,7 +257,16 @@ export function registerCognitiveTools(
         timeLimit: traits.patience > 0.7 ? 180 : (traits.patience < 0.3 ? 60 : 120),
       };
 
-      const b = await getBrowser();
+      // v18.33.0: Use token-based browser for session continuity
+      let b: Awaited<ReturnType<typeof getBrowser>>;
+      let browserToken: string | undefined;
+      if (getBrowserByToken) {
+        const result = await getBrowserByToken(undefined); // New session for init
+        b = result.browser;
+        browserToken = result.token;
+      } else {
+        b = await getBrowser();
+      }
 
       // Apply location settings: explicit override > persona default
       const effectiveLocation: PersonaLocation = {
@@ -170,7 +285,127 @@ export function registerCognitiveTools(
         locationResult = await b.applyPersonaLocation(effectiveLocation);
       }
 
-      await b.navigate(startUrl);
+      const navOpts = {
+        ...(waitAfterLoad ? { waitAfterLoad } : {}),
+        ...(waitForSelector ? { waitForSelector } : {}),
+      };
+      await b.navigate(startUrl, navOpts);
+
+      // v18.30.0: Verify browser is healthy after navigation
+      // JS-heavy sites can crash the persistent browser context
+      const MAX_RETRIES = 2;
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+          const page = await b.getPage();
+          const title = await page.title().catch(() => '');
+          const bodyLen = await page.evaluate(() => document.body?.innerText?.length || 0).catch(() => 0);
+          if (bodyLen > 0 || title) break; // Page is healthy
+
+          // Page is blank — persistent context is corrupted
+          console.warn(`[cognitive_journey_init] Blank page on attempt ${attempt + 1}. Resetting browser (persistent state preserved).`);
+          await b.close();
+          await b.launch();
+          await b.navigate(startUrl, navOpts);
+        } catch (e) {
+          console.warn(`[cognitive_journey_init] Recovery attempt ${attempt + 1} failed: ${(e as Error).message}`);
+          try { await b.close(); await b.launch(); await b.navigate(startUrl, navOpts); } catch {}
+        }
+      }
+
+      // v18.35.0: Gate site model data by persona's siteFamiliarity trait
+      // If persona claims high familiarity but no site model data exists,
+      // downgrade to 0.0 and warn — can't simulate "knowing" a site we've never seen
+      const requestedFamiliarity = profile.traits.siteFamiliarity ?? 0.5;
+      let effectiveFamiliarity = requestedFamiliarity;
+      let familiarityWarning: string | undefined;
+      let siteModelContext: {
+        hasModel: boolean;
+        knownPaths?: number;
+        suggestion?: string;
+        familiarityLevel?: string;
+        familiarityDowngraded?: boolean;
+        originalFamiliarity?: number;
+      } = { hasModel: false };
+
+      try {
+        const { SiteModelManager } = await import("../../site-model/manager.js");
+        const siteModel = SiteModelManager.getInstance();
+        const domain = new URL(startUrl).hostname;
+        const stats = await siteModel.getModelStats(domain);
+        const hasData = stats.navigationNodes > 0;
+
+        // Downgrade familiarity if persona claims knowledge we don't have
+        if (!hasData && requestedFamiliarity > 0.1) {
+          effectiveFamiliarity = 0.0;
+          familiarityWarning = `"${personaObj.name}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} but CBrowser has NO prior knowledge of ${domain}. Downgraded to 0.0 (first visit). To build site knowledge, navigate the site first — data accumulates automatically on every navigate/click/fill.`;
+          siteModelContext = {
+            hasModel: false,
+            familiarityLevel: "none",
+            familiarityDowngraded: true,
+            originalFamiliarity: requestedFamiliarity,
+            suggestion: familiarityWarning,
+          };
+        } else if (hasData && requestedFamiliarity > 0.05) {
+          // Scale familiarity by data coverage — partial knowledge = partial familiarity
+          // A site with 3 pages mapped shouldn't give "expert" level access
+          const coverageScore = Math.min(1.0, stats.navigationNodes / 20); // 20+ pages = full coverage
+          effectiveFamiliarity = Math.min(requestedFamiliarity, coverageScore);
+
+          if (effectiveFamiliarity < requestedFamiliarity - 0.1) {
+            familiarityWarning = `"${personaObj.name}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} but site model only has ${stats.navigationNodes} pages mapped. Adjusted to ${effectiveFamiliarity.toFixed(1)}. More navigation will build fuller site knowledge.`;
+          }
+
+          const familiarityLevel =
+            effectiveFamiliarity >= 0.8 ? "expert" :
+            effectiveFamiliarity >= 0.5 ? "familiar" :
+            effectiveFamiliarity >= 0.1 ? "vague" : "none";
+
+          if (effectiveFamiliarity >= 0.8) {
+            siteModelContext = {
+              hasModel: true,
+              knownPaths: stats.goalPaths,
+              familiarityLevel,
+              familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
+              originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,
+              suggestion: stats.goalPaths > 0
+                ? `This persona knows this site well. ${stats.goalPaths} known goal paths, ${stats.navigationNodes} mapped pages. Use site_model_query for best path.`
+                : `This persona knows the site layout (${stats.navigationNodes} pages) but hasn't completed goals here.`,
+            };
+          } else if (effectiveFamiliarity >= 0.5) {
+            siteModelContext = {
+              hasModel: true,
+              familiarityLevel,
+              familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
+              originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,
+              suggestion: familiarityWarning || `This persona has some familiarity with this site (${stats.navigationNodes} pages known).`,
+            };
+          } else {
+            siteModelContext = {
+              hasModel: stats.failurePatterns > 0,
+              familiarityLevel,
+              familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
+              originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,
+              suggestion: stats.failurePatterns > 0
+                ? `This persona vaguely recalls issues on this site (${stats.failurePatterns} known problems).`
+                : familiarityWarning,
+            };
+          }
+        } else {
+          siteModelContext.familiarityLevel = "none";
+        }
+      } catch {
+        // If site model fails, treat as no data — downgrade high familiarity
+        if (requestedFamiliarity > 0.1) {
+          effectiveFamiliarity = 0.0;
+          siteModelContext = {
+            hasModel: false,
+            familiarityLevel: "none",
+            familiarityDowngraded: true,
+            originalFamiliarity: requestedFamiliarity,
+            suggestion: `Site model unavailable. "${personaObj.name}" siteFamiliarity downgraded from ${requestedFamiliarity.toFixed(1)} to 0.0.`,
+          };
+        }
+      }
 
       const personaValues = getPersonaValues(personaObj.name);
       const influencePatterns = personaValues
@@ -223,11 +458,25 @@ export function registerCognitiveTools(
                   susceptibility: ip.susceptibility,
                 })),
               },
+              motivationalValues: personaValues ? {
+                security: personaValues.security,
+                stimulation: personaValues.stimulation,
+                achievement: personaValues.achievement,
+                conformity: personaValues.conformity,
+                selfDirection: personaValues.selfDirection,
+                tradition: personaValues.tradition,
+                power: personaValues.power,
+                maslowLevel: personaValues.maslowLevel,
+              } : undefined,
               cognitiveProfile: profile,
               initialState,
               abandonmentThresholds: thresholds,
               goal,
               startUrl,
+              // v18.35.0: Site model context for informed exploration
+              siteModel: siteModelContext,
+              // v18.33.0: Browser session token for continuity across tool calls
+              _browserToken: browserToken || null,
               instructions: `
 COGNITIVE JOURNEY SIMULATION INSTRUCTIONS:
 
@@ -239,14 +488,23 @@ You are now simulating a "${personaObj.name}" user with these cognitive traits:
 
 Attention Pattern: ${profile.attentionPattern}
 Decision Style: ${profile.decisionStyle}
-
+${personaValues ? `
+MOTIVATIONAL VALUES (Schwartz — influence what this persona notices and clicks):
+- Security: ${personaValues.security.toFixed(2)} ${personaValues.security > 0.7 ? "(seeks trust signals, guarantees, reads policies)" : personaValues.security < 0.3 ? "(skips fine print, comfortable with risk)" : ""}
+- Stimulation: ${personaValues.stimulation.toFixed(2)} ${personaValues.stimulation > 0.7 ? "(drawn to 'New', beta features, novelty)" : personaValues.stimulation < 0.3 ? "(ignores new features, prefers familiar)" : ""}
+- Achievement: ${personaValues.achievement.toFixed(2)} ${personaValues.achievement > 0.7 ? "(seeks ROI, metrics, efficiency)" : ""}
+- Conformity: ${personaValues.conformity.toFixed(2)} ${personaValues.conformity > 0.7 ? "(influenced by reviews, 'Most popular', social proof)" : personaValues.conformity < 0.3 ? "(ignores social proof, independent)" : ""}
+- Self-Direction: ${personaValues.selfDirection.toFixed(2)} ${personaValues.selfDirection > 0.7 ? "(resists defaults, customizes, explores options)" : ""}
+` : ""}
 GOAL: "${goal}"
 
+IMPORTANT: Pass _browserToken="${browserToken || ''}" to ALL subsequent tool calls (navigate, screenshot, click, fill, scroll, extract) to maintain browser state across calls.
+
 SIMULATION LOOP:
-1. PERCEIVE - Use screenshot/snapshot to see the page. Filter by attention pattern.
+1. PERCEIVE - Use screenshot (with _browserToken) to see the page. Filter by attention pattern.
 2. COMPREHEND - Interpret elements as this persona would (lower comprehension = more confusion)
 3. DECIDE - Choose action based on traits. Generate inner monologue.
-4. EXECUTE - Use click/fill/navigate tools.
+4. EXECUTE - Use click/fill/navigate tools (always pass _browserToken).
 5. EVALUATE - Update cognitive state after each action:
    - patienceRemaining -= 0.02 + (frustrationLevel × 0.05)
    - confusionLevel changes based on UI clarity
@@ -271,10 +529,10 @@ Begin the simulation now. Narrate your thoughts as this persona.
     }
   );
 
-  server.tool(
-    "cognitive_journey_update_state",
-    "Update the cognitive state during a journey simulation. Call this after each action to track mental state.",
-    {
+  server.registerTool("cognitive_journey_update_state", {
+    title: "Update Cognitive State",
+    description: "Update the cognitive state during a journey simulation. Call this after each action to track mental state.",
+    inputSchema: {
       currentState: z.object({
         patienceRemaining: z.number(),
         confusionLevel: z.number(),
@@ -297,50 +555,90 @@ Begin the simulation now. Narrate your thoughts as this persona.
         comprehension: z.number(),
         persistence: z.number(),
       }).describe("Persona traits affecting state changes"),
+      personaValues: z.object({
+        security: z.number().optional(),
+        stimulation: z.number().optional(),
+        achievement: z.number().optional(),
+        conformity: z.number().optional(),
+        selfDirection: z.number().optional(),
+        tradition: z.number().optional(),
+        power: z.number().optional(),
+      }).optional().describe("Schwartz motivational values (0-1). Modulate cognitive state changes: security increases risk aversion, stimulation rewards novelty, achievement increases impatience with inefficiency."),
     },
-    async ({ currentState, actionResult, personaTraits }) => {
+    annotations: {
+      title: "Update Cognitive State",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  }, async ({ currentState, actionResult, personaTraits, personaValues }) => {
+      // Value modulation factors (0.8-1.2 range, default 1.0 when no values)
+      const v = personaValues || {};
+      const securityMod = 1 + ((v.security ?? 0.5) - 0.5) * 0.4;       // 0.8-1.2: high security = more reactive to failure
+      const stimulationMod = 1 + ((v.stimulation ?? 0.5) - 0.5) * 0.4;  // 0.8-1.2: high stimulation = more patience for novelty
+      const achievementMod = 1 + ((v.achievement ?? 0.5) - 0.5) * 0.4;  // 0.8-1.2: high achievement = more impatient with inefficiency
+      const conformityMod = 1 + ((v.conformity ?? 0.5) - 0.5) * 0.4;    // 0.8-1.2: high conformity = more frustrated without social proof
+
       let newPatienceRemaining = currentState.patienceRemaining - 0.02;
       let newConfusionLevel = currentState.confusionLevel;
       let newFrustrationLevel = currentState.frustrationLevel;
       let newConfidenceLevel = currentState.confidenceLevel;
       let newMood = currentState.currentMood;
 
-      newPatienceRemaining -= currentState.frustrationLevel * 0.05;
+      // Patience drain from frustration — achievement-driven personas drain faster
+      newPatienceRemaining -= currentState.frustrationLevel * 0.05 * achievementMod;
 
       if (actionResult.success) {
-        newConfusionLevel = Math.max(0, newConfusionLevel - 0.1);
+        // Success recovery — stimulation-seeking personas recover faster from novelty
+        newConfusionLevel = Math.max(0, newConfusionLevel - 0.1 * stimulationMod);
         newFrustrationLevel = Math.max(0, newFrustrationLevel - 0.05);
 
         if (actionResult.progressMade) {
-          newConfidenceLevel = Math.min(1, newConfidenceLevel + 0.1);
-          if (newMood === "confused" || newMood === "frustrated") {
-            newMood = "hopeful";
-          }
+          // Achievement-driven personas get bigger confidence boost from progress
+          newConfidenceLevel = Math.min(1, newConfidenceLevel + 0.1 * achievementMod);
         }
       } else {
-        newFrustrationLevel = Math.min(1, newFrustrationLevel + 0.2);
+        // Failure — security-focused personas accumulate MORE frustration on failure
+        newFrustrationLevel = Math.min(1, newFrustrationLevel + 0.2 * securityMod);
 
-        if (newFrustrationLevel > 0.7) {
-          newMood = "frustrated";
-        }
-        if (newFrustrationLevel > 0.8 && personaTraits.persistence < 0.5) {
-          newMood = "defeated";
-        }
       }
 
       if (actionResult.wasConfusing) {
-        newConfusionLevel = Math.min(1, newConfusionLevel + (1 - personaTraits.comprehension) * 0.15);
-
-        if (newConfusionLevel > 0.5 && newMood !== "frustrated") {
-          newMood = "confused";
-        }
+        // Confusion — conformity-seeking personas get more confused without clear guidance
+        newConfusionLevel = Math.min(1, newConfusionLevel + (1 - personaTraits.comprehension) * 0.15 * conformityMod);
       }
 
       if (actionResult.wentBack) {
-        newConfidenceLevel = Math.max(0, newConfidenceLevel - 0.15);
+        // Going back — security-focused personas lose more confidence (risk aversion)
+        newConfidenceLevel = Math.max(0, newConfidenceLevel - 0.15 * securityMod);
       }
 
+      // Mood resolved from the FINAL levels, by whichever dimension actually
+      // dominates. It used to be assigned inside whichever branch happened to
+      // run: frustration only set the mood on a FAILED action, while confusion
+      // set it on any action guarded only by `newMood !== "frustrated"`. So a
+      // persona carrying frustration 0.85 into a successful-but-confusing step
+      // came out "confused" while frustration outranked confusion 0.85 to 0.65.
+      // (2026-07-29)
+      if (newFrustrationLevel > 0.8 && personaTraits.persistence < 0.5) {
+        newMood = "defeated";
+      } else if (newFrustrationLevel > 0.7 || newConfusionLevel > 0.5) {
+        newMood = newFrustrationLevel >= newConfusionLevel ? "frustrated" : "confused";
+      } else if (actionResult.success && actionResult.progressMade) {
+        newMood = "hopeful";
+      }
+
+      // 6.18: goalProgress is a REQUIRED input that nothing read and nothing
+      // returned, so every loop the caller supplied it and got nothing back —
+      // state threading dropped it. progressMade already means "the goal moved",
+      // so advance it there and echo it otherwise.
+      const newGoalProgress = actionResult.progressMade
+        ? Math.min(1, currentState.goalProgress + 0.1)
+        : currentState.goalProgress;
+
       const newState: Partial<CognitiveState> = {
+        goalProgress: newGoalProgress,
         patienceRemaining: Math.max(0, newPatienceRemaining),
         confusionLevel: newConfusionLevel,
         frustrationLevel: newFrustrationLevel,
@@ -354,18 +652,57 @@ Begin the simulation now. Narrate your thoughts as this persona.
       let abandonmentReason: string | undefined;
       let abandonmentMessage: string | undefined;
 
-      if (newState.patienceRemaining! < 0.1) {
+      // Abandonment thresholds — values shift sensitivity
+      // Security-focused personas abandon earlier on risk/uncertainty
+      // Achievement-focused personas abandon earlier on inefficiency
+      const patienceThreshold = 0.1;
+      const frustrationThreshold = 0.85 / securityMod;  // Lower threshold for high-security personas
+      const confusionThreshold = 0.8 / conformityMod;   // Lower threshold for high-conformity personas
+
+      // Precedence used to be an implicit if/else chain — patience, then
+      // frustration, then confusion — so when two dimensions breached at once
+      // the reported reason depended on source order and nothing said which had
+      // actually driven the abandonment. Score each breach by how far PAST its
+      // own threshold it went, report the worst, and name the others. Margins
+      // are relative so thresholds of different scales stay comparable.
+      // (2026-07-29)
+      const breaches: Array<{ reason: string; margin: number; message: string }> = [];
+
+      if (newState.patienceRemaining! < patienceThreshold) {
+        breaches.push({
+          reason: "patience",
+          margin: (patienceThreshold - newState.patienceRemaining!) / Math.max(patienceThreshold, 1e-6),
+          message: "This is taking too long. I give up.",
+        });
+      }
+      if (newState.frustrationLevel! > frustrationThreshold) {
+        breaches.push({
+          reason: "frustration",
+          margin: (newState.frustrationLevel! - frustrationThreshold) / Math.max(frustrationThreshold, 1e-6),
+          message: (v.security ?? 0.5) > 0.7
+            ? "This doesn't feel safe or reliable. I'm leaving."
+            : "This is so frustrating! I'm done.",
+        });
+      }
+      // Confusion still requires two consecutive breaching steps: a single
+      // confusing moment is not grounds to give up.
+      if (newState.confusionLevel! > confusionThreshold && currentState.confusionLevel > confusionThreshold) {
+        breaches.push({
+          reason: "confusion",
+          margin: (newState.confusionLevel! - confusionThreshold) / Math.max(confusionThreshold, 1e-6),
+          message: (v.conformity ?? 0.5) > 0.7
+            ? "I can't tell what most people would do here. I'll try something else."
+            : "I have no idea what I'm supposed to do here.",
+        });
+      }
+
+      let alsoBreached: string[] | undefined;
+      if (breaches.length > 0) {
+        breaches.sort((a, b) => b.margin - a.margin);
         shouldAbandon = true;
-        abandonmentReason = "patience";
-        abandonmentMessage = "This is taking too long. I give up.";
-      } else if (newState.frustrationLevel! > 0.85) {
-        shouldAbandon = true;
-        abandonmentReason = "frustration";
-        abandonmentMessage = "This is so frustrating! I'm done.";
-      } else if (newState.confusionLevel! > 0.8 && currentState.confusionLevel > 0.8) {
-        shouldAbandon = true;
-        abandonmentReason = "confusion";
-        abandonmentMessage = "I have no idea what I'm supposed to do here.";
+        abandonmentReason = breaches[0].reason;
+        abandonmentMessage = breaches[0].message;
+        if (breaches.length > 1) alsoBreached = breaches.slice(1).map((b) => b.reason);
       }
 
       return {
@@ -377,6 +714,9 @@ Begin the simulation now. Narrate your thoughts as this persona.
               shouldAbandon,
               abandonmentReason,
               abandonmentMessage,
+              // Named so a caller can see the reason was a choice between
+              // simultaneous breaches, not the only one that fired.
+              ...(alsoBreached ? { alsoBreached } : {}),
               stateChange: {
                 patienceDelta: newState.patienceRemaining! - currentState.patienceRemaining,
                 confusionDelta: newState.confusionLevel! - currentState.confusionLevel,
@@ -389,11 +729,18 @@ Begin the simulation now. Narrate your thoughts as this persona.
     }
   );
 
-  server.tool(
-    "list_cognitive_personas",
-    "List all available personas with their cognitive traits (includes accessibility and emotional personas)",
-    {},
-    async () => {
+  server.registerTool("list_cognitive_personas", {
+    title: "List Cognitive Personas",
+    description: "List all available personas with their cognitive traits (includes accessibility and emotional personas)",
+    inputSchema: {},
+    annotations: {
+      title: "List Cognitive Personas",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async () => {
       const builtinNames = listPersonas();
       const accessibilityNames = listAccessibilityPersonas();
 
@@ -513,7 +860,95 @@ Begin the simulation now. Narrate your thoughts as this persona.
         };
       }).filter(Boolean);
 
-      const allPersonas = [...builtinPersonas, ...accessibilityPersonas];
+      // v18.35.0: Include local custom personas
+      const { loadCustomPersonas } = await import("../../personas.js");
+      const customPersonaMap = loadCustomPersonas();
+      const localCustomPersonas = Object.values(customPersonaMap).map(p => {
+        const profile = getCognitiveProfile(p);
+        return {
+          name: p.name,
+          description: p.description,
+          category: "custom" as const,
+          demographics: p.demographics,
+          cognitiveTraits: profile.traits,
+          attentionPattern: profile.attentionPattern,
+          decisionStyle: profile.decisionStyle,
+        };
+      });
+
+      // v18.54.0: Include account-scoped custom personas from CMS
+      const cmsPersonas = await fetchCustomPersonasFromCMS(_sessionApiKey);
+      const cmsCustomPersonas = cmsPersonas.map(p => ({
+        name: p.name,
+        description: p.description,
+        category: "custom" as const,
+        source: p.source,
+        cognitiveTraits: p.traits,
+        values: p.values ? (() => {
+          const sv = {
+            selfDirection: p.values.selfDirection ?? 0.5,
+            stimulation: p.values.stimulation ?? 0.5,
+            hedonism: p.values.hedonism ?? 0.5,
+            achievement: p.values.achievement ?? 0.5,
+            power: p.values.power ?? 0.5,
+            security: p.values.security ?? 0.5,
+            conformity: p.values.conformity ?? 0.5,
+            tradition: p.values.tradition ?? 0.5,
+            benevolence: p.values.benevolence ?? 0.5,
+            universalism: p.values.universalism ?? 0.5,
+          };
+          return {
+            schwartz: sv,
+            higherOrder: {
+              openness: (sv.selfDirection + sv.stimulation) / 2,
+              selfEnhancement: (sv.achievement + sv.power) / 2,
+              conservation: (sv.security + sv.conformity + sv.tradition) / 3,
+              selfTranscendence: (sv.benevolence + sv.universalism) / 2,
+            },
+            sdt: {
+              autonomyNeed: p.values.autonomyNeed ?? 0.5,
+              competenceNeed: p.values.competenceNeed ?? 0.5,
+              relatednessNeed: p.values.relatednessNeed ?? 0.5,
+            },
+            maslowLevel: "esteem" as const,
+          };
+        })() : undefined,
+      }));
+
+      // Dedupe by name. listPersonas() returns built-ins UNION the on-disk custom
+      // personas, so each disk-custom persona was already emitted in the builtin
+      // loop above (mislabelled category "builtin"), then again as "custom", and a
+      // third time from the CMS when it had been synced there — 37 rows for ~23
+      // real personas.
+      //
+      // This MERGES rather than replaces. A plain last-write-wins would be lossy:
+      // the CMS record carries no demographics / attentionPattern / decisionStyle
+      // and holds raw DB traits, so it would silently drop fields the earlier
+      // record had, on a tool whose own description advertises "with their
+      // cognitive traits". Later records therefore fill in and refine, and the
+      // first-seen computed cognitive profile wins over raw CMS traits.
+      // (2026-07-28)
+      const rawPersonas = [...builtinPersonas, ...accessibilityPersonas, ...localCustomPersonas, ...cmsCustomPersonas]
+        .filter(Boolean) as Array<Record<string, unknown>>;
+
+      const byName = new Map<string, Record<string, unknown>>();
+      for (const p of rawPersonas) {
+        const name = p.name as string;
+        const existing = byName.get(name);
+        if (!existing) {
+          byName.set(name, { ...p });
+          continue;
+        }
+        for (const [key, value] of Object.entries(p)) {
+          if (value === undefined || value === null) continue;
+          // getCognitiveProfile() output beats the raw traits column.
+          if (key === "cognitiveTraits" && existing.cognitiveTraits) continue;
+          existing[key] = value;
+        }
+      }
+      const allPersonas = [...byName.values()];
+      const countByCategory = (category: string) =>
+        allPersonas.filter((p) => p.category === category).length;
 
       return {
         content: [
@@ -523,8 +958,9 @@ Begin the simulation now. Narrate your thoughts as this persona.
               personas: allPersonas,
               count: allPersonas.length,
               categories: {
-                builtin: builtinPersonas.length,
-                accessibility: accessibilityPersonas.length,
+                builtin: countByCategory("builtin"),
+                accessibility: countByCategory("accessibility"),
+                custom: countByCategory("custom"),
               },
             }, null, 2),
           },

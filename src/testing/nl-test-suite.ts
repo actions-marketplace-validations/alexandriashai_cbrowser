@@ -15,6 +15,13 @@ import type { Page } from "playwright";
 import { existsSync, readFileSync } from "fs";
 
 import { CBrowser } from "../browser.js";
+import {
+  finishAutoCapture,
+  resolveCaptureOptions,
+  startAutoCapture,
+  type AutoCaptureResult,
+  type AutoCaptureSetting,
+} from "../recording/auto-capture.js";
 import type {
   NLTestStep,
   NLTestCase,
@@ -32,7 +39,9 @@ import type {
  * - "click [the] <target>" / "press <target>"
  * - "type '<value>' in[to] <target>" / "fill <target> with '<value>'"
  * - "select '<option>' from <dropdown>"
- * - "scroll down/up"
+ * - "scroll down/up [N times | N pixels]" / "scroll to [the] top/bottom [of the page]"
+ * - "set cookie <name> to <value>" (applies to the current page's origin — navigate first)
+ * - "tap at <x>,<y>" / "click at <x>,<y>" (real pointer events at viewport coordinates)
  * - "wait [for] <seconds> seconds"
  * - "wait for content" / "wait for page to load" / "wait for page ready" (v16.7.1)
  * - "wait for '<text>' appears" / "wait for <element> to appear" (v16.7.1)
@@ -53,6 +62,16 @@ export function parseNLInstruction(instruction: string): NLTestStep {
       instruction,
       action: "navigate",
       target: originalMatch ? originalMatch[1].trim() : navigateMatch[1].trim(),
+    };
+  }
+
+  // Coordinate tap MUST parse before the generic click pattern (which would swallow it)
+  const tapAtMatch = lower.match(/^(?:tap|click)\s+at\s+(\d+)\s*[,x]\s*(\d+)$/i);
+  if (tapAtMatch) {
+    return {
+      instruction,
+      action: "click",
+      target: `at:${tapAtMatch[1]},${tapAtMatch[2]}`,
     };
   }
 
@@ -104,13 +123,33 @@ export function parseNLInstruction(instruction: string): NLTestStep {
   }
 
   // Scroll patterns
-  const scrollMatch = lower.match(/^scroll\s+(up|down|left|right)(?:\s+(\d+)\s+(?:times|pixels))?$/i);
+  const scrollToMatch = lower.match(/^scroll\s+to\s+(?:the\s+)?(top|bottom)(?:\s+of\s+the\s+page)?$/i);
+  if (scrollToMatch) {
+    return {
+      instruction,
+      action: "scroll",
+      target: scrollToMatch[1],
+    };
+  }
+  const scrollMatch = lower.match(/^scroll\s+(up|down|left|right)(?:\s+(\d+)\s+(times|pixels))?$/i);
   if (scrollMatch) {
     return {
       instruction,
       action: "scroll",
       target: scrollMatch[1],
-      value: scrollMatch[2] || "3",
+      value: scrollMatch[2] || "1",
+      unit: (scrollMatch[3] as "times" | "pixels" | undefined) || "times",
+    };
+  }
+
+  // Cookie pattern — "set cookie NAME to VALUE" (value from the ORIGINAL string to preserve case)
+  const cookieMatch = trimmed.match(/^set\s+cookie\s+(\S+)\s+to\s+(.+)$/i);
+  if (cookieMatch) {
+    return {
+      instruction,
+      action: "cookie",
+      target: cookieMatch[1],
+      value: cookieMatch[2].trim(),
     };
   }
 
@@ -284,6 +323,15 @@ export interface NLTestSuiteOptions {
   headless?: boolean;
   /** Use fuzzy matching for text assertions */
   fuzzyMatch?: boolean;
+  /**
+   * Record the run to GIF/WebP/video (v18.70.0).
+   *
+   * `true` uses defaults; pass an options object to set fps, formats or output
+   * directory. The capture starts once the browser is up and stops before it
+   * closes, so no separate capture_start/capture_stop call is needed. Capture
+   * failures never fail the suite — they are reported on `result.capture.error`.
+   */
+  capture?: AutoCaptureSetting;
 }
 
 /**
@@ -381,6 +429,7 @@ export async function runNLTestSuite(
     screenshotOnFailure = true,
     headless = true,
     fuzzyMatch = false,
+    capture,
   } = options;
 
   const startTime = Date.now();
@@ -396,8 +445,20 @@ export async function runNLTestSuite(
     headless,
   });
 
+  let captureResult: AutoCaptureResult | undefined;
+  let captureSession: Awaited<ReturnType<typeof startAutoCapture>> = null;
+
   try {
     await browser.launch();
+
+    // Auto-capture (v18.70.0): starts here so the recording covers every test
+    // in the suite, and stops in the finally below before the browser closes.
+    captureSession = await startAutoCapture(
+      await browser.getPage(),
+      capture,
+      `suite-${suite.name.replace(/[^a-zA-Z0-9-_]+/g, "-").toLowerCase()}-${Date.now()}`,
+    );
+    if (captureSession) console.log(`   🎥 Capturing to ${captureSession.status().outDir}`);
 
     for (const test of suite.tests) {
       console.log(`\n📋 Test: ${test.name}`);
@@ -425,6 +486,18 @@ export async function runNLTestSuite(
             }
 
             case "click": {
+              const coordTarget = (step.target || "").match(/^at:(\d+),(\d+)$/);
+              if (coordTarget) {
+                const page = (browser as any).page as Page;
+                if (page) {
+                  const x = parseInt(coordTarget[1], 10);
+                  const y = parseInt(coordTarget[2], 10);
+                  await page.mouse.move(x, y);
+                  await page.mouse.down();
+                  await page.mouse.up();
+                }
+                break;
+              }
               const result = await browser.smartClick(step.target || "");
               if (!result.success) {
                 throw new Error(`Failed to click: ${step.target}`);
@@ -443,11 +516,43 @@ export async function runNLTestSuite(
             }
 
             case "scroll": {
-              const direction = step.target?.toLowerCase() === "up" ? -500 : 500;
               const page = (browser as any).page as Page;
               if (page) {
-                await page.evaluate((d) => window.scrollBy(0, d), direction);
+                const target = step.target?.toLowerCase();
+                if (target === "top" || target === "bottom") {
+                  await page.evaluate((t) => {
+                    window.scrollTo(0, t === "bottom" ? document.documentElement.scrollHeight : 0);
+                  }, target);
+                } else {
+                  const sign = target === "up" ? -1 : 1;
+                  const n = parseInt(step.value || "1", 10) || 1;
+                  const delta = sign * (step.unit === "pixels" ? n : n * 500);
+                  await page.evaluate((d) => window.scrollBy(0, d), delta);
+                }
               }
+              break;
+            }
+
+            case "cookie": {
+              const page = (browser as any).page as Page;
+              if (!page || !step.target) {
+                throw new Error(
+                  `Cookie step could not run (page=${!!page}, name=${step.target ?? "<missing>"}) — navigate before setting cookies`
+                );
+              }
+              // A site-set cookie of the same name (often dot-domain, e.g. an anon PHP
+              // session) would otherwise COEXIST with ours (host-only vs dot-domain are
+              // distinct identities) and win first-occurrence parsing server-side.
+              // Clear same-name cookies first so this is a true replacement.
+              const host = new URL(page.url()).hostname;
+              try {
+                await page.context().clearCookies({ name: step.target });
+              } catch {
+                /* clearCookies filters unsupported on old Playwright — best effort */
+              }
+              await page.context().addCookies([
+                { name: step.target, value: step.value || "", domain: host, path: "/" },
+              ]);
               break;
             }
 
@@ -610,6 +715,12 @@ export async function runNLTestSuite(
       console.log(`   ${testPassed ? "✅" : "❌"} ${test.name}: ${testPassed ? "PASSED" : "FAILED"}`);
     }
   } finally {
+    // Stop before the browser closes — the page has to still exist. Bounded, so
+    // a wedged recorder cannot hang the suite (see finishAutoCapture).
+    captureResult = await finishAutoCapture(
+      captureSession,
+      resolveCaptureOptions(capture)?.stopTimeoutMs,
+    );
     await browser.close();
   }
 
@@ -647,6 +758,7 @@ export async function runNLTestSuite(
       stepPassRate,
     },
     recommendations: recommendations.length > 0 ? recommendations : undefined,
+    ...(captureResult ? { capture: captureResult } : {}),
   };
 
   return result;

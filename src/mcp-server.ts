@@ -14,10 +14,22 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { PERSONA_CATEGORIES } from "./persona-questionnaire.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { CBrowser } from "./browser.js";
 import { ensureDirectories, getStatusInfo } from "./config.js";
+
+// Screen capture tools — implementation shared with the remote MCP server
+import {
+  startCapture,
+  stopCapture,
+  captureStatus,
+  CAPTURE_START_DESCRIPTION,
+  CAPTURE_STOP_DESCRIPTION,
+  CAPTURE_STATUS_DESCRIPTION,
+} from "./mcp-tools/base/capture-tools.js";
+import { applySecurityLayer } from "./mcp-tools/security-layer.js";
 
 // Visual module imports
 import {
@@ -64,6 +76,7 @@ import {
   saveCustomPersona,
   listEmotionalPersonas,
   getEmotionalPersona,
+  isAgentPersonaObject,
 } from "./personas.js";
 
 // Emotional state functions (v13.1.0)
@@ -123,13 +136,6 @@ import {
   securityAuditHandler,
   type SecurityAuditHandlerOptions,
 } from "mcp-guardian";
-
-// ============================================================================
-// CRITICAL: Redirect console.log to stderr for MCP stdio transport
-// MCP uses stdout for JSON-RPC messages. Any console.log output corrupts
-// the protocol and causes "Unexpected token" JSON parsing errors in clients.
-// ============================================================================
-console.log = (...args: unknown[]) => console.error(...args);
 
 // Shared browser instance
 let browser: CBrowser | null = null;
@@ -359,6 +365,32 @@ interface QuestionnaireSession {
 }
 
 const questionnaireSessionsMap = new Map<string, QuestionnaireSession>();
+
+/**
+ * Group a flat Schwartz/SDT value record into the nested schema every other
+ * values-returning path uses (schwartz / higherOrder / sdt / maslowLevel).
+ *
+ * persona_questionnaire_build emitted `values` FLAT, with Schwartz and SDT
+ * merged and no higherOrder grouping — so the C4b nested-schema fix never
+ * reached the creation path, and a persona built through the questionnaire had
+ * a different value shape from the same persona loaded back. Three sites
+ * already hand-write this grouping; this is the shared one. (2026-07-29)
+ */
+function nestPersonaValues(values: Record<string, unknown> | undefined) {
+  if (!values) return undefined;
+  const pick = (...keys: string[]) => {
+    const out: Record<string, unknown> = {};
+    for (const k of keys) if (values[k] !== undefined) out[k] = values[k];
+    return out;
+  };
+  return {
+    schwartz: pick("selfDirection", "stimulation", "hedonism", "achievement", "power",
+                   "security", "conformity", "tradition", "benevolence", "universalism"),
+    higherOrder: pick("openness", "selfEnhancement", "conservation", "selfTranscendence"),
+    sdt: pick("autonomyNeed", "competenceNeed", "relatednessNeed"),
+    maslowLevel: values.maslowLevel,
+  };
+}
 
 function getQuestionnaireSession(sessionId: string): QuestionnaireSession | undefined {
   return questionnaireSessionsMap.get(sessionId);
@@ -661,6 +693,14 @@ async function registerCBrowserTools(): Promise<McpServer> {
     return (originalTool as (...args: unknown[]) => unknown)(name, description, ...rest);
   };
 
+  // Security layer: audit logging, description scanning, zone checks. This server
+  // registers its own ~100 tools through the deprecated `server.tool(...)` rather
+  // than through registerAllPublicTools, so the layer is attached here directly.
+  // Wiring only the shared registration path left this entire surface unaudited —
+  // found by driving a real tools/call and finding no audit entry, which is the
+  // exact "wired but never fires" outcome this change exists to eliminate.
+  applySecurityLayer(server);
+
   // =========================================================================
   // Navigation Tools
   // =========================================================================
@@ -931,6 +971,88 @@ async function registerCBrowserTools(): Promise<McpServer> {
   );
 
   // =========================================================================
+  // Screen Capture Tools
+  //
+  // Same three tools as the remote server (src/mcp-tools/base/capture-tools.ts),
+  // in this server's older registration form and sharing that module's
+  // implementation — a tool that exists on only one server is half-shipped.
+  // This server is single-session, so no browser token is threaded through.
+  // =========================================================================
+
+  server.tool(
+    "capture_start",
+    CAPTURE_START_DESCRIPTION,
+    {
+      url: z.string().optional().describe("URL to navigate to before capturing. Omit to capture the current page."),
+      fps: z.number().optional().describe("Target frames per second (default: 10)"),
+      duration: z.string().optional().describe("Auto-stop after this long: 5s, 2m, 1500ms. Omit for an open-ended capture stopped by capture_stop."),
+      viewport: z.string().optional().describe("Viewport as WIDTHxHEIGHT (e.g. 1280x720) or a preset name (mobile, tablet, desktop, desktop-lg)"),
+      region: z.string().optional().describe("Capture a fixed region as x,y,width,height (e.g. 0,0,800,600). Clamped to the viewport."),
+      element: z.string().optional().describe("CSS selector to capture. Resolved to the element's bounding box once at start; the region does not follow the element if it moves."),
+      padding: z.number().optional().describe("Padding in pixels around the element region (default: 0)"),
+      format: z.string().optional().describe("Comma-separated output formats: gif,webp,mp4,webm (default: gif). mp4 needs a full ffmpeg; the bundled one does webm."),
+      quality: z.number().optional().describe("JPEG quality for captured frames, 1-100 (default: 80)"),
+      max_frames: z.number().optional().describe("Hard cap on retained frames (default: 3000)"),
+      name: z.string().optional().describe("Capture name / slug"),
+      out_dir: z.string().optional().describe("Output directory (default: a slug directory under the recordings dir)"),
+    },
+    async (args) => {
+      try {
+        const b = await getBrowser();
+        const payload = await startCapture(b, args);
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            }, null, 2),
+          }],
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "capture_stop",
+    CAPTURE_STOP_DESCRIPTION,
+    {},
+    async () => {
+      try {
+        const { payload } = await stopCapture();
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            }, null, 2),
+          }],
+        };
+      }
+    }
+  );
+
+  server.tool(
+    "capture_status",
+    CAPTURE_STATUS_DESCRIPTION,
+    {},
+    async () => {
+      return {
+        content: [{ type: "text", text: JSON.stringify(captureStatus(), null, 2) }],
+      };
+    }
+  );
+
+  // =========================================================================
   // Assertion Tools
   // =========================================================================
 
@@ -1195,6 +1317,37 @@ async function registerCBrowserTools(): Promise<McpServer> {
               url: result.url,
               overallStatus: result.overallStatus,
               summary: result.summary,
+              // The evidence used to be collapsed to two integers —
+              // screenshotCount / comparisonCount — while `result` carried every
+              // screenshot path, every pairwise similarity score, and
+              // problematicBrowsers. So the caller received an absolute verdict
+              // ("renders consistently across all tested browsers") with every
+              // number that could falsify it removed, and no way to open the
+              // screenshots it said it had taken.
+              //
+              // It also explains the contradiction with cross_browser_diff: this
+              // tool compares ABOVE-THE-FOLD PIXELS at a forced 1920x1080, while
+              // the diff compares FULL-PAGE TEXT at 1280x720. Two different
+              // measurements reported in language that claims to settle the same
+              // question. `scope` now says which one you are reading.
+              // (2026-07-29)
+              scope: "above-the-fold pixels at 1920x1080; page TEXT is not compared — use cross_browser_diff for content",
+              screenshots: result.screenshots.map((s) => ({
+                browser: s.browser,
+                path: (s as unknown as { screenshotPath?: string }).screenshotPath,
+                viewport: (s as unknown as { viewport?: unknown }).viewport,
+              })),
+              comparisons: result.comparisons.map((c) => ({
+                browserA: c.browserA,
+                browserB: c.browserB,
+                status: c.analysis?.overallStatus,
+                similarity: c.analysis?.similarityScore,
+                changes: (c.analysis?.changes ?? []).map((ch) => ({
+                  severity: ch.severity,
+                  description: ch.description,
+                })),
+              })),
+              ...(result.problematicBrowsers?.length ? { problematicBrowsers: result.problematicBrowsers } : {}),
               screenshotCount: result.screenshots.length,
               comparisonCount: result.comparisons.length,
               ...(result.missingBrowsers?.length ? { missingBrowsers: result.missingBrowsers } : {}),
@@ -1252,6 +1405,24 @@ async function registerCBrowserTools(): Promise<McpServer> {
               url: result.url,
               overallStatus: result.overallStatus,
               summary: result.summary,
+              // `result.issues` and `problematicViewports` were both computed and
+              // then dropped here, so the caller got "13 issues: 7 overflow, 2
+              // unreadable text..." with no way to learn WHICH viewport or WHICH
+              // element — a count they could not act on. Same computed-then-
+              // discarded shape as the cross-browser handler above. (2026-07-29)
+              issues: (result.issues ?? []).map((i) => ({
+                type: i.type,
+                severity: i.severity,
+                description: i.description,
+                affectedViewports: i.affectedViewports,
+                ...(i.breakpointRange ? { breakpointRange: i.breakpointRange } : {}),
+              })),
+              ...(result.problematicViewports?.length ? { problematicViewports: result.problematicViewports } : {}),
+              viewports: result.screenshots.map((s) => ({
+                name: (s as unknown as { viewport?: string; name?: string }).viewport
+                  ?? (s as unknown as { name?: string }).name,
+                path: (s as unknown as { screenshotPath?: string }).screenshotPath,
+              })),
               viewportsCount: result.screenshots.length,
             }, null, 2),
           },
@@ -1516,6 +1687,22 @@ async function registerCBrowserTools(): Promise<McpServer> {
     },
     async ({ baseUrl, testFiles, maxPages }) => {
       const result = await generateCoverageMap(baseUrl, testFiles, { maxPages });
+      // Mirrors the guard in mcp-tools/base/testing-tools.ts. This file is the
+      // local stdio server's independent registration of the same tool, so a fix
+      // applied to only one of the two surfaces leaves the bug live on the other.
+      if (result.missingTestFiles.length === testFiles.length && testFiles.length > 0) {
+        return {
+          isError: true,
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "no_readable_test_files",
+              message: `None of the ${testFiles.length} test file path(s) could be read, so there is no coverage to report.`,
+              missingTestFiles: result.missingTestFiles,
+            }, null, 2),
+          }],
+        };
+      }
       return {
         content: [
           {
@@ -1525,6 +1712,10 @@ async function registerCBrowserTools(): Promise<McpServer> {
               testedPages: result.testedPages.length,
               untestedPages: result.analysis.untestedPages,
               overallCoverage: `${result.analysis.coveragePercent.toFixed(1)}%`,
+              ...(result.missingTestFiles.length > 0 ? {
+                missingTestFiles: result.missingTestFiles,
+                warning: `${result.missingTestFiles.length} of ${testFiles.length} test files could not be read and contributed no coverage.`,
+              } : {}),
               gaps: result.gaps.slice(0, 10).map(g => ({
                 url: g.page.url,
                 priority: g.priority,
@@ -1761,6 +1952,20 @@ async function registerCBrowserTools(): Promise<McpServer> {
       // v16.14.1: Use getAnyPersona to find personas in ALL registries
       const existingPersona = getAnyPersona(personaName);
       let personaObj: Persona | AccessibilityPersona;
+
+      // v17.0.0: Check for agent personas - cognitive journeys don't support them yet
+      if (existingPersona && isAgentPersonaObject(existingPersona)) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              error: "Agent personas not supported for cognitive journeys",
+              message: `"${personaName}" is an AI agent persona. Cognitive journeys simulate human behavior and require human personas. Use a human persona instead, or use agent-ready-audit for AI agent testing.`,
+              suggestedPersonas: ["first-timer", "power-user", "mobile-user"],
+            }, null, 2),
+          }],
+        };
+      }
 
       if (!existingPersona) {
         // Create from description
@@ -2284,8 +2489,12 @@ This ensures personas are grounded in research, not stereotypes.
 `.trim(),
               categoryInfo,
               questionCount: questions.length,
+              // `questions` (formatted) and `rawQuestions` (unformatted) were
+              // both returned, so every question shipped twice and roughly
+              // doubled the payload. The formatted set is what a caller asks
+              // these with; the raw set carried no field the formatted one
+              // lacks. (2026-07-29)
               questions: formatted,
-              rawQuestions: questions,
             }, null, 2),
           },
         ],
@@ -2297,7 +2506,7 @@ This ensures personas are grounded in research, not stereotypes.
     "persona_category_guidance",
     "Get research-based guidance for a specific persona category. Explains what values are appropriate and why, with citations. Use before building a persona to understand category constraints.",
     {
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).describe("Persona category to get guidance for"),
+      category: z.enum(PERSONA_CATEGORIES).describe("Persona category to get guidance for"),
     },
     async ({ category }) => {
       const {
@@ -2334,7 +2543,12 @@ This ensures personas are grounded in research, not stereotypes.
                 sensory: "Use neutral (0.5) values. Sensory perception ≠ motivational psychology. Color-blindness doesn't make someone more/less achievement-oriented.",
                 emotional: "Apply trait-based values from personality psychology (e.g., anxiety = high security-seeking).",
                 general: "Use population baselines. Specific characteristics come from cognitive traits, not disability-based value shifts.",
-              }[category],
+                // Added 2026-07-29: this table covered five of the six
+                // categories, and TypeScript flagged it the moment the enum
+                // stopped silently excluding "agent". An unlisted key would have
+                // yielded `undefined` guidance beside a populated preset.
+                agent: "Agent personas are not human — motivational values do not apply. Use trait-based capability values (parsing, retrieval, tool use) and do NOT project human needs like security or belonging onto them.",
+              }[category as (typeof PERSONA_CATEGORIES)[number]],
             }, null, 2),
           },
         ],
@@ -2349,7 +2563,7 @@ This ensures personas are grounded in research, not stereotypes.
       name: z.string().describe("Name for the new persona"),
       description: z.string().describe("Description of the persona"),
       answers: z.record(z.string(), z.number()).describe("Map of trait names to values (0-1), e.g. {patience: 0.25, riskTolerance: 0.75}"),
-      category: z.enum(["cognitive", "physical", "sensory", "emotional", "general"]).optional().describe("Persona category for value safeguards. Auto-detected from name/description if not provided."),
+      category: z.enum(PERSONA_CATEGORIES).optional().describe("Persona category for value safeguards. Auto-detected from name/description if not provided."),
       valueOverrides: z.record(z.string(), z.number()).optional().describe("Override specific Schwartz values (0-1), e.g. {security: 0.8, stimulation: 0.3}"),
       save: z.boolean().optional().default(true).describe("Save the persona to disk for future use"),
     },
@@ -2423,7 +2637,10 @@ This ensures personas are grounded in research, not stereotypes.
                 strategy: categoryResult.valueStrategy,
                 guidance: categoryResult.guidance,
               },
+              // Flat shape retained for callers that already read it; the nested
+              // grouping is what every other values-returning path emits.
               values: categoryResult.values,
+              valuesNested: nestPersonaValues(categoryResult.values as unknown as Record<string, unknown>),
               researchBasis: subtypeValues
                 ? [...categoryResult.researchBasis, subtypeValues.researchBasis]
                 : categoryResult.researchBasis,
@@ -2698,7 +2915,17 @@ This ensures personas are grounded in research, not stereotypes.
       // Build persona profiles
       // v16.14.1: Use getAnyPersona to find personas in ALL registries
       // (builtin, accessibility, emotional, custom) - fixes name mismatch bug
-      const personas = personaNames.map(name => {
+      // v17.0.0: Filter out agent personas - cognitive journeys don't support them
+      const personas = personaNames
+        .filter(name => {
+          const persona = getAnyPersona(name);
+          if (persona && isAgentPersonaObject(persona)) {
+            console.warn(`[CBrowser] Skipping agent persona "${name}" - not supported for persona comparison`);
+            return false;
+          }
+          return true;
+        })
+        .map(name => {
         const existingPersona = getAnyPersona(name);
         let personaObj: Persona | AccessibilityPersona;
 
@@ -2706,7 +2933,8 @@ This ensures personas are grounded in research, not stereotypes.
           // Only create generic stub if persona truly doesn't exist
           personaObj = createCognitivePersona(name, name, {});
         } else {
-          personaObj = existingPersona;
+          // Safe cast - we filtered out agent personas above
+          personaObj = existingPersona as Persona | AccessibilityPersona;
         }
 
         const profile = getCognitiveProfile(personaObj);
@@ -3563,10 +3791,11 @@ This ensures personas are grounded in research, not stereotypes.
 
   server.tool(
     "status",
-    "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, and self-healing cache statistics",
+    "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, self-healing cache statistics, and MCP tool count",
     {},
     async () => {
-      const info = await getStatusInfo(VERSION);
+      // v18.22.0: Include tool count for self-diagnosis of tool discrepancies
+      const info = await getStatusInfo(VERSION, collectedTools.length);
       return {
         content: [
           {
@@ -4242,6 +4471,14 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
 }
 
 export async function startMcpServer(): Promise<void> {
+  // CRITICAL: MCP stdio transport uses stdout for JSON-RPC messages — any console.log
+  // corrupts the protocol ("Unexpected token" in clients). Redirect it to stderr here, at
+  // the top of the stdio entry point (before createMcpServer's tool-registration logging),
+  // NOT at module scope: cli.ts imports this module, so a module-level redirect poisoned
+  // console.log for the whole CLI and sent command output to stderr. The HTTP remote server
+  // (mcp-server-remote.ts) doesn't need this — its stdout is not the protocol channel.
+  console.log = (...args: unknown[]) => console.error(...args);
+
   const server = await createMcpServer();
   await connectMcpServer(server);
 }

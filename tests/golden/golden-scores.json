@@ -1,0 +1,1306 @@
+{
+  "aria-rich": {
+    "composite": 85,
+    "grade": "A",
+    "certification": "silver",
+    "motor": {
+      "score": 79,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 67,
+          "details": "4/6 interactive elements meet 44px minimum (67%)"
+        },
+        "hitProbability": {
+          "score": 91,
+          "details": "Average minimum dimension: 43px (sigmoid-scored)"
+        },
+        "interactionCount": {
+          "score": 55,
+          "details": "38 interactive elements on page (fewer is easier for motor impairments)"
+        },
+        "spacingAdequacy": {
+          "score": 100,
+          "details": "No spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 100,
+          "details": "No drag-dependent interactions detected"
+        }
+      }
+    },
+    "visual": {
+      "score": 89,
+      "components": {
+        "contrastCompliance": {
+          "score": 90,
+          "details": "No contrast data -- estimated from agent-ready accessibility score"
+        },
+        "textScalability": {
+          "score": 100,
+          "details": "Text content can scale to 200% without loss of functionality"
+        },
+        "colorIndependence": {
+          "score": 100,
+          "details": "No color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 91,
+          "details": "Estimated from semantic score (91/100)"
+        },
+        "spacingDensity": {
+          "score": 56,
+          "details": "Information density: 44% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 74,
+      "components": {
+        "decisionComplexity": {
+          "score": 86,
+          "details": "Decision layer cost: 0.070 (lower is better)"
+        },
+        "readability": {
+          "score": 74,
+          "details": "Flesch readability score: 62 (higher = more readable)"
+        },
+        "informationDensity": {
+          "score": 53,
+          "details": "480 elements on page (progressive penalty above 200)"
+        },
+        "attentionClarity": {
+          "score": 72,
+          "details": "CTA capture rate: 36.0% (higher = clearer attention guidance)"
+        },
+        "predictability": {
+          "score": 85,
+          "details": "10 navigation items (7 or fewer is optimal for cognitive predictability)"
+        }
+      }
+    },
+    "sensory": {
+      "score": 92,
+      "components": {
+        "animationControl": {
+          "score": 94,
+          "details": "6 animations detected — prefers-reduced-motion supported (user can disable)"
+        },
+        "sensoryIndependence": {
+          "score": 100,
+          "details": "No audio/caption accessibility barriers detected"
+        },
+        "visualCalm": {
+          "score": 78,
+          "details": "Information density: 44% (animations controllable via prefers-reduced-motion)"
+        },
+        "layoutConsistency": {
+          "score": 88,
+          "details": "Layout consistency derived from structural score (88/100)"
+        },
+        "overloadThreshold": {
+          "score": 95,
+          "details": "Total CTC: 0.340 (lower = less cognitive overload risk)"
+        }
+      }
+    },
+    "navigation": {
+      "score": 96,
+      "components": {
+        "semanticStructure": {
+          "score": 91,
+          "details": "Average of 3 semantic sub-scores: 91/100"
+        },
+        "keyboardOperability": {
+          "score": 100,
+          "details": "No keyboard accessibility barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 100,
+          "details": "No skip navigation issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 95,
+          "details": "ARIA label score: 95/100"
+        },
+        "formAccessibility": {
+          "score": 94,
+          "details": "Form label score: 94/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "cognitive",
+        "component": "informationDensity",
+        "score": 53,
+        "fix": "Reduce visible elements from 480 -- use progressive disclosure to reveal content incrementally"
+      },
+      {
+        "category": "motor",
+        "component": "interactionCount",
+        "score": 55,
+        "fix": "Reduce interactive elements from 38 to under 30 on a single view"
+      },
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 56,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      },
+      {
+        "category": "motor",
+        "component": "touchTargetCompliance",
+        "score": 67,
+        "fix": "Increase 2 interactive element sizes to at least 44x44px (WCAG 2.5.5 AAA)"
+      },
+      {
+        "category": "cognitive",
+        "component": "attentionClarity",
+        "score": 72,
+        "fix": "Make primary CTA visually dominant -- increase size, contrast, and whitespace around conversion elements"
+      }
+    ],
+    "url": "https://app.example.com/dashboard"
+  },
+  "cognitive-overload": {
+    "composite": 62,
+    "grade": "C",
+    "certification": "none",
+    "motor": {
+      "score": 80,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 100,
+          "details": "No touch target data available -- estimated from barriers"
+        },
+        "hitProbability": {
+          "score": 100,
+          "details": "No touch target barriers detected"
+        },
+        "interactionCount": {
+          "score": 0,
+          "details": "96 interactive elements on page (fewer is easier for motor impairments)"
+        },
+        "spacingAdequacy": {
+          "score": 100,
+          "details": "No spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 100,
+          "details": "No drag-dependent interactions detected"
+        }
+      }
+    },
+    "visual": {
+      "score": 71,
+      "components": {
+        "contrastCompliance": {
+          "score": 69,
+          "details": "No contrast data -- estimated from agent-ready accessibility score"
+        },
+        "textScalability": {
+          "score": 86,
+          "details": "High density (78%) may cause overlap at 200% zoom (-14)"
+        },
+        "colorIndependence": {
+          "score": 100,
+          "details": "No color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 66,
+          "details": "Estimated from semantic score (66/100)"
+        },
+        "spacingDensity": {
+          "score": 22,
+          "details": "Information density: 78% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 23,
+      "components": {
+        "decisionComplexity": {
+          "score": 24,
+          "details": "Decision layer cost: 0.380 (lower is better)"
+        },
+        "readability": {
+          "score": 41,
+          "details": "Flesch readability score: 34 (higher = more readable)"
+        },
+        "informationDensity": {
+          "score": 0,
+          "details": "2350 elements on page (progressive penalty above 200)"
+        },
+        "attentionClarity": {
+          "score": 14,
+          "details": "CTA capture rate: 7.0% (higher = clearer attention guidance)"
+        },
+        "predictability": {
+          "score": 40,
+          "details": "19 navigation items (7 or fewer is optimal for cognitive predictability)"
+        }
+      }
+    },
+    "sensory": {
+      "score": 76,
+      "components": {
+        "animationControl": {
+          "score": 100,
+          "details": "No animations detected"
+        },
+        "sensoryIndependence": {
+          "score": 100,
+          "details": "No audio/caption accessibility barriers detected"
+        },
+        "visualCalm": {
+          "score": 61,
+          "details": "Information density: 78%, 0 uncontrolled animations"
+        },
+        "layoutConsistency": {
+          "score": 61,
+          "details": "Layout consistency derived from structural score (61/100)"
+        },
+        "overloadThreshold": {
+          "score": 0,
+          "details": "Total CTC: 1.420 (lower = less cognitive overload risk)"
+        }
+      }
+    },
+    "navigation": {
+      "score": 74,
+      "components": {
+        "semanticStructure": {
+          "score": 61,
+          "details": "Average of 3 semantic sub-scores: 61/100"
+        },
+        "keyboardOperability": {
+          "score": 100,
+          "details": "No keyboard accessibility barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 100,
+          "details": "No skip navigation issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 55,
+          "details": "ARIA label score: 55/100"
+        },
+        "formAccessibility": {
+          "score": 52,
+          "details": "Form label score: 52/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "motor",
+        "component": "interactionCount",
+        "score": 0,
+        "fix": "Reduce interactive elements from 96 to under 30 on a single view"
+      },
+      {
+        "category": "cognitive",
+        "component": "informationDensity",
+        "score": 0,
+        "fix": "Reduce visible elements from 2350 -- use progressive disclosure to reveal content incrementally"
+      },
+      {
+        "category": "sensory",
+        "component": "overloadThreshold",
+        "score": 0,
+        "fix": "Reduce total cognitive load -- simplify page structure, reduce simultaneous information streams"
+      },
+      {
+        "category": "cognitive",
+        "component": "attentionClarity",
+        "score": 14,
+        "fix": "Make primary CTA visually dominant -- increase size, contrast, and whitespace around conversion elements"
+      },
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 22,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      }
+    ],
+    "url": "https://portal.example.gov/benefits/application"
+  },
+  "keyboard-trap": {
+    "composite": 82,
+    "grade": "B",
+    "certification": "bronze",
+    "motor": {
+      "score": 93,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 100,
+          "details": "No touch target data available -- estimated from barriers"
+        },
+        "hitProbability": {
+          "score": 100,
+          "details": "No touch target barriers detected"
+        },
+        "interactionCount": {
+          "score": 65,
+          "details": "34 interactive elements on page (fewer is easier for motor impairments)"
+        },
+        "spacingAdequacy": {
+          "score": 100,
+          "details": "No spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 100,
+          "details": "No drag-dependent interactions detected"
+        }
+      }
+    },
+    "visual": {
+      "score": 80,
+      "components": {
+        "contrastCompliance": {
+          "score": 73,
+          "details": "No contrast data -- estimated from agent-ready accessibility score"
+        },
+        "textScalability": {
+          "score": 100,
+          "details": "Text content can scale to 200% without loss of functionality"
+        },
+        "colorIndependence": {
+          "score": 100,
+          "details": "No color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 71,
+          "details": "Estimated from semantic score (71/100)"
+        },
+        "spacingDensity": {
+          "score": 52,
+          "details": "Information density: 48% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 86,
+      "components": {
+        "decisionComplexity": {
+          "score": 100,
+          "details": "No CTC decision layer data available"
+        },
+        "readability": {
+          "score": 78,
+          "details": "Flesch readability score: 65 (higher = more readable)"
+        },
+        "informationDensity": {
+          "score": 90,
+          "details": "260 elements on page (progressive penalty above 200)"
+        },
+        "attentionClarity": {
+          "score": 60,
+          "details": "No attention data available — estimated 60 (conservative)"
+        },
+        "predictability": {
+          "score": 100,
+          "details": "6 navigation items — clear, predictable structure"
+        }
+      }
+    },
+    "sensory": {
+      "score": 87,
+      "components": {
+        "animationControl": {
+          "score": 100,
+          "details": "No animations detected"
+        },
+        "sensoryIndependence": {
+          "score": 100,
+          "details": "No audio/caption accessibility barriers detected"
+        },
+        "visualCalm": {
+          "score": 76,
+          "details": "Information density: 48%, 0 uncontrolled animations"
+        },
+        "layoutConsistency": {
+          "score": 66,
+          "details": "Layout consistency derived from structural score (66/100)"
+        },
+        "overloadThreshold": {
+          "score": 68,
+          "details": "Total CTC: 0.550 (lower = less cognitive overload risk)"
+        }
+      }
+    },
+    "navigation": {
+      "score": 63,
+      "components": {
+        "semanticStructure": {
+          "score": 71,
+          "details": "Average of 1 semantic sub-scores: 71/100"
+        },
+        "keyboardOperability": {
+          "score": 40,
+          "details": "4 keyboard/motor barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 75,
+          "details": "1 skip mechanism issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 58,
+          "details": "ARIA label score: 58/100"
+        },
+        "formAccessibility": {
+          "score": 74,
+          "details": "Form label score: 74/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "navigation",
+        "component": "keyboardOperability",
+        "score": 40,
+        "fix": "Ensure all interactive elements are keyboard-accessible with logical tab order"
+      },
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 52,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      },
+      {
+        "category": "navigation",
+        "component": "linkButtonClarity",
+        "score": 58,
+        "fix": "Add descriptive ARIA labels to all links and buttons -- avoid 'click here' or icon-only controls"
+      },
+      {
+        "category": "cognitive",
+        "component": "attentionClarity",
+        "score": 60,
+        "fix": "Make primary CTA visually dominant -- increase size, contrast, and whitespace around conversion elements"
+      },
+      {
+        "category": "motor",
+        "component": "interactionCount",
+        "score": 65,
+        "fix": "Reduce interactive elements from 34 to under 30 on a single view"
+      }
+    ],
+    "url": "https://app.example.com/checkout"
+  },
+  "low-contrast": {
+    "composite": 87,
+    "grade": "A",
+    "certification": "silver",
+    "motor": {
+      "score": 99,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 100,
+          "details": "No touch target data available -- estimated from barriers"
+        },
+        "hitProbability": {
+          "score": 100,
+          "details": "No touch target barriers detected"
+        },
+        "interactionCount": {
+          "score": 95,
+          "details": "22 interactive elements on page (fewer is easier for motor impairments)"
+        },
+        "spacingAdequacy": {
+          "score": 100,
+          "details": "No spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 100,
+          "details": "No drag-dependent interactions detected"
+        }
+      }
+    },
+    "visual": {
+      "score": 78,
+      "components": {
+        "contrastCompliance": {
+          "score": 75,
+          "details": "12 contrast issues (10 normal text below 4.5:1, 2 large text below 3:1)"
+        },
+        "textScalability": {
+          "score": 100,
+          "details": "Text content can scale to 200% without loss of functionality"
+        },
+        "colorIndependence": {
+          "score": 80,
+          "details": "1 color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 78,
+          "details": "Estimated from semantic score (78/100)"
+        },
+        "spacingDensity": {
+          "score": 50,
+          "details": "Information density: 50% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 86,
+      "components": {
+        "decisionComplexity": {
+          "score": 100,
+          "details": "No CTC decision layer data available"
+        },
+        "readability": {
+          "score": 70,
+          "details": "Flesch readability score: 58 (higher = more readable)"
+        },
+        "informationDensity": {
+          "score": 100,
+          "details": "48 elements — well within cognitive limits"
+        },
+        "attentionClarity": {
+          "score": 62,
+          "details": "CTA capture rate: 31.0% (higher = clearer attention guidance)"
+        },
+        "predictability": {
+          "score": 100,
+          "details": "6 navigation items — clear, predictable structure"
+        }
+      }
+    },
+    "sensory": {
+      "score": 86,
+      "components": {
+        "animationControl": {
+          "score": 100,
+          "details": "No animations detected"
+        },
+        "sensoryIndependence": {
+          "score": 100,
+          "details": "No audio/caption accessibility barriers detected"
+        },
+        "visualCalm": {
+          "score": 75,
+          "details": "Information density: 50%, 0 uncontrolled animations"
+        },
+        "layoutConsistency": {
+          "score": 72,
+          "details": "Layout consistency derived from structural score (72/100)"
+        },
+        "overloadThreshold": {
+          "score": 50,
+          "details": "Total CTC: 0.700 (lower = less cognitive overload risk)"
+        }
+      }
+    },
+    "navigation": {
+      "score": 86,
+      "components": {
+        "semanticStructure": {
+          "score": 78,
+          "details": "Average of 3 semantic sub-scores: 78/100"
+        },
+        "keyboardOperability": {
+          "score": 100,
+          "details": "No keyboard accessibility barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 100,
+          "details": "No skip navigation issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 70,
+          "details": "ARIA label score: 70/100"
+        },
+        "formAccessibility": {
+          "score": 80,
+          "details": "Form label score: 80/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 50,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      },
+      {
+        "category": "sensory",
+        "component": "overloadThreshold",
+        "score": 50,
+        "fix": "Reduce total cognitive load -- simplify page structure, reduce simultaneous information streams"
+      },
+      {
+        "category": "cognitive",
+        "component": "attentionClarity",
+        "score": 62,
+        "fix": "Make primary CTA visually dominant -- increase size, contrast, and whitespace around conversion elements"
+      },
+      {
+        "category": "cognitive",
+        "component": "readability",
+        "score": 70,
+        "fix": "Simplify text to 8th-grade reading level (current Flesch: 58)"
+      },
+      {
+        "category": "navigation",
+        "component": "linkButtonClarity",
+        "score": 70,
+        "fix": "Add descriptive ARIA labels to all links and buttons -- avoid 'click here' or icon-only controls"
+      }
+    ],
+    "url": "https://example.com/pricing"
+  },
+  "minimal-empty": {
+    "composite": 81,
+    "grade": "B",
+    "certification": "silver",
+    "motor": {
+      "score": 88,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 100,
+          "details": "No touch target data available -- estimated from barriers"
+        },
+        "hitProbability": {
+          "score": 100,
+          "details": "No touch target barriers detected"
+        },
+        "interactionCount": {
+          "score": 40,
+          "details": "50 interactive elements on page (fewer is easier for motor impairments)"
+        },
+        "spacingAdequacy": {
+          "score": 100,
+          "details": "No spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 100,
+          "details": "No drag-dependent interactions detected"
+        }
+      }
+    },
+    "visual": {
+      "score": 75,
+      "components": {
+        "contrastCompliance": {
+          "score": 68,
+          "details": "No contrast data -- estimated from agent-ready accessibility score"
+        },
+        "textScalability": {
+          "score": 100,
+          "details": "Text content can scale to 200% without loss of functionality"
+        },
+        "colorIndependence": {
+          "score": 100,
+          "details": "No color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 50,
+          "details": "Estimated from semantic score (50/100)"
+        },
+        "spacingDensity": {
+          "score": 50,
+          "details": "Information density: 50% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 84,
+      "components": {
+        "decisionComplexity": {
+          "score": 100,
+          "details": "No CTC decision layer data available"
+        },
+        "readability": {
+          "score": 60,
+          "details": "No readability data available — estimated 60 (conservative)"
+        },
+        "informationDensity": {
+          "score": 100,
+          "details": "100 elements — well within cognitive limits"
+        },
+        "attentionClarity": {
+          "score": 60,
+          "details": "No attention data available — estimated 60 (conservative)"
+        },
+        "predictability": {
+          "score": 100,
+          "details": "5 navigation items — clear, predictable structure"
+        }
+      }
+    },
+    "sensory": {
+      "score": 86,
+      "components": {
+        "animationControl": {
+          "score": 100,
+          "details": "No animations detected"
+        },
+        "sensoryIndependence": {
+          "score": 100,
+          "details": "No audio/caption accessibility barriers detected"
+        },
+        "visualCalm": {
+          "score": 75,
+          "details": "Information density: 50%, 0 uncontrolled animations"
+        },
+        "layoutConsistency": {
+          "score": 70,
+          "details": "Layout consistency derived from structural score (70/100)"
+        },
+        "overloadThreshold": {
+          "score": 50,
+          "details": "Total CTC: 0.700 (lower = less cognitive overload risk)"
+        }
+      }
+    },
+    "navigation": {
+      "score": 72,
+      "components": {
+        "semanticStructure": {
+          "score": 50,
+          "details": "Estimated from agent-ready score: 50/100"
+        },
+        "keyboardOperability": {
+          "score": 100,
+          "details": "No keyboard accessibility barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 100,
+          "details": "No skip navigation issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 50,
+          "details": "ARIA label score: 50/100"
+        },
+        "formAccessibility": {
+          "score": 60,
+          "details": "Form label score: 60/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "motor",
+        "component": "interactionCount",
+        "score": 40,
+        "fix": "Reduce interactive elements from 0 to under 30 on a single view"
+      },
+      {
+        "category": "visual",
+        "component": "focusVisibility",
+        "score": 50,
+        "fix": "Ensure all interactive elements have visible focus indicators with at least 3:1 contrast"
+      },
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 50,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      },
+      {
+        "category": "sensory",
+        "component": "overloadThreshold",
+        "score": 50,
+        "fix": "Reduce total cognitive load -- simplify page structure, reduce simultaneous information streams"
+      },
+      {
+        "category": "navigation",
+        "component": "semanticStructure",
+        "score": 50,
+        "fix": "Add proper heading hierarchy (h1-h6), landmark roles, and semantic HTML elements"
+      }
+    ],
+    "url": "https://example.com/blank"
+  },
+  "missing-alt-barriers": {
+    "composite": 82,
+    "grade": "B",
+    "certification": "silver",
+    "motor": {
+      "score": 96,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 100,
+          "details": "No touch target data available -- estimated from barriers"
+        },
+        "hitProbability": {
+          "score": 100,
+          "details": "No touch target barriers detected"
+        },
+        "interactionCount": {
+          "score": 80,
+          "details": "28 interactive elements on page (fewer is easier for motor impairments)"
+        },
+        "spacingAdequacy": {
+          "score": 100,
+          "details": "No spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 100,
+          "details": "No drag-dependent interactions detected"
+        }
+      }
+    },
+    "visual": {
+      "score": 76,
+      "components": {
+        "contrastCompliance": {
+          "score": 66,
+          "details": "No contrast data -- estimated from agent-ready accessibility score"
+        },
+        "textScalability": {
+          "score": 100,
+          "details": "Text content can scale to 200% without loss of functionality"
+        },
+        "colorIndependence": {
+          "score": 100,
+          "details": "No color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 62,
+          "details": "Estimated from semantic score (62/100)"
+        },
+        "spacingDensity": {
+          "score": 45,
+          "details": "Information density: 55% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 82,
+      "components": {
+        "decisionComplexity": {
+          "score": 100,
+          "details": "No CTC decision layer data available"
+        },
+        "readability": {
+          "score": 73,
+          "details": "Flesch readability score: 61 (higher = more readable)"
+        },
+        "informationDensity": {
+          "score": 80,
+          "details": "320 elements on page (progressive penalty above 200)"
+        },
+        "attentionClarity": {
+          "score": 60,
+          "details": "No attention data available — estimated 60 (conservative)"
+        },
+        "predictability": {
+          "score": 95,
+          "details": "8 navigation items (7 or fewer is optimal for cognitive predictability)"
+        }
+      }
+    },
+    "sensory": {
+      "score": 80,
+      "components": {
+        "animationControl": {
+          "score": 100,
+          "details": "No animations detected"
+        },
+        "sensoryIndependence": {
+          "score": 85,
+          "details": "1 audio/caption barriers (each deducts 15)"
+        },
+        "visualCalm": {
+          "score": 73,
+          "details": "Information density: 55%, 0 uncontrolled animations"
+        },
+        "layoutConsistency": {
+          "score": 58,
+          "details": "Layout consistency derived from structural score (58/100)"
+        },
+        "overloadThreshold": {
+          "score": 50,
+          "details": "Total CTC: 0.700 (lower = less cognitive overload risk)"
+        }
+      }
+    },
+    "navigation": {
+      "score": 73,
+      "components": {
+        "semanticStructure": {
+          "score": 62,
+          "details": "Average of 3 semantic sub-scores: 62/100"
+        },
+        "keyboardOperability": {
+          "score": 100,
+          "details": "No keyboard accessibility barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 100,
+          "details": "No skip navigation issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 38,
+          "details": "ARIA label score: 38/100"
+        },
+        "formAccessibility": {
+          "score": 60,
+          "details": "Form label score: 60/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "navigation",
+        "component": "linkButtonClarity",
+        "score": 38,
+        "fix": "Add descriptive ARIA labels to all links and buttons -- avoid 'click here' or icon-only controls"
+      },
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 45,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      },
+      {
+        "category": "sensory",
+        "component": "overloadThreshold",
+        "score": 50,
+        "fix": "Reduce total cognitive load -- simplify page structure, reduce simultaneous information streams"
+      },
+      {
+        "category": "sensory",
+        "component": "layoutConsistency",
+        "score": 58,
+        "fix": "Standardize layout patterns -- consistent nav placement, predictable content regions"
+      },
+      {
+        "category": "cognitive",
+        "component": "attentionClarity",
+        "score": 60,
+        "fix": "Make primary CTA visually dominant -- increase size, contrast, and whitespace around conversion elements"
+      }
+    ],
+    "url": "https://example.com/gallery"
+  },
+  "perfect-page": {
+    "composite": 96,
+    "grade": "A+",
+    "certification": "gold",
+    "motor": {
+      "score": 99,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 100,
+          "details": "6/6 interactive elements meet 44px minimum (100%)"
+        },
+        "hitProbability": {
+          "score": 94,
+          "details": "Average minimum dimension: 47px (sigmoid-scored)"
+        },
+        "interactionCount": {
+          "score": 100,
+          "details": "12 interactive elements — manageable for motor impairments"
+        },
+        "spacingAdequacy": {
+          "score": 100,
+          "details": "No spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 100,
+          "details": "No drag-dependent interactions detected"
+        }
+      }
+    },
+    "visual": {
+      "score": 93,
+      "components": {
+        "contrastCompliance": {
+          "score": 95,
+          "details": "No contrast data -- estimated from agent-ready accessibility score"
+        },
+        "textScalability": {
+          "score": 100,
+          "details": "Text content can scale to 200% without loss of functionality"
+        },
+        "colorIndependence": {
+          "score": 100,
+          "details": "No color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 96,
+          "details": "Estimated from semantic score (96/100)"
+        },
+        "spacingDensity": {
+          "score": 68,
+          "details": "Information density: 32% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 96,
+      "components": {
+        "decisionComplexity": {
+          "score": 94,
+          "details": "Decision layer cost: 0.030 (lower is better)"
+        },
+        "readability": {
+          "score": 89,
+          "details": "Flesch readability score: 74 (higher = more readable)"
+        },
+        "informationDensity": {
+          "score": 100,
+          "details": "140 elements — well within cognitive limits"
+        },
+        "attentionClarity": {
+          "score": 96,
+          "details": "CTA capture rate: 48.0% (higher = clearer attention guidance)"
+        },
+        "predictability": {
+          "score": 100,
+          "details": "5 navigation items — clear, predictable structure"
+        }
+      }
+    },
+    "sensory": {
+      "score": 96,
+      "components": {
+        "animationControl": {
+          "score": 99,
+          "details": "1 animations detected — prefers-reduced-motion supported (user can disable)"
+        },
+        "sensoryIndependence": {
+          "score": 100,
+          "details": "No audio/caption accessibility barriers detected"
+        },
+        "visualCalm": {
+          "score": 84,
+          "details": "Information density: 32% (animations controllable via prefers-reduced-motion)"
+        },
+        "layoutConsistency": {
+          "score": 94,
+          "details": "Layout consistency derived from structural score (94/100)"
+        },
+        "overloadThreshold": {
+          "score": 100,
+          "details": "Total CTC: 0.180 — within easy range"
+        }
+      }
+    },
+    "navigation": {
+      "score": 97,
+      "components": {
+        "semanticStructure": {
+          "score": 96,
+          "details": "Average of 3 semantic sub-scores: 96/100"
+        },
+        "keyboardOperability": {
+          "score": 100,
+          "details": "No keyboard accessibility barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 100,
+          "details": "No skip navigation issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 92,
+          "details": "ARIA label score: 92/100"
+        },
+        "formAccessibility": {
+          "score": 97,
+          "details": "Form label score: 97/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 68,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      },
+      {
+        "category": "sensory",
+        "component": "visualCalm",
+        "score": 84,
+        "fix": "Reduce visual noise -- fewer animations, lower information density, more whitespace"
+      },
+      {
+        "category": "cognitive",
+        "component": "readability",
+        "score": 89,
+        "fix": "Simplify text to 8th-grade reading level (current Flesch: 74)"
+      },
+      {
+        "category": "navigation",
+        "component": "linkButtonClarity",
+        "score": 92,
+        "fix": "Add descriptive ARIA labels to all links and buttons -- avoid 'click here' or icon-only controls"
+      },
+      {
+        "category": "motor",
+        "component": "hitProbability",
+        "score": 94,
+        "fix": "Increase average interactive element dimensions -- target 48px minimum for reliable motor access"
+      }
+    ],
+    "url": "https://example.com/perfect"
+  },
+  "tiny-touch-targets": {
+    "composite": 74,
+    "grade": "B",
+    "certification": "bronze",
+    "motor": {
+      "score": 50,
+      "components": {
+        "touchTargetCompliance": {
+          "score": 20,
+          "details": "2/10 interactive elements meet 44px minimum (20%)"
+        },
+        "hitProbability": {
+          "score": 70,
+          "details": "Average minimum dimension: 28px (sigmoid-scored)"
+        },
+        "interactionCount": {
+          "score": 42,
+          "details": "48 interactive elements on page (fewer is easier for motor impairments)"
+        },
+        "spacingAdequacy": {
+          "score": 70,
+          "details": "2 touch target/spacing barriers detected"
+        },
+        "dragFreeAlternatives": {
+          "score": 75,
+          "details": "1 drag-dependent interactions found without alternatives"
+        }
+      }
+    },
+    "visual": {
+      "score": 78,
+      "components": {
+        "contrastCompliance": {
+          "score": 74,
+          "details": "No contrast data -- estimated from agent-ready accessibility score"
+        },
+        "textScalability": {
+          "score": 98,
+          "details": "High density (62%) may cause overlap at 200% zoom (-2)"
+        },
+        "colorIndependence": {
+          "score": 100,
+          "details": "No color-only information barriers detected"
+        },
+        "focusVisibility": {
+          "score": 70,
+          "details": "Estimated from semantic score (70/100)"
+        },
+        "spacingDensity": {
+          "score": 38,
+          "details": "Information density: 62% (lower is better for visual processing)"
+        }
+      }
+    },
+    "cognitive": {
+      "score": 79,
+      "components": {
+        "decisionComplexity": {
+          "score": 100,
+          "details": "No CTC decision layer data available"
+        },
+        "readability": {
+          "score": 79,
+          "details": "Flesch readability score: 66 (higher = more readable)"
+        },
+        "informationDensity": {
+          "score": 63,
+          "details": "420 elements on page (progressive penalty above 200)"
+        },
+        "attentionClarity": {
+          "score": 60,
+          "details": "No attention data available — estimated 60 (conservative)"
+        },
+        "predictability": {
+          "score": 90,
+          "details": "9 navigation items (7 or fewer is optimal for cognitive predictability)"
+        }
+      }
+    },
+    "sensory": {
+      "score": 84,
+      "components": {
+        "animationControl": {
+          "score": 100,
+          "details": "No animations detected"
+        },
+        "sensoryIndependence": {
+          "score": 100,
+          "details": "No audio/caption accessibility barriers detected"
+        },
+        "visualCalm": {
+          "score": 69,
+          "details": "Information density: 62%, 0 uncontrolled animations"
+        },
+        "layoutConsistency": {
+          "score": 68,
+          "details": "Layout consistency derived from structural score (68/100)"
+        },
+        "overloadThreshold": {
+          "score": 50,
+          "details": "Total CTC: 0.700 (lower = less cognitive overload risk)"
+        }
+      }
+    },
+    "navigation": {
+      "score": 80,
+      "components": {
+        "semanticStructure": {
+          "score": 70,
+          "details": "Average of 1 semantic sub-scores: 70/100"
+        },
+        "keyboardOperability": {
+          "score": 100,
+          "details": "No keyboard accessibility barriers detected"
+        },
+        "skipMechanisms": {
+          "score": 100,
+          "details": "No skip navigation issues detected"
+        },
+        "linkButtonClarity": {
+          "score": 62,
+          "details": "ARIA label score: 62/100"
+        },
+        "formAccessibility": {
+          "score": 65,
+          "details": "Form label score: 65/100"
+        }
+      }
+    },
+    "topIssues": [
+      {
+        "category": "motor",
+        "component": "touchTargetCompliance",
+        "score": 20,
+        "fix": "Increase 8 interactive element sizes to at least 44x44px (WCAG 2.5.5 AAA)"
+      },
+      {
+        "category": "visual",
+        "component": "spacingDensity",
+        "score": 38,
+        "fix": "Increase whitespace between content blocks -- reduce information density below 60%"
+      },
+      {
+        "category": "motor",
+        "component": "interactionCount",
+        "score": 42,
+        "fix": "Reduce interactive elements from 48 to under 30 on a single view"
+      },
+      {
+        "category": "sensory",
+        "component": "overloadThreshold",
+        "score": 50,
+        "fix": "Reduce total cognitive load -- simplify page structure, reduce simultaneous information streams"
+      },
+      {
+        "category": "cognitive",
+        "component": "attentionClarity",
+        "score": 60,
+        "fix": "Make primary CTA visually dominant -- increase size, contrast, and whitespace around conversion elements"
+      }
+    ],
+    "url": "https://m.example.com/news"
+  }
+}

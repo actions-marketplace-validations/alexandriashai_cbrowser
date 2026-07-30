@@ -12,7 +12,7 @@
  * Extracted from CBrowser class for better modularity.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
 import type { SelectorCache as SelectorCacheType, SelectorCacheEntry, SelectorCacheStats } from "../types.js";
 
@@ -83,11 +83,35 @@ export class SelectorCacheManager {
   private save(): void {
     if (!this.cache) return;
     const cachePath = this.getCachePath();
-    writeFileSync(cachePath, JSON.stringify(this.cache, null, 2));
+    // Write to a temp file, then rename. rename() is atomic within a filesystem,
+    // so a crash mid-write can no longer leave truncated JSON behind — which
+    // load() swallows into a silent fresh start, quietly discarding every heal
+    // ever learned. (2026-07-26)
+    const tmpPath = `${cachePath}.${process.pid}.tmp`;
+    try {
+      writeFileSync(tmpPath, JSON.stringify(this.cache, null, 2));
+      renameSync(tmpPath, cachePath);
+    } catch (e) {
+      try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* best effort */ }
+      if (this.config.verbose) {
+        console.debug(`[CBrowser] Failed to save selector cache: ${(e as Error).message}`);
+      }
+    }
   }
 
   /**
    * Get cache key for a selector.
+   *
+   * The lowercasing is DELIBERATE and stays. A 2026-07-26 cross-vendor audit
+   * flagged it as a bug on the grounds that selectors are case-sensitive, and
+   * that reasoning does not survive contact with how this cache is used: the keys
+   * here are frequently natural-language element descriptions ("Login Button" vs
+   * "login button"), which is exactly what the existing case-insensitivity test
+   * pins. Removing the fold broke that test, which is the codebase stating its
+   * intent. The narrow risk the audit identified is real but different — two
+   * literal selectors differing only by case (`text="Next"` / `text="NEXT"`)
+   * share an entry — and it is a design question about key normalisation, not a
+   * defect to silently flip.
    */
   private getKey(selector: string, domain?: string): string {
     const d = domain || this.currentDomain;
@@ -110,12 +134,21 @@ export class SelectorCacheManager {
     const key = this.getKey(original);
     const domain = this.currentDomain;
 
+    // Re-healing the SAME selector increments; it does not reset. The old code
+    // replaced the entry wholesale with successCount:1, so a selector healed 50
+    // times reported 1 heal — and that number is user-visible through the
+    // heal_stats tool, which made the feature look far less effective than it is.
+    // A heal to a DIFFERENT working selector is genuinely new, so it starts at 1.
+    // (2026-07-26)
+    const existing = cache.entries[key];
+    const isSameHeal = existing && existing.workingSelector === working;
+
     cache.entries[key] = {
       originalSelector: original,
       workingSelector: working,
       domain,
-      successCount: 1,
-      failCount: 0,
+      successCount: isSameHeal ? (existing.successCount || 0) + 1 : 1,
+      failCount: isSameHeal ? (existing.failCount || 0) : 0,
       lastUsed: new Date().toISOString(),
       reason,
     };

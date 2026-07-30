@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recording fixture — logs stamped with the absolute clock</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101018; color: #f2f2f7; font: 16px/1.4 system-ui, sans-serif; }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; }
+  #box { width: 140px; height: 140px; background: #4573d6; }
+</style>
+</head>
+<body>
+  <main><div id="box"></div><div id="clock">0.00</div></main>
+  <script>
+    // Every log carries Date.now(), the SAME absolute clock the manifest's
+    // started_at is written from. That makes attribution checkable without
+    // comparing page-relative time to capture-relative time - which are
+    // different origins, and mistaking one for the other looks exactly like a
+    // constant offset bug.
+    var start = performance.now();
+    var box = document.getElementById('box');
+    var clock = document.getElementById('clock');
+    var fired = {};
+
+    // Log every 250ms of page time, forever, so events land both before and
+    // during any capture window.
+    function emit(label) {
+      console.log('TICK ' + label + ' wall=' + Date.now());
+    }
+    setInterval(function () { emit('interval'); }, 250);
+
+    function tick(now) {
+      var t = (now - start) / 1000;
+      clock.textContent = t.toFixed(2);
+      box.style.transform = 'translateX(' + (Math.sin(t * Math.PI / 20) * 100).toFixed(2) + 'px) rotate(' + (t * 180) + 'deg)';
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

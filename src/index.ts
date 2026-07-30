@@ -19,11 +19,18 @@
  * ```
  */
 
-export { CBrowser } from "./browser.js";
+export { CBrowser, launchBrowserWithFallback, isBrowserNotInstalledError, installPlaywrightBrowsers, getBrowserInstallErrorMessage } from "./browser.js";
 export { getDefaultConfig, getPaths, ensureDirectories, mergeConfig } from "./config.js";
 export type { CBrowserConfig, CBrowserPaths, BrowserType } from "./config.js";
+export { getGeoProxy, listGeoRegions, isGeoProxyConfigured } from "./geo-proxy.js";
 export * from "./types.js";
-export { BUILTIN_PERSONAS, registerPersonas } from "./personas.js";
+export {
+  BUILTIN_PERSONAS,
+  registerPersonas,
+  isInvalidPersona,
+  cleanupInvalidPersonas,
+  listInvalidPersonas,
+} from "./personas.js";
 
 // Trait Reference (v15.0.0) - Cognitive trait definitions and guidelines
 export * from "./trait-reference.js";
@@ -39,6 +46,12 @@ export * from "./testing/index.js";
 
 // Analysis module
 export * from "./analysis/index.js";
+
+// Remediation module (v17.0.0)
+export * from "./remediation/index.js";
+
+// llms.txt module (v17.0.0)
+export * from "./llms-txt/index.js";
 
 // Performance module
 export * from "./performance/index.js";
@@ -85,8 +98,28 @@ export {
   registerPerformanceTools,
   registerAuditTools,
   registerBrowserManagementTools,
+  registerRemediationTools,
+  registerLlmsTxtTools,
 } from "./mcp-tools/index.js";
 export type { ToolRegistrationContext } from "./mcp-tools/index.js";
 
 // Security module (v18.0.0) - Request signing and audit logging
 export * from "./security/index.js";
+
+// Lightpanda Integration (v18.20.0) - High-performance headless browser
+// Uses CDP connection for 11x faster, 9x less memory headless browsing
+// ⚠️ SECURITY: Opt-in only, no security audit, never for sensitive ops
+export {
+  connectToLightpanda,
+  launchWithLightpandaFallback,
+  getLightpandaStatus,
+  isLightpandaConfigured,
+  shouldUseLightpanda,
+  getLightpandaConfig,
+  isSensitiveOperation,
+  LIGHTPANDA_SETUP_GUIDE,
+  LIGHTPANDA_SECURITY_WARNING,
+  LIGHTPANDA_LOCAL_ENDPOINT,
+  LIGHTPANDA_CLOUD_ENDPOINT,
+} from "./lightpanda.js";
+export type { LightpandaConfig, LightpandaConnectionResult, SensitiveOperation } from "./lightpanda.js";

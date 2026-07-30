@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Localized counter</title>
+<style>html,body{margin:0;height:100%;background:#0d0d14;color:#eee;font:16px system-ui}
+#c{position:absolute;left:12px;top:12px;font:20px monospace}</style></head>
+<body><main></main><div id="c">0</div>
+<script>
+// ONE small counter changes; the other 99% of a 1280x800 frame is static.
+// Global SSIM averages this to ~0.998 (zero change points — the bug).
+var n=0; setInterval(function(){document.getElementById('c').textContent=(++n);}, 250);
+</script></body></html>

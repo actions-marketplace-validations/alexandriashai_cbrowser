@@ -1458,6 +1458,63 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
       },
     ],
   },
+  {
+    name: "siteFamiliarity",
+    description: "How much the persona knows about a site from prior visits",
+    researchBasis: "Cockburn et al. (2007) - Familiar Interfaces; Tauscher & Greenberg (1997) - How people revisit web pages; Weinreich et al. (2008) - Off the beaten tracks",
+    levels: [
+      {
+        value: 0.0,
+        label: "Brand New Visitor",
+        behaviors: [
+          "Has never visited this site before",
+          "No memory of navigation or layout",
+          "Explores blindly, no shortcuts",
+          "Every page is a discovery",
+        ],
+      },
+      {
+        value: 0.25,
+        label: "Vague Memory",
+        behaviors: [
+          "Has visited once or twice before",
+          "Remembers what went wrong, not where things are",
+          "May avoid known problem areas",
+          "Doesn't remember navigation structure",
+        ],
+      },
+      {
+        value: 0.5,
+        label: "Occasional Visitor",
+        behaviors: [
+          "Knows the general site structure",
+          "Remembers main navigation but not details",
+          "Has partial memory of common paths",
+          "Needs some re-orientation each visit",
+        ],
+      },
+      {
+        value: 0.75,
+        label: "Regular User",
+        behaviors: [
+          "Knows the site well",
+          "Navigates efficiently to common areas",
+          "Remembers specific paths and shortcuts",
+          "Only confused by new or changed sections",
+        ],
+      },
+      {
+        value: 1.0,
+        label: "Daily User / Expert",
+        behaviors: [
+          "Uses the site daily or near-daily",
+          "Knows exactly where everything is",
+          "Uses keyboard shortcuts and direct URLs",
+          "Navigates entirely from memory",
+        ],
+      },
+    ],
+  },
 ];
 
 // ============================================================================
@@ -1553,6 +1610,7 @@ function generateQuestionText(trait: TraitReference): string {
     fearOfMissingOut: "How do 'limited time' offers and countdown timers affect your decisions?",
     socialProofSensitivity: "How much do reviews, ratings, and testimonials influence your decisions?",
     mentalModelRigidity: "When a website you use regularly changes its layout, how do you respond?",
+    siteFamiliarity: "How well do you typically know the websites you visit — are you usually a first-time visitor or a returning regular?",
   };
 
   return questionMap[trait.name] || `How would you describe your ${trait.name}?`;
@@ -1607,6 +1665,7 @@ export function buildTraitsFromAnswers(
     fearOfMissingOut: 0.50,     // Neutral - highly age-dependent
     socialProofSensitivity: 0.60, // Research: social proof is powerful (Cialdini)
     mentalModelRigidity: 0.55,  // Research: confirmation bias is common
+    siteFamiliarity: 0.5,       // Research: 58% of pages are revisits (Tauscher & Greenberg)
   };
 
   // Apply answers
@@ -1658,6 +1717,7 @@ const BASELINE_TRAITS: Record<string, number> = {
   fearOfMissingOut: 0.50,
   socialProofSensitivity: 0.60,
   mentalModelRigidity: 0.55,
+  siteFamiliarity: 0.5,
 };
 
 /** Check if a trait is at its baseline (wasn't explicitly set) */
@@ -1788,6 +1848,7 @@ const TRAIT_SHORT_HEADERS: Record<string, string> = {
   fearOfMissingOut: "FOMO",
   socialProofSensitivity: "SocialProof",
   mentalModelRigidity: "Rigidity",
+  siteFamiliarity: "SiteMem",
 };
 
 /**
@@ -1832,12 +1893,28 @@ export function formatForAskUserQuestion(questions: QuestionnaireQuestion[]): Ar
  * - EMOTIONAL: Trait anxiety/confidence → specific values based on psychology
  * - GENERAL: No disability → research-based population defaults
  */
-export type PersonaCategory =
-  | "cognitive"   // ADHD, dyslexia, autism, processing speed
-  | "physical"    // Motor tremor, mobility, dexterity
-  | "sensory"     // Color blindness, hearing, visual acuity
-  | "emotional"   // Anxiety, depression, confidence
-  | "general";    // No specific disability
+/**
+ * The single source of truth for persona categories.
+ *
+ * There used to be three hand-maintained lists and they had drifted apart:
+ * CATEGORY_QUESTION offered "agent" but not "emotional", while the
+ * persona_questionnaire_build / persona_category_guidance z.enums accepted
+ * "emotional" but not "agent". Each side was missing exactly what the other
+ * had, so picking "AI Agent" from the question the tool itself offered was
+ * rejected by the tool it told you to call next — a dead end reachable only by
+ * following the instructions. Every consumer now derives from this array.
+ * (2026-07-29)
+ */
+export const PERSONA_CATEGORIES = [
+  "cognitive",   // ADHD, dyslexia, autism, processing speed
+  "physical",    // Motor tremor, mobility, dexterity
+  "sensory",     // Color blindness, hearing, visual acuity
+  "emotional",   // Anxiety, depression, confidence
+  "general",     // No specific disability
+  "agent",       // AI agent personas (v17.0.0)
+] as const;
+
+export type PersonaCategory = (typeof PERSONA_CATEGORIES)[number];
 
 /**
  * Category-specific value presets with research citations.
@@ -1873,6 +1950,37 @@ export interface CategoryValuePreset {
  * Research-grounded value presets for each category.
  */
 export const CATEGORY_VALUE_PRESETS: CategoryValuePreset[] = [
+  {
+    // Added 2026-07-29. "agent" was offered by CATEGORY_QUESTION and accepted by
+    // the build enum, but had no preset — so getCategoryValuePreset fell through
+    // to "general" and an AI-agent persona was silently assigned GENERAL HUMAN
+    // motivational values. That is worse than rejecting the category: it
+    // produces a confident, research-cited profile that models the wrong kind of
+    // entity. Found by checking that every offered category resolves to its OWN
+    // preset rather than trusting that the enum widening was sufficient.
+    category: "agent",
+    description: "AI-powered automation agent (crawler, retrieval, task completion) — not a human user",
+    valueStrategy: "trait_based",
+    researchBasis: [
+      "Schwartz, S.H. (2012). An Overview of the Schwartz Theory of Basic Values. ORPC 2(1). — the theory is defined over HUMAN motivational goals and does not extend to software agents.",
+      "Deci, E.L. & Ryan, R.M. (2000). Self-Determination Theory. Psychological Inquiry 11(4). — autonomy/competence/relatedness are human psychological needs.",
+    ],
+    defaultValues: {
+      // Deliberately neutral on every human motivational dimension. An agent has
+      // capabilities and constraints, not needs; assigning it a security drive or
+      // a belonging need is a category error dressed as data. What differentiates
+      // agent personas belongs in cognitiveTraits (parsing, retrieval, tool use),
+      // which is why the strategy is trait_based.
+      stimulation: 0.5,
+      security: 0.5,
+      conformity: 0.5,
+      autonomyNeed: 0.5,
+      competenceNeed: 0.5,
+      relatednessNeed: 0.5,
+      maslowLevel: "physiological",
+    },
+    guidance: "Agent personas are not human. Schwartz values and SDT needs are defined over human motivation and do not transfer, so every motivational dimension stays neutral (0.5) and differentiation comes from cognitive traits — parsing ability, retrieval strategy, tool use, error recovery. Do NOT project human needs like security or belonging onto an agent; a confidently-wrong profile is worse than no profile.",
+  },
   {
     category: "cognitive",
     description: "Disabilities affecting brain function, attention, or processing",
@@ -2010,6 +2118,11 @@ const CATEGORY_KEYWORDS: Record<PersonaCategory, string[]> = {
     "depressed", "depression", "stressed", "overwhelmed", "fearful",
     "nervous", "worried", "self-doubt", "low confidence",
   ],
+  agent: [
+    "agent", "ai agent", "bot", "crawler", "scraper", "automation",
+    "retrieval", "task-completion", "crawl", "conversational",
+    "gpt", "claude", "llm", "language model", "autonomous",
+  ],
   general: [], // No keywords - default fallback
 };
 
@@ -2023,8 +2136,8 @@ export function detectPersonaCategory(
 ): PersonaCategory {
   const text = `${name} ${description || ""}`.toLowerCase();
 
-  // Check each category's keywords
-  for (const category of ["cognitive", "physical", "sensory", "emotional"] as PersonaCategory[]) {
+  // Check each category's keywords (agent first to prioritize AI agent detection)
+  for (const category of ["agent", "cognitive", "physical", "sensory", "emotional"] as PersonaCategory[]) {
     const keywords = CATEGORY_KEYWORDS[category];
     for (const keyword of keywords) {
       if (text.includes(keyword)) {
@@ -2435,6 +2548,20 @@ export const CATEGORY_QUESTION: {
       label: "Sensory Difference",
       description: "Color blindness, hearing, vision differences (affects perception only)",
       category: "sensory",
+    },
+    {
+      label: "AI Agent",
+      description: "AI-powered automation agent (crawler, retrieval, task completion)",
+      category: "agent",
+    },
+    {
+      // Was absent while the build tool accepted it — the other half of the
+      // drift described on PERSONA_CATEGORIES. A category with value presets and
+      // guidance that no question ever offers is unreachable by a caller
+      // following the documented flow.
+      label: "Emotional / Confidence",
+      description: "Anxiety, low confidence, or fear of making mistakes shapes how they navigate",
+      category: "emotional",
     },
     // Note: "Other" option always available via AskUserQuestion
   ],

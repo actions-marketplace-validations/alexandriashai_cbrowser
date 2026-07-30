@@ -1,6 +1,6 @@
 ---
 name: CBrowser
-description: Cognitive Browser - AI-powered browser automation with constitutional safety, AI visual regression, cross-browser testing, responsive testing, A/B comparison, and user perspective testing. v16.10.0 (25 cognitive traits with research-based correlations, 9 personas, persona questionnaire, FCP/TTFB Web Vitals ratings, reduced stealth false positives). USE WHEN cognitive browser, smart browser, AI browser automation, vision-based automation, self-healing selectors, autonomous web agent, user testing, persona testing, authenticated automation, test suite, natural language tests, repair tests, fix broken tests, flaky test detection, detect flaky tests, unreliable tests, constitutional safety, safe automation, visual regression, screenshot comparison, cross-browser, responsive testing, viewport testing, mobile testing, A/B testing, staging vs production, compare URLs, performance regression, test coverage, coverage map, coverage gaps, MCP server, Claude Desktop, remote MCP, custom connector, Auth0 OAuth, accessibility, a11y, ARIA, verbose, debug, overlay, dismiss overlay, CI/CD, GitHub Action, Docker, GitLab CI, cognitive journey, cognitive simulation, user abandonment, friction detection, cognitive traits, patience, frustration, confusion, resilience, bounce-back, recovery, vision mode, hover, dropdown menu, daemon mode, persistent session, explore, custom dropdown, Alpine.js, React Select, agent-ready, competitive benchmark, empathy audit, focus hierarchy, attention patterns, session bridge, api-free, compare personas, deterministic, motor-tremor, low-vision, adhd, color-blind, disability personas, persona questionnaire, 25 traits, 6 tiers, trait correlations, web vitals.
+description: Cognitive Browser — AI browser automation that simulates real user cognition. 122 MCP tools, 21 personas, 25 cognitive traits, constitutional safety, cognitive journeys with LLM-free trace replay, screen capture to GIF/WebP/WebM with an AI-readable frame manifest (v18.69.3). USE WHEN browser automation OR cognitive journey OR persona testing OR empathy audit OR agent-ready audit OR visual regression OR cross-browser test OR responsive test OR natural language tests OR flaky test detection OR performance regression OR user abandonment OR friction detection OR record a video OR record a gif OR screen capture OR capture animation OR capture motion OR screencast OR record the page OR capture an element as it moves.
 ---
 
 # CBrowser (Cognitive Browser)
@@ -39,16 +39,29 @@ Start the local MCP server included with the skill:
 npx cbrowser mcp-server  # Starts local MCP on stdio
 ```
 
-Then use MCP tools:
+Then use MCP tools (stdio names below; a claude.ai remote connector exposes the same tools as `mcp__claude_ai_<YourConnectorName>__*`):
 
 | MCP Tool | Purpose |
 |----------|---------|
-| `mcp__claude_ai_CBrowser_Demo__navigate` | Navigate to URL |
-| `mcp__claude_ai_CBrowser_Demo__click` | Click elements |
-| `mcp__claude_ai_CBrowser_Demo__fill` | Fill form fields |
-| `mcp__claude_ai_CBrowser_Demo__cognitive_journey_init` | Start cognitive journey |
+| `mcp__cbrowser__navigate` | Navigate to URL |
+| `mcp__cbrowser__click` | Click elements |
+| `mcp__cbrowser__fill` | Fill form fields |
+| `mcp__cbrowser__cognitive_journey_init` | Start cognitive journey |
 
 **All three options provide the same CBrowser functionality.** Choose based on your setup.
+
+## Cost & API Keys (check BEFORE running)
+
+Cognitive commands call the Anthropic API per journey step (~$0.05/test target). Everything else is free:
+
+| Free (keyless) | Keyed (costs API money) |
+|----------------|-------------------------|
+| `navigate`, `screenshot`, `click`, `fill`, `extract`, `scroll` | `cognitive-journey` (LLM per step; fails loudly without a key) |
+| `explore` (built-in heuristics) | `compare-personas` (one full journey PER persona — N× cost) |
+| `agent-ready-audit`, `ai-benchmark`, `hunt-bugs`, `webmcp-ready` | `visual-cognitive-story` |
+| `doctor`, `status`, visual/perf baselines | anything doing per-step persona reasoning |
+
+**Replay is free (v18.69.0).** Record a journey once with `trace: true` — per-step JSONL lands in `~/.cbrowser/traces/<journeyId>.jsonl` (page state stored as a sha256 hash; secrets and raw HTML redacted by construction). Replay with `replayTrace: <path>`: deterministic, **zero per-step LLM calls**. Prefer replay for regression checks and debugging over re-running paid journeys. Dynamic pages legitimately diverge — `TraceDivergenceError` names the exact step.
 
 ### DO NOT USE
 | Avoid | Reason |
@@ -125,6 +138,7 @@ Built for the Claude ecosystem. First-class MCP server for Claude Desktop integr
 | "cross-browser", "browser comparison" | npm: `cross-browser` | Cross-browser visual testing (v7.1.0) |
 | "responsive", "viewport", "mobile testing" | npm: `responsive` | Responsive visual testing (v7.2.0) |
 | "A/B", "compare URLs", "staging vs production" | npm: `ab` | A/B visual comparison (v7.3.0) |
+| "record a video", "record a gif", "screen capture", "capture motion", "screencast" | `Workflows/Capture.md` | Screen capture to GIF/WebP/WebM + frame manifest (v18.69.3) |
 
 ---
 
@@ -148,9 +162,9 @@ npx cbrowser fill "email input" "user@example.com"
 
 **Local MCP** (after starting `npx cbrowser mcp-server`):
 ```
-mcp__claude_ai_CBrowser_Demo__navigate(url: "https://example.com")
-mcp__claude_ai_CBrowser_Demo__click(selector: "the blue submit button")
-mcp__claude_ai_CBrowser_Demo__fill(selector: "email input", value: "user@example.com")
+mcp__cbrowser__navigate(url: "https://example.com")
+mcp__cbrowser__click(selector: "the blue submit button")
+mcp__cbrowser__fill(selector: "email input", value: "user@example.com")
 ```
 
 ### Credential Management
@@ -167,7 +181,7 @@ npx cbrowser auth "github"              # Authenticate
 
 ```
 # List personas
-mcp__claude_ai_CBrowser_Demo__list_cognitive_personas()
+mcp__cbrowser__list_cognitive_personas()
 ```
 
 ### Persona Management (CLI - Fallback)
@@ -182,14 +196,14 @@ npx cbrowser persona create "tester"    # Create custom
 
 ```
 # Initialize cognitive journey
-mcp__claude_ai_CBrowser_Demo__cognitive_journey_init(
+mcp__cbrowser__cognitive_journey_init(
   persona: "first-timer",
   goal: "Complete signup and reach dashboard",
   startUrl: "https://example.com"
 )
 
 # Update cognitive state after each action
-mcp__claude_ai_CBrowser_Demo__cognitive_journey_update_state(
+mcp__cbrowser__cognitive_journey_update_state(
   sessionId: "...",
   patienceChange: -0.05,
   confusionChange: 0.1
@@ -212,10 +226,10 @@ npx cbrowser explore "https://example.com"
 ### Session Management (MCP - Preferred)
 
 ```
-mcp__claude_ai_CBrowser_Demo__save_session(name: "mysite")
-mcp__claude_ai_CBrowser_Demo__load_session(name: "mysite")
-mcp__claude_ai_CBrowser_Demo__list_sessions()
-mcp__claude_ai_CBrowser_Demo__delete_session(name: "mysite")
+mcp__cbrowser__save_session(name: "mysite")
+mcp__cbrowser__load_session(name: "mysite")
+mcp__cbrowser__list_sessions()
+mcp__cbrowser__delete_session(name: "mysite")
 ```
 
 ### Session Management (CLI - Fallback)
@@ -231,36 +245,36 @@ npx cbrowser session delete "mysite"
 
 ```
 # Natural Language Tests
-mcp__claude_ai_CBrowser_Demo__nl_test_inline(
+mcp__cbrowser__nl_test_inline(
   name: "Login Test",
   content: "go to https://example.com\nclick login\nverify url contains /dashboard"
 )
-mcp__claude_ai_CBrowser_Demo__nl_test_file(filepath: "tests.txt")
+mcp__cbrowser__nl_test_file(filepath: "tests.txt")
 
 # Test Generation & Repair
-mcp__claude_ai_CBrowser_Demo__generate_tests(url: "https://example.com")
-mcp__claude_ai_CBrowser_Demo__repair_test(testName: "Login", steps: ["go to...", "click..."])
-mcp__claude_ai_CBrowser_Demo__detect_flaky_tests(testName: "Login", steps: [...], runs: 10)
+mcp__cbrowser__generate_tests(url: "https://example.com")
+mcp__cbrowser__repair_test(testName: "Login", steps: ["go to...", "click..."])
+mcp__cbrowser__detect_flaky_tests(testName: "Login", steps: [...], runs: 10)
 
 # Coverage
-mcp__claude_ai_CBrowser_Demo__coverage_map(url: "https://example.com")
+mcp__cbrowser__coverage_map(url: "https://example.com")
 
 # Performance
-mcp__claude_ai_CBrowser_Demo__perf_baseline(url: "https://example.com", name: "homepage")
-mcp__claude_ai_CBrowser_Demo__perf_regression(url: "https://example.com", baselineName: "homepage")
-mcp__claude_ai_CBrowser_Demo__list_baselines()
+mcp__cbrowser__perf_baseline(url: "https://example.com", name: "homepage")
+mcp__cbrowser__perf_regression(url: "https://example.com", baselineName: "homepage")
+mcp__cbrowser__list_baselines()
 
 # Visual Testing
-mcp__claude_ai_CBrowser_Demo__visual_baseline(url: "https://example.com", name: "homepage")
-mcp__claude_ai_CBrowser_Demo__visual_regression(url: "https://staging.example.com", baselineName: "homepage")
-mcp__claude_ai_CBrowser_Demo__cross_browser_test(url: "https://example.com", browsers: ["chromium", "firefox"])
-mcp__claude_ai_CBrowser_Demo__responsive_test(url: "https://example.com", viewports: ["mobile", "tablet", "desktop"])
-mcp__claude_ai_CBrowser_Demo__ab_comparison(urlA: "https://staging.example.com", urlB: "https://example.com")
+mcp__cbrowser__visual_baseline(url: "https://example.com", name: "homepage")
+mcp__cbrowser__visual_regression(url: "https://staging.example.com", baselineName: "homepage")
+mcp__cbrowser__cross_browser_test(url: "https://example.com", browsers: ["chromium", "firefox"])
+mcp__cbrowser__responsive_test(url: "https://example.com", viewports: ["mobile", "tablet", "desktop"])
+mcp__cbrowser__ab_comparison(urlA: "https://staging.example.com", urlB: "https://example.com")
 
 # Analysis
-mcp__claude_ai_CBrowser_Demo__hunt_bugs(url: "https://example.com")
-mcp__claude_ai_CBrowser_Demo__chaos_test(url: "https://example.com", networkLatency: 3000)
-mcp__claude_ai_CBrowser_Demo__empathy_audit(url: "https://example.com", personas: ["elderly-user", "first-timer"])
+mcp__cbrowser__hunt_bugs(url: "https://example.com")
+mcp__cbrowser__chaos_test(url: "https://example.com", networkLatency: 3000)
+mcp__cbrowser__empathy_audit(url: "https://example.com", personas: ["elderly-user", "first-timer"])
 ```
 
 ### Advanced Testing (CLI - Fallback)
@@ -336,7 +350,7 @@ npx cbrowser click "search" --verbose --debug-dir ./debug  # Save debug screensh
 
 ### v7.4.1: Modular Architecture + MCP Tools
 
-CBrowser v7.4.1 includes modular architecture for tree-shakeable imports. MCP tools have grown significantly since then (now 68 local, 52 remote):
+CBrowser v7.4.1 includes modular architecture for tree-shakeable imports. MCP tools have grown significantly since then (122 on the live server, probed 2026-07-14):
 
 ```typescript
 // Import everything (unchanged)
@@ -358,7 +372,7 @@ import { capturePerformanceBaseline, detectPerformanceRegression } from 'cbrowse
 | `cbrowser/analysis` | AI analysis | `huntBugs`, `runChaosTest`, `comparePersonas`, `findElementByIntent` |
 | `cbrowser/performance` | Performance | `capturePerformanceBaseline`, `detectPerformanceRegression` |
 
-**MCP Server (83 tools for Claude Desktop):**
+**MCP Server (122 tools, probed 2026-07-14):**
 
 Add to `claude_desktop_config.json`:
 ```json
@@ -471,6 +485,34 @@ verify page contains "results"
 
 ---
 
+## Screen Capture (video/GIF) — v18.69.3
+
+Records a timed frame sequence and emits **two co-equal artifacts from one capture**: a human artifact (GIF / animated WebP / WebM) and an AI artifact (`manifest.json` plus the frames).
+
+```bash
+cbrowser capture start <url> [--duration 5s] [--fps 10] [--format gif,webp,webm] [--out DIR]
+cbrowser capture stop
+cbrowser capture status
+```
+
+**Three targets:**
+
+| Target | Flag | Behaviour |
+|--------|------|-----------|
+| Viewport | `--viewport 390x844` or `--device iphone-15` | Sets the viewport before the first frame |
+| Region | `--region x,y,w,h` | Fixed rect, clamped to the viewport (`region_clamped: true`); zero or negative area exits 1 |
+| Element | `--element "<sel>" [--element-padding 10]` | Crop **follows the element per frame** as it moves; output dimensions stay locked so encoders get constant frame size |
+
+**The manifest is the point.** An AI agent cannot watch a video file. `manifest.json` gives it per-frame `t_ms`, the `crop` used, `ssim_prev`, `anomaly`, `tracking`, and the console/network events inside each frame's window — plus a top-level `change_points` array naming the frame indices where the page actually changed. Read the manifest to find *when* something happened, then look only at those frames.
+
+**Two behaviours worth knowing up front:**
+- **Capture is event-driven.** Chromium's screencast emits frames when the compositor commits, so a static page produces very few. Idle spans are reported as `frame_gaps` and the manifest clock is wall-time, so `t_ms` always matches real elapsed time and the GIF still plays at true speed.
+- **mp4 needs a full ffmpeg.** Playwright's bundled binary is a stripped WebM/VP8 build with no mp4 muxer or H.264 encoder. Use `--format webm`, or point `CBROWSER_FFMPEG_PATH` at a full ffmpeg.
+
+**`capture` is not `record`.** `cbrowser record` is the Tier-2 feature that records *user actions* for test generation. `capture` records the screen. Separate commands, deliberately.
+
+Full recipes per target and per format: `Workflows/Capture.md`.
+
 ## AI Selector Modes
 
 | Mode | Syntax | Example |
@@ -504,16 +546,15 @@ Each matched element returns:
 
 ---
 
-## Built-in Personas
+## Built-in Personas (21)
 
-| Persona | Description |
-|---------|-------------|
-| `power-user` | Tech-savvy expert who expects efficiency |
-| `first-timer` | New user exploring for the first time |
-| `mobile-user` | Smartphone user with touch interface |
-| `screen-reader-user` | Blind user with screen reader |
-| `elderly-user` | Older adult with vision/motor limitations |
-| `impatient-user` | Quick to abandon slow experiences |
+| Group | Personas |
+|-------|----------|
+| Core (6) | `power-user`, `first-timer`, `mobile-user`, `screen-reader-user`, `elderly-user`, `impatient-user` |
+| Accessibility (11) | `motor-impairment-tremor`, `low-vision-magnified`, `cognitive-adhd`, `dyslexic-user`, `deaf-user`, `elderly-low-vision`, `color-blind-deuteranopia`, `autism-spectrum`, `intellectual-disability`, `aphasia-receptive`, `dyscalculia` |
+| Emotional (4) | `anxious-user`, `confident-user`, `emotional-user`, `stoic-user` |
+
+Custom personas: `persona_create_start` (questionnaire flow) or `--persona "<free-text description>"`.
 
 ---
 
@@ -590,7 +631,7 @@ npx cbrowser cognitive-journey \
 
 **Hover-Before-Click (v8.4.0):** All clicks automatically hover parent menu triggers first, enabling proper dropdown menu interaction.
 
-### Cognitive Traits (7 dimensions)
+### Core Cognitive Traits (7 of 25 — see `CognitivePersonas.md` for the full set)
 
 | Trait | What it measures | Low → High impact |
 |-------|------------------|-------------------|
@@ -757,7 +798,8 @@ bun run Tools/CBrowser.ts backend set claude-in-chrome
 │   ├── Authenticate.md         # Login handling
 │   ├── Test.md                 # Test scenarios
 │   ├── Journey.md              # Autonomous journeys
-│   └── CognitiveJourney.md     # Cognitive user simulation
+│   ├── CognitiveJourney.md     # Cognitive user simulation
+│   └── Capture.md              # Screen capture to GIF/WebP/WebM
 ├── Tools/
 │   └── CBrowser.ts     # CLI tool
 └── .memory/                    # Persistent storage
@@ -816,11 +858,6 @@ User: "Simulate a confused first-timer trying to register as a provider"
 
 ## Integration
 
-**Works with:**
-- **QATester** agent — Automated testing integration
-- **Research** skill — Data gathering with extraction
-- **WebAssessment** skill — Security testing with auth
-
 **CBrowser is the PRIMARY browser automation tool for:**
 - All browser navigation and interaction
 - Screenshot capture and visual testing
@@ -830,7 +867,6 @@ User: "Simulate a confused first-timer trying to register as a provider"
 - Cross-browser compatibility testing
 - Visual regression testing
 
-**Note:** The Browser skill has been disabled. Use CBrowser for ALL browser automation tasks.
 
 ---
 
@@ -873,7 +909,6 @@ User: "Simulate a confused first-timer trying to register as a provider"
 - MCP server mode for Claude Desktop
 - Daemon mode for persistent browser sessions
 
-**Note:** The Browser skill has been disabled. CBrowser is now the sole browser automation tool for all tasks.
 
 ---
 
@@ -881,6 +916,11 @@ User: "Simulate a confused first-timer trying to register as a provider"
 
 | Version | Features |
 |---------|----------|
+| v18.69.0 | **Journey traces + LLM-free deterministic replay** (decision-provider seam, divergence detection); scoring engine golden-pinned in CI (score drift fails the build) |
+| v18.68.x | CLI stdout fix (piped `--version`/`help`/`status` no longer capture empty); `/health` advertises api_key auth |
+| v18.20.0 | Lightpanda integration for high-performance headless browsing |
+| v18.18.3 | WebMCP readiness audit, llms.txt endpoint |
+| v18.15.0 | AI Friendliness tools, competitive benchmark |
 | v16.14.1 | **Persona name mismatch fix.** `compare_personas_init` and `cognitive_journey_init` now find accessibility personas (e.g., `cognitive-adhd`) instead of creating generic stubs. New `getAnyPersona()` unified lookup across all registries. `getCognitiveProfile()` accepts both Persona and AccessibilityPersona. |
 | v16.14.0 | **Trait-based value derivation.** General-category personas now derive Schwartz values from cognitive traits (not flat 0.5). 12 research-backed `TRAIT_VALUE_CORRELATIONS` (curiosity→stimulation, riskTolerance→security, etc.). New `deriveValuesFromTraits()` function with weighted contributions. `valueDerivations` field shows trait→value influence. General category uses `valueStrategy: "trait_based"`. |
 | v16.12.0 | **Category-aware persona values system.** Research-backed Schwartz's 10 Universal Values for all personas. `detectPersonaCategory()` for automatic category detection (cognitive/physical/sensory/emotional). `validateCategoryValues()` with research-based warnings. Category-specific value strategies: cognitive=specific values, physical=security_shift, sensory=neutral, emotional=trait_based. New MCP tools: `persona_values_lookup`, `list_influence_patterns`, `persona_category_guidance`. Added `researchBasis` field on accessibility personas. |

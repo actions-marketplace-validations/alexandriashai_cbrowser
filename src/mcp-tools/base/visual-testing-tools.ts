@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer } from "../types.js";
 import {
   runVisualRegression,
@@ -20,24 +21,47 @@ import {
  * Register visual testing tools (6 tools: visual_baseline, visual_regression, cross_browser_test, cross_browser_diff, responsive_test, ab_comparison)
  */
 export function registerVisualTestingTools(server: McpServer): void {
-  server.tool(
-    "visual_baseline",
-    "Capture a visual baseline for a URL",
-    {
+  server.registerTool("visual_baseline", {
+    title: "Capture Visual Baseline",
+    description: "Capture a visual baseline using Wasserstein barycenter. Takes multiple screenshots, rejects outliers, computes optimal consensus reference with adaptive threshold. Robust to dynamic content, animations, and timing variations.",
+    inputSchema: {
       url: z.string().url().describe("URL to capture baseline for"),
       name: z.string().describe("Name for the baseline"),
+      captures: z.number().optional().default(3).describe("Number of screenshots (default 3). More = more robust but slower."),
+      delay: z.number().optional().default(1500).describe("Delay between captures in ms"),
+      selector: z.string().optional().describe("CSS selector to capture specific element"),
+      device: z.string().optional().describe("Device emulation (e.g. mobile, tablet, iphone-15)"),
+      waitFor: z.union([z.number(), z.string()]).optional().describe("Wait after page load: number = ms delay, string = CSS selector to wait for. Useful for client-side translation or deferred rendering."),
     },
-    async ({ url, name }) => {
-      const result = await captureVisualBaseline(url, name, {});
+    annotations: {
+      title: "Capture Visual Baseline",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, name, captures, delay, selector, device, waitFor }) => {
+      const { captureSmartBaseline } = await import("../../visual/index.js");
+      const result = await captureSmartBaseline(url, name, {
+        numCaptures: captures || 3,
+        captureDelay: delay,
+        selector,
+        device,
+        waitFor,
+      });
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: JSON.stringify({
               success: true,
               name: result.name,
-              url: result.url,
-              timestamp: result.timestamp,
+              captures: result.numCaptures,
+              outliers: result.numOutliers,
+              meanDistance: result.meanDistance,
+              adaptiveThreshold: result.adaptiveThreshold,
+              reference: result.referencePath,
+              computeTime: `${result.computeTimeMs.toFixed(0)}ms`,
             }, null, 2),
           },
         ],
@@ -45,24 +69,90 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "visual_regression",
-    "Run AI visual regression test against a baseline",
-    {
+  server.registerTool("visual_regression", {
+    title: "Visual Regression Test",
+    description: "Run visual regression test against a baseline. Automatically uses smart regression (Wasserstein) if a smart baseline exists for this name, otherwise falls back to traditional comparison.",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       baselineName: z.string().describe("Name of baseline to compare against"),
+      transportMap: z.boolean().optional().describe("Also generate a visual transport map showing where content moved"),
+      threshold: z.number().optional().describe("Override similarity threshold (0-1). Smart baselines use adaptive thresholds by default."),
     },
-    async ({ url, baselineName }) => {
+    annotations: {
+      title: "Visual Regression Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, baselineName, transportMap: wantMap, threshold }) => {
+      // Check if a smart baseline exists — if so, use smart regression
+      const { getSmartBaseline, runSmartRegression, runRegressionWithTransportMap } = await import("../../visual/index.js");
+      const smartBaseline = getSmartBaseline(baselineName);
+
+      // transportMap used to be handled ONLY inside this smart-baseline branch,
+      // so asking for a map against a traditional baseline fell through to the
+      // plain path below and the flag was silently ignored — no map, no error,
+      // no explanation. runRegressionWithTransportMap handles both kinds (it
+      // falls back to regularBaseline.screenshotPath), so honour the flag first
+      // and report which kind of baseline answered. (2026-07-29)
+      if (wantMap) {
+        const result = await runRegressionWithTransportMap(url, baselineName, { threshold });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                mode: smartBaseline ? "smart+transport" : "traditional+transport",
+                passed: result.passed,
+                similarity: result.analysis.similarityScore,
+                status: result.analysis.overallStatus,
+                summary: result.analysis.summary,
+                ...(smartBaseline
+                  ? { adaptiveThreshold: smartBaseline.adaptiveThreshold }
+                  : { note: "Traditional baseline: scored by combined Wasserstein distance, not against an adaptive threshold. Capture with visual_baseline captures=5 for smart regression." }),
+                hotspots: result.transportMap?.hotspots,
+                flows: result.transportMap?.flows.length,
+                svgPath: result.transportMapSvgPath,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      if (smartBaseline) {
+        const result = await runSmartRegression(url, baselineName, { threshold });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                mode: "smart",
+                passed: result.passed,
+                similarity: result.analysis.similarityScore,
+                status: result.analysis.overallStatus,
+                summary: result.analysis.summary,
+                adaptiveThreshold: smartBaseline.adaptiveThreshold,
+                rawAnalysis: result.analysis.rawAnalysis,
+              }, null, 2),
+            },
+          ],
+        };
+      }
+
+      // Traditional regression
       const result = await runVisualRegression(url, baselineName);
       return {
         content: [
           {
-            type: "text",
+            type: "text" as const,
             text: JSON.stringify({
+              mode: "traditional",
               passed: result.passed,
               similarityScore: result.analysis?.similarityScore,
               summary: result.analysis?.summary,
               changes: result.analysis?.changes?.length || 0,
+              tip: "Capture with visual_baseline captures=5 for smart Wasserstein regression",
             }, null, 2),
           },
         ],
@@ -70,14 +160,21 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "cross_browser_test",
-    "Test page rendering across multiple browsers",
-    {
+  server.registerTool("cross_browser_test", {
+    title: "Cross-Browser Test",
+    description: "Test page rendering across multiple browsers",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       browsers: z.array(z.enum(["chromium", "firefox", "webkit"])).optional().describe("Browsers to test"),
     },
-    async ({ url, browsers }) => {
+    annotations: {
+      title: "Cross-Browser Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, browsers }) => {
       const result = await runCrossBrowserTest(url, { browsers });
       return {
         content: [
@@ -87,6 +184,37 @@ export function registerVisualTestingTools(server: McpServer): void {
               url: result.url,
               overallStatus: result.overallStatus,
               summary: result.summary,
+              // The evidence used to be collapsed to two integers —
+              // screenshotCount / comparisonCount — while `result` carried every
+              // screenshot path, every pairwise similarity score, and
+              // problematicBrowsers. So the caller received an absolute verdict
+              // ("renders consistently across all tested browsers") with every
+              // number that could falsify it removed, and no way to open the
+              // screenshots it said it had taken.
+              //
+              // It also explains the contradiction with cross_browser_diff: this
+              // tool compares ABOVE-THE-FOLD PIXELS at a forced 1920x1080, while
+              // the diff compares FULL-PAGE TEXT at 1280x720. Two different
+              // measurements reported in language that claims to settle the same
+              // question. `scope` now says which one you are reading.
+              // (2026-07-29)
+              scope: "above-the-fold pixels at 1920x1080; page TEXT is not compared — use cross_browser_diff for content",
+              screenshots: result.screenshots.map((s) => ({
+                browser: s.browser,
+                path: (s as unknown as { screenshotPath?: string }).screenshotPath,
+                viewport: (s as unknown as { viewport?: unknown }).viewport,
+              })),
+              comparisons: result.comparisons.map((c) => ({
+                browserA: c.browserA,
+                browserB: c.browserB,
+                status: c.analysis?.overallStatus,
+                similarity: c.analysis?.similarityScore,
+                changes: (c.analysis?.changes ?? []).map((ch) => ({
+                  severity: ch.severity,
+                  description: ch.description,
+                })),
+              })),
+              ...(result.problematicBrowsers?.length ? { problematicBrowsers: result.problematicBrowsers } : {}),
               screenshotCount: result.screenshots.length,
               comparisonCount: result.comparisons.length,
               ...(result.missingBrowsers?.length ? { missingBrowsers: result.missingBrowsers } : {}),
@@ -99,14 +227,21 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "cross_browser_diff",
-    "Quick diff of page metrics across browsers",
-    {
+  server.registerTool("cross_browser_diff", {
+    title: "Cross-Browser Diff",
+    description: "Quick diff of page metrics across browsers",
+    inputSchema: {
       url: z.string().url().describe("URL to compare"),
       browsers: z.array(z.enum(["chromium", "firefox", "webkit"])).optional().describe("Browsers to compare"),
     },
-    async ({ url, browsers }) => {
+    annotations: {
+      title: "Cross-Browser Diff",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, browsers }) => {
       const result = await crossBrowserDiff(url, browsers);
       return {
         content: [
@@ -127,14 +262,21 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "responsive_test",
-    "Test page across different viewport sizes",
-    {
+  server.registerTool("responsive_test", {
+    title: "Responsive Test",
+    description: "Test page across different viewport sizes",
+    inputSchema: {
       url: z.string().url().describe("URL to test"),
       viewports: z.array(z.string()).optional().describe("Viewport presets (mobile, tablet, desktop, etc.)"),
     },
-    async ({ url, viewports }) => {
+    annotations: {
+      title: "Responsive Test",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, viewports }) => {
       const result = await runResponsiveTest(url, { viewports });
       return {
         content: [
@@ -144,6 +286,24 @@ export function registerVisualTestingTools(server: McpServer): void {
               url: result.url,
               overallStatus: result.overallStatus,
               summary: result.summary,
+              // `result.issues` and `problematicViewports` were both computed and
+              // then dropped here, so the caller got "13 issues: 7 overflow, 2
+              // unreadable text..." with no way to learn WHICH viewport or WHICH
+              // element — a count they could not act on. Same computed-then-
+              // discarded shape as the cross-browser handler above. (2026-07-29)
+              issues: (result.issues ?? []).map((i) => ({
+                type: i.type,
+                severity: i.severity,
+                description: i.description,
+                affectedViewports: i.affectedViewports,
+                ...(i.breakpointRange ? { breakpointRange: i.breakpointRange } : {}),
+              })),
+              ...(result.problematicViewports?.length ? { problematicViewports: result.problematicViewports } : {}),
+              viewports: result.screenshots.map((s) => ({
+                name: (s as unknown as { viewport?: string; name?: string }).viewport
+                  ?? (s as unknown as { name?: string }).name,
+                path: (s as unknown as { screenshotPath?: string }).screenshotPath,
+              })),
               viewportsCount: result.screenshots.length,
             }, null, 2),
           },
@@ -152,16 +312,23 @@ export function registerVisualTestingTools(server: McpServer): void {
     }
   );
 
-  server.tool(
-    "ab_comparison",
-    "Compare two URLs visually (staging vs production)",
-    {
+  server.registerTool("ab_comparison", {
+    title: "A/B Visual Comparison",
+    description: "Compare two URLs visually (staging vs production)",
+    inputSchema: {
       urlA: z.string().url().describe("First URL (e.g., staging)"),
       urlB: z.string().url().describe("Second URL (e.g., production)"),
       labelA: z.string().optional().describe("Label for first URL"),
       labelB: z.string().optional().describe("Label for second URL"),
     },
-    async ({ urlA, urlB, labelA, labelB }) => {
+    annotations: {
+      title: "A/B Visual Comparison",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ urlA, urlB, labelA, labelB }) => {
       const labels = labelA && labelB ? { a: labelA, b: labelB } : undefined;
       const result = await runABComparison(urlA, urlB, { labels });
       return {
@@ -198,6 +365,440 @@ export function registerVisualTestingTools(server: McpServer): void {
           },
         ],
       };
+    }
+  );
+
+  // smart_baseline and smart_regression merged into visual_baseline and visual_regression (v18.34.0)
+
+  server.registerTool("transport_map", {
+    title: "Visual Transport Map",
+    description: "Generate a Visual Transport Map showing WHERE visual content moved between two screenshots. Produces heatmap, flow arrows, hotspots, and SVG visualization.",
+    inputSchema: {
+      baselinePath: z.string().describe("Path to baseline screenshot"),
+      currentPath: z.string().describe("Path to current screenshot"),
+      cellSize: z.number().optional().describe("Grid cell size in pixels (default: 32)"),
+      hotspots: z.number().optional().describe("Number of hotspots to identify (default: 5)"),
+    },
+    annotations: {
+      title: "Visual Transport Map",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  }, async ({ baselinePath, currentPath, cellSize, hotspots: numHotspots }) => {
+      const { computeTransportMap } = await import("../../visual/distance-metrics.js");
+      const result = await computeTransportMap(baselinePath, currentPath, { cellSize, numHotspots });
+
+      // Save SVG
+      const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+      const { join } = await import("path");
+      const { homedir } = await import("os");
+      const baseDir = process.env.CBROWSER_DATA_DIR || join(homedir(), ".cbrowser");
+      const mapsDir = join(baseDir, "transport-maps");
+      if (!existsSync(mapsDir)) mkdirSync(mapsDir, { recursive: true });
+      const svgPath = join(mapsDir, `transport-map-${Date.now()}.svg`);
+      writeFileSync(svgPath, result.svg);
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              grid: result.gridSize,
+              flows: result.flows.length,
+              totalCost: result.totalCost,
+              hotspots: result.hotspots,
+              svgPath,
+              dimensions: result.dimensions,
+              computeTime: `${result.computeTimeMs.toFixed(0)}ms`,
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ── Attention Transport (v18.28.0) ──
+
+  server.registerTool("attention_analysis", {
+    title: "Attention Saliency Analysis",
+    description: "Analyze where a persona's attention goes on a page. Two-layer model: (1) visual saliency via W₂ on CIE-Lab (what POPS), (2) DOM semantic analysis (what MATTERS — CTAs, headings, forms, nav). Blended 35/65 so a gray search bar a power-user prioritizes outweighs a flashy banner they ignore. Returns heatmap overlay, attention metrics, and quality score.",
+    inputSchema: {
+      url: z.string().describe("URL to analyze"),
+      persona: z.string().optional().default("first-timer").describe("Persona name"),
+      goal: z.string().optional().describe("Task goal — elements matching this goal get boosted attention (e.g., 'find pricing', 'sign up for an account')"),
+      cellSize: z.number().optional().default(4).describe("Saliency grid cell size in pixels (smaller = finer heatmap, default: 4)"),
+      heatmap: z.boolean().optional().default(true).describe("Generate visual heatmap overlay (default: true)"),
+      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
+      useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on saliency map generation and attention scoring. Default: false."),
+    },
+    annotations: {
+      title: "Attention Saliency Analysis",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, persona, goal, cellSize, heatmap, device, useValues }) => {
+      const { CBrowser } = await import("../../browser.js");
+      const browser = new CBrowser({
+        headless: true,
+        ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
+      });
+      const { join } = await import("path");
+      const { tmpdir } = await import("os");
+      const { unlinkSync } = await import("fs");
+
+      try {
+        await browser.launch();
+        await browser.navigate(url);
+        await new Promise(r => setTimeout(r, 2000));
+
+        const page = await browser.getPage();
+        const screenshotPath = join(tmpdir(), `attn-${Date.now()}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: false });
+
+        // Extract DOM elements BEFORE saliency computation so they feed into the
+        // attention model. This was the only inline copy of the collect+DPR-scale
+        // dance; it now shares one implementation with visual_cognitive_story and
+        // journey_heatmap_gif, so the scaling cannot drift between the three.
+        const { computeAttentionQuality, extractPageElementsForAttention, collectDomAttentionElements } =
+          await import("../../visual/attention-quality.js");
+        const rawElements = await extractPageElementsForAttention(page);
+        const dpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
+        const pageElements = rawElements.map(el => ({
+          ...el,
+          x: el.x * dpr,
+          y: el.y * dpr,
+          width: el.width * dpr,
+          height: el.height * dpr,
+        }));
+
+        // Run attention analysis with DOM semantic layer (visual + semantic blend)
+        const { analyzeAttention } = await import("../../visual/attention-transport.js");
+        const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
+
+        // Persona-judged relevance, replacing keyword overlap in the semantic
+        // layer. Computed HERE rather than inside analyzeAttention so the one
+        // network call is visible, cached and tier-gated at the boundary that
+        // knows the caller's entitlement.
+        let relevanceScores: Record<number, number> | undefined;
+        let relevanceSource: string | undefined;
+        let relevanceReasoning: string | undefined;
+        if (domAttentionElements.length > 0) {
+          try {
+            const { judgeRelevance } = await import("../../visual/llm-relevance.js");
+            const { getAnthropicApiKey } = await import("../../cognitive/index.js");
+            const { getActiveTier } = await import("../tier-gate.js");
+            const { tierHasAccess } = await import("../tool-categories.js");
+            const tier = getActiveTier();
+            const entitled = tier === null ? true : tierHasAccess(tier, "pro");
+
+            const judged = await judgeRelevance(
+              domAttentionElements.map((el, i) => ({
+                index: i,
+                type: el.type,
+                text: el.text ?? "",
+                x: el.x, y: el.y, width: el.width, height: el.height,
+              })),
+              { personaName: persona, goal, entitled },
+              getAnthropicApiKey,
+            );
+            relevanceScores = judged.scores;
+            relevanceSource = judged.source;
+            relevanceReasoning = judged.reasoning;
+          } catch { /* keyword path inside buildSemanticMap remains the floor */ }
+        }
+
+        const result = await analyzeAttention(
+          screenshotPath, persona, cellSize, undefined, domAttentionElements, goal,
+          undefined, relevanceScores,
+        );
+
+        // Compute attention quality — cross-reference hotspots with classified elements
+        let attentionQuality: unknown = null;
+        try {
+          const hotspots = result.saliencyMap?.hotspots || [];
+          // Pass persona values only when useValues is enabled
+          let pValues: Record<string, number> | undefined;
+          if (useValues) {
+            try {
+              const { getPersonaValues, registerPersonaValues, createPersonaValues } = await import("../../values/index.js");
+              let vals = getPersonaValues(persona);
+
+              // If not found in built-ins, check CMS for custom persona values
+              if (!vals) {
+                try {
+                  const { getSessionApiKey } = await import("./cognitive-tools.js"); const _sessionApiKey = getSessionApiKey();
+                  if (_sessionApiKey) {
+                    const cmsUrl = process.env.CMS_URL || "http://localhost:3200";
+                    const res = await fetch(`${cmsUrl}/api/personas`, {
+                      headers: { "Authorization": `Bearer ${_sessionApiKey}` },
+                    });
+                    if (res.ok) {
+                      const data = await res.json() as { personas: Array<{ name: string; slug: string; schwartz_values?: string }> };
+                      const match = data.personas.find((p: any) => p.slug === persona || p.name.toLowerCase() === persona.toLowerCase());
+                      if (match?.schwartz_values) {
+                        const sv = typeof match.schwartz_values === "string" ? JSON.parse(match.schwartz_values) : match.schwartz_values;
+                        const pv = createPersonaValues(
+                          { selfDirection: sv.selfDirection ?? 0.5, stimulation: sv.stimulation ?? 0.5, hedonism: sv.hedonism ?? 0.5, achievement: sv.achievement ?? 0.5, power: sv.power ?? 0.5, security: sv.security ?? 0.5, conformity: sv.conformity ?? 0.5, tradition: sv.tradition ?? 0.5, benevolence: sv.benevolence ?? 0.5, universalism: sv.universalism ?? 0.5 },
+                          { autonomyNeed: sv.autonomyNeed ?? 0.5, competenceNeed: sv.competenceNeed ?? 0.5, relatednessNeed: sv.relatednessNeed ?? 0.5 },
+                          "esteem"
+                        );
+                        registerPersonaValues([{ personaName: persona, values: pv, rationale: "Custom persona from CMS" }]);
+                        vals = pv;
+                      }
+                    }
+                  }
+                } catch { /* CMS lookup failed — proceed without values */ }
+              }
+
+              if (vals) pValues = vals as unknown as Record<string, number>;
+            } catch {}
+          }
+          attentionQuality = computeAttentionQuality(hotspots, pageElements, cellSize, pValues);
+        } catch (e) {
+          console.debug(`[attention_analysis] Attention quality failed: ${(e as Error).message}`);
+        }
+
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [{
+          type: "text" as const,
+          text: JSON.stringify({
+            persona: result.persona,
+            alignmentScore: result.alignmentScore,
+            entropy: result.entropy,
+            concentration: result.concentration,
+            transportCost: result.transportCost,
+            topAttentionAreas: result.attentionCompetitors,
+            ...(attentionQuality ? { attentionQuality } : {}),
+            // Why this persona attends where it does, and by which method.
+            // The scores were already being used to build the map while the
+            // reasoning behind them was computed and thrown away — a judgement
+            // with no stated reason is one the caller cannot argue with, which
+            // was the point of leaving keyword matching.
+            ...(relevanceReasoning ? { attentionReasoning: relevanceReasoning } : {}),
+            ...(relevanceSource ? { relevanceMethod: relevanceSource } : {}),
+            // These two lines used to read as a contradiction — "Scattered
+            // attention (overwhelmed)" printed directly above "Attention
+            // concentrated on few areas". The numbers were never wrong; the
+            // prose was. They answer different questions:
+            //   entropy       = normalized Shannon entropy, 1 = evenly spread
+            //                   across every cell that gets any attention
+            //   concentration = share of total saliency in the top 20% of cells,
+            //                   whose floor is 0.2 for a perfectly uniform page,
+            //                   NOT 0
+            // Saliency spread evenly within a small region scores high on both
+            // (measured: entropy 0.692 with concentration 1.0), and both
+            // readings are correct. Each string now names its own basis, and
+            // `pattern` gives the single combined verdict a caller actually
+            // wants. (2026-07-28)
+            interpretation: {
+              alignment: result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design",
+              entropy: `Evenness of attention across the areas that draw it: ${result.entropy > 0.8 ? "very even" : result.entropy > 0.5 ? "moderately even" : "sharply peaked"} (${result.entropy.toFixed(2)} of 1.0)`,
+              concentration: `Share of attention landing in the top 20% of the page: ${(result.concentration * 100).toFixed(0)}% (a perfectly uniform page scores 20%)`,
+              pattern: result.concentration > 0.6
+                ? (result.entropy > 0.5
+                  ? "Attention pools into a small part of the page, and spreads evenly once there — a dense hotspot rather than a single focal point."
+                  : "Attention locks onto one or two focal points and ignores the rest of the page.")
+                : (result.entropy > 0.5
+                  ? "Attention is spread broadly across the page with no dominant focal point."
+                  : "Attention is split between a few separate areas, with the rest of the page largely unseen."),
+            },
+            computeTimeMs: Math.round(result.computeTimeMs),
+            hasHeatmap: heatmap !== false,
+          }, null, 2),
+        }];
+
+        // Generate heatmap overlay and save as public URL
+        if (heatmap !== false && result.saliencyMap) {
+          try {
+            const { generateHeatmapOverlay } = await import("../../visual/heatmap-overlay.js");
+            const heatmapBase64 = await generateHeatmapOverlay(
+              screenshotPath,
+              result.saliencyMap.cells,
+              result.saliencyMap.rows,
+              result.saliencyMap.cols,
+              `${persona} Attention`,
+            );
+
+            // Save to public directory for URL access
+            const { writeFileSync, mkdirSync, existsSync } = await import("fs");
+            const { homedir } = await import("os");
+            const heatmapId = `attn-${persona}-${Date.now()}`;
+
+            // Both entries of the old deployedPaths list were wrong: nginx
+            // serves /heatmaps/ from /var/www/cbrowser-data/heatmaps, and this
+            // picked whichever candidate's PARENT existed — /var/www exists, so
+            // it wrote to /var/www/cbrowser-web/heatmaps and returned a
+            // cbrowser.ai URL for a file no one could fetch. One store now owns
+            // the directory and the URL together. (2026-07-29)
+            const cbrowserDir = join(homedir(), ".cbrowser", "heatmaps");
+            let savedPath = "";
+            let publicUrl = "";
+
+            const written = writeArtifact(Buffer.from(heatmapBase64, "base64"), `${heatmapId}.png`);
+            if (written) {
+              savedPath = written.path;
+              publicUrl = written.url;
+            } else {
+              // Served store unavailable — keep the local copy, and return the
+              // local path rather than a URL that would not resolve.
+              if (!existsSync(cbrowserDir)) mkdirSync(cbrowserDir, { recursive: true });
+              savedPath = join(cbrowserDir, `${heatmapId}.png`);
+              writeFileSync(savedPath, Buffer.from(heatmapBase64, "base64"));
+              publicUrl = savedPath;
+            }
+
+            // Return both image content and URL
+            content.push({
+              type: "image" as const,
+              data: heatmapBase64,
+              mimeType: "image/png",
+            });
+
+            // Add URL to the text response
+            const firstBlock = content[0];
+            if (firstBlock.type === "text") {
+              const textContent = JSON.parse(firstBlock.text);
+              textContent.heatmapUrl = publicUrl;
+              textContent.heatmapNote = "Show this heatmap image to the user. The red areas show where this persona's attention concentrates. Blue areas receive little attention.";
+              content[0] = { type: "text" as const, text: JSON.stringify(textContent, null, 2) };
+            }
+
+            // Auto-save to Visual Reports gallery
+            try {
+              const { saveVisualReport } = await import("../visual-report-saver.js");
+              const { getSessionApiKey } = await import("./cognitive-tools.js");
+              saveVisualReport({
+                apiKey: getSessionApiKey(),
+                imageUrl: publicUrl,
+                toolName: "attention_analysis",
+                targetUrl: url,
+                persona,
+                metadata: { entropy: result.entropy, concentration: result.concentration, alignmentScore: result.alignmentScore },
+              });
+            } catch {}
+          } catch (e) {
+            console.debug(`[attention_analysis] Heatmap generation failed: ${(e as Error).message}`);
+          }
+        }
+
+        try { unlinkSync(screenshotPath); } catch {}
+
+        return { content };
+      } finally {
+        await browser.close();
+      }
+    }
+  );
+
+  server.registerTool("attention_compare", {
+    title: "Compare Persona Attention",
+    description: "Compare attention patterns between two personas on the same page. Shows where they look differently and the Wasserstein divergence between their saliency maps.",
+    inputSchema: {
+      url: z.string().describe("URL to analyze"),
+      personaA: z.string().describe("First persona"),
+      personaB: z.string().describe("Second persona"),
+    },
+    annotations: {
+      title: "Compare Persona Attention",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  }, async ({ url, personaA, personaB }) => {
+      const { CBrowser } = await import("../../browser.js");
+      const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
+      const { join } = await import("path");
+      const { tmpdir } = await import("os");
+      const { unlinkSync } = await import("fs");
+
+      try {
+        await browser.launch();
+        await browser.navigate(url);
+        await new Promise(r => setTimeout(r, 2000));
+
+        const page = await browser.getPage();
+        const screenshotPath = join(tmpdir(), `attn-cmp-${Date.now()}.png`);
+        await page.screenshot({ path: screenshotPath, fullPage: false });
+
+        // Extract DOM elements for semantic attention layer
+        const { extractPageElementsForAttention } = await import("../../visual/attention-quality.js");
+        const rawEls = await extractPageElementsForAttention(page);
+        const cmpDpr: number = await page.evaluate(() => window.devicePixelRatio).catch(() => 1);
+        const domEls = rawEls.map(el => ({
+          type: el.type, x: el.x * cmpDpr, y: el.y * cmpDpr,
+          width: el.width * cmpDpr, height: el.height * cmpDpr,
+          text: el.text, isCTA: el.isCTA, isHeading: el.isHeading,
+          isNav: el.isNav, isDecorative: el.isDecorative,
+        }));
+
+        const { compareAttention } = await import("../../visual/attention-transport.js");
+        const result = await compareAttention(screenshotPath, personaA, personaB, 4, domEls);
+
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+
+        const responseData: Record<string, unknown> = {
+          personaA: {
+            name: personaA,
+            alignment: result.personaA.alignmentScore,
+            entropy: result.personaA.entropy,
+            concentration: result.personaA.concentration,
+          },
+          personaB: {
+            name: personaB,
+            alignment: result.personaB.alignmentScore,
+            entropy: result.personaB.entropy,
+            concentration: result.personaB.concentration,
+          },
+          attentionDivergence: result.attentionDivergence,
+          interpretation: result.attentionDivergence < 0.05
+            ? "Nearly identical attention patterns"
+            : result.attentionDivergence < 0.15
+            ? "Moderate attention differences"
+            : "Substantially different attention patterns",
+          divergentRegions: result.divergentRegions.slice(0, 5),
+        };
+
+        // Generate comparison heatmap overlay
+        if (result.personaA.saliencyMap && result.personaB.saliencyMap) {
+          try {
+            const { generateComparisonHeatmap } = await import("../../visual/visual-overlays.js");
+            const compBase64 = await generateComparisonHeatmap(
+              screenshotPath,
+              result.personaA.saliencyMap.cells,
+              result.personaB.saliencyMap.cells,
+              result.personaA.saliencyMap.rows,
+              result.personaA.saliencyMap.cols,
+              personaA,
+              personaB,
+            );
+
+            // Save to public URL
+            const heatmapId = `cmp-${personaA}-${personaB}-${Date.now()}`;
+            const written = writeArtifact(Buffer.from(compBase64, "base64"), `${heatmapId}.png`);
+            // Only advertise a URL when the artifact actually landed in the
+            // served directory. A URL for a file that was not written is the
+            // defect the artifact store exists to end.
+            if (written) responseData.comparisonHeatmapUrl = written.url;
+            responseData.heatmapNote = `Blue = ${personaA} looks here more. Red = ${personaB} looks here more. Transparent = similar attention.`;
+
+            content.push({ type: "image" as const, data: compBase64, mimeType: "image/png" });
+          } catch (e) {
+            console.debug(`[attention_compare] Comparison heatmap failed: ${(e as Error).message}`);
+          }
+        }
+
+        content.unshift({ type: "text" as const, text: JSON.stringify(responseData, null, 2) });
+
+        try { unlinkSync(screenshotPath); } catch {}
+
+        return { content };
+      } finally {
+        await browser.close();
+      }
     }
   );
 }

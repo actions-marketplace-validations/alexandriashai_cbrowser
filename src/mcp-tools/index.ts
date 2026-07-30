@@ -6,21 +6,21 @@
  * Tool counts by deployment:
  *
  * LOCAL MCP (npx cbrowser mcp-server):
- * - Base tools: 57 (4 marketing as stubs)
+ * - Base tools: 78 (4 marketing as stubs, 3 remediation, 1 ai_benchmark, 2 llms.txt, 1 webmcp_ready)
  * - Persona creation: 7
  * - Ask user: 1
  * - Enterprise stubs: 18
- * - Total: 83 (61 real + 22 stubs)
+ * - Total: 104 (68 real + 23 stubs)
  *
  * DEMO SERVER (MCP_MODE=demo):
- * - Base tools: 57 (4 marketing real)
+ * - Base tools: 78 (4 marketing real, 3 remediation, 1 ai_benchmark, 2 llms.txt, 1 webmcp_ready)
  * - Persona creation: 7
  * - Ask user: 1
  * - Enterprise stubs: 18
- * - Total: 83 (65 real + 18 stubs)
+ * - Total: 104 (72 real + 19 stubs)
  *
  * ENTERPRISE (MCP_MODE=enterprise):
- * - All 83 tools fully functional
+ * - All 91 tools fully functional
  *
  * @copyright 2026 Alexandria Eden alexandria.shai.eden@gmail.com https://cbrowser.ai
  * @license MIT
@@ -60,6 +60,14 @@ export {
   registerBrowserManagementTools,
   registerSecurityTools,
   registerMarketingTools,
+  registerRemediationTools,
+  registerLlmsTxtTools,
+  registerSiteKnowledgeTools,
+  registerAdvancedInteractionTools,
+  registerBrowserStateTools,
+  registerGifTools,
+  registerCaptureTools,
+  setSecurityAuditToolList,
 } from "./base/index.js";
 
 // Re-export persona creation tools
@@ -76,28 +84,54 @@ import { registerBaseTools } from "./base/index.js";
 import { registerPersonaCreationTools } from "./persona-creation-tools.js";
 import { registerAskUserTool } from "./ask-user-tools.js";
 import { registerEnterpriseStubs } from "./enterprise-stubs.js";
+import { setActiveTier, createGatedServer } from "./tier-gate.js";
+import { applySecurityLayer } from "./security-layer.js";
+import type { PricingTier } from "./tool-categories.js";
+
+// Re-export tier gating
+export { setActiveTier, getActiveTier, isToolAccessible, upgradePrompt, createGatedServer, setActiveKeyHash, getActiveKeyHash } from "./tier-gate.js";
+export type { PricingTier } from "./tool-categories.js";
 
 /**
  * Register all public npm tools on an MCP server
  *
- * Tool count: 83 tools across all deployments
- * - LOCAL: 83 tools (61 real + 22 stubs including 4 marketing stubs)
- * - DEMO: 83 tools (65 real + 18 stubs)
- * - ENTERPRISE: 83 tools all functional
+ * Tool count: 108 tools across all deployments
+ *
+ * @param server - MCP server instance
+ * @param context - Tool registration context with browser access
+ * @param pricingTier - User's pricing tier. null = self-hosted (no gating).
+ *   'free' = core browser/testing/sessions only. 'pro' = cognitive/visual/personas.
+ *   'enterprise' = marketing/stealth/security.
  */
 export function registerAllPublicTools(
   server: McpServer,
-  context: ToolRegistrationContext
+  context: ToolRegistrationContext,
+  pricingTier?: PricingTier | null,
 ): void {
-  // Base tools (57)
-  registerBaseTools(server, context);
+  // Set active tier for gating (null = self-hosted, no gating)
+  setActiveTier(pricingTier ?? null);
+
+  // Wrap server with tier gate proxy (intercepts registerTool calls)
+  const gatedServer = createGatedServer(server) as McpServer;
+
+  // Security layer: audit logging, description scanning, zone checks. Applied
+  // OUTSIDE the tier gate deliberately — createGatedServer returns the server
+  // untouched when the tier is null, which is the live enterprise config, so
+  // nesting security inside it would inherit that hole. Until 2026-07-26 the
+  // entire security module had zero call sites while the README shipped a Zone
+  // table and SKILL.md claimed constitutional safety. (See security-layer.ts for
+  // what is enforced and why red-zone denial is opt-in.)
+  const securedServer = applySecurityLayer(gatedServer) as McpServer;
+
+  // Base tools (78)
+  registerBaseTools(securedServer, context);
 
   // Persona creation tools (7)
-  registerPersonaCreationTools(server);
+  registerPersonaCreationTools(securedServer);
 
   // Ask user tool (1)
-  registerAskUserTool(server);
+  registerAskUserTool(securedServer);
 
   // Enterprise stubs (18)
-  registerEnterpriseStubs(server);
+  registerEnterpriseStubs(securedServer);
 }

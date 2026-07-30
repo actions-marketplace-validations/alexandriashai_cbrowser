@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recording fixture — element vanishes mid-capture</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101018; color: #f2f2f7; font: 16px/1.4 system-ui, sans-serif; }
+  main { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 24px; }
+  #box { width: 160px; height: 160px; background: #d64545; }
+  #clock { font-size: 32px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <main>
+    <div id="box"></div>
+    <div id="clock">0</div>
+  </main>
+  <script>
+    // #box animates for a second, then is removed from the layout entirely.
+    // Element tracking must keep capturing with the last known rect and mark
+    // the remaining frames stale rather than aborting the capture.
+    var start = performance.now();
+    var box = document.getElementById('box');
+    var clock = document.getElementById('clock');
+    function tick(now) {
+      var t = (now - start) / 1000;
+      clock.textContent = t.toFixed(2);
+      if (box) {
+        if (t > 1) {
+          box.style.display = 'none';
+          box = null;
+        } else {
+          box.style.transform = 'translateX(' + (t * 60) + 'px)';
+        }
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

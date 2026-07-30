@@ -209,7 +209,13 @@ export async function comparePersonas(
   const sortedByTime = [...successfulResults].sort(
     (a, b) => a.totalTime - b.totalTime
   );
-  const sortedByFriction = [...results].sort(
+  // SUCCESSES only. Ranking every result meant that when all journeys failed the
+  // summary still named a mostFriction and a leastFriction persona — derived
+  // from journeys that never completed, so the friction counts compared were
+  // whatever had accumulated before each one died. `leastFriction:
+  // elderly-low-vision` alongside `successCount: 0` is the shape of that.
+  // (2026-07-29)
+  const sortedByFriction = [...successfulResults].sort(
     (a, b) => b.frictionCount - a.frictionCount
   );
 
@@ -337,6 +343,12 @@ export async function comparePersonas(
         successfulResults.length
       : 0;
 
+  /** Pick an end of a ranking, but only when a ranking exists (>= 2 entries). */
+  const contrastive = (ranked: typeof results, end: 0 | -1): string =>
+    ranked.length >= 2
+      ? (end === 0 ? ranked[0] : ranked[ranked.length - 1]).persona
+      : "N/A";
+
   const comparison: PersonaComparisonResult = {
     url: startUrl,
     goal,
@@ -347,12 +359,15 @@ export async function comparePersonas(
       totalPersonas: personas.length,
       successCount: successfulResults.length,
       failureCount: failedResults.length,
-      fastestPersona: sortedByTime[0]?.persona || "N/A",
-      slowestPersona:
-        sortedByTime[sortedByTime.length - 1]?.persona || "N/A",
-      mostFriction: sortedByFriction[0]?.persona || "N/A",
-      leastFriction:
-        sortedByFriction[sortedByFriction.length - 1]?.persona || "N/A",
+      // These four are CONTRASTIVE — each is only meaningful against its
+      // opposite. With a single successful journey, fastest and slowest are the
+      // same persona, which reads as a finding and is not one. Two data points
+      // is the minimum for a comparison, so below that they report N/A rather
+      // than dressing one sample as a ranking.
+      fastestPersona: contrastive(sortedByTime, 0),
+      slowestPersona: contrastive(sortedByTime, -1),
+      mostFriction: contrastive(sortedByFriction, 0),
+      leastFriction: contrastive(sortedByFriction, -1),
       avgCompletionTime: Math.round(avgTime),
       commonFrictionPoints: commonFriction,
     },

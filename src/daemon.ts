@@ -20,9 +20,10 @@
  */
 
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "http";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, createWriteStream } from "fs";
 import { join } from "path";
 import { spawn } from "child_process";
+import { VideoCaptureSession, type VideoCaptureOptions, type VideoCaptureResult } from "./recording/engine.js";
 import { CBrowser } from "./browser.js";
 import { executeNaturalLanguage } from "./analysis/index.js";
 import { getPaths, mergeConfig, type CBrowserConfig } from "./config.js";
@@ -168,7 +169,7 @@ export async function startDaemon(port: number = DEFAULT_PORT): Promise<{ succes
   );
 
   // Write logs to file
-  const logStream = require("fs").createWriteStream(logPath, { flags: "a" });
+  const logStream = createWriteStream(logPath, { flags: "a" });
   child.stdout?.pipe(logStream);
   child.stderr?.pipe(logStream);
 
@@ -280,6 +281,21 @@ export async function runDaemonServer(config: Partial<CBrowserConfig>, port: num
     return browser;
   };
 
+  // The live capture, if one is running. Held by the daemon rather than by a
+  // CLI process so the recording outlives the invocation that started it: that
+  // is the whole point of daemon-routed capture. Later `click`/`fill`/
+  // `navigate` calls hit the same browser, so their effects land in the frames.
+  let capture: VideoCaptureSession | null = null;
+  let captureResult: VideoCaptureResult | null = null;
+
+  /**
+   * Ceiling on a single command. A wedged command used to present as an
+   * indefinite silence on the client; now it comes back as an error naming the
+   * command, so a regression is visible instead of looking like slowness.
+   * Generous because a capture stop has to encode before it returns.
+   */
+  const COMMAND_TIMEOUT_MS = 180_000;
+
   const handleCommand = async (req: DaemonRequest): Promise<DaemonResponse> => {
     resetIdleTimer();
     updateState();
@@ -351,11 +367,157 @@ export async function runDaemonServer(config: Partial<CBrowserConfig>, port: num
           };
         }
 
+        case "keyboard": {
+          // Sequences/chords/held modifiers, driven on the daemon's page so a
+          // capture running here records them.
+          const page = await b.getPage();
+          const steps = req.args.steps as { kind: string; key?: string; text?: string }[];
+          const hold = (req.args.hold as string[]) ?? [];
+          const delay = (req.args.delay as number) ?? 50;
+          const repeat = (req.args.repeat as number) ?? 1;
+          const selector = req.args.selector as string | undefined;
+
+          if (selector) {
+            const locator = await b.resolveElementLocator(selector);
+            if (!locator) return { success: false, error: `No element matched selector: ${selector}` };
+            await locator.focus();
+          }
+
+          for (const modifier of hold) await page.keyboard.down(modifier);
+          try {
+            for (let pass = 0; pass < repeat; pass++) {
+              for (const step of steps) {
+                if (step.kind === "text") {
+                  await page.keyboard.type(step.text ?? "", { delay: Math.min(delay, 50) });
+                } else {
+                  await page.keyboard.press(step.key ?? "");
+                }
+                if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+              }
+            }
+          } finally {
+            for (const modifier of [...hold].reverse()) await page.keyboard.up(modifier);
+          }
+          return { success: true, result: { steps: steps.length, repeat } };
+        }
+
+        case "press": {
+          const page = await b.getPage();
+          await page.keyboard.press(req.args.key as string);
+          return { success: true, result: { key: req.args.key } };
+        }
+
+        case "type": {
+          const page = await b.getPage();
+          await page.keyboard.type(req.args.text as string, { delay: (req.args.delay as number) ?? 50 });
+          return { success: true, result: { length: (req.args.text as string).length } };
+        }
+
+        case "evaluate": {
+          const page = await b.getPage();
+          const result = await page.evaluate(
+            (payload: { src: string; a: unknown[] }) => {
+              const fn = new Function("args", payload.src);
+              return fn(payload.a);
+            },
+            { src: req.args.body as string, a: (req.args.args as unknown[]) ?? [] },
+          );
+          return { success: true, result };
+        }
+
+        case "captureStart": {
+          if (capture && capture.status().state === "recording") {
+            return {
+              success: false,
+              error: `A capture is already running (${capture.status().slug}); stop it first`,
+            };
+          }
+
+          const opts = (req.args.options ?? {}) as VideoCaptureOptions;
+          const url = req.args.url as string | undefined;
+          if (url) await b.navigate(url);
+
+          const page = await b.getPage();
+          const engine = (req.args.engine as "chromium" | "firefox" | "webkit") ?? "chromium";
+          const paths = getPaths();
+
+          capture = new VideoCaptureSession(page, engine, join(paths.videosDir, paths.sessionId));
+          captureResult = null;
+          const status = await capture.start({
+            ...opts,
+            // Rebuilt daemon-side: a resolver cannot cross the HTTP boundary.
+            resolveElement: (selector) => b.resolveElementLocator(selector),
+          });
+
+          // Finalise whenever the capture ends on its own (duration or a stop
+          // trigger) so `capture status` can report the result afterwards.
+          void capture.finished.then((result) => { captureResult = result; }).catch(() => {});
+
+          return { success: true, result: status };
+        }
+
+        case "captureStop": {
+          if (!capture) {
+            return { success: false, error: "No capture is running in the daemon" };
+          }
+          const result = await capture.stop();
+          captureResult = result;
+          return {
+            success: true,
+            result: {
+              manifestPath: result.manifestPath,
+              manifest: result.manifest,
+              encodeErrors: result.encodeErrors,
+            },
+          };
+        }
+
+        case "captureStatus": {
+          if (!capture) {
+            return { success: true, result: { state: "idle" } };
+          }
+          return {
+            success: true,
+            result: {
+              ...capture.status(),
+              ...(captureResult
+                ? {
+                    manifestPath: captureResult.manifestPath,
+                    frames: captureResult.manifest.frames.length,
+                    artifacts: captureResult.manifest.artifacts,
+                    encodeErrors: captureResult.encodeErrors,
+                  }
+                : {}),
+            },
+          };
+        }
+
         default:
           return { success: false, error: `Unknown command: ${req.command}` };
       }
     } catch (err) {
       return { success: false, error: String(err) };
+    }
+  };
+
+  /** Run a command under the timeout ceiling. */
+  const handleCommandBounded = async (req: DaemonRequest): Promise<DaemonResponse> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        handleCommand(req),
+        new Promise<DaemonResponse>((resolve) => {
+          timer = setTimeout(
+            () => resolve({
+              success: false,
+              error: `Command '${req.command}' did not complete within ${COMMAND_TIMEOUT_MS / 1000}s`,
+            }),
+            COMMAND_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   };
 
@@ -389,15 +551,30 @@ export async function runDaemonServer(config: Partial<CBrowserConfig>, port: num
     }
 
     if (req.url === "/command" && req.method === "POST") {
+      // Cap body size to 10 MB. Without this, a malicious or buggy client
+      // can stream gigabytes into memory and OOM the daemon.
+      const MAX_BODY_SIZE = 10 * 1024 * 1024;
       let body = "";
-      req.on("data", chunk => { body += chunk; });
+      let aborted = false;
+      req.on("data", chunk => {
+        if (aborted) return;
+        body += chunk;
+        if (body.length > MAX_BODY_SIZE) {
+          aborted = true;
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: "Request body too large (>10 MB)" }));
+          req.destroy();
+        }
+      });
       req.on("end", async () => {
+        if (aborted) return;
         try {
           const request = JSON.parse(body) as DaemonRequest;
-          const response = await handleCommand(request);
+          const response = await handleCommandBounded(request);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(response));
         } catch (err) {
+          console.error("[daemon] Request handling failed:", err);
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: false, error: `Invalid request: ${err}` }));
         }

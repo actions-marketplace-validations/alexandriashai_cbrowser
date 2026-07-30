@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — cbrowser-ui</title>
+  <meta name="description" content="Install cbrowser-ui in 30 seconds. CDN, npm, or framework patch.">
+  <link rel="stylesheet" href="https://cdn.cbrowser.ai/ui.css">
+  <script type="module" src="https://cdn.cbrowser.ai/ui.mjs"></script>
+  <link rel="stylesheet" href="/cdn/playground.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>:root { --cui-font: 'Inter', system-ui, sans-serif; --cui-primary: #4f46e5; --cui-primary-fg: #fff; --cui-primary-hover: #4338ca; --cui-gradient-start: #4f46e5; --cui-gradient-end: #7c3aed; }
+  @media (prefers-color-scheme: dark) { :root { --cui-primary: #818cf8; --cui-primary-fg: #0f172a; --cui-primary-hover: #a5b4fc; } }
+  [id], h1, h2, h3, h4, h5, h6 { scroll-margin-top: 80px; }
+  .cui-nav-backdrop { pointer-events: none; }
+  .cui-nav-backdrop[aria-hidden="false"], .cui-header.cui-header-open .cui-nav-backdrop { pointer-events: auto; }</style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "name": "Getting Started — cbrowser-ui",
+    "url": "https://playground.cbrowser.ai/getting-started/",
+    "description": "Install cbrowser-ui in 30 seconds. CDN, npm, or framework patch."
+  }
+  </script>
+</head>
+<body>
+  <a href="#main" class="cui-skip-link" data-testid="skip-to-main">Skip to main content</a>
+
+  <header class="cui-header">
+    <div class="cui-container-lg cui-row" style="margin: 0 auto; width: 100%;">
+      <a href="/" class="cui-header-logo" style="margin-right: auto;" data-testid="site-logo"><span class="cui-gradient-text" style="font-size: 1.25rem;">cbrowser-ui</span></a>
+      <nav class="cui-header-nav" id="main-nav" aria-label="Main navigation">
+        <a href="/" data-testid="nav-home">Home</a>
+        <a href="/getting-started/" aria-current="page" data-testid="nav-get-started">Get Started</a>
+        <a href="/components/" data-testid="nav-components">Components</a>
+        <a href="/templates/" data-testid="nav-templates">Templates</a>
+        <a href="https://github.com/alexandriashai/cbrowser-ui" target="_blank" rel="noopener" data-testid="nav-github">GitHub</a>
+      </nav>
+      <button class="cui-header-toggle" aria-controls="main-nav" aria-expanded="false" aria-label="Open menu" data-testid="menu-toggle">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav aria-label="Breadcrumb" data-testid="breadcrumb">
+    <ol style="list-style: none; display: flex; gap: 0.5rem; padding: 0.75rem 0; margin: 0; font-size: 0.875rem;" class="cui-container">
+      <li><a href="/" data-testid="breadcrumb-home">Home</a></li>
+      <li aria-hidden="true">/</li>
+      <li aria-current="page">Getting Started</li>
+    </ol>
+  </nav>
+
+  <main id="main">
+    <section class="cui-section">
+      <div class="cui-container" style="max-width: 48rem;">
+        <span class="cui-badge cui-badge-primary" style="margin-bottom: 1rem;">Installation</span>
+        <h1 class="cui-display-sm">Get started in 30 seconds</h1>
+        <p class="cui-lead">Three ways to add cbrowser-ui. Pick the one that fits your project.</p>
+
+        <!-- Option 1: CDN -->
+        <div class="cui-card cui-card-highlight cui-mt-2" style="margin-bottom: 2rem;">
+          <h2 style="margin-top: 0;">Option 1: CDN <span class="cui-badge cui-badge-primary" style="margin-left: 0.5rem;">Fastest</span></h2>
+          <p>No build step. No install. Just two tags in your HTML.</p>
+          <div class="pg-code">
+            <button class="pg-copy" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy</button>
+            <code>&lt;link rel="stylesheet" href="https://cdn.cbrowser.ai/ui.css"&gt;
+&lt;script type="module" src="https://cdn.cbrowser.ai/ui.mjs"&gt;&lt;/script&gt;</code>
+          </div>
+          <p class="cui-text-sm cui-text-muted">The JS is optional — only needed for focus traps, keyboard navigation, and mobile menu toggle.</p>
+        </div>
+
+        <!-- Option 2: npm -->
+        <div class="cui-card" style="margin-bottom: 2rem;">
+          <h2 style="margin-top: 0;">Option 2: npm</h2>
+          <p>For build systems — React, Next.js, Vite, Astro, anything with a bundler.</p>
+          <div class="pg-code">
+            <button class="pg-copy" onclick="navigator.clipboard.writeText('npm install cbrowser-ui')">Copy</button>
+            <code>npm install cbrowser-ui</code>
+          </div>
+          <p style="margin-top: 1rem;">Then import in your entry point:</p>
+          <div class="pg-code">
+            <button class="pg-copy" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy</button>
+            <code><span class="comment">// Import the CSS</span>
+<span class="tag">import</span> <span class="string">'cbrowser-ui/css'</span>;
+
+<span class="comment">// Import JS utilities (optional)</span>
+<span class="tag">import</span> { FocusTrap, initArrowNav } <span class="tag">from</span> <span class="string">'cbrowser-ui'</span>;</code>
+          </div>
+        </div>
+
+        <!-- Option 3: Framework patch -->
+        <div class="cui-card" style="margin-bottom: 2rem;">
+          <h2 style="margin-top: 0;">Option 3: Patch your existing framework</h2>
+          <p>Already using Bootstrap, Tailwind, or shadcn? Add one line after your framework CSS. Nothing else changes.</p>
+          <div class="pg-code">
+            <button class="pg-copy" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy</button>
+            <code><span class="comment">&lt;!-- Bootstrap 5 --&gt;</span>
+&lt;link rel="stylesheet" href="<span class="string">https://cdn.cbrowser.ai/fix-bootstrap.css</span>"&gt;
+
+<span class="comment">&lt;!-- Tailwind CSS --&gt;</span>
+&lt;link rel="stylesheet" href="<span class="string">https://cdn.cbrowser.ai/fix-tailwind.css</span>"&gt;
+
+<span class="comment">&lt;!-- shadcn/ui --&gt;</span>
+&lt;link rel="stylesheet" href="<span class="string">https://cdn.cbrowser.ai/fix-shadcn.css</span>"&gt;</code>
+          </div>
+        </div>
+
+        <hr class="cui-separator">
+
+        <!-- Your first page -->
+        <h2 class="cui-mt-2">Your first page</h2>
+        <p>Copy this complete HTML file. It has everything: skip link, semantic landmarks, accessible navigation, labeled form, and proper heading hierarchy.</p>
+
+        <div class="pg-code" style="margin: 1.5rem 0;">
+          <button class="pg-copy" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy</button>
+          <code>&lt;!DOCTYPE html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="UTF-8"&gt;
+  &lt;meta name="viewport" content="width=device-width, initial-scale=1.0"&gt;
+  &lt;title&gt;My Accessible Site&lt;/title&gt;
+  &lt;link rel="stylesheet" href="https://cdn.cbrowser.ai/ui.css"&gt;
+  &lt;script type="module" src="https://cdn.cbrowser.ai/ui.mjs"&gt;&lt;/script&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;a href="#main" class="cui-skip-link"&gt;Skip to main content&lt;/a&gt;
+
+  &lt;header class="cui-header"&gt;
+    &lt;a href="/" class="cui-header-logo"&gt;My Site&lt;/a&gt;
+    &lt;nav class="cui-header-nav" id="nav" aria-label="Main"&gt;
+      &lt;a href="/" aria-current="page"&gt;Home&lt;/a&gt;
+      &lt;a href="/about"&gt;About&lt;/a&gt;
+      &lt;a href="/contact"&gt;Contact&lt;/a&gt;
+    &lt;/nav&gt;
+    &lt;button class="cui-header-toggle"
+      aria-controls="nav" aria-expanded="false"
+      aria-label="Open menu"&gt;☰&lt;/button&gt;
+  &lt;/header&gt;
+
+  &lt;main id="main" class="cui-container cui-section"&gt;
+    &lt;h1&gt;Welcome to My Site&lt;/h1&gt;
+    &lt;p&gt;This page is fully accessible out of the box.&lt;/p&gt;
+
+    &lt;div class="cui-card cui-mt-2"&gt;
+      &lt;h2&gt;Contact Us&lt;/h2&gt;
+      &lt;form action="/contact" method="post"&gt;
+        &lt;div class="cui-stack"&gt;
+          &lt;div&gt;
+            &lt;label for="name"&gt;Name&lt;/label&gt;
+            &lt;input type="text" id="name" required&gt;
+          &lt;/div&gt;
+          &lt;div&gt;
+            &lt;label for="email"&gt;Email&lt;/label&gt;
+            &lt;input type="email" id="email" required&gt;
+          &lt;/div&gt;
+          &lt;div&gt;
+            &lt;label for="message"&gt;Message&lt;/label&gt;
+            &lt;textarea id="message" rows="4"&gt;&lt;/textarea&gt;
+          &lt;/div&gt;
+          &lt;button type="submit" class="cui-btn"&gt;Send&lt;/button&gt;
+        &lt;/div&gt;
+      &lt;/form&gt;
+    &lt;/div&gt;
+  &lt;/main&gt;
+
+  &lt;footer aria-label="Site footer"
+    style="border-top: 1px solid var(--cui-border);"&gt;
+    &lt;div class="cui-container" style="padding: 2rem 0;"&gt;
+      &lt;p class="cui-text-sm cui-text-muted"&gt;
+        © 2026 My Site. Built with cbrowser-ui.
+      &lt;/p&gt;
+    &lt;/div&gt;
+  &lt;/footer&gt;
+&lt;/body&gt;
+&lt;/html&gt;</code>
+        </div>
+
+        <hr class="cui-separator">
+
+        <!-- Theming -->
+        <h2 class="cui-mt-2">Customize the theme</h2>
+        <p>Override any of the 20 CSS custom properties. Every color is AAA-contrast-safe in both light and dark mode.</p>
+
+        <div class="pg-code" style="margin: 1.5rem 0;">
+          <button class="pg-copy" onclick="navigator.clipboard.writeText(this.nextElementSibling.textContent)">Copy</button>
+          <code><span class="tag">:root</span> {
+  <span class="comment">/* Brand colors */</span>
+  <span class="attr">--cui-primary</span>: <span class="string">#059669</span>;        <span class="comment">/* emerald */</span>
+  <span class="attr">--cui-primary-fg</span>: <span class="string">#ffffff</span>;
+  <span class="attr">--cui-primary-hover</span>: <span class="string">#047857</span>;
+
+  <span class="comment">/* Shape */</span>
+  <span class="attr">--cui-radius</span>: <span class="string">0.75rem</span>;         <span class="comment">/* rounder corners */</span>
+
+  <span class="comment">/* Typography */</span>
+  <span class="attr">--cui-font</span>: <span class="string">'Instrument Sans', sans-serif</span>;
+}</code>
+        </div>
+
+        <h3>All CSS variables</h3>
+        <div class="cui-table-wrapper" style="margin: 1rem 0;">
+          <table class="cui-table">
+            <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>--cui-bg</code></td><td><code>#ffffff</code></td><td>Page background</td></tr>
+              <tr><td><code>--cui-fg</code></td><td><code>#0f172a</code></td><td>Text color</td></tr>
+              <tr><td><code>--cui-muted</code></td><td><code>#64748b</code></td><td>Secondary text</td></tr>
+              <tr><td><code>--cui-border</code></td><td><code>#e2e8f0</code></td><td>Borders and dividers</td></tr>
+              <tr><td><code>--cui-surface</code></td><td><code>#f8fafc</code></td><td>Card/surface background</td></tr>
+              <tr><td><code>--cui-primary</code></td><td><code>#2563eb</code></td><td>Primary action color</td></tr>
+              <tr><td><code>--cui-primary-fg</code></td><td><code>#ffffff</code></td><td>Text on primary</td></tr>
+              <tr><td><code>--cui-primary-hover</code></td><td><code>#1d4ed8</code></td><td>Primary hover state</td></tr>
+              <tr><td><code>--cui-destructive</code></td><td><code>#dc2626</code></td><td>Danger/delete actions</td></tr>
+              <tr><td><code>--cui-success</code></td><td><code>#16a34a</code></td><td>Success states</td></tr>
+              <tr><td><code>--cui-focus-ring</code></td><td><code>#2563eb</code></td><td>Focus outline color</td></tr>
+              <tr><td><code>--cui-font</code></td><td><code>system-ui</code></td><td>Body font family</td></tr>
+              <tr><td><code>--cui-font-mono</code></td><td><code>ui-monospace</code></td><td>Code font family</td></tr>
+              <tr><td><code>--cui-text-base</code></td><td><code>1rem</code></td><td>Base font size (16px)</td></tr>
+              <tr><td><code>--cui-line-height</code></td><td><code>1.6</code></td><td>Body line height</td></tr>
+              <tr><td><code>--cui-radius</code></td><td><code>0.5rem</code></td><td>Border radius</td></tr>
+              <tr><td><code>--cui-spacing</code></td><td><code>1rem</code></td><td>Base spacing unit</td></tr>
+              <tr><td><code>--cui-touch-min</code></td><td><code>44px</code></td><td>Minimum touch target</td></tr>
+              <tr><td><code>--cui-duration</code></td><td><code>150ms</code></td><td>Transition duration</td></tr>
+              <tr><td><code>--cui-easing</code></td><td><code>ease-out</code></td><td>Transition easing</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <hr class="cui-separator">
+
+        <!-- What's included -->
+        <h2 class="cui-mt-2">What you get</h2>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin: 1.5rem 0;">
+          <div class="cui-card">
+            <h3 style="margin-top: 0;">CSS Framework</h3>
+            <p class="cui-text-sm">Reset, typography, buttons, forms, cards, navigation, alerts, badges, tables, accordions, dialogs, progress bars, layout utilities.</p>
+            <p class="cui-text-sm cui-text-muted">21kb minified</p>
+          </div>
+          <div class="cui-card">
+            <h3 style="margin-top: 0;">JS Runtime</h3>
+            <p class="cui-text-sm">Focus traps, keyboard arrow navigation, mobile menu toggle, color scheme management, toast notifications, reduced motion detection.</p>
+            <p class="cui-text-sm cui-text-muted">5kb minified</p>
+          </div>
+          <div class="cui-card">
+            <h3 style="margin-top: 0;">Framework Patches</h3>
+            <p class="cui-text-sm">One-file fixes for Bootstrap 5, Tailwind CSS, shadcn/ui, and Material UI. Touch targets, contrast, motion, focus rings.</p>
+            <p class="cui-text-sm cui-text-muted">3-4kb each</p>
+          </div>
+        </div>
+
+        <!-- CTA -->
+        <div style="text-align: center; padding: 3rem 0;">
+          <h2>Ready to build?</h2>
+          <p class="cui-text-muted" style="margin-bottom: 1.5rem;">Browse all the components or start from a template.</p>
+          <div class="cui-row" style="justify-content: center; gap: 1rem;">
+            <a href="/components/" class="cui-btn" data-testid="cta-components">Browse Components</a>
+            <a href="/templates/" class="cui-btn cui-btn-secondary" data-testid="cta-templates">See Templates</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer aria-label="Site footer" style="border-top: 1px solid var(--cui-border);">
+    <div class="cui-container" style="padding: 2rem 0;">
+      <p class="cui-text-sm cui-text-muted"><strong class="cui-gradient-text">cbrowser-ui</strong> · MIT License · Built by <a href="https://cbrowser.ai" data-testid="footer-cbrowser">CBrowser</a></p>
+    </div>
+  </footer>
+</body>
+</html>

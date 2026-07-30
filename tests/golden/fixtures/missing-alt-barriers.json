@@ -1,0 +1,25 @@
+{
+  "url": "https://example.com/gallery",
+  "barriers": [
+    { "type": "missing_alt_text", "severity": "critical", "element": "img.hero-banner", "description": "Hero image has no alt attribute", "wcagCriteria": ["1.1.1"] },
+    { "type": "missing_alt_text", "severity": "serious", "element": "img.product-thumb:nth-child(3)", "description": "Product thumbnail missing alt text", "wcagCriteria": ["1.1.1"] },
+    { "type": "missing_alt_text", "severity": "serious", "element": "img.product-thumb:nth-child(7)", "description": "Product thumbnail missing alt text", "wcagCriteria": ["1.1.1"] },
+    { "type": "decorative_image_not_hidden", "severity": "moderate", "element": "img.section-divider", "description": "Decorative image not marked aria-hidden", "wcagCriteria": ["1.1.1"] },
+    { "type": "missing_caption", "severity": "serious", "element": "video#promo", "description": "Promo video lacks captions", "wcagCriteria": ["1.2.2"] }
+  ],
+  "agentReadyScore": 58,
+  "semanticScore": 62,
+  "ariaScore": 38,
+  "landmarkScore": 55,
+  "headingScore": 70,
+  "formLabelScore": 60,
+  "pageType": "gallery",
+  "elementCount": 320,
+  "interactiveCount": 28,
+  "navItemCount": 8,
+  "linkCount": 45,
+  "imageCount": 34,
+  "animationCount": 0,
+  "informationDensity": 0.55,
+  "fleschScore": 61
+}
