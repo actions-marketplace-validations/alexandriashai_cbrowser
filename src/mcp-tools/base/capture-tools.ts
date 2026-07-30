@@ -1062,28 +1062,17 @@ export function registerCaptureTools(
     try {
       const { token } = await resolveBrowser(_browserToken);
       const { payload, contactSheet, captureUiUri } = await stopCapture(token);
-      // Embedded resource, same reason as status: a resourceUri declared on the
-      // tool schema alone gives the host nothing to inject. Appended after the
-      // budget pass so the panel never displaces the JSON or the contact sheet.
-      const base = enforceResponseBudget(
-        buildContentWithScreenshots(
-          { ...payload, ...(token ? { _browserToken: token } : {}) },
-          contactSheet,
-        ),
-      );
-      let panel: unknown;
-      if (captureUiUri) {
-        try {
-          const { readCaptureUi } = await import("../ui-resources.js");
-          const html = readCaptureUi(captureUiUri);
-          if (html) {
-            panel = { type: "resource", resource: { uri: captureUiUri, mimeType: MCP_APP_MIME_LOCAL, text: html } };
-          }
-        } catch { /* the recording and its links stand without the panel */ }
-      }
+      // No embedded HTML here either: it would land in the model's context as
+      // a multi-hundred-KB string and still not render. The per-capture view is
+      // referenced by URI and fetched by the host; only the pointer travels.
       return {
-        content: (panel ? [...base, panel] : base) as typeof base,
-        ...(captureUiUri ? { _meta: { "ui": { resourceUri: captureUiUri } } } : {}),
+        content: enforceResponseBudget(
+          buildContentWithScreenshots(
+            { ...payload, ...(token ? { _browserToken: token } : {}) },
+            contactSheet,
+          ),
+        ),
+        ...(captureUiUri ? { _meta: { ui: { resourceUri: captureUiUri } } } : {}),
       };
     } catch (error) {
       return errorContent(error);

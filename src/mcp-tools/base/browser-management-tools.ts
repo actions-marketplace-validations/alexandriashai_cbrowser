@@ -34,10 +34,20 @@ export function registerBrowserManagementTools(
     title: "Browser Status",
     description: "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, self-healing cache statistics, and MCP tool count",
     inputSchema: {},
-    // Carries the MCP Apps inline-UI probe. status is the cheapest tool to call,
-    // so testing whether this host renders ui:// resources costs nothing and
-    // touches no browser state. Hosts that do not support MCP Apps ignore _meta.
-    _meta: { ui: { resourceUri: "ui://cbrowser/probe" } },
+    // outputSchema is what permits structuredContent on the result; without it
+    // the SDK rejects the field and the view has nothing to hydrate from.
+    // Passthrough rather than enumerated: getStatusInfo's shape varies with what
+    // is installed, and a strict schema here would drop fields the panel shows.
+    outputSchema: { } as Record<string, never>,
+    // The view for this tool. Nested form: the SDK resolver reads
+    // _meta.ui.resourceUri first and falls back to the flat "ui/resourceUri"
+    // key, so both are valid and this is the preferred one.
+    //
+    // status is deliberately the first tool to get a view. It needs no
+    // subresources at all, so it exercises the whole ui:// path -- declaration,
+    // resources/read, iframe injection, hydration -- while leaving the separate
+    // question of what the sandbox CSP will fetch for the capture player.
+    _meta: { ui: { resourceUri: "ui://cbrowser/status" } },
     annotations: {
       title: "Browser Status",
       readOnlyHint: true,
@@ -48,36 +58,23 @@ export function registerBrowserManagementTools(
   }, async () => {
       const toolCount = getToolCount?.();
       const info = await getStatusInfo(VERSION, toolCount);
-      // The panel rides IN the result as an embedded resource. Declaring
-      // _meta.ui.resourceUri on the tool definition alone produced a result with
-      // no content blocks and nothing for a host to inject -- the resource has
-      // to be in the result, not merely referenced from the schema.
+      // structuredContent, not an embedded HTML block. The host fetches the
+      // declared ui:// resource itself and pushes THIS result into the iframe,
+      // where the view reads structuredContent and renders. Returning the HTML
+      // here instead put several KB of markup into the model's context as a
+      // string and rendered nothing: a content block is not a view.
       //
-      // Additive by construction: the text block below is byte-for-byte what it
-      // was before. status is read to diff numbers, and a panel-only result
-      // would leave a reader able to say a widget appeared and nothing more.
-      let panel: { type: "resource"; resource: { uri: string; mimeType: string; text: string } } | undefined;
-      try {
-        const { buildStatusPanel, MCP_APP_MIME } = await import("../ui-resources.js");
-        panel = {
-          type: "resource" as const,
-          resource: {
-            uri: "ui://cbrowser/status",
-            mimeType: MCP_APP_MIME,
-            text: buildStatusPanel(info as unknown as Record<string, unknown>),
-          },
-        };
-      } catch { /* the numbers are the deliverable; the panel is decoration */ }
-
+      // The text block is retained unchanged. status is read to diff numbers,
+      // by the model as much as by a person, and structuredContent alone would
+      // be a regression for every host that does not render views.
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify(info, null, 2),
           },
-          ...(panel ? [panel] : []),
         ],
-        _meta: { "ui": { resourceUri: "ui://cbrowser/status" } },
+        structuredContent: info as unknown as Record<string, unknown>,
       };
     }
   );

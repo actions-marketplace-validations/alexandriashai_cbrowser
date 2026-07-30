@@ -116,29 +116,33 @@ const registered = new WeakSet<McpServer>();
  * that returned only a panel would leave the model able to report that a widget
  * appeared and nothing else.
  */
-export function buildStatusPanel(info: Record<string, unknown>): string {
-  const esc = (v: unknown): string => String(v)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+export const EXT_APPS_ESM = "https://esm.sh/@modelcontextprotocol/ext-apps@1.7.5";
 
-  const rows: string[] = [];
-  const walk = (obj: Record<string, unknown>, prefix = ""): void => {
-    for (const [k, v] of Object.entries(obj)) {
-      const label = prefix ? `${prefix}.${k}` : k;
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        walk(v as Record<string, unknown>, label);
-      } else {
-        const val = Array.isArray(v) ? v.join(", ") : v;
-        rows.push(`<tr><th>${esc(label)}</th><td>${esc(val === "" ? "&mdash;" : val)}</td></tr>`);
-      }
-    }
-  };
-  walk(info);
-
+/**
+ * Static status view.
+ *
+ * Takes no data, and that is the whole point. An MCP Apps resource is fetched
+ * by the host via resources/read and cached against its URI, so it is identical
+ * across every call -- there is no per-call server-side render step to put
+ * values into. The numbers arrive separately: the host pushes the tool result
+ * into the iframe over postMessage, and the view reads structuredContent from
+ * it at runtime.
+ *
+ * The first version rendered a populated table server-side and shipped it in
+ * the tool result as an embedded resource. That put several KB of HTML into the
+ * model's context as a plain string and rendered nothing, because content
+ * blocks are not views -- being a view is a property of being declared one.
+ *
+ * The SDK loads from esm.sh, which is on the sandbox's CSP origin allowlist.
+ * That allowlist exists precisely so views can load their runtime.
+ */
+export function buildStatusTemplate(): string {
   return `<!doctype html><meta charset="utf-8">
 <style>
   :root{color-scheme:light dark;--ink:#14161a;--ground:#fff;--muted:#6b7078;--rule:#dcdfe4;--accent:#2f6f4f;--card:#fff}
   @media (prefers-color-scheme:dark){:root{--ink:#e8eaed;--ground:#16181c;--muted:#9aa0a8;--rule:#31353b;--accent:#6fbf8f;--card:#1d2025}}
+  :root[data-theme="dark"]{--ink:#e8eaed;--ground:#16181c;--muted:#9aa0a8;--rule:#31353b;--accent:#6fbf8f;--card:#1d2025}
+  :root[data-theme="light"]{--ink:#14161a;--ground:#fff;--muted:#6b7078;--rule:#dcdfe4;--accent:#2f6f4f;--card:#fff}
   *{box-sizing:border-box}
   body{margin:0;padding:16px;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--ground)}
   .eyebrow{font:600 .67rem/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 .4rem}
@@ -149,12 +153,56 @@ export function buildStatusPanel(info: Record<string, unknown>): string {
   tr:last-child th,tr:last-child td{border-bottom:0}
   th{font:.74rem/1.4 ui-monospace,monospace;color:var(--muted);font-weight:500;white-space:nowrap;width:1%}
   td{font-variant-numeric:tabular-nums;word-break:break-word}
-  .note{font-size:.76rem;color:var(--muted);margin:.7rem 0 0}
+  .status{font-size:.86rem;color:var(--muted)}
 </style>
 <p class="eyebrow">CBrowser</p>
 <h1>Environment status</h1>
-<div class="wrap"><table><tbody>${rows.join("")}</tbody></table></div>
-<p class="note">Rendered from the same payload as the JSON block in this result, which is unchanged.</p>`;
+<div class="wrap"><table><tbody id="rows"></tbody></table></div>
+<p class="status" id="status">Waiting for the host to deliver the tool result&hellip;</p>
+<script type="module">
+  import { App } from "${EXT_APPS_ESM}";
+
+  var tbody = document.getElementById("rows");
+  var status = document.getElementById("status");
+
+  // Values are written with textContent, never innerHTML. The view is hydrated
+  // from tool output, and tool output includes strings this server does not
+  // control (paths, versions, browser names) -- interpolating those into markup
+  // is how a status panel becomes an injection sink.
+  function addRow(label, value) {
+    var tr = document.createElement("tr");
+    var th = document.createElement("th");
+    var td = document.createElement("td");
+    th.textContent = label;
+    td.textContent = value === "" || value === null || value === undefined ? "\u2014" : String(value);
+    tr.appendChild(th); tr.appendChild(td); tbody.appendChild(tr);
+  }
+  function walk(obj, prefix) {
+    Object.keys(obj || {}).forEach(function (k) {
+      var v = obj[k];
+      var label = prefix ? prefix + "." + k : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) walk(v, label);
+      else addRow(label, Array.isArray(v) ? v.join(", ") : v);
+    });
+  }
+  function render(data) {
+    if (!data) return;
+    tbody.replaceChildren();
+    walk(data, "");
+    status.textContent = "";
+  }
+
+  var app = new App({ name: "cbrowser-status", version: "1.0.0" });
+  app.addEventListener("toolresult", function (p) {
+    render(p && (p.structuredContent || (p.result && p.result.structuredContent)));
+  });
+  try {
+    await app.connect();
+    status.textContent = "Connected. Waiting for status data\u2026";
+  } catch (e) {
+    status.textContent = "Could not connect to the host: " + (e && e.message ? e.message : e);
+  }
+</script>`;
 }
 
 /** Read back a published capture panel by its resource URI. */
@@ -185,7 +233,7 @@ export function registerUiResources(server: McpServer): void {
         mimeType: MCP_APP_MIME,
         // Read out of band there is no payload to render, so this stands in.
         // The populated panel travels inside the status tool result itself.
-        text: buildStatusPanel({ note: "Call the status tool to populate this panel." }),
+        text: buildStatusTemplate(),
       }],
     }),
   );
