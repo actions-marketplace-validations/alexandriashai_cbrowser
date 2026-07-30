@@ -73,6 +73,16 @@ export interface AttentionOverlayOptions {
   keyFrames?: number[];
   /** Per-frame timestamps, used to place moments on the recording timeline. */
   frameTimesMs?: number[];
+  /**
+   * DOM as it stood at points in time, captured on navigation during recording.
+   *
+   * A judged frame uses the snapshot in effect AT ITS TIMESTAMP. Without this,
+   * every frame was scored against the page the capture ended on — so a frame
+   * on the pricing page got ranked against a post-click verification screen,
+   * every moment came back identical, and the summary read that uniformity as a
+   * UX finding rather than as the artifact it was.
+   */
+  domTimeline?: Array<{ atMs: number; elements: DOMAttentionElement[] }>;
   /** Persona context for the relevance judge and the closing summary. */
   relevanceContext?: Omit<RelevanceContext, "screenshot">;
   /** Produce a narrative of the whole recording after the frames are overlaid. */
@@ -158,12 +168,25 @@ async function renderHeatLayer(
   for (const c of cells) if (c > peak) peak = c;
   const norm = peak > 0 ? peak : 1;
 
+  // Bilinear sample, not nearest-cell. Nearest-cell paints every pixel of a
+  // cell the same value, which is why the overlay read as a mosaic of hard
+  // squares rather than a field of attention.
+  const at = (r: number, c: number): number =>
+    cells[Math.min(rows - 1, Math.max(0, r)) * cols + Math.min(cols - 1, Math.max(0, c))] / norm;
+
   const out = Buffer.alloc(frameWidth * frameHeight * 4);
   for (let y = 0; y < frameHeight; y++) {
-    const row = Math.min(rows - 1, Math.floor((y / frameHeight) * rows));
+    const fy = (y / frameHeight) * rows - 0.5;
+    const r0 = Math.floor(fy), ty = fy - r0;
     for (let x = 0; x < frameWidth; x++) {
-      const col = Math.min(cols - 1, Math.floor((x / frameWidth) * cols));
-      const [r, g, b, a] = heatColour(cells[row * cols + col] / norm, opts.opacity, opts.floor);
+      const fx = (x / frameWidth) * cols - 0.5;
+      const c0 = Math.floor(fx), tx = fx - c0;
+      const v =
+        at(r0, c0) * (1 - tx) * (1 - ty) +
+        at(r0, c0 + 1) * tx * (1 - ty) +
+        at(r0 + 1, c0) * (1 - tx) * ty +
+        at(r0 + 1, c0 + 1) * tx * ty;
+      const [r, g, b, a] = heatColour(v, opts.opacity, opts.floor);
       const i = (y * frameWidth + x) * 4;
       out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = a;
     }
@@ -186,8 +209,8 @@ export async function overlayAttentionOnFrames(
 ): Promise<OverlayResult> {
   const opts = {
     opacity: options.opacity ?? 0.55,
-    floor: options.floor ?? 0.35,
-    cellSize: options.cellSize ?? 16,
+    floor: options.floor ?? 0.12,
+    cellSize: options.cellSize ?? 4,
     persona: options.persona ?? "first-timer",
     domElements: options.domElements,
     goal: options.goal,
@@ -213,8 +236,19 @@ export async function overlayAttentionOnFrames(
       const heat = await renderHeatLayer(framePath, width, height, opts);
       if (!heat) throw new Error("no attention map produced");
 
+      // Blur at foveal scale. The saliency literature smooths fixation maps with
+      // a Gaussian at sigma ~= 1 degree of visual angle BECAUSE that is the size
+      // of the fovea — roughly 35-60 CSS px at laptop viewing distance. An
+      // attention map with edges sharper than the eye's own acuity is claiming a
+      // precision no measurement supports, so this is the honest rendering as
+      // well as the one that reads correctly.
+      const blurred = await sharp(heat, { raw: { width, height, channels: 4 } })
+        .blur(Math.max(2, Math.round(Math.min(width, height) * 0.012)))
+        .raw()
+        .toBuffer();
+
       await sharp(framePath)
-        .composite([{ input: heat, raw: { width, height, channels: 4 }, blend: "over" }])
+        .composite([{ input: blurred, raw: { width, height, channels: 4 }, blend: "over" }])
         .toFile(target);
 
       frames.push(target);
@@ -248,17 +282,32 @@ export async function overlayAttentionOnFrames(
     : [];
 
   if (ctx && getApiKey && usedDom && judgeAt.length > 0) {
-    const elements: RelevanceElement[] = (options.domElements ?? []).map((el, i) => ({
-      index: i,
-      type: el.type,
-      text: el.text ?? "",
-      x: el.x, y: el.y, width: el.width, height: el.height,
-    }));
+    /**
+     * DOM in effect at a moment — the newest snapshot at or before it.
+     *
+     * Falls back to the single stop-time extract when no timeline was supplied,
+     * which is correct only for a capture that never navigated.
+     */
+    const domAt = (tMs: number): DOMAttentionElement[] => {
+      const tl = options.domTimeline;
+      if (!tl || tl.length === 0) return options.domElements ?? [];
+      let best = tl[0];
+      for (const snap of tl) if (snap.atMs <= tMs) best = snap;
+      return best.elements;
+    };
 
     moments = [];
     for (const frameIndex of judgeAt) {
       if (frameIndex < 0 || frameIndex >= framePaths.length) continue;
       try {
+        const tMs = options.frameTimesMs?.[frameIndex] ?? 0;
+        const frameDom = domAt(tMs);
+        const elements: RelevanceElement[] = frameDom.map((el, i) => ({
+          index: i,
+          type: el.type,
+          text: el.text ?? "",
+          x: el.x, y: el.y, width: el.width, height: el.height,
+        }));
         const judged = await judgeRelevance(elements, { ...ctx, screenshot: undefined }, getApiKey);
         const top = Object.entries(judged.scores)
           .map(([i, score]) => ({ el: elements[Number(i)], score }))

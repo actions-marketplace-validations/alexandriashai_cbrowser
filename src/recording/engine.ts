@@ -258,6 +258,18 @@ export class VideoCaptureSession {
   private startedAtIso = "";
   private stopWallMs = 0;
   private frames: PendingFrame[] = [];
+  /**
+   * DOM as it stood at a point in time, captured on navigation.
+   *
+   * Reading the DOM once at stop and stamping it across every frame is wrong the
+   * moment a capture navigates: frame 0 on the pricing page was being judged
+   * against the post-click verification screen, which made every judged moment
+   * identical and let the summary confabulate a UX finding out of a tool
+   * artifact. One extract per navigation is cheap; per frame would be a
+   * page.evaluate on every screencast tick.
+   */
+  private domSnapshots: Array<{ atMs: number; elements: unknown[] }> = [];
+  private navListener?: () => void;
   private nextDueMs = 0;
   private writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -881,6 +893,19 @@ export class VideoCaptureSession {
 
     this.page.on("console", this.consoleListener);
     this.page.on("request", this.requestListener);
+
+    // Snapshot the DOM now and again whenever the page navigates, so a judged
+    // frame is scored against the page as it was AT THAT MOMENT.
+    const snapshot = async (): Promise<void> => {
+      try {
+        const { extractPageElementsForAttention } = await import("../visual/attention-quality.js");
+        const elements = await extractPageElementsForAttention(this.page);
+        this.domSnapshots.push({ atMs: Date.now() - this.startWallMs, elements });
+      } catch { /* a missing snapshot degrades that frame, never the recording */ }
+    };
+    void snapshot();
+    this.navListener = () => { void snapshot(); };
+    this.page.on("framenavigated", this.navListener);
   }
 
   private detachPageListeners(): void {
@@ -1075,11 +1100,18 @@ export class VideoCaptureSession {
         const { overlayAttentionOnFrames } = await import("./saliency-overlay.js");
         const { extractPageElementsForAttention } = await import("../visual/attention-quality.js");
 
+        // Prefer snapshots taken DURING the recording. Falling back to a
+        // stop-time read is only correct for a capture that never navigated.
         let domElements: Awaited<ReturnType<typeof extractPageElementsForAttention>> | undefined;
-        try {
-          domElements = await extractPageElementsForAttention(this.page);
-        } catch {
-          // A navigated-away or closed page still yields a visual-only overlay.
+        if (this.domSnapshots.length === 0) {
+          try {
+            domElements = await extractPageElementsForAttention(this.page);
+          } catch {
+            // A navigated-away or closed page still yields a visual-only overlay.
+          }
+        } else {
+          domElements = this.domSnapshots[this.domSnapshots.length - 1]
+            .elements as Awaited<ReturnType<typeof extractPageElementsForAttention>>;
         }
 
         // Everything the judging path needs must actually be handed over.
@@ -1100,6 +1132,9 @@ export class VideoCaptureSession {
             ...(cfg.entitled !== undefined ? { entitled: cfg.entitled } : {}),
           },
           keyFrames: manifest.key_frames ?? [],
+          // Time-indexed DOM, so a frame is judged against the page as it was
+          // at that moment rather than against wherever the capture ended up.
+          domTimeline: this.domSnapshots as never,
           frameTimesMs: manifest.frames.map((f) => f.t_ms),
           summarize: true,
           getApiKey: getAnthropicApiKey,
