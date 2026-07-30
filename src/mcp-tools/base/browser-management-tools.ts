@@ -48,13 +48,36 @@ export function registerBrowserManagementTools(
   }, async () => {
       const toolCount = getToolCount?.();
       const info = await getStatusInfo(VERSION, toolCount);
+      // The panel rides IN the result as an embedded resource. Declaring
+      // _meta.ui.resourceUri on the tool definition alone produced a result with
+      // no content blocks and nothing for a host to inject -- the resource has
+      // to be in the result, not merely referenced from the schema.
+      //
+      // Additive by construction: the text block below is byte-for-byte what it
+      // was before. status is read to diff numbers, and a panel-only result
+      // would leave a reader able to say a widget appeared and nothing more.
+      let panel: { type: "resource"; resource: { uri: string; mimeType: string; text: string } } | undefined;
+      try {
+        const { buildStatusPanel, MCP_APP_MIME } = await import("../ui-resources.js");
+        panel = {
+          type: "resource" as const,
+          resource: {
+            uri: "ui://cbrowser/status",
+            mimeType: MCP_APP_MIME,
+            text: buildStatusPanel(info as unknown as Record<string, unknown>),
+          },
+        };
+      } catch { /* the numbers are the deliverable; the panel is decoration */ }
+
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify(info, null, 2),
           },
+          ...(panel ? [panel] : []),
         ],
+        _meta: { "ui": { resourceUri: "ui://cbrowser/status" } },
       };
     }
   );

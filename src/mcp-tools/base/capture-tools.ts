@@ -80,6 +80,8 @@ const MIN_USEFUL_SHEET_BYTES = 12000;
  * same `_browserToken` that carries page continuity means a caller driving two
  * browsers gets two independent captures.
  */
+const MCP_APP_MIME_LOCAL = "text/html;profile=mcp-app";
+
 const sessions = new Map<string, { session: VideoCaptureSession; url?: string; viewport?: { width: number; height: number } }>();
 
 /** Summary of a capture that has already stopped. */
@@ -586,7 +588,7 @@ export async function startCapture(
  */
 export async function stopCapture(
   token?: string,
-): Promise<{ payload: CaptureStopPayload; contactSheet?: string }> {
+): Promise<{ payload: CaptureStopPayload; contactSheet?: string; captureUiUri?: string }> {
   const key = sessionKey(token);
   const entry = sessions.get(key);
   if (!entry) {
@@ -704,6 +706,42 @@ export async function stopCapture(
     if (written) playerUrl = written.url;
   } catch { /* the recording stands without its player */ }
 
+  // Inline player for MCP Apps. Separate build from the hosted page above,
+  // because that one links its artifacts by URL and this one cannot: the widget
+  // sandbox allowlists origins that do not include cbrowser.ai, so every frame
+  // it shows has to be embedded as a data: URI under a byte budget.
+  let captureUiUri: string | undefined;
+  try {
+    const { buildInlineCapturePlayer } = await import("../../recording/inline-player.js");
+    const { publishCaptureUi } = await import("../ui-resources.js");
+    const overlay = manifest.attention_overlay;
+    const framesDir = overlay?.applied ? "frames-attention" : "frames";
+    const inline = await buildInlineCapturePlayer({
+      slug: manifest.slug,
+      ...(entry?.url ? { targetUrl: entry.url } : {}),
+      durationMs: manifest.duration_ms,
+      actualFps: manifest.actual_fps,
+      framePaths: manifest.frames.map((_f, i) =>
+        join(status.outDir, framesDir, `${String(i).padStart(4, "0")}.jpg`)),
+      frameTimesMs: manifest.frames.map((f) => f.t_ms),
+      ...(manifest.interactions?.length ? { interactions: manifest.interactions } : {}),
+      ...(overlay?.moments
+        ? { moments: overlay.moments.map((m) => ({
+            frameIndex: m.frame_index, tMs: m.t_ms,
+            ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+            topElements: (m.top_elements ?? []) as Array<{ text: string; score: number; type: string }>,
+          })) }
+        : {}),
+      ...(overlay?.summary ? { summary: overlay.summary } : {}),
+      artifactUrls,
+      ...(playerUrl ? { playerUrl } : {}),
+      ...(overlay
+        ? { overlay: { quantity: overlay.quantity, domElements: overlay.dom_elements } }
+        : {}),
+    });
+    captureUiUri = publishCaptureUi(manifest.slug, inline);
+  } catch { /* inline panel is additive; the recording and hosted player stand */ }
+
   // Surface the recording in the account's Visual Reports gallery, the same way
   // heatmaps and empathy screenshots appear. Prefer the GIF: it plays inline in
   // a gallery, where a WebM needs a player and the contact sheet is only a
@@ -763,7 +801,7 @@ export async function stopCapture(
     stoppedAt: new Date().toISOString(),
   });
   sessions.delete(key);
-  return { payload, ...(contactSheet ? { contactSheet } : {}) };
+  return { payload, ...(contactSheet ? { contactSheet } : {}), ...(captureUiUri ? { captureUiUri } : {}) };
 }
 
 /**
@@ -1023,14 +1061,29 @@ export function registerCaptureTools(
   }, async ({ _browserToken }) => {
     try {
       const { token } = await resolveBrowser(_browserToken);
-      const { payload, contactSheet } = await stopCapture(token);
-      return {
-        content: enforceResponseBudget(
-          buildContentWithScreenshots(
-            { ...payload, ...(token ? { _browserToken: token } : {}) },
-            contactSheet,
-          ),
+      const { payload, contactSheet, captureUiUri } = await stopCapture(token);
+      // Embedded resource, same reason as status: a resourceUri declared on the
+      // tool schema alone gives the host nothing to inject. Appended after the
+      // budget pass so the panel never displaces the JSON or the contact sheet.
+      const base = enforceResponseBudget(
+        buildContentWithScreenshots(
+          { ...payload, ...(token ? { _browserToken: token } : {}) },
+          contactSheet,
         ),
+      );
+      let panel: unknown;
+      if (captureUiUri) {
+        try {
+          const { readCaptureUi } = await import("../ui-resources.js");
+          const html = readCaptureUi(captureUiUri);
+          if (html) {
+            panel = { type: "resource", resource: { uri: captureUiUri, mimeType: MCP_APP_MIME_LOCAL, text: html } };
+          }
+        } catch { /* the recording and its links stand without the panel */ }
+      }
+      return {
+        content: (panel ? [...base, panel] : base) as typeof base,
+        ...(captureUiUri ? { _meta: { "ui": { resourceUri: captureUiUri } } } : {}),
       };
     } catch (error) {
       return errorContent(error);

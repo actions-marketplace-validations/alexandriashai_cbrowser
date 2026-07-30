@@ -20,8 +20,35 @@
  * both of them.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 export const UI_PROBE_URI = "ui://cbrowser/probe";
+export const CAPTURE_UI_PREFIX = "ui://cbrowser/capture/";
+
+/**
+ * Built player HTML, keyed by capture slug.
+ *
+ * The host reads a ui:// resource in a request separate from the tool call, so
+ * the resource handler cannot know which capture is being asked about from the
+ * call itself -- the slug in the URI is the only link between them. Hence a
+ * store, and hence a per-capture URI rather than one fixed template URI.
+ *
+ * Bounded because these hold hundreds of KB of embedded frames each and a
+ * long-lived server would otherwise accumulate every capture it ever ran.
+ */
+const CAPTURE_HTML_LIMIT = 24;
+const captureHtml = new Map<string, string>();
+
+/** Store a built player and return the resource URI that will serve it. */
+export function publishCaptureUi(slug: string, html: string): string {
+  captureHtml.set(slug, html);
+  while (captureHtml.size > CAPTURE_HTML_LIMIT) {
+    const oldest = captureHtml.keys().next().value;
+    if (oldest === undefined) break;
+    captureHtml.delete(oldest);
+  }
+  return `${CAPTURE_UI_PREFIX}${slug}`;
+}
 export const MCP_APP_MIME = "text/html;profile=mcp-app";
 
 const PROBE_HTML = `<!doctype html><meta charset="utf-8">
@@ -75,16 +102,114 @@ const PROBE_HTML = `<!doctype html><meta charset="utf-8">
  */
 const registered = new WeakSet<McpServer>();
 
+/**
+ * Render a status payload as a panel.
+ *
+ * Deliberately the first UI resource shipped, because it needs no subresources
+ * at all -- counts, versions, config strings. That isolates the ui:// delivery
+ * path (resource rides in the tool result, host injects, iframe renders) from
+ * the separate question of what the sandbox CSP will fetch. One unknown at a
+ * time; the capture player stacks two.
+ *
+ * The JSON block it accompanies is never replaced. status is read by the model
+ * at least as often as by a person, and it is read to diff numbers -- a tool
+ * that returned only a panel would leave the model able to report that a widget
+ * appeared and nothing else.
+ */
+export function buildStatusPanel(info: Record<string, unknown>): string {
+  const esc = (v: unknown): string => String(v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  const rows: string[] = [];
+  const walk = (obj: Record<string, unknown>, prefix = ""): void => {
+    for (const [k, v] of Object.entries(obj)) {
+      const label = prefix ? `${prefix}.${k}` : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        walk(v as Record<string, unknown>, label);
+      } else {
+        const val = Array.isArray(v) ? v.join(", ") : v;
+        rows.push(`<tr><th>${esc(label)}</th><td>${esc(val === "" ? "&mdash;" : val)}</td></tr>`);
+      }
+    }
+  };
+  walk(info);
+
+  return `<!doctype html><meta charset="utf-8">
+<style>
+  :root{color-scheme:light dark;--ink:#14161a;--ground:#fff;--muted:#6b7078;--rule:#dcdfe4;--accent:#2f6f4f;--card:#fff}
+  @media (prefers-color-scheme:dark){:root{--ink:#e8eaed;--ground:#16181c;--muted:#9aa0a8;--rule:#31353b;--accent:#6fbf8f;--card:#1d2025}}
+  *{box-sizing:border-box}
+  body{margin:0;padding:16px;font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--ground)}
+  .eyebrow{font:600 .67rem/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 .4rem}
+  h1{font-size:1.05rem;margin:0 0 .9rem}
+  .wrap{overflow-x:auto;border:1px solid var(--rule);border-radius:8px;background:var(--card)}
+  table{border-collapse:collapse;width:100%;font-size:.85rem}
+  th,td{text-align:left;padding:.42rem .7rem;border-bottom:1px solid var(--rule);vertical-align:top}
+  tr:last-child th,tr:last-child td{border-bottom:0}
+  th{font:.74rem/1.4 ui-monospace,monospace;color:var(--muted);font-weight:500;white-space:nowrap;width:1%}
+  td{font-variant-numeric:tabular-nums;word-break:break-word}
+  .note{font-size:.76rem;color:var(--muted);margin:.7rem 0 0}
+</style>
+<p class="eyebrow">CBrowser</p>
+<h1>Environment status</h1>
+<div class="wrap"><table><tbody>${rows.join("")}</tbody></table></div>
+<p class="note">Rendered from the same payload as the JSON block in this result, which is unchanged.</p>`;
+}
+
+/** Read back a published capture panel by its resource URI. */
+export function readCaptureUi(uri: string): string | undefined {
+  return captureHtml.get(uri.startsWith(CAPTURE_UI_PREFIX) ? uri.slice(CAPTURE_UI_PREFIX.length) : uri);
+}
+
 /** Register the inline-UI resources on a server. Safe to call more than once. */
 export function registerUiResources(server: McpServer): void {
   if (registered.has(server)) return;
   registered.add(server);
-  server.resource(
-    UI_PROBE_URI,
+  server.registerResource(
+    "cbrowser-ui-probe",
     UI_PROBE_URI,
     { description: "Inline UI render probe (MCP Apps)", mimeType: MCP_APP_MIME },
     async () => ({
       contents: [{ uri: UI_PROBE_URI, mimeType: MCP_APP_MIME, text: PROBE_HTML }],
     }),
+  );
+
+  server.registerResource(
+    "cbrowser-status-ui",
+    "ui://cbrowser/status",
+    { description: "CBrowser environment status panel", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{
+        uri: "ui://cbrowser/status",
+        mimeType: MCP_APP_MIME,
+        // Read out of band there is no payload to render, so this stands in.
+        // The populated panel travels inside the status tool result itself.
+        text: buildStatusPanel({ note: "Call the status tool to populate this panel." }),
+      }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-capture-ui",
+    new ResourceTemplate(`${CAPTURE_UI_PREFIX}{slug}`, { list: undefined }),
+    { description: "Inline capture player with embedded frames", mimeType: MCP_APP_MIME },
+    async (uri, vars) => {
+      const slug = String(Array.isArray(vars.slug) ? vars.slug[0] : vars.slug ?? "");
+      const html = captureHtml.get(slug);
+      return {
+        contents: [{
+          uri: uri.href,
+          mimeType: MCP_APP_MIME,
+          // An expired slug is normal, not an error: the store is bounded and a
+          // host may re-read an old panel. Say so plainly instead of throwing.
+          text: html ?? `<!doctype html><meta charset="utf-8">
+<div style="font:15px/1.5 ui-sans-serif,system-ui,sans-serif;padding:18px">
+  <p>This capture is no longer held in memory. Re-run the capture, or open the full
+  player link from the original tool result.</p>
+</div>`,
+        }],
+      };
+    },
   );
 }

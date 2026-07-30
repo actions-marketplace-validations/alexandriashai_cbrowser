@@ -1,4 +1,4 @@
-export { registerUiResources, UI_PROBE_URI, MCP_APP_MIME } from "./ui-resources.js";
+export { registerUiResources, publishCaptureUi, buildStatusPanel, UI_PROBE_URI, CAPTURE_UI_PREFIX, MCP_APP_MIME } from "./ui-resources.js";
 /**
  * CBrowser MCP Tools - Main Index
  *
