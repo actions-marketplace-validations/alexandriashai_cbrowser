@@ -210,8 +210,8 @@ export function buildStatusTemplate(): string {
        the sweep -- the cyan end is the lighter one and sets the floor. */
     --brand:oklch(0.55 0.18 250);
     --brand-2:oklch(0.6 0.18 180);
-    --hero-a:oklch(0.47 0.17 255);
-    --hero-b:oklch(0.52 0.11 205);
+    --hero-a:oklch(0.415 0.19 258);
+    --hero-b:oklch(0.45 0.13 202);
     --accent:var(--color-accent-primary,oklch(0.55 0.18 250));
     --warn:oklch(0.55 0.16 45);
     --ok:oklch(0.62 0.16 150);
@@ -221,7 +221,7 @@ export function buildStatusTemplate(): string {
   }
   :root.dark{--ink:#e9ebee;--sub:#98a0aa;--line:#333840;
     --brand:oklch(0.65 0.18 250);--brand-2:oklch(0.7 0.15 180);
-    --hero-a:oklch(0.42 0.16 255);--hero-b:oklch(0.46 0.11 205);
+    --hero-a:oklch(0.385 0.18 258);--hero-b:oklch(0.42 0.12 202);
     --accent:oklch(0.65 0.18 250);--warn:oklch(0.72 0.14 55);--ok:oklch(0.72 0.15 150);
     --raise:color-mix(in srgb, #fff 6%, transparent)}
   *{box-sizing:border-box}
@@ -231,7 +231,19 @@ export function buildStatusTemplate(): string {
      broken. Inset lives on the two bands instead. */
   body{margin:0;padding:0;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
 
-  .hero{padding:16px 18px 15px;background:linear-gradient(118deg,var(--hero-a),var(--hero-b));color:#fff}
+  /* Layered rather than a flat two-stop sweep: a light bloom top-left, a dark
+     one bottom-right for depth, then two soft arcs and one angled facet over
+     the base gradient. That stack is what gives the reference its sense of a
+     lit surface instead of a printed ramp.
+     Base stops are pulled darker than the site tokens because the white bloom
+     lifts the ground under white text -- the contrast floor is measured off the
+     composited pixels, not off these stops. */
+  .hero{padding:16px 18px 15px;color:#fff;
+    background:
+      radial-gradient(115% 95% at 10% -12%, rgba(255,255,255,.20), transparent 58%),
+      radial-gradient(95% 85% at 98% 118%, rgba(0,0,0,.26), transparent 60%),
+      url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%20800%20200%27%20preserveAspectRatio%3D%27none%27%3E%3Cpath%20d%3D%27M0%2C128%20C150%2C58%20330%2C168%20505%2C96%20C645%2C38%20730%2C78%20800%2C52%20L800%2C200%20L0%2C200%20Z%27%20fill%3D%27%23ffffff%27%20opacity%3D%27.10%27%2F%3E%3Cpath%20d%3D%27M0%2C171%20C190%2C116%20372%2C190%20548%2C142%20C688%2C104%20754%2C132%20800%2C116%20L800%2C200%20L0%2C200%20Z%27%20fill%3D%27%23ffffff%27%20opacity%3D%27.07%27%2F%3E%3Cpath%20d%3D%27M556%2C0%20L800%2C0%20L800%2C200%20L678%2C200%20Z%27%20fill%3D%27%23ffffff%27%20opacity%3D%27.05%27%2F%3E%3C%2Fsvg%3E") center/100% 100% no-repeat,
+      linear-gradient(118deg,var(--hero-a),var(--hero-b))}
   .hrow{display:flex;align-items:center;gap:.6rem}
   /* Always dark, both themes. The mark is a blue that sits brightest against a
      dark ground, and a fixed disc also means the badge does not restyle itself
@@ -251,13 +263,13 @@ export function buildStatusTemplate(): string {
   .health.bad .dot{background:var(--warn)}
   .health.unknown{color:#33383f}
   .health.unknown .dot{background:#8a9099}
-  .hnote{margin:.5rem 0 0;font-size:.79rem;color:rgba(255,255,255,.9)}
+  .hnote{margin:.5rem 0 0;font-size:.79rem;color:#fff}
 
   .facts{display:flex;flex-wrap:wrap;gap:.34rem;margin:.7rem 0 0}
   .fact{display:inline-flex;align-items:baseline;gap:.34rem;padding:.24rem .52rem;
     border:1px solid rgba(255,255,255,.34);border-radius:6px;background:rgba(255,255,255,.14)}
   .fact b{font:650 .82rem/1 var(--mono);font-variant-numeric:tabular-nums;color:#fff}
-  .fact span{font-size:.74rem;color:rgba(255,255,255,.88)}
+  .fact span{font-size:.74rem;color:#fff}
   .fact.attn{background:rgba(255,255,255,.94);border-color:transparent}
   .fact.attn b{color:#7a3410} .fact.attn span{color:#5d3520}
 
