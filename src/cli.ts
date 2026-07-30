@@ -637,6 +637,10 @@ SCREEN CAPTURE (video/GIF — distinct from 'record', which captures actions)
     --quality <1-100>         JPEG quality of captured frames (default: 80)
     --max-frames <n>          Stop retaining frames after n (default: 3000)
     --contact-sheet           Also write one JPEG summarising the whole capture
+    --attention-overlay       Paint the predicted-attention map over every frame
+                              (adds ~0.5-1s per frame; uses the live DOM)
+    --overlay-persona <name>  Persona weighting the overlay (default: first-timer)
+    --overlay-goal <text>     Goal string weighting goal-relevance in the overlay
     --after <event>           Start on load|domcontentloaded|networkidle
     --after-element <sel>     Start when the element is present and visible
     --after-delay <500ms>     Extra delay after the start trigger
@@ -1051,6 +1055,7 @@ const COMMAND_FLAGS: Record<string, string[]> = {
   capture: [
     "fps", "duration", "format", "out", "name", "quality", "max-frames",
     "viewport", "region", "element", "element-padding", "contact-sheet",
+    "attention-overlay", "overlay-persona", "overlay-goal",
     "after", "after-element", "after-delay",
     "until-element", "until-element-gone", "until-idle", "timeout",
   ],
@@ -1206,7 +1211,7 @@ const CAPTURE_FLAGS = new Set([
   // capture-specific
   "fps", "duration", "format", "out", "name", "quality", "max-frames",
   "viewport", "region", "element", "element-padding",
-  "contact-sheet",
+  "contact-sheet", "attention-overlay", "overlay-persona", "overlay-goal",
   "after", "after-element", "after-delay",
   "until-element", "until-element-gone", "until-idle", "timeout",
   // globals honoured by the shared CBrowser construction
@@ -1486,6 +1491,17 @@ async function runOneCapture(
   await session.start({
     fps, durationMs, outDir, format, slug, target, quality, maxFrames,
     contactSheet: options["contact-sheet"] === true || typeof options["contact-sheet"] === "string",
+    // Overlay the model's predicted-attention map on every frame. Opt-in: it
+    // costs one attention pass per frame. DOM is read from the live page at
+    // stop, so this is the full 35/65 model, not bottom-up contrast alone.
+    ...(options["attention-overlay"]
+      ? {
+          saliencyOverlay: {
+            ...(typeof options["overlay-persona"] === "string" ? { persona: options["overlay-persona"] } : {}),
+            ...(typeof options["overlay-goal"] === "string" ? { goal: options["overlay-goal"] } : {}),
+          },
+        }
+      : {}),
     ...triggers,
     // Element tracking resolves through the browser's existing nine-strategy
     // resolver rather than a second one living in the capture engine.

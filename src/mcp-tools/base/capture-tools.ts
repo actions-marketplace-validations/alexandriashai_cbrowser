@@ -23,6 +23,7 @@ import { z } from "zod";
 import type { Page } from "playwright";
 
 import { getPaths } from "../../config.js";
+import { writeArtifact } from "../../artifact-store.js";
 import { buildContactSheet } from "../../recording/contact-sheet.js";
 import { VideoCaptureSession, type CaptureFormat, type VideoCaptureOptions } from "../../recording/engine.js";
 import type { RecordingManifest } from "../../recording/types.js";
@@ -217,6 +218,15 @@ export interface CaptureStopPayload {
   frames_dir: string;
   contact_sheet?: string;
   contact_sheet_note?: string;
+  /**
+   * Public HTTPS URLs for the encoded artifacts, keyed by the same format names
+   * as `artifacts`. Present only for artifacts that were successfully copied
+   * into the served directory — a missing key means no URL to offer, never a
+   * URL that 404s.
+   */
+  artifact_urls?: Record<string, string>;
+  /** Public URL for the contact sheet, when it was published. */
+  contact_sheet_url?: string;
   note: string;
 }
 
@@ -241,6 +251,8 @@ export function buildCaptureStopPayload(
     encodeErrors?: Record<string, string>;
     contactSheet?: string;
     contactSheetNote?: string;
+    artifactUrls?: Record<string, string>;
+    contactSheetUrl?: string;
   },
 ): CaptureStopPayload {
   const consoleErrors: string[] = [];
@@ -289,9 +301,14 @@ export function buildCaptureStopPayload(
     frames_dir: join(extra.outDir, "frames"),
     ...(extra.contactSheet ? { contact_sheet: extra.contactSheet } : {}),
     ...(extra.contactSheetNote ? { contact_sheet_note: extra.contactSheetNote } : {}),
+    ...(extra.artifactUrls && Object.keys(extra.artifactUrls).length > 0
+      ? { artifact_urls: extra.artifactUrls }
+      : {}),
+    ...(extra.contactSheetUrl ? { contact_sheet_url: extra.contactSheetUrl } : {}),
     note:
-      "Individual frames and video artifacts are on disk, not inlined — read them by path. " +
-      "The contact sheet is an evenly spaced visual sample of the recording.",
+      "Frames stay on disk — read them by path. Encoded artifacts are also published " +
+      "to public HTTPS URLs in `artifact_urls`, so a GIF or video can be displayed " +
+      "directly in a chat client. The contact sheet is an evenly spaced visual sample.",
   };
 }
 
@@ -354,6 +371,9 @@ export interface CaptureStartArgs {
   max_frames?: number;
   name?: string;
   out_dir?: string;
+  attention_overlay?: boolean;
+  overlay_persona?: string;
+  overlay_goal?: string;
 }
 
 /**
@@ -435,6 +455,16 @@ export async function startCapture(
     ...(args.max_frames !== undefined ? { maxFrames: args.max_frames } : {}),
     ...(args.name !== undefined ? { slug: args.name } : {}),
     ...(args.out_dir !== undefined ? { outDir: resolve(args.out_dir) } : {}),
+    // Overlay is resolved at stop, against the still-live page, so the DOM it
+    // reads is the page as recorded rather than a reconstruction.
+    ...(args.attention_overlay
+      ? {
+          saliencyOverlay: {
+            ...(args.overlay_persona ? { persona: args.overlay_persona } : {}),
+            ...(args.overlay_goal ? { goal: args.overlay_goal } : {}),
+          },
+        }
+      : {}),
   };
 
   // videosDir, not recordingsDir — the latter is the ACTION-recording feature's
@@ -515,12 +545,73 @@ export async function stopCapture(
     }
   }
 
+  // Publish encoded artifacts to the served directory so a chat client can
+  // render them. Same store screenshots use. A copy that fails yields no key
+  // rather than a URL that 404s — handing back a dead link is worse than
+  // handing back only the disk path.
+  const artifactUrls: Record<string, string> = {};
+  for (const [format, diskPath] of Object.entries(manifest.artifacts ?? {})) {
+    if (typeof diskPath !== "string" || !existsSync(diskPath)) continue;
+    try {
+      const written = writeArtifact(readFileSync(diskPath), `${manifest.slug}.${format}`);
+      if (written) artifactUrls[format] = written.url;
+    } catch { /* keep the capture; just omit this URL */ }
+  }
+
+  let contactSheetUrl: string | undefined;
+  if (contactSheet && existsSync(contactSheet)) {
+    try {
+      const written = writeArtifact(readFileSync(contactSheet), `${manifest.slug}-contact-sheet.jpg`);
+      if (written) contactSheetUrl = written.url;
+    } catch { /* same */ }
+  }
+
+  // Surface the recording in the account's Visual Reports gallery, the same way
+  // heatmaps and empathy screenshots appear. Prefer the GIF: it plays inline in
+  // a gallery, where a WebM needs a player and the contact sheet is only a
+  // sample. Fire-and-forget — a gallery write never costs the recording.
+  try {
+    const galleryUrl = artifactUrls.gif ?? artifactUrls.webp ?? contactSheetUrl;
+    if (galleryUrl) {
+      const { saveVisualReport } = await import("../visual-report-saver.js");
+      const { getSessionApiKey } = await import("./cognitive-tools.js");
+      const overlay = manifest.attention_overlay;
+      saveVisualReport({
+        apiKey: getSessionApiKey(),
+        imageUrl: galleryUrl,
+        toolName: "capture_stop",
+        targetUrl: entry?.url,
+        ...(overlay?.used_dom ? { persona: "first-timer" } : {}),
+        description: overlay?.applied
+          // Name the quantity, not just the artifact: with DOM this is the full
+          // attention model, without it only the bottom-up contrast half.
+          ? `Screen recording with ${overlay.quantity === "predicted-attention"
+              ? "predicted-attention"
+              : "visual-contrast"} overlay — ${manifest.frames.length} frames over ${
+              Math.round(manifest.duration_ms / 1000)}s.`
+          : `Screen recording — ${manifest.frames.length} frames over ${
+              Math.round(manifest.duration_ms / 1000)}s.`,
+        metadata: {
+          slug: manifest.slug,
+          frames: manifest.frames.length,
+          duration_ms: manifest.duration_ms,
+          actual_fps: manifest.actual_fps,
+          artifact_urls: artifactUrls,
+          ...(contactSheetUrl ? { contact_sheet_url: contactSheetUrl } : {}),
+          ...(overlay ? { attention_overlay: overlay } : {}),
+        },
+      });
+    }
+  } catch { /* gallery is a nicety; the capture is the deliverable */ }
+
   const payload = buildCaptureStopPayload(manifest, {
     manifestPath: result.manifestPath,
     outDir: status.outDir,
     encodeErrors: result.encodeErrors,
     ...(contactSheet ? { contactSheet } : {}),
     ...(contactSheetNote ? { contactSheetNote } : {}),
+    ...(Object.keys(artifactUrls).length > 0 ? { artifactUrls } : {}),
+    ...(contactSheetUrl ? { contactSheetUrl } : {}),
   });
 
   finished.set(key, {
@@ -695,6 +786,9 @@ export const captureStartSchema = {
   max_frames: z.number().optional().describe("Hard cap on retained frames (default: 3000)"),
   name: z.string().optional().describe("Capture name / slug"),
   out_dir: z.string().optional().describe("Output directory (default: a slug directory under the recordings dir)"),
+  attention_overlay: z.boolean().optional().describe("Paint the predicted-attention heatmap over every frame before encoding. Uses the live DOM, so this is the full attention model (35% visual contrast + 65% DOM semantics), not contrast alone. Costs roughly 0.5-1s per frame. Default false."),
+  overlay_persona: z.string().optional().describe("Persona whose priorities weight the attention overlay (default: first-timer). Only used with attention_overlay."),
+  overlay_goal: z.string().optional().describe("Goal string that weights goal-relevance in the attention overlay. Only used with attention_overlay."),
   _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
 };
 

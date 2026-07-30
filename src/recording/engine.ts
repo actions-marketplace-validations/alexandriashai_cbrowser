@@ -105,6 +105,22 @@ export interface VideoCaptureOptions {
   slug?: string;
   /** Also write a contact sheet: one JPEG summarising the whole capture. */
   contactSheet?: boolean | { columns?: number; maxFrames?: number };
+  /**
+   * Paint the visual-contrast (saliency) map over every frame before encoding.
+   *
+   * Opt-in because it costs one saliency pass per frame (~0.5-1s each), so a
+   * 50-frame capture adds 30-60s. The result is a CONTRAST map, not a gaze
+   * prediction — see `saliency-overlay.ts` for why that distinction is load-bearing.
+   */
+  saliencyOverlay?: boolean | {
+    opacity?: number;
+    floor?: number;
+    cellSize?: number;
+    /** Persona whose priorities weight the semantic half of the blend. */
+    persona?: string;
+    /** Goal string weighting goal-relevance in the semantic half. */
+    goal?: string;
+  };
   /** Delay the first frame until this condition holds. */
   startTrigger?: StartTrigger;
   /** Extra delay after the start trigger fires, in milliseconds. */
@@ -323,6 +339,7 @@ export class VideoCaptureSession {
       quality: options.quality ?? DEFAULT_QUALITY,
       maxFrames: options.maxFrames ?? DEFAULT_MAX_FRAMES,
       contactSheet: options.contactSheet ?? false,
+      saliencyOverlay: options.saliencyOverlay ?? false,
       triggerTimeoutMs: options.triggerTimeoutMs ?? DEFAULT_TRIGGER_TIMEOUT_MS,
     };
     this.startTrigger = options.startTrigger;
@@ -1041,7 +1058,45 @@ export class VideoCaptureSession {
       this.frames.map((f) => f.tMs),
       Math.max(durationMs, 1),
     );
-    const encodePaths = expanded.items.map((i) => i.path);
+    let encodePaths = expanded.items.map((i) => i.path);
+
+    // Attention overlay, when asked for. Runs BEFORE encoding so every format
+    // gets the overlaid frames from one pass rather than one pass per format.
+    //
+    // The DOM is read from the still-live page here rather than per frame: a
+    // per-frame extract would cost a page.evaluate on every screencast frame,
+    // and supplying the DOM at all is what upgrades this from bottom-up
+    // contrast (benchmarked, lost to centre-bias) to the full 35/65 model.
+    if (this.opts.saliencyOverlay) {
+      const cfg = typeof this.opts.saliencyOverlay === "object" ? this.opts.saliencyOverlay : {};
+      try {
+        const { overlayAttentionOnFrames } = await import("./saliency-overlay.js");
+        const { extractPageElementsForAttention } = await import("../visual/attention-quality.js");
+
+        let domElements: Awaited<ReturnType<typeof extractPageElementsForAttention>> | undefined;
+        try {
+          domElements = await extractPageElementsForAttention(this.page);
+        } catch {
+          // A navigated-away or closed page still yields a visual-only overlay.
+        }
+
+        const overlay = await overlayAttentionOnFrames(encodePaths, this.outDir, {
+          ...cfg,
+          ...(domElements ? { domElements: domElements as never } : {}),
+        });
+        encodePaths = overlay.frames;
+        manifest.attention_overlay = {
+          applied: true,
+          quantity: overlay.quantity,
+          used_dom: overlay.usedDom,
+          dom_elements: domElements?.length ?? 0,
+          frames_failed: overlay.failed,
+        };
+      } catch (err) {
+        // An overlay failure must never cost the recording.
+        errors["attention-overlay"] = `attention overlay failed: ${(err as Error).message}`;
+      }
+    }
     const delays = expanded.delays;
 
     // Frames on disk are full-viewport; the crop is applied here, at encode

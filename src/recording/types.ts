@@ -260,6 +260,22 @@ export const RecordingManifestSchema = z.object({
   region_clamped: z.boolean().optional(),
   /** Output format ("gif", "webp", "mp4", ...) to artifact path. */
   artifacts: z.record(z.string(), z.string()),
+  /**
+   * Present when frames were overlaid with the attention map.
+   *
+   * `quantity` records WHAT was painted, because the two cases carry different
+   * evidential weight: with DOM it is the full 35/65 production model, without
+   * it only the bottom-up contrast half that lost to a centre-bias baseline.
+   * A consumer that renders these frames should label them from this field
+   * rather than assuming.
+   */
+  attention_overlay: z.object({
+    applied: z.boolean(),
+    quantity: z.enum(["predicted-attention", "visual-contrast-only"]),
+    used_dom: z.boolean(),
+    dom_elements: z.number(),
+    frames_failed: z.number(),
+  }).optional(),
 });
 
 // ============================================================================
