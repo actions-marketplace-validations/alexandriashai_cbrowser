@@ -477,6 +477,14 @@ export function registerVisualTestingTools(server: McpServer): void {
 
         // Run attention analysis with DOM semantic layer (visual + semantic blend)
         const { analyzeAttention } = await import("../../visual/attention-transport.js");
+        // Same reason as capture: a persona created through the account lives in
+        // the CMS, and attention_analysis resolves personas through the registry.
+        try {
+          const { loadAccountPersonas } = await import("../account-personas.js");
+          const { getSessionApiKey } = await import("./cognitive-tools.js");
+          await loadAccountPersonas(getSessionApiKey());
+        } catch { /* falls back to disk and built-ins */ }
+
         const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
 
         // Persona-judged relevance, replacing keyword overlap in the semantic

@@ -489,6 +489,18 @@ export async function startCapture(
     ...(args.out_dir !== undefined ? { outDir: resolve(args.out_dir) } : {}),
     // Overlay is resolved at stop, against the still-live page, so the DOM it
     // reads is the page as recorded rather than a reconstruction.
+    // Register the account's custom personas before the overlay resolves one.
+    // They live in the CMS, not on disk, so without this a persona created
+    // through the account is silently replaced by a generic profile and every
+    // number is attributed to a persona that never ran.
+    ...(args.attention_overlay ? await (async () => {
+      try {
+        const { loadAccountPersonas } = await import("../account-personas.js");
+        const { getSessionApiKey } = await import("./cognitive-tools.js");
+        await loadAccountPersonas(getSessionApiKey());
+      } catch { /* falls back to disk and built-ins */ }
+      return {};
+    })() : {}),
     ...(args.attention_overlay
       ? {
           saliencyOverlay: {
