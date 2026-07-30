@@ -80,7 +80,7 @@ const MIN_USEFUL_SHEET_BYTES = 12000;
  * same `_browserToken` that carries page continuity means a caller driving two
  * browsers gets two independent captures.
  */
-const sessions = new Map<string, { session: VideoCaptureSession; url?: string }>();
+const sessions = new Map<string, { session: VideoCaptureSession; url?: string; viewport?: { width: number; height: number } }>();
 
 /** Summary of a capture that has already stopped. */
 interface FinishedCapture {
@@ -108,6 +108,18 @@ function sessionKey(token?: string): string {
 }
 
 /** Exposed for tests and for `reset_browser`-style teardown. */
+/**
+ * Viewport of the capture currently recording, if any.
+ *
+ * Exported so the screenshot tool can match it. Returns undefined when nothing
+ * is recording, which is the common case and must stay a no-op.
+ */
+export function activeRecordingViewport(token?: string): { width: number; height: number } | undefined {
+  const entry = sessions.get(sessionKey(token));
+  if (!entry || entry.session.status().state !== "recording") return undefined;
+  return entry.viewport;
+}
+
 export function clearCaptureSessions(): void {
   sessions.clear();
   finished.clear();
@@ -525,7 +537,16 @@ export async function startCapture(
   const paths = getPaths();
   const session = new VideoCaptureSession(page, engine, join(paths.videosDir, paths.sessionId));
   const status = await session.start(options);
-  sessions.set(key, { session, ...(args.url ? { url: args.url } : {}) });
+  // Recorded so screenshots taken mid-capture can be forced to the same size.
+  // A screenshot at a different viewport reflows the page, so the frame it
+  // returns is not the frame the recording contains -- two artifacts of the
+  // same moment that disagree, which is worse than having only one.
+  const recViewport = page.viewportSize();
+  sessions.set(key, {
+    session,
+    ...(args.url ? { url: args.url } : {}),
+    ...(recViewport ? { viewport: recViewport } : {}),
+  });
 
   return {
     success: true,
@@ -637,6 +658,7 @@ export async function stopCapture(
       frames: manifest.frames.length,
       actualFps: manifest.actual_fps,
       artifactUrls,
+      ...(manifest.interactions?.length ? { interactions: manifest.interactions } : {}),
       ...(contactSheetUrl ? { contactSheetUrl } : {}),
       ...(overlay
         ? {

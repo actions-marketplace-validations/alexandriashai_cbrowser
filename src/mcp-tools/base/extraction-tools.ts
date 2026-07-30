@@ -8,6 +8,7 @@
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { buildContentWithScreenshots } from "../screenshot-utils.js";
+import { activeRecordingViewport } from "./capture-tools.js";
 import { refuseUnboundSession } from "../session-policy.js";
 
 /**
@@ -41,9 +42,29 @@ export function registerExtractionTools(
       } else {
         b = await getBrowser();
       }
+      // A capture in progress owns the viewport. Taking a screenshot at a
+      // different size reflows the page, so the image would show a layout the
+      // recording never contained -- and the two artifacts of the same moment
+      // would disagree. Coerce to the recording's size rather than let that happen.
+      let viewportForced: { width: number; height: number } | undefined;
+      try {
+        const rec = activeRecordingViewport(token);
+        if (rec) {
+          const page = await b.getPage();
+          const now = page.viewportSize();
+          if (!now || now.width !== rec.width || now.height !== rec.height) {
+            await page.setViewportSize(rec);
+            viewportForced = rec;
+          }
+        }
+      } catch { /* never let viewport matching break a screenshot */ }
+
       const file = await b.screenshot(path);
       return {
-        content: buildContentWithScreenshots({ screenshot: file, ...(token ? { _browserToken: token } : {}) }, file),
+        content: buildContentWithScreenshots({ screenshot: file,
+          ...(viewportForced
+            ? { viewport_forced: `${viewportForced.width}x${viewportForced.height}`, viewport_forced_reason: "matched to the capture in progress" }
+            : {}), ...(token ? { _browserToken: token } : {}) }, file),
       };
     }
   );

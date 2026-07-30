@@ -34,6 +34,12 @@ export interface CapturePlayerData {
   /** Public URLs by format, as returned by capture_stop. */
   artifactUrls: Record<string, string>;
   contactSheetUrl?: string;
+  /**
+   * Real interactions, in capture time. Rendered as a seekable track under the
+   * media so a viewer can jump to the moment a click happened rather than
+   * scrubbing for it.
+   */
+  interactions?: Array<{ atMs: number; type: string; x: number; y: number; label: string }>;
   moments?: JudgedMoment[];
   summary?: string;
   /**
@@ -94,6 +100,26 @@ export function buildCapturePlayer(data: CapturePlayerData): string {
     : image
       ? `<img src="${esc(image)}" alt="Recording of ${esc(data.targetUrl ?? data.slug)}">`
       : `<p class="empty">No playable artifact was produced for this capture.</p>`;
+
+  const acts = (data.interactions ?? []).slice().sort((a, b) => a.atMs - b.atMs);
+  const dur = Math.max(1, data.durationMs);
+  // Markers are positioned by fraction of capture duration, so the track lines up
+  // with the media above it regardless of artifact format. Only the video can be
+  // seeked -- for a GIF the markers still read as a record of what happened, they
+  // just do not drive playback, and the note says so rather than silently no-op.
+  const actTrack = acts.length === 0
+    ? ""
+    : `
+    <section class="acts">
+      <h2>Interactions</h2>
+      <p class="lede">${acts.length} recorded ${acts.length === 1 ? "event" : "events"}${video ? " &mdash; select one to jump there." : " &mdash; seeking needs the video artifact."}</p>
+      <div class="track" role="list">
+        ${acts.map((a) => `<button type="button" role="listitem" class="mark" data-at="${a.atMs}" style="--x:${((a.atMs / dur) * 100).toFixed(2)}%" title="${esc(a.type)} &middot; ${esc(a.label.slice(0, 60))}"><span class="dot" data-type="${esc(a.type)}"></span></button>`).join("")}
+      </div>
+      <ol class="actlist">
+        ${acts.map((a) => `<li><button type="button" data-at="${a.atMs}"><span class="t">${esc(fmtTime(a.atMs))}</span><span class="kind" data-type="${esc(a.type)}">${esc(a.type)}</span><span class="lab">${esc(a.label.slice(0, 90) || "(no label)")}</span></button></li>`).join("")}
+      </ol>
+    </section>`;
 
   const moments = data.moments ?? [];
   const timeline = moments.length === 0
@@ -170,6 +196,30 @@ video,img{display:block;width:100%;height:auto;background:#000}
 .speed button[aria-pressed="true"]{background:var(--accent);color:var(--card);border-color:var(--accent)}
 .speed button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .speednote{font-size:.85rem;color:var(--muted);margin-top:-1.4rem}
+.acts .lede{margin-bottom:.5rem}
+.acts .track{position:relative;height:26px;margin:.2rem 0 .9rem;border-radius:4px;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--rule) 55%,transparent),color-mix(in srgb,var(--rule) 20%,transparent));
+  border:1px solid var(--rule)}
+.acts .mark{position:absolute;left:var(--x);top:0;height:100%;width:18px;transform:translateX(-9px);
+  background:none;border:0;padding:0;cursor:pointer;display:grid;place-items:center}
+.acts .mark .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);
+  border:2px solid var(--card);box-shadow:0 0 0 1px var(--accent)}
+.acts .mark .dot[data-type="submit"]{background:#d1495b;box-shadow:0 0 0 1px #d1495b}
+.acts .mark .dot[data-type="input"]{background:#e0a458;box-shadow:0 0 0 1px #e0a458}
+.acts .mark:hover .dot{transform:scale(1.35)}
+.acts .mark:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:3px}
+.actlist{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:.15rem}
+.actlist button{display:flex;gap:.6rem;align-items:baseline;width:100%;text-align:left;
+  background:none;border:0;border-radius:4px;padding:.3rem .45rem;cursor:pointer;color:inherit;font:inherit}
+.actlist button:hover{background:color-mix(in srgb,var(--accent) 9%,transparent)}
+.actlist button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.actlist .t{font-family:var(--mono);font-size:.74rem;color:var(--muted);flex:0 0 3.6rem;font-variant-numeric:tabular-nums}
+.actlist .kind{font-family:var(--mono);font-size:.66rem;text-transform:uppercase;letter-spacing:.08em;
+  padding:.08rem .34rem;border-radius:3px;background:color-mix(in srgb,var(--accent) 16%,transparent);flex:0 0 auto}
+.actlist .kind[data-type="submit"]{background:color-mix(in srgb,#d1495b 18%,transparent)}
+.actlist .kind[data-type="input"]{background:color-mix(in srgb,#e0a458 22%,transparent)}
+.actlist .lab{font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.acts .mark:hover .dot{transform:none}}
 .moments{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.9rem}
 .moments>li{display:grid;grid-template-columns:5.5rem 1fr;gap:0 1rem;background:var(--card);
   border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:4px;padding:.9rem 1rem}
@@ -220,6 +270,7 @@ a:focus-visible,video:focus-visible{outline:2px solid var(--accent);outline-offs
 
   <figure>${media}</figure>
   ${speedBar}
+  ${actTrack}
 
   ${summary}
   ${timeline}
@@ -235,6 +286,21 @@ a:focus-visible,video:focus-visible{outline:2px solid var(--accent);outline-offs
   </footer>
 </div>
 <script>
+// Interaction seeking lives in its own IIFE: the player script below returns
+// early when there is no <video>, and the markers must still render and respond
+// on a GIF-only capture even though nothing can be seeked.
+(function () {
+  var v = document.getElementById("rec");
+  document.querySelectorAll("[data-at]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var t = parseInt(b.getAttribute("data-at"), 10) / 1000;
+      if (v && isFinite(t)) { v.currentTime = t; v.pause(); }
+      document.querySelectorAll("[data-at]").forEach(function (o) {
+        o.setAttribute("aria-current", o === b ? "true" : "false");
+      });
+    });
+  });
+})();
 (function () {
   var v = document.getElementById("rec");
   if (!v) return;

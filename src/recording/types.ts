@@ -269,6 +269,21 @@ export const RecordingManifestSchema = z.object({
    * A consumer that renders these frames should label them from this field
    * rather than assuming.
    */
+  /**
+   * Real interactions recorded during the capture, in capture-relative ms.
+   *
+   * Distinct from anything the attention model produces: these are events that
+   * HAPPENED, not attention that was PREDICTED. Kept at manifest level rather
+   * than inside attention_overlay for exactly that reason -- a capture with no
+   * overlay still has a true interaction record.
+   */
+  interactions: z.array(z.object({
+    atMs: z.number(),
+    type: z.string(),
+    x: z.number(),
+    y: z.number(),
+    label: z.string(),
+  })).optional(),
   attention_overlay: z.object({
     applied: z.boolean(),
     quantity: z.enum(["predicted-attention", "visual-contrast-only"]),

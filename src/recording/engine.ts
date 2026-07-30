@@ -420,7 +420,9 @@ export class VideoCaptureSession {
       }
     }
 
-    this.attachPageListeners();
+    // Awaited: the interaction binding must exist before the first frame, or a
+    // click in the opening moments is silently unrecorded.
+    await this.attachPageListeners();
 
     this.startWallMs = Date.now();
     this.startedAtIso = new Date(this.startWallMs).toISOString();
@@ -901,7 +903,7 @@ export class VideoCaptureSession {
     }).catch(() => { /* reported via the frame-count mismatch check at stop */ });
   }
 
-  private attachPageListeners(): void {
+  private async attachPageListeners(): Promise<void> {
     this.consoleListener = (msg: ConsoleMessage) => {
       if (this.state !== "recording") return;
       this.consoleEvents.push({
@@ -946,30 +948,54 @@ export class VideoCaptureSession {
     //
     // Polled rather than event-driven: scroll fires far too often to snapshot
     // on, and a threshold poll costs one cheap evaluate per interval.
-    // Listener injected into the page, drained on the poll. An exposeFunction
-    // binding would fire per event and race the screencast; a drained buffer
-    // costs one evaluate per tick regardless of how much the user clicks.
-    void this.page.evaluate(() => {
-      const w = window as unknown as { __cbInteractions?: unknown[] };
-      if (w.__cbInteractions) return;
-      w.__cbInteractions = [];
-      const record = (type: string) => (e: Event) => {
-        const me = e as MouseEvent;
-        const t = e.target as HTMLElement | null;
-        const label = (t?.innerText || t?.getAttribute?.("aria-label") || t?.tagName || "")
-          .toString().trim().slice(0, 60);
-        (w.__cbInteractions as unknown[]).push({
-          t: Date.now(),
-          type,
-          x: typeof me.clientX === "number" ? me.clientX : 0,
-          y: typeof me.clientY === "number" ? me.clientY : 0,
-          label,
+    // Interactions are reported to Node the INSTANT they happen, and the
+    // listener re-arms on every navigation.
+    //
+    // The first version buffered events in a page global and drained them on the
+    // 200ms poll. That loses precisely the events worth having: a click that
+    // navigates destroys the buffer before the next drain, and the listener
+    // itself dies with the document, so nothing after the first navigation was
+    // ever recorded. Nothing showed up at all.
+    //
+    // exposeFunction costs a binding call per event rather than one evaluate per
+    // tick — the cost I was avoiding — but an event that arrives late is still
+    // an event, and one that is never recorded is not.
+    const BINDING = "__cbReportInteraction";
+    try {
+      await this.page.exposeFunction(BINDING, (raw: unknown) => {
+        const it = raw as Record<string, unknown>;
+        this.interactions.push({
+          atMs: Date.now() - this.startWallMs,
+          type: String(it?.type ?? "click"),
+          x: Number(it?.x ?? 0),
+          y: Number(it?.y ?? 0),
+          label: String(it?.label ?? ""),
         });
+      });
+    } catch { /* already bound on this page; the init script below still runs */ }
+
+    const initScript = `(() => {
+      if (window.__cbArmed) return;
+      window.__cbArmed = true;
+      const send = (type) => (e) => {
+        try {
+          const t = e.target;
+          const label = (t && (t.innerText || (t.getAttribute && t.getAttribute("aria-label")) || t.tagName) || "")
+            .toString().trim().slice(0, 60);
+          if (window.${BINDING}) {
+            window.${BINDING}({ type, x: e.clientX || 0, y: e.clientY || 0, label });
+          }
+        } catch (_) {}
       };
-      document.addEventListener("click", record("click"), true);
-      document.addEventListener("change", record("input"), true);
-      document.addEventListener("submit", record("submit"), true);
-    }).catch(() => { /* CSP or a closed page; interactions degrade to empty */ });
+      document.addEventListener("click", send("click"), true);
+      document.addEventListener("change", send("input"), true);
+      document.addEventListener("submit", send("submit"), true);
+    })();`;
+
+    // addInitScript runs on EVERY document, so the listener survives navigation.
+    try { await this.page.addInitScript({ content: initScript }); } catch { /* CSP */ }
+    // ...and once now, since the current document already loaded.
+    try { await this.page.evaluate(initScript); } catch { /* CSP or closed page */ }
 
     let lastScrollY = 0;
     this.scrollTimer = setInterval(() => {
@@ -981,21 +1007,6 @@ export class VideoCaptureSession {
           // would be wasteful.
           this.scrollTrack.push({ atMs: Date.now() - this.startWallMs, scrollY: y });
 
-          const drained = await this.page.evaluate(() => {
-            const w = window as unknown as { __cbInteractions?: Array<Record<string, unknown>> };
-            const out = w.__cbInteractions ?? [];
-            w.__cbInteractions = [];
-            return out;
-          }).catch(() => []);
-          for (const it of drained as Array<Record<string, unknown>>) {
-            this.interactions.push({
-              atMs: Number(it.t) - this.startWallMs,
-              type: String(it.type ?? "click"),
-              x: Number(it.x ?? 0),
-              y: Number(it.y ?? 0),
-              label: String(it.label ?? ""),
-            });
-          }
           if (Math.abs(y - lastScrollY) >= SCROLL_SNAPSHOT_THRESHOLD_PX) {
             lastScrollY = y;
             await snapshot();
@@ -1092,6 +1103,7 @@ export class VideoCaptureSession {
       version: MANIFEST_VERSION,
       slug: this.slug,
       engine: this.engine,
+      ...(this.interactions.length > 0 ? { interactions: this.interactions } : {}),
       capture_method: this.captureMethod,
       target_fps: this.opts.fps,
       actual_fps: durationMs > 0 ? frames.length / (durationMs / 1000) : 0,

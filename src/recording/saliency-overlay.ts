@@ -143,10 +143,10 @@ function heatColour(v: number, opacity: number, floor: number): [number, number,
 }
 
 /** How long a click pulse stays visible. Long enough to see at 2x, short enough not to smear. */
-const PULSE_MS = 600;
+const PULSE_MS = 900;
 /** Ring radius at the start and end of the pulse. */
-const PULSE_R0 = 14;
-const PULSE_R1 = 62;
+const PULSE_R0 = 22;
+const PULSE_R1 = 86;
 
 /**
  * Draw an expanding ring over an interaction point.
@@ -163,7 +163,7 @@ function drawPulse(
   const radius = PULSE_R0 + (PULSE_R1 - PULSE_R0) * progress;
   const alpha = Math.round(235 * (1 - progress));
   if (alpha <= 0) return;
-  const thickness = 3;
+  const thickness = 5;
 
   const y0 = Math.max(0, Math.floor(cy - radius - thickness));
   const y1 = Math.min(h - 1, Math.ceil(cy + radius + thickness));
