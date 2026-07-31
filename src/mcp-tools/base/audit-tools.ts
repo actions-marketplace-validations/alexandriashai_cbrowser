@@ -34,10 +34,10 @@ import { homedir } from "os";
 function writeAuditScreenshot(
   base64: string | undefined,
   persona: string,
-): { path?: string; url?: string } {
+): { path?: string; url?: string; file?: string } {
   if (!base64) return {};
   const safe = String(persona || "persona").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-  const out: { path?: string; url?: string } = {};
+  const out: { path?: string; url?: string; file?: string } = {};
 
   // Local copy, as before — the CLI and anything on this box reads this.
   try {
@@ -56,7 +56,9 @@ function writeAuditScreenshot(
   try {
     const nonce = randomBytes(6).toString("hex");
     const written = writeArtifact(Buffer.from(base64, "base64"), `empathy-${safe}-${nonce}.png`);
-    if (written) out.url = written.url;
+    // The filename too, not just the URL: the widget sandbox cannot fetch that
+    // URL and asks artifact_fetch for the bytes by name instead.
+    if (written) { out.url = written.url; out.file = written.filename; }
   } catch { /* overlay is optional; the audit is not */ }
 
   return out;
@@ -365,6 +367,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
                   return {
                     screenshotPath: shot.path,
                     screenshotUrl: shot.url,
+                    screenshotFile: shot.file,
                     screenshotNote: "Pass includeScreenshots:true to inline the base64 instead.",
                   };
                 })()),
@@ -458,67 +461,18 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const content: ToolContentBlock[] = [
           { type: "text", text: JSON.stringify(response, null, 2) },
         ];
-        if (uiResourcesEnabled(uiResource)) {
-          // The overlay goes FIRST. It is the thing that makes a score
-          // falsifiable by eye — barriers drawn on the page at their real
-          // positions — and the text report is the detail behind it.
-          try {
-            const { buildBarrierOverlayHtml } = await import("../../visual/barrier-overlay-html.js");
-            const shots = (response.pageScreenshots ?? []) as Array<Record<string, any>>;
-            for (const shot of shots) {
-              // The screenshot is inlined, not linked. An https URL on
-              // cbrowser.ai is blocked by the sandbox CSP, and because the
-              // boxes are absolutely positioned the failure presents as
-              // outlines floating over empty space rather than a broken image.
-              // Falls back to the URL when the bytes cannot be read, which is
-              // no worse than before and still works outside a sandbox.
-              let inlineImage: string | undefined;
-              try {
-                const file = String(shot.screenshotFile ?? "");
-                const local = String(shot.screenshotPath ?? "");
-                const { readFileSync, existsSync } = await import("node:fs");
-                const { join, extname } = await import("node:path");
-                const { ARTIFACT_DIR } = await import("../../artifact-store.js");
-                const path = local && existsSync(local) ? local
-                  : file ? join(ARTIFACT_DIR, file) : "";
-                if (path && existsSync(path)) {
-                  const ext = extname(path).toLowerCase();
-                  const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
-                  inlineImage = `data:${mime};base64,${readFileSync(path).toString("base64")}`;
-                }
-              } catch { /* fall through to the URL */ }
-
-              const overlayHtml = buildBarrierOverlayHtml({
-                imageUrl: inlineImage ?? shot.screenshotUrl,
-                imageWidth: shot.viewportSize?.width,
-                captureHeight: shot.captureHeight ?? shot.viewportSize?.height,
-                barrierRects: shot.barrierRects ?? [],
-                persona: String(shot.persona ?? testedPersona),
-                pageUrl: String(result.url),
-                score: result.overallScore,
-              });
-              attachUiResource(
-                content,
-                htmlUiResource(
-                  `ui://cbrowser/barrier-overlay/${encodeURIComponent(String(shot.persona ?? testedPersona))}`,
-                  overlayHtml ?? undefined,
-                  { frameSize: ["100%", "820px"] },
-                ),
-              );
-            }
-          } catch { /* overlay is additive; never fail the audit for it */ }
-
-          // The whole-report rawHtml attachment is gone; ui://cbrowser/empathy
-          // replaces it, declared on the tool below.
-          //
-          // Two UI mechanisms were live at once. mcp-ui embeds rendered HTML in
-          // the result, MCP Apps declares a resource the host fetches and
-          // hydrates. Running both on one tool means shipping a report AND a
-          // pointer to a different one, and it is the embedded HTML that costs:
-          // the report rides in the payload against a ~150k cap, so a rich
-          // audit could truncate the JSON beside it -- the same failure the
-          // heatmap caused before it moved to artifact_fetch.
-        }
+        // No UI resource is attached here any more.
+        //
+        // Both mcp-ui attachments are retired: the whole-report rawHtml and the
+        // barrier overlay. Both embedded rendered HTML in the result, which
+        // costs payload against the host's ~150k cap, and the overlay's boxes
+        // were drawn over an img on cbrowser.ai that the widget sandbox will
+        // not load -- outlines over empty space. Both are now served by
+        // ui://cbrowser/empathy, declared on the tool, where the host fetches
+        // the view and the overlay pulls its screenshot through artifact_fetch.
+        //
+        // uiResource is still accepted as an argument so existing callers do
+        // not break; it simply no longer changes the response.
         return { content };
       } catch (error) {
         // Categorize the error for better user feedback

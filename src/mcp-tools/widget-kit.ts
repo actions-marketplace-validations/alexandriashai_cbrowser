@@ -102,6 +102,19 @@ export type BlockSpec =
    */
   | { type: "levels"; title: string; field: FieldPath;
       valueField?: FieldPath; labelField?: FieldPath; behaviorsField?: FieldPath }
+  /**
+   * A screenshot with barrier boxes drawn over it.
+   *
+   * The artifact an accessibility audit actually hands someone: barriers at
+   * their real positions on the real page, which makes a score falsifiable by
+   * eye. Boxes are positioned in percentages so they track the image at any
+   * rendered width, and every box carries a text label -- colour must never be
+   * the only carrier of meaning (WCAG 1.4.1), least of all in a tool that
+   * reports on exactly that.
+   */
+  | { type: "overlay"; title: string; field: FieldPath;
+      fetchTool?: string; fileKey?: string; rectsKey?: string;
+      widthKey?: string; heightKey?: string; labelKey?: string }
   /** Free prose. */
   | { type: "note"; title?: string; field: FieldPath }
   /** Everything not consumed by another block, so no field is silently dropped. */
@@ -430,6 +443,15 @@ const CSS = `
   .behav li::before{content:"";position:absolute;left:.15rem;top:.72rem;
     width:5px;height:5px;border-radius:50%;background:var(--accent)}
   .lvlname{font-size:.8rem;font-weight:600;margin:.7rem 0 0}
+  .ovwrap{position:relative;display:block;max-width:100%;border:1px solid var(--line);
+    border-radius:6px;overflow:hidden;background:var(--raise)}
+  .ovwrap img{display:block;width:100%;height:auto}
+  .bx{position:absolute;border:2px solid;border-radius:2px}
+  .lg{list-style:none;display:flex;flex-wrap:wrap;gap:.7rem;padding:0;margin:.5rem 0 0;font-size:.76rem}
+  .lg li{display:flex;align-items:center;gap:.35rem;color:var(--sub)}
+  .sw{width:11px;height:11px;border-radius:2px;display:inline-block}
+  .offlist{margin:.6rem 0 0;padding:0;list-style:none;font-size:.8rem}
+  .offlist li{padding:.18rem 0;color:var(--sub)}
   .shot{max-width:100%;height:auto;display:block;border-radius:6px;border:1px solid var(--line)}
   .cap{font-size:.77rem;color:var(--sub);margin:.35rem 0 0}
   .foot{padding:0 18px 14px;font-size:.77rem;color:var(--sub)}
@@ -804,6 +826,111 @@ const RUNTIME = String.raw`
     return wrap;
   }
 
+  var SEV_COLOR = {
+    critical: "#dc2626", blocker: "#dc2626",
+    major: "#ea580c", high: "#ea580c", serious: "#ea580c",
+    medium: "#ca8a04", moderate: "#ca8a04",
+    minor: "#2563eb", low: "#2563eb", info: "#64748b", notice: "#64748b",
+  };
+
+  async function overlayBlock(data, b) {
+    var shots = at(data, b.field);
+    var shot = Array.isArray(shots) ? shots[0] : shots;
+    if (!shot) return null;
+    var rects = shot[b.rectsKey || "barrierRects"] || [];
+    var w = (shot[b.widthKey || "viewportSize"] || {}).width;
+    var h = shot.captureHeight || (shot[b.widthKey || "viewportSize"] || {}).height;
+    if (!w || !h) return null;
+
+    var wrap = el("div");
+    var frame = el("div", "ovwrap");
+    var img = document.createElement("img");
+    img.alt = "Page screenshot with accessibility barriers outlined";
+    frame.appendChild(img);
+    wrap.appendChild(frame);
+
+    var drawn = [], off = [];
+    rects.forEach(function (r) {
+      var rc = r.rect || r;
+      var inBounds = rc && typeof rc.x === "number" &&
+        rc.x + (rc.width || 0) > 0 && rc.y + (rc.height || 0) > 0 &&
+        rc.x < w && rc.y < h && !r.outsideScreenshot;
+      (inBounds ? drawn : off).push(r);
+    });
+
+    drawn.forEach(function (r) {
+      var rc = r.rect || r;
+      var sev = String(r.severity || "").toLowerCase();
+      var color = SEV_COLOR[sev] || "#64748b";
+      var box = el("div", "bx");
+      // Percentages, so the boxes track the image at whatever width the host
+      // renders it -- pixel offsets would drift the moment the frame resized.
+      box.style.left = ((rc.x / w) * 100).toFixed(3) + "%";
+      box.style.top = ((rc.y / h) * 100).toFixed(3) + "%";
+      box.style.width = (((rc.width || 0) / w) * 100).toFixed(3) + "%";
+      box.style.height = (((rc.height || 0) / h) * 100).toFixed(3) + "%";
+      box.style.borderColor = color;
+      box.style.boxShadow = "0 0 0 1px " + color + "55";
+      var label = (r.severity || "barrier") + ": " + (r.type || "issue") +
+        ((r.wcag || r.wcagCriteria || []).length ? " (WCAG " + (r.wcag || r.wcagCriteria).join(", ") + ")" : "") +
+        (r.element ? " — " + r.element : "");
+      box.title = label;
+      box.setAttribute("aria-label", label);
+      box.setAttribute("role", "img");
+      frame.appendChild(box);
+    });
+
+    var sevs = [];
+    drawn.forEach(function (r) {
+      var s2 = String(r.severity || "").toLowerCase();
+      if (s2 && sevs.indexOf(s2) < 0) sevs.push(s2);
+    });
+    if (sevs.length) {
+      var lg = el("ul", "lg");
+      sevs.forEach(function (s2) {
+        var li = el("li");
+        var sw = el("span", "sw"); sw.style.background = SEV_COLOR[s2] || "#64748b";
+        li.appendChild(sw);
+        li.appendChild(document.createTextNode(s2 + " (" + drawn.filter(function (r) {
+          return String(r.severity || "").toLowerCase() === s2; }).length + ")"));
+        lg.appendChild(li);
+      });
+      wrap.appendChild(lg);
+    }
+
+    // Barriers that fall outside the capture are listed, not silently dropped.
+    // They are real findings; the image just cannot show them.
+    if (off.length) {
+      var ol = el("ul", "offlist");
+      ol.appendChild(el("li", null, off.length + " barrier" + (off.length === 1 ? "" : "s") +
+        " outside the captured area, listed rather than drawn:"));
+      off.slice(0, 8).forEach(function (r) {
+        ol.appendChild(el("li", null, "• " + (r.severity || "barrier") + " " + (r.type || "") +
+          (r.element ? " — " + r.element : "")));
+      });
+      wrap.appendChild(ol);
+    }
+
+    var file = shot[b.fileKey || "screenshotFile"];
+    if (b.fetchTool && file) {
+      try {
+        var res = await app.callServerTool({ name: b.fetchTool, arguments: { file: file } });
+        var blk = (res && res.content || []).filter(function (c) { return c.type === "image"; })[0];
+        if (blk && blk.data) img.src = "data:" + (blk.mimeType || "image/png") + ";base64," + blk.data;
+      } catch (e) { /* boxes still convey positions even without the picture */ }
+    }
+    if (!img.src && shot.screenshot) {
+      img.src = String(shot.screenshot).startsWith("data:")
+        ? shot.screenshot : "data:image/png;base64," + shot.screenshot;
+    }
+    if (!img.src) {
+      // Never leave boxes floating over nothing: say the image is missing.
+      img.remove();
+      frame.appendChild(el("p", "cap", "Screenshot unavailable — barrier positions listed below rather than drawn."));
+    }
+    return wrap;
+  }
+
   function section(title, count, node, open) {
     var d = el("details", "sec");
     if (open) d.open = true;
@@ -860,6 +987,11 @@ const RUNTIME = String.raw`
         if (f) used[f.split(".")[0]] = true;
       });
       var node = levelsBlock(data, b);
+      return node ? { node: node, count: null } : null;
+    }
+    if (b.type === "overlay") {
+      used[b.field.split(".")[0]] = true;
+      var node = await overlayBlock(data, b);
       return node ? { node: node, count: null } : null;
     }
     if (b.type === "note") {

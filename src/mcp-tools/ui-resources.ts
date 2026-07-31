@@ -381,8 +381,13 @@ export const EMPATHY_SPEC: WidgetSpec = {
     ],
   },
   blocks: [
+    // The overlay leads. It is what makes a score falsifiable by eye --
+    // barriers drawn on the real page at their real positions -- and the
+    // ranked list is the detail behind it.
+    { type: "overlay", title: "Barriers on the page", field: "pageScreenshots",
+      fetchTool: "artifact_fetch" },
     { type: "findings", title: "Barriers, worst first", field: "topBarriers",
-      textKey: "description", severityKey: "severity", detailKey: "type" },
+      textKey: "description", severityKey: "severityForPersona", detailKey: "type" },
     { type: "drawer", title: "Details", blocks: [
       { type: "table", title: "Per persona", field: "resultsSummary" },
       { type: "table", title: "WCAG violations", field: "allWcagViolations" },
