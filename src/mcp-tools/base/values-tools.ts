@@ -436,7 +436,7 @@ export function registerValuesTools(server: McpServer): void {
     },
     // Declares the trait view. The bands are the finding; the JSON is a list
     // of five level objects a reader has to hold in their head to compare.
-    _meta: { ui: { resourceUri: "ui://cbrowser/trait" } },
+_meta: { ui: { resourceUri: "ui://cbrowser/trait-v2" } },
     annotations: {
       title: "Lookup Persona Trait",
       readOnlyHint: true,

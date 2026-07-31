@@ -292,7 +292,15 @@ export const SCREENSHOT_SPEC: WidgetSpec = {
  * there.
  */
 export const TRAIT_SPEC: WidgetSpec = {
-  id: "trait",
+  // Served under a URI the host has never seen.
+  //
+  // The bisect proved the tool side is fine: pointed at ui://cbrowser/status
+  // it renders. So the fault is specific to this resource, which parses,
+  // registers and renders locally under test. The remaining explanation is a
+  // cached negative for the URI -- the host was told to render
+  // ui://cbrowser/trait while the resource had not yet deployed, and kept the
+  // failure. A fresh URI cannot have a stale entry.
+  id: "trait-v2",
   title: "Trait",
   titleField: "trait",
   hero: {
@@ -376,10 +384,10 @@ export function registerUiResources(server: McpServer): void {
 
   server.registerResource(
     "cbrowser-trait-ui",
-    widgetUri("trait"),
+    widgetUri("trait-v2"),
     { description: "Trait level scale with behavioural bands", mimeType: MCP_APP_MIME },
     async () => ({
-      contents: [{ uri: widgetUri("trait"), mimeType: MCP_APP_MIME, text: buildTraitTemplate() }],
+      contents: [{ uri: widgetUri("trait-v2"), mimeType: MCP_APP_MIME, text: buildTraitTemplate() }],
     }),
   );
 
