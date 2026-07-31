@@ -481,7 +481,21 @@ const RUNTIME = String.raw`
     if (v === true) return "yes";
     if (v === false) return "no";
     if (v === "" || v === null || v === undefined) return "—";
-    if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
+    if (Array.isArray(v)) {
+      // An array of records has no useful join; String() on it yields a row of
+      // "[object Object]" separated by commas.
+      if (isObjArray(v)) return v.length + (v.length === 1 ? " entry" : " entries");
+      return v.length ? v.join(", ") : "—";
+    }
+    // Backstop. Callers flatten objects before reaching here, but a value that
+    // slips through should show its contents rather than "[object Object]",
+    // which tells a reader nothing and looks like a broken widget.
+    if (typeof v === "object") {
+      try {
+        var j = JSON.stringify(v);
+        return j.length > 220 ? j.slice(0, 217) + "…" : j;
+      } catch (_) { return "(unserialisable)"; }
+    }
     return String(v);
   };
   var titleize = function (k) {
@@ -524,6 +538,35 @@ const RUNTIME = String.raw`
   }
   function hideTip() { if (tip) tip.classList.remove("on"); }
   document.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTip(); });
+
+  /**
+   * Flatten an object into label/value pairs, following nested objects.
+   *
+   * kv and rest previously descended exactly one level, so anything deeper
+   * reached fmt() as an object and rendered "[object Object]" -- scoreContext
+   * is several levels deep, and every branch of it came out as that string.
+   *
+   * Arrays of records are left intact for the caller to table; arrays of
+   * scalars join. Depth-limited so a cyclic or pathological payload cannot
+   * hang the view, and the cutoff is reported rather than silently truncating.
+   */
+  function flattenPairs(obj, prefix, out, depth) {
+    out = out || [];
+    depth = depth === undefined ? 4 : depth;
+    Object.keys(obj || {}).forEach(function (k) {
+      var v = obj[k];
+      var label = prefix ? prefix + " › " + titleize(k) : titleize(k);
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        if (depth > 0) flattenPairs(v, label, out, depth - 1);
+        else out.push([label, "(nested further)"]);
+      } else if (isObjArray(v)) {
+        out.push([label, v.length + (v.length === 1 ? " entry" : " entries")]);
+      } else {
+        out.push([label, v]);
+      }
+    });
+    return out;
+  }
 
   function kvTable(pairs) {
     var t = el("table", "kv"), tb = el("tbody");
@@ -779,7 +822,7 @@ const RUNTIME = String.raw`
       if (b.field) {
         used[b.field.split(".")[0]] = true;
         var o = at(data, b.field);
-        if (o && typeof o === "object") Object.keys(o).forEach(function (k) { pairs.push([titleize(k), o[k]]); });
+        if (o && typeof o === "object") flattenPairs(o, "", pairs);
       }
       (b.fields || []).forEach(function (f) {
         used[f.split(".")[0]] = true;
@@ -831,7 +874,7 @@ const RUNTIME = String.raw`
         var v = data[k];
         if (isObjArray(v)) return;
         if (v && typeof v === "object" && !Array.isArray(v)) {
-          Object.keys(v).forEach(function (sk) { rest.push([titleize(k) + " › " + titleize(sk), v[sk]]); });
+          flattenPairs(v, titleize(k), rest);
         } else rest.push([titleize(k), v]);
       });
       return rest.length ? { node: kvTable(rest), count: rest.length } : null;
