@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import { barrierWeightFor, weightedSeverity } from "../../visual/perceptual-transport.js";
+import { barrierWeightFor, weightedSeverity, weightKeyFor } from "../../visual/perceptual-transport.js";
 import { randomBytes } from "crypto";
 import { htmlUiResource, attachUiResource, uiResourcesEnabled, type ToolContentBlock } from "../../mcp-ui-resources.js";
 import { writeArtifact } from "../../artifact-store.js";
@@ -194,6 +194,40 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const testedPersona = singlePersona[0];
         const remainingPersonas = allPersonas.filter(p => p !== testedPersona);
 
+        // The findings shown, selected once so the overlay and the list agree.
+        // Both the numbered boxes on the map and the numbered entries in the
+        // list index into this array, so box 3 is finding 3 by construction
+        // rather than by two pieces of code happening to sort the same way.
+        const chosenBarriers = (() => {
+          const top = result.topBarriers.slice(0, 5);
+          const covered = new Set(top.flatMap((b) => b.wcagCriteria ?? []));
+          const rescued: typeof top = [];
+          for (const b of result.topBarriers.slice(5)) {
+            const missing = (b.wcagCriteria ?? []).filter((c) => !covered.has(c));
+            if (missing.length === 0) continue;
+            missing.forEach((c) => covered.add(c));
+            rescued.push(b);
+          }
+          // Numbered in the order they are DISPLAYED (worst-first by the
+          // persona-weighted grade, which is how the widget sorts them), so
+          // the numbers on the map read 1,2,3 down the list instead of
+          // whatever order the analyzer happened to emit.
+          const rank = (b: any) => {
+            const { weight } = barrierWeightFor(
+              testedPersona, String(b.type ?? ""), b.wcagCriteria);
+            const { severity } = weightedSeverity(String(b.severity ?? "minor"), weight);
+            const order: Record<string, number> = {
+              critical: 0, blocker: 0, high: 1, major: 1, serious: 1,
+              medium: 2, moderate: 2, low: 3, minor: 3, info: 4, notice: 4 };
+            return order[String(severity).toLowerCase()] ?? 9;
+          };
+          return [...top, ...rescued].sort((a, b) => rank(a) - rank(b));
+        })();
+        // Group keys in list order; a rect's key looked up here gives its
+        // finding number.
+        const findingKeys = chosenBarriers.map(
+          (b) => `${b.type}|${weightKeyFor(String(b.type ?? ""), b.wcagCriteria) ?? ""}`);
+
         const response: Record<string, unknown> = {
           url: result.url,
           goal: result.goal,
@@ -284,26 +318,19 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           // reported either way, so the slice was hiding the explanation while
           // keeping the accusation.
           topBarriers: (() => {
-            const top = result.topBarriers.slice(0, 5);
-            const covered = new Set(top.flatMap((b) => b.wcagCriteria ?? []));
-            const rescued: typeof top = [];
-            for (const b of result.topBarriers.slice(5)) {
-              const missing = (b.wcagCriteria ?? []).filter((c) => !covered.has(c));
-              if (missing.length === 0) continue;
-              missing.forEach((c) => covered.add(c));
-              rescued.push(b);
-            }
-            const chosen = [...top, ...rescued];
+            const chosen = chosenBarriers;
             // Severity as this persona experiences it, alongside the base.
             // The base is what maps to WCAG conformance -- a criterion is not
             // more or less violated depending on who reads it -- so both ship
             // and the weight that separates them ships with them.
-            return chosen.map((b) => {
+            return chosen.map((b, i) => {
               const { weight, key, defaulted } = barrierWeightFor(
                 testedPersona, String(b.type ?? ""), b.wcagCriteria);
               const { severity, shifted } = weightedSeverity(String(b.severity ?? "minor"), weight);
               return {
                 ...b,
+                // Same number the overlay draws on the matching boxes.
+                finding: i + 1,
                 severityForPersona: severity,
                 personaWeight: Math.round(weight * 100) / 100,
                 personaWeightKey: key,
@@ -416,21 +443,71 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             // They were previously labelled "viewport" while holding values from
             // several scroll positions at once — y:-274 and y:3951 in one list.
             coordinateSpace: "document",
+            // The document-space region the screenshot actually covers, so a
+            // consumer can map a rect onto the image without guessing. A
+            // full_page capture starts at the document origin; a viewport
+            // capture starts wherever the page was scrolled to.
+            //
+            // These two fields exist because captureHeight alone was not
+            // enough: it reported documentHeight while the image was the
+            // viewport, and the overlay scaled 5363px of coordinates onto an
+            // 800px picture. Origin plus size is the whole answer, and it is
+            // read from the PNG header rather than measured separately, so it
+            // cannot disagree with the picture it describes. (2026-07-31)
+            captureOrigin: scope === "full_page"
+              ? { x: 0, y: 0 }
+              : (r.captureScroll ?? { x: 0, y: 0 }),
+            captureSize: r.screenshotSize,
             // Height of the captured image in document space. A viewport capture
             // covers only the scroll position it was taken at; a full_page capture
             // covers the document. Without this the bounds test compared document
             // coordinates against a viewport height and flagged EVERY rect,
             // including ones plainly inside the image. (2026-07-29)
-            captureHeight: (scope === "full_page" ? (r.documentHeight ?? undefined) : r.viewportSize?.height),
+            // The height of the image that exists, preferred over the
+            // separately-measured documentHeight. A page that lazy-loads
+            // during capture makes the two disagree, and the picture is the
+            // one the boxes are drawn on.
+            captureHeight: r.screenshotSize?.height
+              ?? (scope === "full_page" ? (r.documentHeight ?? undefined) : r.viewportSize?.height),
             barrierRects: r.barriers?.filter((b: any) => b.rect).map((b: any) => {
-              const vp = r.viewportSize;
-              const bound = scope === "full_page" ? (r.documentHeight ?? Infinity) : (vp?.height ?? Infinity);
+              // Bounds tested in IMAGE space: document rect minus capture
+              // origin, against the real image size. Testing document
+              // coordinates against documentHeight passed every rect as
+              // "inside" even when the image showed only the top 800px, so
+              // nothing was ever listed as off-capture and the overlay
+              // claimed coverage it did not have.
+              const origin = scope === "full_page"
+                ? { x: 0, y: 0 }
+                : (r.captureScroll ?? { x: 0, y: 0 });
+              const size = r.screenshotSize
+                ?? { width: r.viewportSize?.width ?? Infinity,
+                     height: scope === "full_page" ? (r.documentHeight ?? Infinity) : (r.viewportSize?.height ?? Infinity) };
+              const ix = b.rect ? b.rect.x - origin.x : 0;
+              const iy = b.rect ? b.rect.y - origin.y : 0;
               const outside = !!b.rect && (
-                b.rect.y + b.rect.height < 0 || b.rect.x + b.rect.width < 0 ||
-                b.rect.y > bound || (!!vp && b.rect.x > vp.width)
+                iy + b.rect.height < 0 || ix + b.rect.width < 0 ||
+                iy > size.height || ix > size.width
               );
+              // The map is coloured by the SAME grade the findings list is
+              // ranked by. It previously carried only the raw WCAG severity
+              // while the list below it used severityForPersona, so on a
+              // weighted audit one barrier was orange on the map and red in
+              // the list -- two scales, no label saying which was which.
+              // (2026-07-31)
+              const { weight } = barrierWeightFor(
+                r.persona, String(b.type ?? ""), b.wcagCriteria);
+              const { severity: weighted } = weightedSeverity(
+                String(b.severity ?? "minor"), weight);
+              // Which findings-list entry this box belongs to. Boxes are
+              // per-element and findings are grouped by type+criterion, so
+              // ten boxes can map to five findings; without the link there is
+              // no way to tell which box the list is talking about.
+              const gk = `${b.type}|${weightKeyFor(String(b.type ?? ""), b.wcagCriteria) ?? ""}`;
+              const findingIndex = findingKeys.indexOf(gk);
               return {
                 type: b.type, severity: b.severity, element: b.element,
+                severityForPersona: weighted,
+                ...(findingIndex >= 0 ? { finding: findingIndex + 1 } : {}),
                 description: b.description, rect: b.rect,
                 wcag: b.wcagCriteria,
                 ...(outside ? { outsideScreenshot: true } : {}),

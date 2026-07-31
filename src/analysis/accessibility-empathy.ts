@@ -1667,14 +1667,45 @@ async function simulateAccessibilityJourney(
   // coordinates against the VIEWPORT height flagged every rect as outside.
   // (2026-07-29)
   let documentHeight: number | undefined;
+  // The real pixel dimensions of the image above, read from the PNG header
+  // rather than inferred. The overlay divides rect coordinates by this to get
+  // percentages, so it has to be the height of the picture that actually
+  // exists -- not a separately-measured document height that the picture may
+  // not cover. (2026-07-31)
+  let screenshotSize: { width: number; height: number } | undefined;
+  // Scroll offset at the moment of capture. Document-space rects are only
+  // comparable to a viewport image after subtracting this.
+  let captureScroll: { x: number; y: number } | undefined;
   try {
-    const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: false });
+    // Capture the region the coordinates describe. Rects are DOCUMENT-space
+    // (scroll offset added at capture), so a full_page audit needs a full_page
+    // image or the two are in different spaces: measured on ucdenver.edu,
+    // barriers spanned document y 6-4787 of a 5363px page while the image was
+    // the top 800px, and the overlay divided by 5363. Six of ten boxes were
+    // drawn over elements that had nothing to do with the barrier, and the
+    // bounds test compared against documentHeight so none were flagged.
+    // (2026-07-31)
+    const screenshotBuffer = await page.screenshot({
+      type: 'png',
+      fullPage: scope === "full_page",
+    });
     pageScreenshotBase64 = Buffer.from(screenshotBuffer).toString('base64');
+    // PNG IHDR: width at byte 16, height at byte 20, both big-endian uint32.
+    if (screenshotBuffer.length > 24) {
+      screenshotSize = {
+        width: screenshotBuffer.readUInt32BE(16),
+        height: screenshotBuffer.readUInt32BE(20),
+      };
+    }
     const vp = page.viewportSize();
     if (vp) viewportSize = { width: vp.width, height: vp.height };
-    documentHeight = await page.evaluate(() =>
-      Math.max(document.body?.scrollHeight ?? 0, document.documentElement?.scrollHeight ?? 0)
-    );
+    const metrics = await page.evaluate(() => ({
+      docHeight: Math.max(document.body?.scrollHeight ?? 0, document.documentElement?.scrollHeight ?? 0),
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+    }));
+    documentHeight = metrics.docHeight;
+    captureScroll = { x: metrics.scrollX, y: metrics.scrollY };
   } catch {}
 
   return {
@@ -1705,6 +1736,8 @@ async function simulateAccessibilityJourney(
     pageScreenshot: pageScreenshotBase64, // v18.60.0: For WCAG overlay visualization
     viewportSize, // v18.60.0
     documentHeight,
+    screenshotSize,
+    captureScroll,
   } as any;
 }
 

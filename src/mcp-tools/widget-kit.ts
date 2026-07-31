@@ -447,8 +447,17 @@ const CSS = `
     border-radius:6px;overflow:hidden;background:var(--raise)}
   .ovwrap img{display:block;width:100%;height:auto}
   .bx{position:absolute;border:2px solid;border-radius:2px}
+  .bxn{position:absolute;top:-9px;left:-9px;min-width:17px;height:17px;
+    border-radius:9px;color:#fff;font-size:11px;font-weight:700;line-height:17px;
+    text-align:center;padding:0 4px;box-sizing:border-box}
   .lg{list-style:none;display:flex;flex-wrap:wrap;gap:.7rem;padding:0;margin:.5rem 0 0;font-size:.76rem}
   .lg li{display:flex;align-items:center;gap:.35rem;color:var(--sub)}
+  .lgnote{font-size:.72rem;color:var(--sub);margin:.35rem 0 0;opacity:.85}
+  .fmeta{display:flex;align-items:center;gap:.35rem}
+  .fnum{min-width:17px;height:17px;border-radius:9px;
+    background:var(--sub);color:var(--bg);font-size:11px;font-weight:700;
+    line-height:17px;text-align:center;padding:0 4px;
+    box-sizing:border-box;flex:none}
   .sw{width:11px;height:11px;border-radius:2px;display:inline-block}
   .offlist{margin:.6rem 0 0;padding:0;list-style:none;font-size:.8rem}
   .offlist li{padding:.18rem 0;color:var(--sub)}
@@ -650,7 +659,14 @@ const RUNTIME = String.raw`
     sorted.forEach(function (r) {
       var li = el("li");
       var sev = String(r[b.severityKey] || "").toLowerCase();
-      li.appendChild(el("span", "sev " + (SEV_ORDER[sev] !== undefined ? sev : "low"), sev || "note"));
+      // Number and severity travel together as ONE grid child. Appending the
+      // number as a third child put it in a column sized by the description
+      // text on the next row, so the badge stretched into a full-width bar.
+      var meta = el("span", "fmeta");
+      // The number drawn on this finding's boxes in the overlay above.
+      if (r.finding) meta.appendChild(el("span", "fnum", String(r.finding)));
+      meta.appendChild(el("span", "sev " + (SEV_ORDER[sev] !== undefined ? sev : "low"), sev || "note"));
+      li.appendChild(meta);
       li.appendChild(el("span", null, fmt(r[b.textKey])));
       if (b.detailKey && r[b.detailKey]) li.appendChild(el("p", "fdetail", fmt(r[b.detailKey])));
       ul.appendChild(li);
@@ -838,8 +854,15 @@ const RUNTIME = String.raw`
     var shot = Array.isArray(shots) ? shots[0] : shots;
     if (!shot) return null;
     var rects = shot[b.rectsKey || "barrierRects"] || [];
-    var w = (shot[b.widthKey || "viewportSize"] || {}).width;
-    var h = shot.captureHeight || (shot[b.widthKey || "viewportSize"] || {}).height;
+    // The region of the document the image actually covers. captureSize is
+    // read from the PNG header server-side, so it cannot disagree with the
+    // picture; viewportSize is the fallback for older payloads.
+    var cs = shot.captureSize || {};
+    var origin = shot.captureOrigin || { x: 0, y: 0 };
+    var ox = origin.x || 0, oy = origin.y || 0;
+    var w = cs.width || (shot[b.widthKey || "viewportSize"] || {}).width;
+    var h = cs.height || shot.captureHeight ||
+      (shot[b.widthKey || "viewportSize"] || {}).height;
     if (!w || !h) return null;
 
     var wrap = el("div");
@@ -852,26 +875,42 @@ const RUNTIME = String.raw`
     var drawn = [], off = [];
     rects.forEach(function (r) {
       var rc = r.rect || r;
+      // Image space: document coordinate minus the capture origin.
+      var ix = rc ? rc.x - ox : 0, iy = rc ? rc.y - oy : 0;
       var inBounds = rc && typeof rc.x === "number" &&
-        rc.x + (rc.width || 0) > 0 && rc.y + (rc.height || 0) > 0 &&
-        rc.x < w && rc.y < h && !r.outsideScreenshot;
+        ix + (rc.width || 0) > 0 && iy + (rc.height || 0) > 0 &&
+        ix < w && iy < h && !r.outsideScreenshot;
       (inBounds ? drawn : off).push(r);
     });
 
     drawn.forEach(function (r) {
       var rc = r.rect || r;
-      var sev = String(r.severity || "").toLowerCase();
+      // The persona-weighted grade, which is what the findings list is ranked
+      // and coloured by. Falling back to the raw grade keeps older payloads
+      // rendering; using the raw grade FIRST is what made the map disagree
+      // with the list directly beneath it.
+      var sev = String(r.severityForPersona || r.severity || "").toLowerCase();
       var color = SEV_COLOR[sev] || "#64748b";
       var box = el("div", "bx");
       // Percentages, so the boxes track the image at whatever width the host
       // renders it -- pixel offsets would drift the moment the frame resized.
-      box.style.left = ((rc.x / w) * 100).toFixed(3) + "%";
-      box.style.top = ((rc.y / h) * 100).toFixed(3) + "%";
+      box.style.left = (((rc.x - ox) / w) * 100).toFixed(3) + "%";
+      box.style.top = (((rc.y - oy) / h) * 100).toFixed(3) + "%";
       box.style.width = (((rc.width || 0) / w) * 100).toFixed(3) + "%";
       box.style.height = (((rc.height || 0) / h) * 100).toFixed(3) + "%";
       box.style.borderColor = color;
       box.style.boxShadow = "0 0 0 1px " + color + "55";
-      var label = (r.severity || "barrier") + ": " + (r.type || "issue") +
+      // The finding number, so a box on the map can be found in the list
+      // below it. Ten boxes group into five findings, so the numbers repeat --
+      // that repetition is the information: it says these four boxes are one
+      // problem, not four.
+      if (r.finding) {
+        var tag = el("span", "bxn", String(r.finding));
+        tag.style.background = color;
+        box.appendChild(tag);
+      }
+      var label = (r.finding ? "Finding " + r.finding + " — " : "") +
+        (r.severityForPersona || r.severity || "barrier") + ": " + (r.type || "issue") +
         ((r.wcag || r.wcagCriteria || []).length ? " (WCAG " + (r.wcag || r.wcagCriteria).join(", ") + ")" : "") +
         (r.element ? " — " + r.element : "");
       box.title = label;
@@ -881,9 +920,15 @@ const RUNTIME = String.raw`
     });
 
     var sevs = [];
+    var anyWeighted = false;
     drawn.forEach(function (r) {
-      var s2 = String(r.severity || "").toLowerCase();
+      if (r.severityForPersona) anyWeighted = true;
+      var s2 = String(r.severityForPersona || r.severity || "").toLowerCase();
       if (s2 && sevs.indexOf(s2) < 0) sevs.push(s2);
+    });
+    sevs.sort(function (a, c) {
+      return (SEV_ORDER[a] === undefined ? 9 : SEV_ORDER[a]) -
+             (SEV_ORDER[c] === undefined ? 9 : SEV_ORDER[c]);
     });
     if (sevs.length) {
       var lg = el("ul", "lg");
@@ -891,11 +936,24 @@ const RUNTIME = String.raw`
         var li = el("li");
         var sw = el("span", "sw"); sw.style.background = SEV_COLOR[s2] || "#64748b";
         li.appendChild(sw);
+        // Counted by the SAME grade the swatch is labelled with. Counting the
+        // raw grade under a weighted label printed "critical (0)" next to ten
+        // red boxes.
         li.appendChild(document.createTextNode(s2 + " (" + drawn.filter(function (r) {
-          return String(r.severity || "").toLowerCase() === s2; }).length + ")"));
+          return String(r.severityForPersona || r.severity || "").toLowerCase() === s2;
+        }).length + ")"));
         lg.appendChild(li);
       });
       wrap.appendChild(lg);
+      // Name the scale. The same colours on an unweighted map would mean
+      // something else, and a legend that does not say which is which is why
+      // the colours looked like they aligned with nothing.
+      var counted = drawn.filter(function (r) { return r.finding; }).length;
+      wrap.appendChild(el("p", "lgnote",
+        (anyWeighted
+          ? "Coloured by severity for this persona — the same grade the findings below are ranked by."
+          : "Coloured by WCAG severity.") +
+        (counted ? " Numbers match the findings list; boxes sharing a number are one finding." : "")));
     }
 
     // Barriers that fall outside the capture are listed, not silently dropped.
