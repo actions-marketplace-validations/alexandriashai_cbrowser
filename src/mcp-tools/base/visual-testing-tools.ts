@@ -517,6 +517,11 @@ export function registerVisualTestingTools(server: McpServer): void {
             const tier = getActiveTier();
             const entitled = tier === null ? true : tierHasAccess(tier, "pro");
 
+            // Traits, values and description -- not just the name. Shared with
+            // the capture path so the two cannot drift.
+            const { resolvePersonaContext } = await import("../../visual/persona-context.js");
+            const pctx = await resolvePersonaContext(persona);
+
             const judged = await judgeRelevance(
               domAttentionElements.map((el, i) => ({
                 index: i,
@@ -524,7 +529,7 @@ export function registerVisualTestingTools(server: McpServer): void {
                 text: el.text ?? "",
                 x: el.x, y: el.y, width: el.width, height: el.height,
               })),
-              { personaName: persona, goal, entitled },
+              { personaName: persona, goal, entitled, ...pctx },
               getAnthropicApiKey,
             );
             relevanceScores = judged.scores;

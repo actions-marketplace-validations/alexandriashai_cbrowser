@@ -1237,11 +1237,16 @@ export class VideoCaptureSession {
         // failed silently on every path, so an overlay ran, painted frames, and
         // produced zero judged moments while reporting success.
         const { getAnthropicApiKey } = await import("../cognitive/index.js");
+        const { resolvePersonaContext } = await import("../visual/persona-context.js");
         const overlay = await overlayAttentionOnFrames(encodePaths, this.outDir, {
           ...cfg,
           ...(domElements ? { domElements: domElements as never } : {}),
           relevanceContext: {
             personaName: cfg.persona ?? "first-timer",
+            // Traits, values and description. This path had the same defect as
+            // attention_analysis: only the name reached the judge, so every
+            // frame was scored against a persona the model had to imagine.
+            ...(await resolvePersonaContext(cfg.persona ?? "first-timer")),
             ...(cfg.goal ? { goal: cfg.goal } : {}),
             // Undefined means "no entitlement opinion" — the judge treats only
             // an explicit false as a block, so CLI and self-hosted callers work.
