@@ -682,11 +682,18 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
   const imagesWithoutAlt = await page.$$eval('img:not([alt])', (elements) =>
     elements.map(el => {
       const imgEl = el as HTMLImageElement;
+      // Identified by FILENAME, not by the first 50 characters of the URL.
+      // Barriers are deduplicated into a Set of these strings, and on a CDN
+      // path the first 50 characters are the part every image shares -- four
+      // distinct images collapsed to two keys, so the finding said "affects 2
+      // elements" beside four drawn rects. The tail is what differs.
+      // (2026-07-31)
+      //
       // Document coordinates, matching every other rect in this file: the
       // overlay maps them onto a full-page capture.
       const r = imgEl.getBoundingClientRect();
       return {
-        selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
+        selector: `img[src$="${(imgEl.currentSrc || imgEl.src).split("?")[0].split("/").pop() || imgEl.src.slice(-40)}"]`,
         isDecorative: imgEl.width < 20 || imgEl.height < 20,
         issue: "missing",
         x: Math.round(r.left + window.scrollX),
@@ -711,7 +718,7 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
         String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('separator') ||
         imgEl.getAttribute('role') === 'presentation';
       return {
-        selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
+        selector: `img[src$="${(imgEl.currentSrc || imgEl.src).split("?")[0].split("/").pop() || imgEl.src.slice(-40)}"]`,
         isDecorative: isLikelyDecorative,
         issue: "empty",
         x: Math.round(rect.left + window.scrollX),

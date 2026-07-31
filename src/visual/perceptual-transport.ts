@@ -573,7 +573,7 @@ function synthesizePerceptualProfile(
  * @returns Weighted score and breakdown
  */
 export function calculatePerceptualScore(
-  barriers: Array<{ type: string; severity: string; element?: string }>,
+  barriers: Array<{ type: string; severity: string; element?: string; wcagCriteria?: string[] }>,
   frictionPoints: Array<{ impact: string }>,
   goalAchieved: boolean,
   personaName: string,
@@ -601,23 +601,36 @@ export function calculatePerceptualScore(
   /** Per-barrier-type susceptibility weight actually applied for this persona. */
   const appliedWeights: Record<string, number> = {};
 
-  // Group barriers by type
-  const byType = new Map<string, Array<{ severity: string }>>();
+  // Grouped by the susceptibility key that WEIGHTS them, not by the detector's
+  // type label.
+  //
+  // Grouping by type meant one weight for the whole bucket, and "sensory"
+  // holds barriers that could not be more different for the same person:
+  // missing alt text (3.0 for a screen-reader user), missing audio description
+  // (3.0), missing captions (0.2) and colour-only information (0.1). The
+  // type-level lookup resolved sensory to colour-only, so the two findings
+  // ranked #1 and #2 for that persona -- both critical, both weight 3.0 in the
+  // list -- were scored at 0.1 and deducted 4.2 points between them, while
+  // hover interaction at 2.5 dominated the score.
+  //
+  // That left two weighting systems in one payload: per-key weights driving
+  // severityForPersona and the ordering, per-type weights driving the
+  // arithmetic. They disagreed and the arithmetic used the coarser one.
+  // (2026-07-31)
+  const byKey = new Map<string, Array<{ severity: string }>>();
   for (const b of barriers) {
-    const existing = byType.get(b.type) || [];
+    const key = weightKeyFor(b.type, b.wcagCriteria) ?? b.type;
+    const existing = byKey.get(key) || [];
     existing.push(b);
-    byType.set(b.type, existing);
+    byKey.set(key, existing);
   }
 
   // Apply persona-weighted deductions
-  for (const [type, typeBarriers] of byType) {
-    // Same map the reported personaWeightKey resolves through. These were two
-    // separate tables and they disagreed: scoring resolved motor_precision to
-    // hover_dependent (2.5 for a screen-reader user) while the payload
-    // displayed touch_target (0.1) for the same barrier -- a 25x gap between
-    // the weight applied and the weight shown, on the largest deduction in the
-    // run. One table now, so a divergence is not expressible. (2026-07-31)
-    const weightKey = BARRIER_TYPE_TO_WEIGHT_KEY[type] || type;
+  for (const [weightKey, typeBarriers] of byKey) {
+    // The group key IS the susceptibility key, resolved by the same
+    // weightKeyFor the payload reports as personaWeightKey. Scoring and
+    // display therefore cannot disagree: there is one lookup, one table, one
+    // answer per barrier. (2026-07-31)
     const weight = profile.barrierWeights[weightKey] ?? 1.0;
 
     const critical = typeBarriers.filter(b => b.severity === 'critical').length;
@@ -635,7 +648,7 @@ export function calculatePerceptualScore(
     const capped = Math.min(35, weighted);
 
     if (capped > 0) {
-      deductions[type] = -Math.round(capped * 10) / 10;
+      deductions[weightKey] = -Math.round(capped * 10) / 10;
       // Barriers carry an affectedPersonas list naming a couple of exemplars,
       // which reads as exclusive next to a deduction charged to some other
       // persona. It is not a contradiction — susceptibility is applied here as a
@@ -643,7 +656,7 @@ export function calculatePerceptualScore(
       // motor-impairment-tremor's 3.0). Recording the weight makes the payload
       // explain its own arithmetic instead of looking self-contradictory.
       // (2026-07-28)
-      appliedWeights[type] = weight;
+      appliedWeights[weightKey] = weight;
       score -= capped;
     }
   }

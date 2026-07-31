@@ -349,9 +349,22 @@ const CSS = `
 
   .scroll{overflow-x:auto;max-width:100%}
   table{border-collapse:collapse;width:100%;font-size:.85rem}
-  .kv th{width:1%;white-space:nowrap;text-align:left;padding:.24rem .9rem .24rem 0;
-    font:.77rem/1.45 var(--mono);color:var(--sub);font-weight:400;vertical-align:top}
-  .kv td{padding:.24rem 0;vertical-align:top;word-break:break-word}
+  /* Fixed layout with a capped label column. The label was width:1% plus
+     white-space:nowrap -- shrink-to-fit, which works until a label cannot
+     shrink. Run info flattens nested keys into "A > B > C" strings, and an
+     unwrappable one took the whole row, leaving the value column 10-20px
+     wide. Labels wrap now and the split is enforced rather than negotiated. */
+  .kv{table-layout:fixed}
+  .kv th{width:38%;text-align:left;padding:.24rem .9rem .24rem 0;
+    font:.77rem/1.45 var(--mono);color:var(--sub);font-weight:400;vertical-align:top;
+    white-space:normal;overflow-wrap:anywhere}
+  .kv td{padding:.24rem 0;vertical-align:top;word-break:break-word;overflow-wrap:anywhere}
+  /* Below ~30rem a 38/62 split leaves neither side usable: stack instead. */
+  @media (max-width:30rem){
+    .kv,.kv tbody,.kv tr,.kv th,.kv td{display:block;width:auto}
+    .kv th{padding:.24rem 0 0;}
+    .kv td{padding:0 0 .35rem;border-bottom:1px solid color-mix(in srgb,var(--line) 45%,transparent)}
+  }
   .grid thead th{text-align:left;padding:.18rem .7rem .3rem 0;font:.67rem/1 var(--mono);
     color:var(--sub);font-weight:400;text-transform:uppercase;letter-spacing:.07em;
     border-bottom:1px solid var(--line);white-space:nowrap}

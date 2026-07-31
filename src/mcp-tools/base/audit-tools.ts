@@ -1348,7 +1348,12 @@ export function registerEmpathyAuditTool(server: McpServer): void {
               // 0 every time: that field is this payload's OUTPUT name, not an
               // input, so the coverage line reported drawn:0 beside ten
               // populated rects.
-              const rects = (r.barriers ?? []).filter((b: any) => b.rect).length;
+              // Zero-area rects draw nothing. They were counted as drawn, so
+              // coverage read 19 while only 16 boxes were visible -- an
+              // element that resolved to {0,0,0,0} (display:none, a collapsed
+              // menu item) is undrawn in every sense that matters.
+              const rects = (r.barriers ?? []).filter(
+                (b: any) => b.rect && b.rect.width > 0 && b.rect.height > 0).length;
               const affected = (r.barriers ?? []).reduce(
                 (n: number, b: any) => n + (b.affectedElementCount ?? 1), 0);
               return {
@@ -1403,7 +1408,8 @@ export function registerEmpathyAuditTool(server: McpServer): void {
             // one the boxes are drawn on.
             captureHeight: r.screenshotSize?.height
               ?? (scope === "full_page" ? (r.documentHeight ?? undefined) : r.viewportSize?.height),
-            barrierRects: r.barriers?.filter((b: any) => b.rect).map((b: any) => {
+            barrierRects: r.barriers?.filter(
+              (b: any) => b.rect && b.rect.width > 0 && b.rect.height > 0).map((b: any) => {
               // Bounds tested in IMAGE space: document rect minus capture
               // origin, against the real image size. Testing document
               // coordinates against documentHeight passed every rect as
