@@ -757,6 +757,16 @@ export interface CognitiveProfile {
   traits: CognitiveTraits;
   attentionPattern: AttentionPatternType;
   decisionStyle: DecisionStyleType;
+  /**
+   * How each of the two fields above got its value. Both are initialised to a
+   * literal ("f-pattern", "cautious") and only overwritten when a rule matches
+   * or the persona declares one, so a value that fell through every rule was
+   * indistinguishable from a derived one. A persona with riskTolerance 0.8 and
+   * satisficing 0.25 reported decisionStyle "cautious" -- the initial value,
+   * not a conclusion about that persona. (2026-07-31)
+   */
+  attentionPatternSource?: "declared" | "derived" | "default";
+  decisionStyleSource?: "declared" | "derived" | "default";
   /** Template for generating inner monologue */
   innerVoiceTemplate?: string;
 }

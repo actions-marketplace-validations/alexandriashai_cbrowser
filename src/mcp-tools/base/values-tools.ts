@@ -128,16 +128,86 @@ export function registerValuesTools(server: McpServer): void {
         description: (p as { description?: string }).description ?? "",
         demographics: rec.demographics ?? {},
         traits: profile?.traits ?? {},
-        ...(values ? { values: {
-          selfDirection: values.selfDirection, stimulation: values.stimulation,
-          hedonism: values.hedonism, achievement: values.achievement, power: values.power,
-          security: values.security, conformity: values.conformity, tradition: values.tradition,
-          benevolence: values.benevolence, universalism: values.universalism,
-        } } : {}),
+        // Values from the shared registry, else the ones the persona carries
+        // itself, else an explicit statement that there are none.
+        //
+        // This read the registry alone and omitted the block entirely when it
+        // missed -- so a custom persona whose own file carries a full
+        // schwartzValues map (all ten values plus the three SDT needs)
+        // returned no values at all, from a tool whose description promises
+        // them. Silently, with no field saying anything was absent, while the
+        // data sat one key away in the same object. (2026-07-31)
+        ...(() => {
+          const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
+            "security", "conformity", "tradition", "benevolence", "universalism"] as const;
+          const own = rec.schwartzValues as Record<string, number> | undefined;
+          const src = values ?? own;
+          if (!src) {
+            return {
+              values: null,
+              valuesSource: "none",
+              valuesNote: "No Schwartz values for this persona. They come from a hand-authored registry, or from a schwartzValues block on the persona itself; this persona has neither. Anything weighting by values is running on defaults for it.",
+            };
+          }
+          const out: Record<string, number> = {};
+          for (const k of KEYS) {
+            const v = (src as Record<string, number>)[k];
+            if (typeof v === "number") out[k] = v;
+          }
+          return {
+            values: out,
+            valuesSource: values ? "registry" : "persona",
+            // The SDT needs travel with a persona-authored block and are not
+            // part of the ten; passed through rather than dropped.
+            ...(!values && own
+              ? (() => {
+                  const extra: Record<string, number> = {};
+                  ["autonomyNeed", "competenceNeed", "relatednessNeed"].forEach((k) => {
+                    if (typeof own[k] === "number") extra[k] = own[k];
+                  });
+                  return Object.keys(extra).length ? { selfDeterminationNeeds: extra } : {};
+                })()
+              : {}),
+          };
+        })(),
         ...(rec.accessibility_traits ? { accessibility_traits: rec.accessibility_traits } : {}),
         ...(rec.accessibilityTraits ? { accessibility_traits: rec.accessibilityTraits } : {}),
         ...(profile?.attentionPattern ? { attentionPattern: profile.attentionPattern } : {}),
         ...(profile?.decisionStyle ? { decisionStyle: profile.decisionStyle } : {}),
+        // Where those two came from. "default" means no rule matched and no
+        // value was declared -- it is the initial literal, not a reading of
+        // this persona, and it should not be acted on as one.
+        ...(profile?.attentionPatternSource ? { attentionPatternSource: profile.attentionPatternSource } : {}),
+        ...(profile?.decisionStyleSource ? { decisionStyleSource: profile.decisionStyleSource } : {}),
+        // Author-declared summaries that disagree with the trait vector.
+        //
+        // A persona can declare attentionPattern "thorough" while carrying
+        // attentionSpan 0.35, or a tech_level that its own traits contradict.
+        // Both are legitimate authoring -- the declaration wins -- but shipping
+        // the two side by side with nothing acknowledging the gap is what makes
+        // a profile read as internally inconsistent. Named, not silently
+        // reconciled: only the author knows which one is wrong.
+        ...(() => {
+          const notes: string[] = [];
+          const t = (profile?.traits ?? {}) as unknown as Record<string, number>;
+          const acc = (rec.accessibility_traits ?? rec.accessibilityTraits ?? {}) as Record<string, number>;
+          const demo = (rec.demographics ?? {}) as Record<string, string>;
+          const span = acc.attentionSpan;
+          if (profile?.attentionPatternSource === "declared" &&
+              profile.attentionPattern === "thorough" && typeof span === "number" && span < 0.5) {
+            notes.push(`attentionPattern is declared "thorough" but accessibilityTraits.attentionSpan is ${span}. The declaration is used; the traits suggest skimming.`);
+          }
+          if (profile?.decisionStyleSource === "default") {
+            notes.push(`decisionStyle "${profile.decisionStyle}" is the fallback: no rule matched this trait combination and the persona declares none. Do not read it as derived from the traits.`);
+          }
+          const tech = String(demo.tech_level ?? "");
+          const transfer = t.transferLearning, fluency = t.proceduralFluency;
+          if (tech && tech !== "expert" && typeof transfer === "number" && transfer >= 0.85 &&
+              typeof fluency === "number" && fluency >= 0.65) {
+            notes.push(`demographics.tech_level is "${tech}" while transferLearning is ${transfer} and proceduralFluency is ${fluency}. Demographics are set at creation and are not inferred from traits.`);
+          }
+          return notes.length ? { consistencyNotes: notes } : {};
+        })(),
       };
 
       // JSON in the text block, no structuredContent and no outputSchema.
@@ -185,7 +255,16 @@ export function registerValuesTools(server: McpServer): void {
               text: JSON.stringify({
                 error: `No values profile found for persona: ${persona}`,
                 availablePersonas,
-                note: "Values are defined for all built-in personas. Custom personas can have values added via the questionnaire.",
+                // These are the registry's OWN keys, and several differ from
+                // the names every other tool advertises -- "adhd" here against
+                // "cognitive-adhd" in empathy_audit, "motor-tremor" against
+                // "motor-impairment-tremor". Both forms resolve, because
+                // resolvePersonaName aliases them, but a list that teaches the
+                // internal vocabulary sends a caller to a different name than
+                // the rest of the surface uses. Say so rather than let the
+                // list imply these are the canonical names. (2026-07-31)
+                availablePersonasNote: "Registry keys. The longer names used by empathy_audit and the persona tools (cognitive-adhd, motor-impairment-tremor, low-vision-magnified) alias onto these and resolve fine. list_cognitive_personas is the authoritative roster.",
+                note: "Values come from this registry, or from a schwartzValues block on a custom persona's own file — persona_lookup reads both. Custom personas can also have values added via the questionnaire.",
               }, null, 2),
             },
           ],

@@ -821,7 +821,9 @@ export function createCognitivePersona(
 export function getCognitiveProfile(persona: Persona | AccessibilityPersona): CognitiveProfile {
   // Derive attention pattern from humanBehavior.attention.pattern or behaviors
   let attentionPattern: AttentionPatternType = "f-pattern";
+  let attentionPatternSource: "declared" | "derived" | "default" = "default";
   if (persona.humanBehavior?.attention?.pattern) {
+    attentionPatternSource = "declared";
     const pattern = persona.humanBehavior.attention.pattern;
     if (pattern === "skim") attentionPattern = "skim";
     else if (pattern === "thorough") attentionPattern = "thorough";
@@ -837,10 +839,12 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   // it. (2026-07-28)
   if (persona.behaviors?.attentionPattern) {
     attentionPattern = persona.behaviors.attentionPattern as AttentionPatternType;
+    attentionPatternSource = "declared";
   }
 
   // Derive decision style from traits
   let decisionStyle: DecisionStyleType = "cautious";
+  let decisionStyleSource: "declared" | "derived" | "default" = "default";
   const traits = persona.cognitiveTraits;
 
   // v16.7.1: Validate trait completeness
@@ -861,20 +865,36 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     const comprehension = traits.comprehension ?? 0.5;
     const readingTendency = traits.readingTendency ?? 0.5;
 
+    // The chain had no branch for a bold persona at all: every condition
+    // tested for low risk tolerance, low patience or mobile, so someone with
+    // riskTolerance 0.8 matched nothing and kept the initial "cautious" --
+    // the exact opposite of the trait vector. Boundaries were also exclusive
+    // in a way that bit: patience 0.4 misses `patience < 0.4` by zero and
+    // fell through to the default rather than landing on "efficient".
+    // (2026-07-31)
+    const satisficing = traits.satisficing ?? 0.5;
     if (patience < 0.3 && riskTolerance > 0.6) {
       decisionStyle = "impulsive";
-    } else if (comprehension > 0.8 && patience < 0.4) {
+    } else if (comprehension > 0.8 && patience <= 0.4) {
       decisionStyle = "efficient";
     } else if (riskTolerance < 0.3) {
       decisionStyle = "cautious";
     } else if (readingTendency > 0.8 && patience > 0.7) {
       decisionStyle = "deliberate";
+    } else if (riskTolerance > 0.65 && satisficing < 0.4) {
+      // High tolerance for risk, low tolerance for "good enough": explores
+      // deliberately rather than cautiously.
+      decisionStyle = "deliberate";
+    } else if (riskTolerance > 0.65) {
+      decisionStyle = "impulsive";
     } else if (persona.demographics.device === "mobile") {
       decisionStyle = "quick-tap";
     }
+    if (decisionStyle !== "cautious" || riskTolerance < 0.3) decisionStyleSource = "derived";
   }
   if (persona.behaviors?.decisionStyle) {
     decisionStyle = persona.behaviors.decisionStyle as DecisionStyleType;
+    decisionStyleSource = "declared";
   }
 
   // v16.14.1: Merge traits with defaults to ensure complete CognitiveTraits
@@ -915,6 +935,8 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     traits: traits ? { ...defaultTraits, ...traits } : defaultTraits,
     attentionPattern,
     decisionStyle,
+    attentionPatternSource,
+    decisionStyleSource,
     innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,
   };
 }
