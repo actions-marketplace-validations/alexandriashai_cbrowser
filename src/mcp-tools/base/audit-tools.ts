@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { barrierWeightFor, weightedSeverity } from "../../visual/perceptual-transport.js";
 import { randomBytes } from "crypto";
 import { htmlUiResource, attachUiResource, uiResourcesEnabled, type ToolContentBlock } from "../../mcp-ui-resources.js";
 import { writeArtifact } from "../../artifact-store.js";
@@ -249,6 +250,15 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               cognitiveLoadReadings: (r as any).cognitiveLoadReadings || undefined,
               // v18.28.0: Attention transport analysis (W₂ saliency)
               attentionAnalysis: (r as any).attentionAnalysis || undefined,
+              // Same metric names as the attention_analysis tool, different
+              // implementation, and the distributions do not overlap --
+              // measured on one page: alignment 0.884 here against 0.389-0.616
+              // there, concentration 0.292 against 0.65-0.90, transportCost
+              // 0.460 against 0.756-1.010. Comparing a number from one against
+              // a number from the other is meaningless, and nothing said so.
+              attentionAnalysisNote: (r as any).attentionAnalysis
+                ? "Produced by the empathy audit's own attention pass, NOT by the attention_analysis tool. The metric names match but the implementations differ and their distributions do not overlap, so values are comparable within this tool's output only. Use attention_analysis directly if you need numbers comparable to other attention runs."
+                : undefined,
               // v18.29.0: Journey validation — evidence, path, forensics
               journeyValidation: (r as any).journeyValidation || undefined,
               // v18.35.0: Non-disability persona flag
@@ -276,7 +286,23 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               missing.forEach((c) => covered.add(c));
               rescued.push(b);
             }
-            return [...top, ...rescued];
+            const chosen = [...top, ...rescued];
+            // Severity as this persona experiences it, alongside the base.
+            // The base is what maps to WCAG conformance -- a criterion is not
+            // more or less violated depending on who reads it -- so both ship
+            // and the weight that separates them ships with them.
+            return chosen.map((b) => {
+              const w = barrierWeightFor(testedPersona, String(b.type ?? ""));
+              const { severity, shifted } = weightedSeverity(String(b.severity ?? "minor"), w);
+              return {
+                ...b,
+                severityForPersona: severity,
+                personaWeight: w,
+                ...(shifted !== 0
+                  ? { severityShiftedBy: shifted > 0 ? `+${shifted}` : String(shifted) }
+                  : {}),
+              };
+            });
           })(),
           topBarriersNote:
             "The first five are the highest-severity barriers. Any entries after them are included because they carry a WCAG criterion the top five do not, so every criterion in allWcagViolations has at least one barrier explaining it.",
@@ -297,6 +323,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           barrierFieldNotes: {
             affectedPersonas: "Exemplars — the personas this barrier affects most. NOT an exclusion list; every tested persona is scored against every barrier, weighted by susceptibility.",
             severity: "On topBarriers entries this is the group maximum across all elements of that type (severityIsGroupMax), not one element's severity.",
+            severityForPersona: "The same barrier re-graded by this persona's susceptibility weight, which is what should drive triage order. `severity` stays the WCAG-facing grade: a criterion is not more or less violated depending on who reads it. A 169-item navigation is genuinely minor to most personas and critical to cognitive-adhd, whose cognitive_load weight is 3.0 — and only the weighted grade says so.",
           },
           topRemediation: result.combinedRemediation.slice(0, 5),
           duration: result.duration,
@@ -323,6 +350,28 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
                   };
                 })()),
             viewportSize: r.viewportSize,
+            // How much of the barrier set the overlay can actually draw.
+            //
+            // A rect needs an element that resolved to a bounding box at
+            // capture time, so anything below the fold, hidden, or behind an
+            // unresolvable selector produces a barrier with no box. The
+            // overlay then silently understates coverage -- 21 affected
+            // elements against 10 rects reads as "10 problems" unless the gap
+            // is stated. Reported rather than papered over, the same way
+            // cognitiveLoadReadings reports its disagreement.
+            barrierRectCoverage: (() => {
+              const rects = (r.barrierRects ?? []).length;
+              const affected = (r.barriers ?? []).reduce(
+                (n: number, b: any) => n + (b.affectedElementCount ?? 1), 0);
+              return {
+                drawn: rects,
+                affectedElements: affected,
+                ...(affected > rects
+                  ? { undrawn: affected - rects,
+                      undrawnReason: "Barriers whose element did not resolve to a bounding box at capture time — typically below the fold, hidden, or an unresolvable selector. They are counted in the score and listed in barriers, but the overlay cannot outline them." }
+                  : {}),
+              };
+            })(),
             // Rects come from getBoundingClientRect with no scroll compensation,
             // so they are VIEWPORT coordinates — which is correct here, because
             // the screenshot above is captured with fullPage: false and these are

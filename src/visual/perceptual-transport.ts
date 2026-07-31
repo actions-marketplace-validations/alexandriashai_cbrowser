@@ -825,3 +825,45 @@ export async function analyzePerceptualTransport(
 export function listPerceptualProfiles(): string[] {
   return Object.keys(PERCEPTUAL_PROFILES);
 }
+
+/**
+ * Severity of a barrier as this persona actually experiences it.
+ *
+ * Susceptibility weights already exist and already drive scoring, but the
+ * severity a reader sees was persona-blind -- so a 169-item navigation
+ * displayed as "minor" to cognitive-adhd while being charged at a 3.0
+ * cognitive_load weight and driving the top bottleneck. The number said one
+ * thing and the label said another, and the label is what gets acted on.
+ *
+ * The base severity is kept alongside, because it is the one that maps to WCAG
+ * conformance: a criterion does not become more or less violated because of
+ * who is reading. This is about triage order, not compliance.
+ */
+export type BarrierSeverityLevel = "minor" | "major" | "critical";
+
+const SEVERITY_LADDER: BarrierSeverityLevel[] = ["minor", "major", "critical"];
+
+export function weightedSeverity(
+  base: string,
+  weight: number,
+): { severity: BarrierSeverityLevel; shifted: number } {
+  const at = SEVERITY_LADDER.indexOf(base as BarrierSeverityLevel);
+  if (at < 0) return { severity: "minor", shifted: 0 };
+  // Thresholds chosen against the real weight table, which clusters at 0.3-0.5
+  // for "not my problem", ~1.0 for baseline, and 2.5-3.0 for "this is the one
+  // that stops me". Two steps only at the top of that range, so escalation
+  // stays rare enough to mean something.
+  const shift = weight >= 2.5 ? 2 : weight >= 1.5 ? 1 : weight <= 0.5 ? -1 : 0;
+  const idx = Math.max(0, Math.min(SEVERITY_LADDER.length - 1, at + shift));
+  return { severity: SEVERITY_LADDER[idx] as BarrierSeverityLevel, shifted: idx - at };
+}
+
+/** Susceptibility weight this persona carries for a barrier type. 1.0 default. */
+export function barrierWeightFor(personaName: string, barrierType: string): number {
+  try {
+    const profile = getPerceptualProfile(personaName);
+    return profile.barrierWeights?.[barrierType] ?? 1.0;
+  } catch {
+    return 1.0;
+  }
+}
