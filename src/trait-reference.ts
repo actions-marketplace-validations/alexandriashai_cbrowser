@@ -591,17 +591,22 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
     defaultValue: 0.5,
   },
 
-  mentalModelRigidity: {
-    name: "mentalModelRigidity",
+  mentalModelFlexibility: {
+    name: "mentalModelFlexibility",
     description: "Ability to adapt mental models to unexpected UI patterns",
     /**
-     * ⚠️ SEMANTIC INVERSION WARNING:
-     * Despite the name "rigidity", this trait measures FLEXIBILITY.
-     * - LOW (0.0) = MORE rigid (struggles with change)
-     * - HIGH (1.0) = MORE flexible (adapts quickly)
+     * Renamed from mentalModelRigidity, which asserted the opposite of what it
+     * measured: 1.0 meant maximally FLEXIBLE while the name said rigid.
      *
-     * This naming was kept for backward compatibility with existing personas.
-     * When setting this trait, think: "How flexible is this user?"
+     * The old name is kept as an alias rather than dropped, and every stored
+     * value is untouched. Inverting the numbers instead would have meant
+     * rewriting 29 personas and everything computed from them, to fix a defect
+     * that lives entirely in the label.
+     *
+     * This is not cosmetic. The relevance layer reads trait vectors as text,
+     * so a model reasoning from the name rather than the scale would predict
+     * behaviour exactly backwards -- a persona called inflexible while its
+     * number says the reverse -- and nothing in the output would look wrong.
      */
     lowEnd: "Rigid - struggles when conventions are broken",
     highEnd: "Highly adaptive - quickly forms new mental models",
@@ -761,8 +766,24 @@ export const PERSONA_TRAIT_GUIDELINES: Record<string, Record<string, number>> = 
 /**
  * Get trait definition by name
  */
+/**
+ * Deprecated trait names, mapped to their canonical replacement.
+ *
+ * Stored personas and saved results still carry the old keys, so lookups
+ * resolve through here rather than failing. Expand now, contract once nothing
+ * on disk uses the old name.
+ */
+export const TRAIT_ALIASES: Record<string, string> = {
+  mentalModelRigidity: "mentalModelFlexibility",
+};
+
+/** Canonical name for a trait, resolving any deprecated alias. */
+export function canonicalTraitName(traitName: string): string {
+  return TRAIT_ALIASES[traitName] ?? traitName;
+}
+
 export function getTraitDefinition(traitName: string): TraitDefinition | undefined {
-  return TRAIT_DEFINITIONS[traitName];
+  return TRAIT_DEFINITIONS[canonicalTraitName(traitName)];
 }
 
 /**
