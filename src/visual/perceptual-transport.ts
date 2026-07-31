@@ -602,17 +602,15 @@ export function calculatePerceptualScore(
     byType.set(b.type, existing);
   }
 
-  // Map detector-emitted barrier type keys to profile weight keys
-  const BARRIER_KEY_MAP: Record<string, string> = {
-    'contrast': 'low_contrast',
-    'sensory': 'color_only',
-    'motor_precision': 'hover_dependent',
-    'visual_clarity': 'low_contrast',
-  };
-
   // Apply persona-weighted deductions
   for (const [type, typeBarriers] of byType) {
-    const weightKey = BARRIER_KEY_MAP[type] || type;
+    // Same map the reported personaWeightKey resolves through. These were two
+    // separate tables and they disagreed: scoring resolved motor_precision to
+    // hover_dependent (2.5 for a screen-reader user) while the payload
+    // displayed touch_target (0.1) for the same barrier -- a 25x gap between
+    // the weight applied and the weight shown, on the largest deduction in the
+    // run. One table now, so a divergence is not expressible. (2026-07-31)
+    const weightKey = BARRIER_TYPE_TO_WEIGHT_KEY[type] || type;
     const weight = profile.barrierWeights[weightKey] ?? 1.0;
 
     const critical = typeBarriers.filter(b => b.severity === 'critical').length;
@@ -930,6 +928,28 @@ export function weightedSeverity(
  * precisely than the type does: both a missing alt and a colour-only link are
  * "sensory", and they have opposite susceptibility profiles.
  */
+/**
+ * The single map from a detector-emitted barrier type to a profile weight key.
+ *
+ * Barrier types and susceptibility keys are different vocabularies, and this
+ * file used to hold two independent translations between them -- one used to
+ * SCORE, one used to DISPLAY the weight that was applied. They disagreed on
+ * motor_precision, so an audit reported a 0.1 weight beside a deduction
+ * computed at 2.5. Both paths read this now.
+ */
+export const BARRIER_TYPE_TO_WEIGHT_KEY: Record<string, string> = {
+  contrast: "low_contrast",
+  visual_clarity: "low_contrast",
+  visual: "low_contrast",
+  sensory: "color_only",
+  motor_precision: "hover_dependent",
+  motor: "touch_target",
+  touch_target: "touch_target",
+  cognitive_load: "cognitive_load",
+  timing: "timing",
+  form_complexity: "form_complexity",
+};
+
 const WCAG_TO_WEIGHT_KEY: Record<string, string> = {
   "1.4.1": "color_only",
   "1.1.1": "missing_alt",
@@ -947,16 +967,7 @@ const WCAG_TO_WEIGHT_KEY: Record<string, string> = {
   "1.3.1": "missing_label",
 };
 
-const TYPE_TO_WEIGHT_KEY: Record<string, string> = {
-  cognitive_load: "cognitive_load",
-  timing: "timing",
-  touch_target: "touch_target",
-  motor_precision: "touch_target",
-  motor: "touch_target",
-  visual_clarity: "low_contrast",
-  visual: "low_contrast",
-  form_complexity: "form_complexity",
-};
+const TYPE_TO_WEIGHT_KEY: Record<string, string> = BARRIER_TYPE_TO_WEIGHT_KEY;
 
 export function weightKeyFor(barrierType: string, wcagCriteria?: string[]): string | null {
   for (const c of wcagCriteria ?? []) {

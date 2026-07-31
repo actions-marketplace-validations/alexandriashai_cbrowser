@@ -29,6 +29,8 @@ import {
   CAPTURE_STOP_DESCRIPTION,
   CAPTURE_STATUS_DESCRIPTION,
 } from "./mcp-tools/base/capture-tools.js";
+import { registerEmpathyAuditTool } from "./mcp-tools/base/audit-tools.js";
+import { registerUiResources } from "./mcp-tools/ui-resources.js";
 import { applySecurityLayer } from "./mcp-tools/security-layer.js";
 
 // Visual module imports
@@ -3703,87 +3705,18 @@ This ensures personas are grounded in research, not stereotypes.
     }
   );
 
-  server.tool(
-    "empathy_audit",
-    "Simulate how people with disabilities experience a site. REQUIRES API KEY for internal simulation. For API-free usage over remote MCP, use empathy_audit_init + browser tools + empathy_audit_record_barrier + empathy_audit_complete_persona + empathy_audit_summarize instead.",
-    {
-      url: z.string().url().describe("URL to audit"),
-      goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
-      disabilities: z.array(z.string()).optional().describe("Disability personas to test. Available: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia"),
-      wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
-      maxSteps: z.number().optional().default(20).describe("Max steps per persona"),
-      maxTime: z.number().optional().default(120).describe("Max time per persona in seconds"),
-    },
-    async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime }) => {
-      try {
-        // Default to all if not specified
-        const disabilityList = disabilities || listAccessibilityPersonas();
-        const result = await runEmpathyAudit(url, {
-          goal,
-          disabilities: disabilityList,
-          wcagLevel,
-          maxSteps,
-          maxTime,
-          headless: true,
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                url: result.url,
-                goal: result.goal,
-                overallScore: result.overallScore,
-                resultsSummary: result.results.map((r) => {
-                  // v14.2.5: barrierCount now shows unique barrier types (not element count)
-                  const uniqueTypes = new Set(r.barriers.map(b => b.type));
-                  return {
-                    persona: r.persona,
-                    disabilityType: r.disabilityType,
-                    goalAchieved: r.goalAchieved,
-                    empathyScore: r.empathyScore,
-                    barrierCount: uniqueTypes.size,  // v14.2.5: Changed to unique types
-                    barrierTypes: Array.from(uniqueTypes),
-                    totalBarrierElements: r.barriers.length,  // v14.2.5: Raw element count
-                    wcagViolationCount: r.wcagViolations.length,
-                  };
-                }),
-                allWcagViolations: result.allWcagViolations,
-                topBarriers: result.topBarriers.slice(0, 5), // v11.11.0: Deduplicated by type
-                topRemediation: result.combinedRemediation.slice(0, 5),
-                duration: result.duration,
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes("API key")) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  error: "API key required for all-in-one empathy_audit",
-                  solution: "Use the API-free session bridge pattern instead:",
-                  steps: [
-                    "1. Call empathy_audit_init with url, goal, disabilities, wcagLevel",
-                    "2. For each disability persona, use browser tools to attempt the goal",
-                    "3. Call empathy_audit_record_barrier when you observe accessibility barriers",
-                    "4. Call empathy_audit_complete_persona when each persona finishes",
-                    "5. Call empathy_audit_summarize to get the final audit report",
-                  ],
-                  note: "Claude orchestrates the audit - no API key needed when YOU are the brain!",
-                  availablePersonas: listAccessibilityPersonas(),
-                }, null, 2),
-              },
-            ],
-          };
-        }
-        throw error;
-      }
-    }
-  );
+  // The ui:// resources the canonical tools advertise via _meta.ui. Without
+  // these the stdio server answered "Method not found" to resources/list while
+  // its own tool pointed at ui://cbrowser/empathy, so a UI-capable host was
+  // told a widget existed and could not fetch it.
+  registerUiResources(server);
+
+  // empathy_audit is registered from the canonical implementation in
+  // mcp-tools/base/audit-tools.ts. This file used to carry its own older copy
+  // of the same tool name -- thin summary, no barrier rects, no persona
+  // weighting, no UI resource -- so the local server answered differently to
+  // the remote one for the same call. Removed 2026-07-31.
+  registerEmpathyAuditTool(server);
 
   // =========================================================================
   // Diagnostics Tools

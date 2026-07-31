@@ -34,7 +34,7 @@
  */
 
 import { type Page } from "playwright";
-import { weightKeyFor } from "../visual/perceptual-transport.js";
+import { weightKeyFor, barrierWeightFor, weightedSeverity } from "../visual/perceptual-transport.js";
 import { VERSION } from "../version.js";
 import { CBrowser } from "../browser.js";
 import type {
@@ -1657,7 +1657,7 @@ async function simulateAccessibilityJourney(
   };
 
   // Generate remediation priorities
-  const remediationPriority = generateRemediationPriority(ctx.barriers);
+  const remediationPriority = generateRemediationPriority(ctx.barriers, persona.name);
 
   // Capture page screenshot for WCAG overlay visualization
   let pageScreenshotBase64: string | undefined;
@@ -1897,19 +1897,30 @@ function calculateEmpathyScore(
   return calculateEmpathyScoreWithContext(barriers, frictionPoints, goalAchieved).score;
 }
 
-function generateRemediationPriority(barriers: AccessibilityBarrier[]): RemediationItem[] {
+function generateRemediationPriority(
+  barriers: AccessibilityBarrier[],
+  personaName?: string,
+): RemediationItem[] {
   const items: RemediationItem[] = [];
   let priority = 1;
 
-  // Sort barriers by severity
-  const sorted = [...barriers].sort((a, b) => {
-    const severityOrder: Record<AccessibilityBarrierSeverity, number> = {
-      critical: 0,
-      major: 1,
-      minor: 2,
-    };
-    return severityOrder[a.severity] - severityOrder[b.severity];
-  });
+  // Sorted by severity FOR THIS PERSONA, not the raw WCAG grade.
+  //
+  // The list is capped at ten and the payload surfaces the top five, so the
+  // sort decides what reaches the action list at all. Sorting by the WCAG
+  // grade dropped the single highest-weighted issue in a screen-reader audit:
+  // empty alt text carries severity "minor" and weight 3.0, so it graded
+  // critical for the persona, sorted below five lighter findings, and fell off
+  // the list -- while the payload's own field notes said severityForPersona
+  // "is what should drive triage order". (2026-07-31)
+  const severityOrder: Record<string, number> = { critical: 0, major: 1, minor: 2 };
+  const rank = (b: AccessibilityBarrier): number => {
+    if (!personaName) return severityOrder[b.severity] ?? 3;
+    const { weight } = barrierWeightFor(personaName, b.type, b.wcagCriteria);
+    const { severity } = weightedSeverity(b.severity, weight);
+    return severityOrder[String(severity).toLowerCase()] ?? 3;
+  };
+  const sorted = [...barriers].sort((a, b) => rank(a) - rank(b));
 
   // Group by type to avoid duplicates
   const seen = new Set<string>();
@@ -1919,12 +1930,32 @@ function generateRemediationPriority(barriers: AccessibilityBarrier[]): Remediat
     if (seen.has(key)) continue;
     seen.add(key);
 
+    // Effort by what the fix actually costs. Four types were named and
+    // everything else fell through to "trivial", which is how captions
+    // (transcription plus a caption file per video) and hover-to-keyboard
+    // alternatives (real JS on a carousel) were both rated trivial. A field
+    // that says "trivial" for almost everything carries no triage signal,
+    // which is the only reason it exists. Keyed on the criterion where the
+    // type is too coarse to separate an alt attribute from a caption track.
+    // (2026-07-31)
+    const criteria = barrier.wcagCriteria ?? [];
+    const has = (c: string) => criteria.includes(c);
     const effort: AgentReadyEffort =
+      // Media alternatives: authoring work per asset, not a code change.
+      has("1.2.1") || has("1.2.2") || has("1.2.3") || has("1.2.5") ? "hard" :
+      // Replacing a hover-only affordance means new interaction code.
+      barrier.type === "motor_precision" ? "hard" :
+      // Restructuring navigation or reducing page-level load.
+      barrier.type === "cognitive_load" ? "hard" :
+      barrier.type === "timing" || barrier.type === "temporal" ? "medium" :
+      // Adding a non-colour cue touches markup and styling per instance.
+      has("1.4.1") ? "medium" :
+      // Attribute- or token-level edits.
+      has("1.1.1") ? "easy" :
       barrier.type === "contrast" ? "easy" :
       barrier.type === "touch_target" ? "easy" :
-      barrier.type === "cognitive_load" ? "medium" :
-      barrier.type === "timing" ? "medium" :
-      "trivial";
+      has("3.3.2") || has("1.3.1") ? "easy" :
+      "medium";
 
     items.push({
       priority: priority++,
@@ -2882,8 +2913,15 @@ export async function runEmpathyAudit(
   // v11.10.0: Deduplicate barriers by element+type, list affected personas (issue #86)
   const deduplicatedBarriers = deduplicateBarriers(allBarriers, results);
 
-  // Generate combined remediation from deduplicated barriers
-  const combinedRemediation = generateRemediationPriority(deduplicatedBarriers);
+  // Generate combined remediation from deduplicated barriers.
+  //
+  // Weighted when exactly one persona was audited -- which is what the MCP
+  // tool does, and the path whose topRemediation dropped a critical-for-blind
+  // alt-text finding below five lighter ones. Across several personas there is
+  // no single susceptibility to sort by, so the raw WCAG grade is the honest
+  // ordering and the weighting is left off rather than silently picking one.
+  const soloPersona = results.length === 1 ? results[0].persona : undefined;
+  const combinedRemediation = generateRemediationPriority(deduplicatedBarriers, soloPersona);
 
   // Calculate overall score
   const overallScore = results.length > 0
