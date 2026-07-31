@@ -329,6 +329,73 @@ export const TRAIT_SPEC: WidgetSpec = {
   ],
 };
 
+/**
+ * Bug hunt view. Field names read from a real run, not assumed:
+ * bugs[] carries type, severity, description, url, selector, recommendation.
+ */
+export const BUGS_SPEC: WidgetSpec = {
+  id: "bugs",
+  title: "Bug hunt",
+  hero: {
+    variant: "gradient",
+    // No subtitle. duration is milliseconds, and rendered as a bare subtitle it
+    // read as "8563" under the title with nothing saying what it counted.
+    facts: [
+      { field: "bugsFound", label: "bugs" },
+      { field: "pagesVisited", label: "pages crawled" },
+      { field: "duration", label: "ms" },
+    ],
+  },
+  blocks: [
+    { type: "findings", title: "Findings, worst first", field: "bugs",
+      textKey: "description", severityKey: "severity", detailKey: "recommendation" },
+    { type: "drawer", title: "Details", blocks: [
+      { type: "table", title: "Every bug", field: "bugs" },
+      { type: "rest", title: "Run info" },
+    ] },
+  ],
+};
+
+export function buildBugsTemplate(): string {
+  return buildWidget(BUGS_SPEC);
+}
+
+/**
+ * Empathy audit view.
+ *
+ * Barriers ranked by severity is the artifact worth showing someone -- it is
+ * the output a product team acts on, and nested JSON buries the ordering that
+ * makes it actionable.
+ */
+export const EMPATHY_SPEC: WidgetSpec = {
+  id: "empathy",
+  title: "Empathy audit",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "scopeNote" },
+    facts: [
+      { field: "overallScore", label: "score" },
+      { field: "topBarriers", label: "barriers" },
+      { field: "resultsSummary", label: "personas" },
+      { field: "device", label: "device" },
+    ],
+  },
+  blocks: [
+    { type: "findings", title: "Barriers, worst first", field: "topBarriers",
+      textKey: "description", severityKey: "severity", detailKey: "type" },
+    { type: "drawer", title: "Details", blocks: [
+      { type: "table", title: "Per persona", field: "resultsSummary" },
+      { type: "table", title: "WCAG violations", field: "allWcagViolations" },
+      { type: "table", title: "Remediation", field: "topRemediation" },
+      { type: "rest", title: "Run info" },
+    ] },
+  ],
+};
+
+export function buildEmpathyTemplate(): string {
+  return buildWidget(EMPATHY_SPEC);
+}
+
 export function buildTraitTemplate(): string {
   return buildWidget(TRAIT_SPEC);
 }
@@ -379,6 +446,24 @@ export function registerUiResources(server: McpServer): void {
         // The populated panel travels inside the status tool result itself.
         text: buildStatusTemplate(),
       }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-bugs-ui",
+    widgetUri("bugs"),
+    { description: "Bug hunt findings ranked by severity", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("bugs"), mimeType: MCP_APP_MIME, text: buildBugsTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-empathy-ui",
+    widgetUri("empathy"),
+    { description: "Accessibility barriers ranked by severity", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("empathy"), mimeType: MCP_APP_MIME, text: buildEmpathyTemplate() }],
     }),
   );
 

@@ -141,6 +141,9 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
   );
 
   server.registerTool("empathy_audit", {
+    // Barriers ranked by severity is the artifact a product team acts on, and
+    // nested JSON buries the ordering that makes it actionable.
+    _meta: { ui: { resourceUri: "ui://cbrowser/empathy" } },
     title: "Empathy Accessibility Audit",
     description: "Simulate how real users experience a site. Accepts ANY persona — disability personas get specialized barrier detection, non-disability personas get general UX analysis with a flag. Tests ONE persona per call. Disability: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia. General: first-timer, power-user, mobile-user, elderly-user, impatient-user, or any custom persona.",
     inputSchema: {
@@ -381,21 +384,16 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             }
           } catch { /* overlay is additive; never fail the audit for it */ }
 
-          let reportHtml: string | undefined;
-          try {
-            const { generateEmpathyAuditHtmlReport } = await import("../../analysis/accessibility-empathy.js");
-            reportHtml = generateEmpathyAuditHtmlReport(result);
-          } catch {
-            reportHtml = undefined;
-          }
-          attachUiResource(
-            content,
-            htmlUiResource(
-              `ui://cbrowser/empathy-audit/${encodeURIComponent(testedPersona)}`,
-              reportHtml,
-              { frameSize: ["100%", "760px"] },
-            ),
-          );
+          // The whole-report rawHtml attachment is gone; ui://cbrowser/empathy
+          // replaces it, declared on the tool below.
+          //
+          // Two UI mechanisms were live at once. mcp-ui embeds rendered HTML in
+          // the result, MCP Apps declares a resource the host fetches and
+          // hydrates. Running both on one tool means shipping a report AND a
+          // pointer to a different one, and it is the embedded HTML that costs:
+          // the report rides in the payload against a ~150k cap, so a rich
+          // audit could truncate the JSON beside it -- the same failure the
+          // heatmap caused before it moved to artifact_fetch.
         }
         return { content };
       } catch (error) {

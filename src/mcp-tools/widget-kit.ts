@@ -359,10 +359,10 @@ const CSS = `
   .finds li:last-child{border-bottom:0}
   .sev{font:650 .62rem/1 var(--mono);letter-spacing:.07em;text-transform:uppercase;
     padding:.2rem .36rem;border-radius:3px;white-space:nowrap}
-  .sev.critical{background:color-mix(in srgb,var(--bad) 22%,transparent);color:color-mix(in srgb,var(--bad) 85%,var(--ink))}
-  .sev.high{background:color-mix(in srgb,var(--warn) 22%,transparent);color:color-mix(in srgb,var(--warn) 85%,var(--ink))}
-  .sev.medium{background:color-mix(in srgb,var(--brand) 18%,transparent);color:color-mix(in srgb,var(--brand) 85%,var(--ink))}
-  .sev.low{background:var(--raise);color:var(--sub)}
+  .sev.critical,.sev.blocker{background:color-mix(in srgb,var(--bad) 22%,transparent);color:color-mix(in srgb,var(--bad) 85%,var(--ink))}
+  .sev.high,.sev.major,.sev.serious{background:color-mix(in srgb,var(--warn) 22%,transparent);color:color-mix(in srgb,var(--warn) 85%,var(--ink))}
+  .sev.medium,.sev.moderate{background:color-mix(in srgb,var(--brand) 18%,transparent);color:color-mix(in srgb,var(--brand) 85%,var(--ink))}
+  .sev.low,.sev.minor,.sev.info,.sev.notice{background:var(--raise);color:var(--sub)}
   .fdetail{grid-column:2;font-size:.79rem;color:var(--sub);margin:.15rem 0 0}
 
   /* Score: one headline grade, then weighted categories as proportional bars.
@@ -563,7 +563,18 @@ const RUNTIME = String.raw`
     var box = el("div", "scroll"); box.appendChild(t); return box;
   }
 
-  var SEV_ORDER = { critical: 0, high: 1, medium: 2, moderate: 2, low: 3, info: 4 };
+  // Two vocabularies, because the tools genuinely use two. Bug hunting emits
+  // critical/high/medium/low; the accessibility audit emits major/minor. An
+  // unrecognised severity sorts last and renders in the low style, so omitting
+  // major/minor would have shown every accessibility barrier as least-severe
+  // -- the opposite of what an audit is for.
+  var SEV_ORDER = {
+    critical: 0, blocker: 0,
+    high: 1, major: 1, serious: 1,
+    medium: 2, moderate: 2,
+    low: 3, minor: 3,
+    info: 4, notice: 4,
+  };
   function findingsList(rows, b) {
     var sorted = rows.slice().sort(function (x, y) {
       var a = SEV_ORDER[String(x[b.severityKey] || "").toLowerCase()];

@@ -17,6 +17,7 @@ export function registerBugAnalysisTools(
   { getBrowser }: ToolRegistrationContext
 ): void {
   server.registerTool("hunt_bugs", {
+    _meta: { ui: { resourceUri: "ui://cbrowser/bugs" } },
     title: "Hunt Bugs",
     description: "Autonomous bug hunting - crawl and find issues. Returns bugs with severity, selector, and actionable recommendation for each issue found.",
     inputSchema: {
