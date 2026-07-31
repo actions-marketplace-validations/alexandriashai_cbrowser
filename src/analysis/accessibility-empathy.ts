@@ -79,6 +79,15 @@ import {
 
 const WCAG_CRITERIA: Record<string, { level: "A" | "AA" | "AAA"; description: string }> = {
   "1.1.1": { level: "A", description: "Non-text Content" },
+  // The media criteria were absent from this table while 1.2.2 was already
+  // being emitted, and violations are filtered by looking their level up here:
+  // an unknown code is kept unconditionally. So an audit run at wcagLevel "A"
+  // still reported AA media findings, because the filter had no level to test
+  // them against. (2026-07-31)
+  "1.2.1": { level: "A", description: "Audio-only and Video-only (Prerecorded)" },
+  "1.2.2": { level: "A", description: "Captions (Prerecorded)" },
+  "1.2.3": { level: "A", description: "Audio Description or Media Alternative (Prerecorded)" },
+  "1.2.5": { level: "AA", description: "Audio Description (Prerecorded)" },
   "1.3.1": { level: "A", description: "Info and Relationships" },
   "1.4.1": { level: "A", description: "Use of Color" },
   "1.4.3": { level: "AA", description: "Contrast (Minimum)" },
@@ -665,10 +674,17 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
   const imagesWithoutAlt = await page.$$eval('img:not([alt])', (elements) =>
     elements.map(el => {
       const imgEl = el as HTMLImageElement;
+      // Document coordinates, matching every other rect in this file: the
+      // overlay maps them onto a full-page capture.
+      const r = imgEl.getBoundingClientRect();
       return {
         selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
         isDecorative: imgEl.width < 20 || imgEl.height < 20,
         issue: "missing",
+        x: Math.round(r.left + window.scrollX),
+        y: Math.round(r.top + window.scrollY),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
       };
     }).filter(el => !el.isDecorative).slice(0, 10)
   );
@@ -690,6 +706,8 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
         selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
         isDecorative: isLikelyDecorative,
         issue: "empty",
+        x: Math.round(rect.left + window.scrollX),
+        y: Math.round(rect.top + window.scrollY),
         width: rect.width,
         height: rect.height,
       };
@@ -705,7 +723,12 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
       wcagCriteria: ["1.1.1"],
       severity: "major",
       remediation: "Add descriptive alt text, or alt=\"\" if image is purely decorative",
-    });
+      // Without this the overlay drew ten touch targets and none of the
+      // findings that actually drove the score: only 2 of 22 barrier sites in
+      // this file recorded geometry, so the highest-weighted barriers were
+      // structurally undrawable. (2026-07-31)
+      rect: { x: img.x, y: img.y, width: img.width, height: img.height },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("1.1.1");
   }
 
@@ -719,17 +742,25 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
       wcagCriteria: ["1.1.1"],
       severity: "minor",
       remediation: "Verify this image is purely decorative. If it conveys meaning, add descriptive alt text",
-    });
+      rect: { x: img.x, y: img.y, width: Math.round(img.width), height: Math.round(img.height) },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("1.1.1");
   }
 
   // Check for videos without captions indicator
   // v10.10.0: Always detect, not just for deaf-user persona
   const videos = await page.$$eval('video, iframe[src*="youtube"], iframe[src*="vimeo"]', (elements) =>
-    elements.map(el => ({
-      selector: el.tagName.toLowerCase(),
-      hasCaptions: el.querySelector('track[kind="captions"]') !== null,
-    })).filter(el => !el.hasCaptions)
+    elements.map(el => {
+      const r = el.getBoundingClientRect();
+      return {
+        selector: el.tagName.toLowerCase(),
+        hasCaptions: el.querySelector('track[kind="captions"]') !== null,
+        x: Math.round(r.left + window.scrollX),
+        y: Math.round(r.top + window.scrollY),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      };
+    }).filter(el => !el.hasCaptions)
   );
 
   if (videos.length > 0) {
@@ -741,8 +772,111 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
       wcagCriteria: ["1.2.2"],
       severity: "critical",
       remediation: "Add captions to all video content",
-    });
+      rect: { x: videos[0].x, y: videos[0].y, width: videos[0].width, height: videos[0].height },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("1.2.2");
+  }
+
+  await detectMissingAudioDescription(ctx);
+}
+
+/**
+ * Detect video that carries visual information with no audio description.
+ *
+ * The counterpart to the captions check above, and the reason it exists: they
+ * are opposite remedies for opposite senses. Captions carry a video's AUDIO to
+ * someone who cannot hear it; audio description carries its VISUALS to someone
+ * who cannot see it. Only captions were detected, so an audit run as a blind
+ * user reported "add captions" as their headline media fix -- a change that
+ * does nothing for them -- while the barrier they actually hit, a video whose
+ * on-screen content is never spoken, had no criterion in the set at all.
+ *
+ * Scoped to real <video> elements on purpose. A third-party embed is an
+ * <iframe>, and an iframe cannot contain a <track> child in the host document,
+ * so asking the host DOM whether a YouTube video has descriptions cannot
+ * return anything but "no". That is a guaranteed false positive rather than a
+ * measurement, and this detector declines to make it. (2026-07-31)
+ */
+async function detectMissingAudioDescription(ctx: BarrierContext): Promise<void> {
+  const { page, barriers } = ctx;
+
+  const undescribed = await page.$$eval('video', (elements) =>
+    elements
+      .map((el) => {
+        const v = el as HTMLVideoElement;
+        const rect = v.getBoundingClientRect();
+        // A described track satisfies the criterion outright.
+        const hasDescriptions = v.querySelector('track[kind="descriptions"]') !== null;
+        // Explicitly decorative content is exempt: it is declared to carry no
+        // information, so there is nothing to describe. Trusting the author's
+        // own declaration beats guessing from size or autoplay flags.
+        const decorative =
+          v.getAttribute("aria-hidden") === "true" ||
+          v.getAttribute("role") === "presentation" ||
+          v.getAttribute("role") === "none";
+        // A transcript link near the video can satisfy 1.2.3 (Level A offers
+        // "audio description OR media alternative") while leaving 1.2.5 (AA,
+        // audio description specifically) unmet. Worth separating: the fix is
+        // different and so is the conformance claim.
+        const scope = v.closest("figure, section, article, div") ?? v.parentElement;
+        const nearbyText = (scope?.textContent ?? "").toLowerCase();
+        const hasTranscript =
+          /transcript|described version|audio description/.test(nearbyText) ||
+          !!scope?.querySelector('a[href*="transcript"]');
+        return {
+          selector: v.id ? `video#${v.id}` : (v.getAttribute("src") ? `video[src]` : "video"),
+          hasDescriptions,
+          decorative,
+          hasTranscript,
+          visible: rect.width > 0 && rect.height > 0,
+          x: Math.round(rect.left + window.scrollX),
+          y: Math.round(rect.top + window.scrollY),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      })
+      .filter((v) => !v.hasDescriptions && !v.decorative)
+      .slice(0, 10),
+  );
+
+  if (undescribed.length === 0) return;
+
+  // Split by whether a media alternative appears to be present, because the
+  // two carry different criteria and different remediation.
+  const withTranscript = undescribed.filter((v) => v.hasTranscript);
+  const withNothing = undescribed.filter((v) => !v.hasTranscript);
+
+  if (withNothing.length > 0) {
+    barriers.push({
+      type: "sensory",
+      element: withNothing[0].selector,
+      description: `${withNothing.length} video(s) have no audio description and no transcript - blind and low-vision users cannot access what is shown on screen`,
+      affectedPersonas: ["screen-reader-user", "low-vision-magnified"],
+      wcagCriteria: ["1.2.3", "1.2.5"],
+      severity: "critical",
+      remediation:
+        "Add an audio description track (<track kind=\"descriptions\">) narrating on-screen information that is not already spoken, or publish a described version. A full text transcript satisfies 1.2.3 but not 1.2.5.",
+      affectedElementCount: withNothing.length,
+      rect: { x: withNothing[0].x, y: withNothing[0].y, width: withNothing[0].width, height: withNothing[0].height },
+    } as AccessibilityBarrier);
+    ctx.wcagViolations.add("1.2.3");
+    ctx.wcagViolations.add("1.2.5");
+  }
+
+  if (withTranscript.length > 0) {
+    barriers.push({
+      type: "sensory",
+      element: withTranscript[0].selector,
+      description: `${withTranscript.length} video(s) appear to have a transcript but no audio description track - meets WCAG 1.2.3 (A) but not 1.2.5 (AA)`,
+      affectedPersonas: ["screen-reader-user", "low-vision-magnified"],
+      wcagCriteria: ["1.2.5"],
+      severity: "major",
+      remediation:
+        "Add an audio description track so on-screen information is available during playback, not only in a separate transcript",
+      affectedElementCount: withTranscript.length,
+      rect: { x: withTranscript[0].x, y: withTranscript[0].y, width: withTranscript[0].width, height: withTranscript[0].height },
+    } as AccessibilityBarrier);
+    ctx.wcagViolations.add("1.2.5");
   }
 }
 
@@ -868,7 +1002,8 @@ async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
   const hoverOnlyElements = await page.$$eval(
     '[class*="hover"], [class*="dropdown"], [class*="menu"], [class*="tooltip"]',
     (elements) => {
-      const results: Array<{ selector: string; hasClickAlternative: boolean; text: string }> = [];
+      const results: Array<{ selector: string; hasClickAlternative: boolean; text: string;
+        x: number; y: number; width: number; height: number }> = [];
 
       for (const el of elements.slice(0, 20)) {
         // Check if element or children have click handlers
@@ -876,10 +1011,15 @@ async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
                          el.querySelector('[onclick]') !== null ||
                          el.querySelector('a, button') !== null;
 
+        const r = el.getBoundingClientRect();
         results.push({
           selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
           hasClickAlternative: hasClick,
           text: el.textContent?.trim().slice(0, 30) || '',
+          x: Math.round(r.left + window.scrollX),
+          y: Math.round(r.top + window.scrollY),
+          width: Math.round(r.width),
+          height: Math.round(r.height),
         });
       }
 
@@ -896,7 +1036,8 @@ async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
       wcagCriteria: ["2.1.1", "2.5.1"],
       severity: "major",
       remediation: "Add click/tap alternative to hover interactions, or make hover content accessible via keyboard focus",
-    });
+      rect: { x: el.x, y: el.y, width: el.width, height: el.height },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("2.1.1");
   }
 

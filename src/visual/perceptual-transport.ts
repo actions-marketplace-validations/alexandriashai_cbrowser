@@ -220,6 +220,7 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
       color_only: 2.0,         // May not distinguish subtle color differences
       missing_alt: 2.5,        // Relies heavily on alt text
       missing_label: 2.0,      // Relies on labels
+      audio_description: 1.5,  // Sees the video, loses on-screen detail and text
       cognitive_load: 1.0,
       timing: 1.5,             // Needs more time to scan magnified view
       hover_dependent: 1.0,
@@ -331,7 +332,11 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
     barrierWeights: {
       missing_alt: 3.0,        // The image IS the alt text; without it there is nothing
       missing_label: 3.0,      // An unlabelled control is unusable, not just awkward
-      captions: 1.0,
+      audio_description: 3.0,  // The only route to a video's visual content
+      // Captions transcribe audio this persona can already hear. Near-zero is
+      // the honest weight; it read 1.0 while audio description had no key at
+      // all, so "add captions" ranked as their top media fix.
+      captions: 0.2,
       hover_dependent: 2.5,    // Hover has no keyboard or AT equivalent
       timing: 2.0,             // Re-reading by audio takes longer than by eye
       form_complexity: 1.8,
@@ -369,6 +374,7 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
       // resolved to a neutral 1.0, so an audit run AS a deaf user rated
       // missing captions no higher than anything else on the page.
       captions: 3.0,
+      audio_description: 0.1,  // Visual content is perceived directly
       missing_alt: 1.0,
       missing_label: 1.0,
       hover_dependent: 0.5,
@@ -397,6 +403,7 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
       color_only: 1.5,
       missing_alt: 1.5,
       missing_label: 2.0,
+      audio_description: 1.5,
       hover_dependent: 1.5,
     },
     visualFilter: {
@@ -959,8 +966,14 @@ const WCAG_TO_WEIGHT_KEY: Record<string, string> = {
   "2.5.5": "touch_target",
   "1.2.1": "captions",
   "1.2.2": "captions",
-  "1.2.3": "captions",
-  "1.2.5": "captions",
+  // Audio description is not captions, and collapsing them made the audit
+  // recommend the wrong remedy to the wrong person: captions carry a video's
+  // AUDIO to someone who cannot hear, audio description carries its VISUALS to
+  // someone who cannot see. Under one key a blind user's top media finding was
+  // "add captions" -- a fix that does nothing for them -- while the barrier
+  // they actually hit had no criterion of its own. (2026-07-31)
+  "1.2.3": "audio_description",
+  "1.2.5": "audio_description",
   "2.2.1": "timing",
   "2.2.2": "timing",
   "3.3.2": "missing_label",

@@ -1272,7 +1272,7 @@ export function registerEmpathyAuditTool(server: McpServer): void {
             });
           })(),
           topBarriersNote:
-            "The first five are the highest-severity barriers. Any entries after them are included because they carry a WCAG criterion the top five do not.",
+            "Ordered worst-first by severityForPersona — the persona-weighted grade — so an entry can sit above a higher WCAG severity when this persona is more susceptible to it. Any entries after the fifth are included because they carry a WCAG criterion the top five do not.",
           // Asserting full coverage was itself a defect: the claim held only
           // when a barrier existed for every criterion, and said nothing when
           // one did not. Now it reports the gap instead of asserting there
