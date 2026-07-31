@@ -440,6 +440,9 @@ export function registerVisualTestingTools(server: McpServer): void {
       idempotentHint: true,
       openWorldHint: true,
     },
+    // Declares the attention view. The heatmap is the finding here, and a JSON
+    // list of scores is a lossy description of where a persona actually looks.
+    _meta: { ui: { resourceUri: "ui://cbrowser/attention" } },
   }, async ({ url, persona, goal, cellSize, heatmap, device, useValues }) => {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({
@@ -670,6 +673,10 @@ export function registerVisualTestingTools(server: McpServer): void {
             if (firstBlock.type === "text") {
               const textContent = JSON.parse(firstBlock.text);
               textContent.heatmapUrl = publicUrl;
+              // The filename, not just the URL: the widget sandbox cannot fetch
+              // that URL, so the view asks artifact_fetch for these bytes over
+              // the MCP connection instead.
+              textContent.heatmapFile = `${heatmapId}.png`;
               textContent.heatmapNote = "Show this heatmap image to the user. The red areas show where this persona's attention concentrates. Blue areas receive little attention.";
               content[0] = { type: "text" as const, text: JSON.stringify(textContent, null, 2) };
             }

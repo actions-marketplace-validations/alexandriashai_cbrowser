@@ -197,6 +197,48 @@ export const PERSONA_SPEC: WidgetSpec = {
   ],
 };
 
+/**
+ * Attention heatmap view.
+ *
+ * The image is the finding here -- a JSON list of scores is a lossy
+ * description of where a persona actually looks. It is fetched through
+ * artifact_fetch rather than embedded or linked: the result cannot carry it
+ * past the host's size cap, and the sandbox will not load cbrowser.ai.
+ */
+export const ATTENTION_SPEC: WidgetSpec = {
+  id: "attention",
+  title: "Attention",
+  titleField: "url",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "persona" },
+    facts: [
+      { field: "elementsAnalyzed", label: "elements" },
+      { field: "topElements", label: "ranked" },
+    ],
+  },
+  blocks: [
+    {
+      type: "image",
+      title: "Predicted attention",
+      fetchTool: "artifact_fetch",
+      fetchArgs: { file: "heatmapFile" },
+      caption: "heatmapNote",
+    },
+    { type: "findings", title: "Where attention lands", field: "topElements",
+      textKey: "text", severityKey: "type", detailKey: "reason" },
+    {
+      type: "drawer",
+      title: "Details",
+      blocks: [{ type: "rest", title: "All fields" }],
+    },
+  ],
+};
+
+export function buildAttentionTemplate(): string {
+  return buildWidget(ATTENTION_SPEC);
+}
+
 export function buildPersonaTemplate(): string {
   return buildWidget(PERSONA_SPEC);
 }
@@ -235,6 +277,15 @@ export function registerUiResources(server: McpServer): void {
         // The populated panel travels inside the status tool result itself.
         text: buildStatusTemplate(),
       }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-attention-ui",
+    widgetUri("attention"),
+    { description: "Attention heatmap with ranked elements", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("attention"), mimeType: MCP_APP_MIME, text: buildAttentionTemplate() }],
     }),
   );
 

@@ -35,6 +35,7 @@ import { registerGifTools } from "./gif-tools.js";
 import { registerAdvancedInteractionTools } from "./advanced-interaction-tools.js";
 import { registerBrowserStateTools } from "./browser-state-tools.js";
 import { registerCaptureTools } from "./capture-tools.js";
+import { registerArtifactTools } from "./artifact-tools.js";
 
 /**
  * Register all 65 base tools on an MCP server
@@ -143,6 +144,7 @@ export function registerBaseTools(
 
   // Screen Capture (3) - capture_start, capture_stop, capture_status (pixels to GIF/video)
   registerCaptureTools(server, context);
+  registerArtifactTools(server);
 }
 
 // Re-export individual registration functions for granular use
@@ -171,3 +173,4 @@ export { registerGifTools } from "./gif-tools.js";
 export { registerAdvancedInteractionTools } from "./advanced-interaction-tools.js";
 export { registerBrowserStateTools } from "./browser-state-tools.js";
 export { registerCaptureTools } from "./capture-tools.js";
+export { registerArtifactTools } from "./artifact-tools.js";

@@ -68,7 +68,10 @@ export type BlockSpec =
       categoriesField?: FieldPath; labelKey?: string; valueKey?: string; weightKey?: string }
   /** An image the widget fetches after mount, since results are size-capped. */
   | { type: "image"; title: string; urlField?: FieldPath; dataField?: FieldPath;
-      fetchTool?: string; fetchArgsField?: FieldPath; caption?: FieldPath }
+      fetchTool?: string; fetchArgsField?: FieldPath;
+      /** Argument name to payload field, e.g. {file: "heatmapFile"}. */
+      fetchArgs?: Record<string, FieldPath>;
+      caption?: FieldPath }
   /**
    * Persona trait/value meters, matching the account persona editor.
    *
@@ -653,6 +656,10 @@ const RUNTIME = String.raw`
       wrap.appendChild(img); wrap.appendChild(note);
       try {
         var args = b.fetchArgsField ? at(data, b.fetchArgsField) : {};
+        if (b.fetchArgs) {
+          args = {};
+          Object.keys(b.fetchArgs).forEach(function (k) { args[k] = at(data, b.fetchArgs[k]); });
+        }
         var res = await app.callServerTool({ name: b.fetchTool, arguments: args || {} });
         var blk = (res && res.content || []).filter(function (c) { return c.type === "image"; })[0];
         if (blk && blk.data) { img.src = "data:" + (blk.mimeType || "image/png") + ";base64," + blk.data; note.remove(); }

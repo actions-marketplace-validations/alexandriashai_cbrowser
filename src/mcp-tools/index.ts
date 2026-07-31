@@ -68,6 +68,7 @@ export {
   registerBrowserStateTools,
   registerGifTools,
   registerCaptureTools,
+  registerArtifactTools,
   setSecurityAuditToolList,
 } from "./base/index.js";
 
