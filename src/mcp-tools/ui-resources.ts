@@ -280,6 +280,51 @@ export const SCREENSHOT_SPEC: WidgetSpec = {
   footer: { label: "Saved:", field: "screenshot" },
 };
 
+/**
+ * Trait lookup view.
+ *
+ * The five levels are the answer: what a reader wants from "patience at 0.30"
+ * is where that sits relative to the other four bands and what it means
+ * behaviourally, which a JSON array of level objects does not convey.
+ *
+ * Bands use the same red-to-green ramp as the persona meters, so 0.30 reads
+ * identically in both views rather than being one colour here and another
+ * there.
+ */
+export const TRAIT_SPEC: WidgetSpec = {
+  id: "trait",
+  title: "Trait",
+  titleField: "trait",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "description" },
+    facts: [
+      { field: "value", label: "value" },
+      { field: "label", label: "level" },
+    ],
+  },
+  blocks: [
+    {
+      type: "levels",
+      title: "Where this value sits",
+      field: "allLevels",
+      valueField: "value",
+      labelField: "label",
+      behaviorsField: "behaviors",
+    },
+    { type: "note", title: "Research basis", field: "researchBasis" },
+    {
+      type: "drawer",
+      title: "Every level",
+      blocks: [{ type: "table", title: "Levels", field: "allLevels" }],
+    },
+  ],
+};
+
+export function buildTraitTemplate(): string {
+  return buildWidget(TRAIT_SPEC);
+}
+
 export function buildScreenshotTemplate(): string {
   return buildWidget(SCREENSHOT_SPEC);
 }
@@ -326,6 +371,15 @@ export function registerUiResources(server: McpServer): void {
         // The populated panel travels inside the status tool result itself.
         text: buildStatusTemplate(),
       }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-trait-ui",
+    widgetUri("trait"),
+    { description: "Trait level scale with behavioural bands", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("trait"), mimeType: MCP_APP_MIME, text: buildTraitTemplate() }],
     }),
   );
 

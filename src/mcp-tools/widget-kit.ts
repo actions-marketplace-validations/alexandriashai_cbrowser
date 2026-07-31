@@ -92,6 +92,16 @@ export type BlockSpec =
       nameKey?: string; valueKey?: string;
       /** Show a definition tooltip on each label, from the baked-in glossary. */
       describe?: boolean }
+  /**
+   * A banded scale with the queried point marked.
+   *
+   * For data shaped as "here are the five levels this trait can take, here is
+   * the one you asked about". The bands are the finding: a reader wants to see
+   * where 0.3 sits relative to the others, which a list of five objects does
+   * not show.
+   */
+  | { type: "levels"; title: string; field: FieldPath;
+      valueField?: FieldPath; labelField?: FieldPath; behaviorsField?: FieldPath }
   /** Free prose. */
   | { type: "note"; title?: string; field: FieldPath }
   /** Everything not consumed by another block, so no field is silently dropped. */
@@ -396,6 +406,30 @@ const CSS = `
     color:#9fb4d8;margin-bottom:.2rem}
   .tip .ends{margin-top:.35rem;color:#aab4c2;font-size:.72rem}
   @media (prefers-reduced-motion:reduce){.tip{transition:none}}
+  /* Banded scale. Each band is tinted by its own position on the same
+     red-to-green ramp the persona meters use, so a value reads the same way in
+     both views, and the active band is raised rather than recoloured -- moving
+     the hue would break that correspondence. */
+  /* Top margin is the marker's room. Without it the value label collides with
+     the block heading above, and the tick ran the full height of the band and
+     struck through the label it was pointing at. */
+  .scale{margin:1.5rem 0 .8rem}
+  .bands{display:flex;gap:3px;position:relative}
+  .band{flex:1;height:30px;border-radius:5px;display:grid;place-items:center;
+    font:.62rem/1 var(--mono);text-transform:uppercase;letter-spacing:.05em;
+    color:color-mix(in srgb, var(--ink) 78%, transparent);opacity:.42;
+    border:2px solid transparent;overflow:hidden;white-space:nowrap;padding:0 .2rem}
+  .band.on{opacity:1;border-color:var(--ink);font-weight:650}
+  .marker{position:absolute;top:-17px;transform:translateX(-50%);font:600 .64rem/1 var(--mono);
+    color:var(--ink);white-space:nowrap;pointer-events:none}
+  /* Stops at the band's top edge rather than crossing it. */
+  .marker::after{content:"";display:block;width:2px;height:7px;border-radius:1px;
+    background:var(--ink);margin:3px auto 0}
+  .behav{list-style:none;padding:0;margin:.6rem 0 0}
+  .behav li{position:relative;padding:.22rem 0 .22rem .95rem;font-size:.86rem}
+  .behav li::before{content:"";position:absolute;left:.15rem;top:.72rem;
+    width:5px;height:5px;border-radius:50%;background:var(--accent)}
+  .lvlname{font-size:.8rem;font-weight:600;margin:.7rem 0 0}
   .shot{max-width:100%;height:auto;display:block;border-radius:6px;border:1px solid var(--line)}
   .cap{font-size:.77rem;color:var(--sub);margin:.35rem 0 0}
   .foot{padding:0 18px 14px;font-size:.77rem;color:var(--sub)}
@@ -605,6 +639,41 @@ const RUNTIME = String.raw`
     return [];
   }
 
+  function levelsBlock(data, b) {
+    var levels = at(data, b.field);
+    if (!isObjArray(levels)) return null;
+    var value = b.valueField ? at(data, b.valueField) : undefined;
+    var label = b.labelField ? at(data, b.labelField) : undefined;
+    var behaviors = b.behaviorsField ? at(data, b.behaviorsField) : undefined;
+
+    var wrap = el("div", "scale");
+    var bands = el("div", "bands");
+    levels.forEach(function (lv) {
+      var band = el("div", "band", String(lv.label || ""));
+      var v = Number(lv.value);
+      if (isFinite(v)) band.style.backgroundColor = "hsl(" + (v * 120) + ", 65%, 50%)";
+      // Active band chosen by nearest level, since the queried value rarely
+      // lands exactly on a band's own value.
+      if (label && String(lv.label) === String(label)) band.classList.add("on");
+      band.title = String(lv.label || "");
+      bands.appendChild(band);
+    });
+    if (typeof value === "number" && isFinite(value)) {
+      var m = el("div", "marker", value.toFixed(2));
+      m.style.left = Math.max(2, Math.min(98, value * 100)) + "%";
+      bands.appendChild(m);
+    }
+    wrap.appendChild(bands);
+
+    if (label) wrap.appendChild(el("p", "lvlname", String(label)));
+    if (Array.isArray(behaviors) && behaviors.length) {
+      var ul = el("ul", "behav");
+      behaviors.forEach(function (x) { ul.appendChild(el("li", null, String(x))); });
+      wrap.appendChild(ul);
+    }
+    return wrap;
+  }
+
   function scoreBlock(data, b) {
     var wrap = el("div");
     var grade = at(data, b.gradeField);
@@ -731,6 +800,13 @@ const RUNTIME = String.raw`
       used[b.field.split(".")[0]] = true;
       var rows = normaliseTraits(at(data, b.field), b);
       return rows.length ? { node: traitsBlock(rows, b), count: rows.length } : null;
+    }
+    if (b.type === "levels") {
+      [b.field, b.valueField, b.labelField, b.behaviorsField].forEach(function (f) {
+        if (f) used[f.split(".")[0]] = true;
+      });
+      var node = levelsBlock(data, b);
+      return node ? { node: node, count: null } : null;
     }
     if (b.type === "note") {
       used[b.field.split(".")[0]] = true;

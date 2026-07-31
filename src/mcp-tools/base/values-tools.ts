@@ -434,6 +434,9 @@ export function registerValuesTools(server: McpServer): void {
       trait: z.string().describe("Trait name (e.g., 'patience', 'riskTolerance')"),
       value: z.number().min(0).max(1).describe("Trait value (0-1)"),
     },
+    // Declares the trait view. The bands are the finding; the JSON is a list
+    // of five level objects a reader has to hold in their head to compare.
+    _meta: { ui: { resourceUri: "ui://cbrowser/trait" } },
     annotations: {
       title: "Lookup Persona Trait",
       readOnlyHint: true,
