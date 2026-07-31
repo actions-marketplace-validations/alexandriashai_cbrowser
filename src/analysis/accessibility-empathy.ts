@@ -34,6 +34,7 @@
  */
 
 import { type Page } from "playwright";
+import { weightKeyFor } from "../visual/perceptual-transport.js";
 import { VERSION } from "../version.js";
 import { CBrowser } from "../browser.js";
 import type {
@@ -1721,6 +1722,9 @@ function getDisabilityType(persona: AccessibilityPersona): string {
   if (/^(deaf|hard-of-hearing)/i.test(String(persona.name ?? ""))) {
     return "Hearing (deaf/hard of hearing)";
   }
+  if (/screen-?reader|nvda|jaws|voiceover/i.test(String(persona.name ?? ""))) {
+    return "Blind / screen reader";
+  }
   if (persona.accessibilityTraits.tremor) return "Motor impairment (tremor)";
   if (persona.accessibilityTraits.visionLevel && persona.accessibilityTraits.visionLevel < 0.5) return "Low vision";
   if (persona.accessibilityTraits.colorBlindness) return `Color blindness (${persona.accessibilityTraits.colorBlindness})`;
@@ -2330,7 +2334,8 @@ function deduplicateBarriers(
   results: AccessibilityEmpathyResult[]
 ): AccessibilityBarrier[] {
   // Group by barrier TYPE only (not element)
-  const barriersByType = new Map<AccessibilityBarrierType, {
+  // Keyed "type|weightKey" now, not a bare type.
+  const barriersByType = new Map<string, {
     barriers: AccessibilityBarrier[];
     personas: Set<string>;
     elements: Set<string>;
@@ -2339,7 +2344,19 @@ function deduplicateBarriers(
 
   for (const result of results) {
     for (const barrier of result.barriers) {
-      const existing = barriersByType.get(barrier.type);
+      // Grouped by type AND the susceptibility key its criteria resolve to,
+      // not by type alone.
+      //
+      // "sensory" covers colour-only links (1.4.1), missing alt text (1.1.1)
+      // and missing captions (1.2.2) -- three different problems, three
+      // different fixes, and wildly different susceptibility per persona. Type
+      // alone merged them into one entry carrying one description and one
+      // remediation, so on a screen-reader audit the alt-text criterion that
+      // matters most arrived bundled inside a colour barrier whose fix was
+      // "add patterns alongside colour". Unioning the criteria made them
+      // visible; separating the groups makes them actionable.
+      const groupKey = `${barrier.type}|${weightKeyFor(barrier.type, barrier.wcagCriteria) ?? ""}`;
+      const existing = barriersByType.get(groupKey);
       // Use the barrier's OWN affectedPersonas (set by the detector — accurate)
       // rather than the test persona's name. Previously we overwrote with
       // result.persona, which made every barrier appear to affect only the
@@ -2357,7 +2374,7 @@ function deduplicateBarriers(
           existing.highestSeverity = barrier.severity;
         }
       } else {
-        barriersByType.set(barrier.type, {
+        barriersByType.set(groupKey, {
           barriers: [barrier],
           personas: new Set(barrierPersonas),
           elements: new Set([barrier.element]),
@@ -2367,10 +2384,13 @@ function deduplicateBarriers(
     }
   }
 
-  // Create one deduplicated barrier per type
+  // One deduplicated barrier per type-and-criterion group.
   const deduplicated: AccessibilityBarrier[] = [];
 
-  for (const [type, data] of barriersByType) {
+  for (const [groupKey, data] of barriersByType) {
+    // The map is keyed "type|weightKey"; the emitted barrier keeps the plain
+    // type, since that is what downstream weighting and styling read.
+    const type = groupKey.split("|")[0] as AccessibilityBarrier["type"];
     const elementCount = data.elements.size;
     const representative = data.barriers[0]; // Use first barrier as template
 
@@ -2558,6 +2578,16 @@ export async function runEmpathyAudit(
         const hasVisionHint = name.includes("vision") || name.includes("blind") || name.includes("elderly") || name.includes("magnif");
         const hasMotorHint = name.includes("motor") || name.includes("tremor") || name.includes("parkinsons");
         const hasCognitiveHint = name.includes("adhd") || name.includes("dyslexic") || name.includes("cognitive") || name.includes("memory");
+        // Assistive-technology and hearing personas were in neither bucket, so
+        // screen-reader-user came back isDisabilityPersona: false -- while the
+        // same payload listed it as an exemplar on a sensory barrier and
+        // list_cognitive_personas filed it under accessibility. Three parts of
+        // the system disagreeing about whether a screen reader user has a
+        // disability, and the "no" was the one that drove the score.
+        const hasScreenReaderHint = name.includes("screen-reader") || name.includes("screenreader")
+          || name.includes("nvda") || name.includes("jaws") || name.includes("voiceover");
+        const hasHearingHint = name.includes("deaf") || name.includes("hearing")
+          || name.includes("hard-of-hearing");
 
         persona = {
           ...cognitivePersona,
@@ -2573,8 +2603,9 @@ export async function runEmpathyAudit(
           },
         } as any;
         // If the name hints at a disability, treat it as a disability persona for routing
-        isDisabilityPersona = hasVisionHint || hasMotorHint || hasCognitiveHint;
-        console.log(`[empathy_audit] "${disability}" wrapped as ${isDisabilityPersona ? "disability" : "general"} persona (vision=${hasVisionHint}, motor=${hasMotorHint}, cognitive=${hasCognitiveHint})`);
+        isDisabilityPersona = hasVisionHint || hasMotorHint || hasCognitiveHint
+          || hasScreenReaderHint || hasHearingHint;
+        console.log(`[empathy_audit] "${disability}" wrapped as ${isDisabilityPersona ? "disability" : "general"} persona (vision=${hasVisionHint}, motor=${hasMotorHint}, cognitive=${hasCognitiveHint}, screenReader=${hasScreenReaderHint}, hearing=${hasHearingHint})`);
       } else {
         // Return an explicit error instead of silently skipping
         console.error(`[empathy_audit] Persona "${disability}" not found in any registry (built-in, custom, CMS)`);

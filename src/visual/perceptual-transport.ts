@@ -311,6 +311,50 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
     },
   },
 
+  /**
+   * Navigating by audio, not by sight.
+   *
+   * Absent entirely before, so screen-reader-user fell through to
+   * DEFAULT_PROFILE and every barrier weighed a flat 1.0. That is not neutral:
+   * with no damping, full deductions applied and the persona scored 2 out of
+   * 100 -- worse than any recognised one -- because nothing was weighting the
+   * arithmetic, not because the page was worse for them.
+   *
+   * The weights invert the visual defaults. Touch-target size and contrast are
+   * close to irrelevant to someone who never sees the target; missing alt text
+   * and missing labels are the whole experience, since they are the only
+   * description of an image or control that exists.
+   */
+  'screen-reader-user': {
+    persona: 'screen-reader-user',
+    category: 'vision',
+    barrierWeights: {
+      missing_alt: 3.0,        // The image IS the alt text; without it there is nothing
+      missing_label: 3.0,      // An unlabelled control is unusable, not just awkward
+      captions: 1.0,
+      hover_dependent: 2.5,    // Hover has no keyboard or AT equivalent
+      timing: 2.0,             // Re-reading by audio takes longer than by eye
+      form_complexity: 1.8,
+      cognitive_load: 1.2,     // Linear audio traversal of a busy page is costly
+      low_contrast: 0.1,       // Not perceived
+      color_only: 0.1,         // Not perceived
+      touch_target: 0.1,       // Not pointed at
+    },
+    visualFilter: {
+      contrastThreshold: 0,
+      blurRadius: 0,
+      colorAttenuation: [1, 1, 1],
+      noiseTolerance: 0.8,
+      motorCostMultiplier: 1.0,
+      // text-focused: the page reaches this persona as text in DOM order.
+      // The union has no 'sequential' member and adding one would change a type
+      // other code switches on, for a distinction this model does not yet act
+      // on -- text-focused is the closest true statement available.
+      attentionMode: 'text-focused',
+      processingSpeed: 1.0,
+    },
+  },
+
   'deaf-user': {
     persona: 'deaf-user',
     category: 'hearing',
@@ -425,6 +469,10 @@ export function getPerceptualProfile(
   }
   if (name.includes('adhd') || name.includes('cognitive') || name.includes('dyslexic')) {
     return { ...PERCEPTUAL_PROFILES['cognitive-adhd'], persona: personaName };
+  }
+  if (name.includes('screen-reader') || name.includes('screenreader')
+      || name.includes('nvda') || name.includes('jaws') || name.includes('voiceover')) {
+    return { ...PERCEPTUAL_PROFILES['screen-reader-user'], persona: personaName };
   }
   if (name.includes('deaf') || name.includes('hearing')) {
     return { ...PERCEPTUAL_PROFILES['deaf-user'], persona: personaName };
@@ -933,9 +981,15 @@ export function barrierWeightFor(
   const key = weightKeyFor(barrierType, wcagCriteria);
   try {
     const profile = getPerceptualProfile(personaName);
+    // A profile that resolved to the generic default is not a configured
+    // weight, whatever value it holds. DEFAULT_PROFILE carries 1.0 for every
+    // key, so an unrecognised persona previously reported defaulted:false on
+    // five identical 1.0s -- the field asserted "explicitly configured" about
+    // numbers nobody had chosen for that persona.
+    const isGeneric = profile.persona === "default";
     const w = key ? profile.barrierWeights?.[key] : undefined;
-    if (typeof w === "number") return { weight: w, key, defaulted: false };
-    return { weight: 1.0, key, defaulted: true };
+    if (typeof w === "number" && !isGeneric) return { weight: w, key, defaulted: false };
+    return { weight: typeof w === "number" ? w : 1.0, key, defaulted: true };
   } catch {
     return { weight: 1.0, key, defaulted: true };
   }
