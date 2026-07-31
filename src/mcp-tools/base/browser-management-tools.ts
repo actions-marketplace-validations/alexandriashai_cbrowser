@@ -74,6 +74,15 @@ export function registerBrowserManagementTools(
   );
 
   server.registerTool("browser_health", {
+    // Deliberately points at the 2KB probe view rather than a kit-built one.
+    //
+    // Every kit view carries the 330KB ext-apps runtime, which Anthropic's
+    // guidance requires inlining -- so all four are ~368KB and there is no
+    // smaller self-contained option. That makes size the one property that
+    // cannot be varied within the kit, and therefore the one worth isolating:
+    // if this 2KB view renders while a 368KB one reports "failed to load",
+    // size is the cause; if both fail, it is not, and the kit is the suspect.
+    _meta: { ui: { resourceUri: "ui://cbrowser/probe" } },
     title: "Browser Health Check",
     description: "Check if the browser is healthy and responsive. Use this before operations if you suspect the browser may have crashed. Pass _browserToken to check YOUR session — without it, a fresh session is checked and will always look healthy.",
     inputSchema: {
