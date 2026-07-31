@@ -13,6 +13,7 @@
 import { readFileSync, existsSync, writeFileSync, unlinkSync, createReadStream } from "node:fs";
 import { join, dirname } from "node:path";
 import { basename } from "node:path";
+import { writeArtifact } from "../artifact-store.js";
 
 /**
  * Maximum allowed size for tool responses in bytes.
@@ -293,6 +294,20 @@ async function uploadScreenshotToCMS(filePath: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Host cap on total tool-result characters, and the margin held back from it.
+ *
+ * Past the cap the host substitutes a file pointer, which downstream arrives
+ * as unparseable text. The budget for images is what remains after the JSON,
+ * computed per call rather than fixed: this helper serves a bare screenshot
+ * whose JSON is ~450 characters and audits whose JSON runs to tens of
+ * thousands, and one constant cannot be right for both. A fixed 120k budget
+ * dropped a 144,731-character screenshot that would have fitted beside 448
+ * characters of JSON with room to spare.
+ */
+const RESULT_CAP = 150_000;
+const RESULT_MARGIN = 6_000;
+
 export function buildContentWithScreenshots(
   data: Record<string, unknown>,
   ...screenshotPaths: (string | undefined)[]
@@ -300,28 +315,49 @@ export function buildContentWithScreenshots(
   // In remote mode, upload screenshots to CMS for public URLs
   // and include both the image content block AND a URL in the JSON
   if (getRemoteMode()) {
-    // Collect screenshot URLs synchronously (upload is best-effort)
     const imageBlocks: ContentBlock[] = [];
-    const screenshotUrls: string[] = [];
+    const files: string[] = [];
+    const urls: string[] = [];
+    let omitted = 0;
+    // Reserve what the JSON already costs, plus the fields about to be added.
+    let remaining = RESULT_CAP - RESULT_MARGIN - JSON.stringify(data).length;
 
     for (const path of screenshotPaths) {
       if (!path) continue;
+
+      // Published to the artifact store regardless of whether it rides inline,
+      // so a view always has something to fetch. artifact_fetch serves this
+      // directory, and the sandbox cannot load the public URL directly.
+      try {
+        const buf = readFileSync(path);
+        const written = writeArtifact(buf, basename(path));
+        if (written) { files.push(basename(written.path)); urls.push(written.url); }
+      } catch { /* publishing is additive; the inline block still stands */ }
 
       const base64Data = screenshotToBase64(path);
       if (base64Data) {
         const base64Only = base64Data.split(",")[1];
         const mimeType = base64Data.split(";")[0].split(":")[1];
-        imageBlocks.push({
-          type: "image",
-          data: base64Only,
-          mimeType: mimeType,
-        });
+        if (base64Only.length <= remaining) {
+          imageBlocks.push({ type: "image", data: base64Only, mimeType: mimeType });
+          remaining -= base64Only.length;
+        } else {
+          // Publishing already happened above, so an omitted image is still
+          // reachable -- by the view through artifact_fetch, or by URL.
+          omitted++;
+        }
       }
     }
 
-    // Add screenshot paths to data as URLs for Claude to render inline
-    // Claude.ai can render markdown images: ![](url)
-    if (screenshotPaths.filter(Boolean).length > 0) {
+    if (files.length) {
+      data.screenshotFile = files.length === 1 ? files[0] : files;
+      data.screenshotUrl = urls.length === 1 ? urls[0] : urls;
+    }
+    if (omitted > 0) {
+      data._screenshotNote =
+        `${omitted} screenshot(s) were too large to inline without truncating this result. ` +
+        `Fetch with artifact_fetch using screenshotFile, or open screenshotUrl.`;
+    } else if (screenshotPaths.filter(Boolean).length > 0) {
       data._screenshotNote = "Screenshots are included as image content blocks below. If images don't render inline, the screenshot data is available in the image blocks of this tool response.";
     }
 

@@ -5348,7 +5348,15 @@ For more help: https://playwright.dev/docs/browsers
       const compressionOpts = {
         ...opts,
         compress: true,
-        maxSize: opts.maxSize || Math.floor(MAX_RESPONSE_SIZE / 1.37), // ~110KB raw = ~150KB base64
+        // Reserve room for the JSON the image ships beside.
+        //
+        // This targeted MAX_RESPONSE_SIZE / 1.37, which compresses the image
+        // to fill the entire response budget on its own -- a measured 144,731
+        // base64 characters against a 150k cap, 96.7% of it, leaving nothing
+        // for the payload. Anything but the barest JSON then tipped the result
+        // over, at which point the host swaps in a file pointer and the whole
+        // thing arrives unreadable.
+        maxSize: opts.maxSize || Math.floor((MAX_RESPONSE_SIZE - 28_000) / 1.37),
       };
       return this.screenshotCompressed(path, compressionOpts);
     }

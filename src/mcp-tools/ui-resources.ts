@@ -240,6 +240,50 @@ export const ATTENTION_SPEC: WidgetSpec = {
   ],
 };
 
+/**
+ * Screenshot view.
+ *
+ * The image is the whole result here, so the view is mostly frame: the shot
+ * at full width, then the handful of facts that say what it is a picture of.
+ * Fetched through artifact_fetch rather than read from the result, because a
+ * compressed screenshot measured 144,731 base64 characters against a ~150k
+ * cap -- it fits today and stops fitting on a denser page, and a view that
+ * works until the page gets busy is worse than one that never did.
+ */
+export const SCREENSHOT_SPEC: WidgetSpec = {
+  id: "screenshot",
+  title: "Screenshot",
+  titleField: "url",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "title" },
+    facts: [
+      { field: "viewport", label: "viewport" },
+      { field: "viewport_forced", label: "forced to" },
+      { field: "fullPage", label: "full page" },
+    ],
+  },
+  blocks: [
+    {
+      type: "image",
+      title: "",
+      fetchTool: "artifact_fetch",
+      fetchArgs: { file: "screenshotFile" },
+      caption: "_screenshotNote",
+    },
+    {
+      type: "drawer",
+      title: "Details",
+      blocks: [{ type: "rest", title: "All fields" }],
+    },
+  ],
+  footer: { label: "Saved:", field: "screenshot" },
+};
+
+export function buildScreenshotTemplate(): string {
+  return buildWidget(SCREENSHOT_SPEC);
+}
+
 export function buildAttentionTemplate(): string {
   return buildWidget(ATTENTION_SPEC);
 }
@@ -282,6 +326,15 @@ export function registerUiResources(server: McpServer): void {
         // The populated panel travels inside the status tool result itself.
         text: buildStatusTemplate(),
       }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-screenshot-ui",
+    widgetUri("screenshot"),
+    { description: "Screenshot with page and viewport context", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("screenshot"), mimeType: MCP_APP_MIME, text: buildScreenshotTemplate() }],
     }),
   );
 

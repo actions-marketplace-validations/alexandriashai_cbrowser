@@ -25,6 +25,9 @@ export function registerExtractionTools(
       path: z.string().optional().describe("Optional path to save the screenshot"),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
+    // Declares the screenshot view. The image is the whole result, and the
+    // JSON beside it only says what the picture is of.
+    _meta: { ui: { resourceUri: "ui://cbrowser/screenshot" } },
     annotations: {
       title: "Take Screenshot",
       readOnlyHint: true,
