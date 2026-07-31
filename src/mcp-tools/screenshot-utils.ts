@@ -354,9 +354,15 @@ export function buildContentWithScreenshots(
       data.screenshotUrl = urls.length === 1 ? urls[0] : urls;
     }
     if (omitted > 0) {
+      // Says what actually happened. The previous note claimed the image was
+      // "included as image content blocks below" whether or not one was
+      // emitted, so a caller that could not see an image was told to look for
+      // one that was never sent -- worse than silence, because it sends them
+      // hunting in the wrong place.
+      data._screenshotOmitted = true;
       data._screenshotNote =
-        `${omitted} screenshot(s) were too large to inline without truncating this result. ` +
-        `Fetch with artifact_fetch using screenshotFile, or open screenshotUrl.`;
+        `${omitted} screenshot(s) exceeded the inline budget and are NOT in this response. ` +
+        `Retrieve with artifact_fetch({ file: screenshotFile }), or open screenshotUrl in a browser.`;
     } else if (screenshotPaths.filter(Boolean).length > 0) {
       data._screenshotNote = "Screenshots are included as image content blocks below. If images don't render inline, the screenshot data is available in the image blocks of this tool response.";
     }
