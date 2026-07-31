@@ -781,8 +781,16 @@ const RUNTIME = String.raw`
                          : { state: "ok", label: "HEALTHY", issues: [] };
   }
 
+  // Renders are generation-stamped because render() is async: image blocks
+  // await callServerTool, so two overlapping renders interleave -- the second
+  // clears the root, then the first resumes and appends its blocks into it,
+  // and the panel shows everything twice. Any render whose generation is stale
+  // stops appending.
+  var renderGen = 0;
+
   async function render(data) {
     if (!data) return;
+    var gen = ++renderGen;
     root.replaceChildren();
     used = {};
 
@@ -863,9 +871,11 @@ const RUNTIME = String.raw`
     // Top-level blocks render inline; a drawer collects its children so the
     // default state stays a card rather than a page.
     for (var i = 0; i < SPEC.blocks.length; i++) {
+      if (gen !== renderGen) return;
       var b = SPEC.blocks[i];
       if (b.type === "drawer") {
         var kids = await buildSections(data, b.blocks || []);
+        if (gen !== renderGen) return;
         if (!kids.length) continue;
         var d = el("details", "drawer");
         if (b.open) d.open = true;
@@ -880,6 +890,7 @@ const RUNTIME = String.raw`
         root.appendChild(d);
       } else {
         var built = await buildBlock(data, b);
+        if (gen !== renderGen) return;
         if (!built) continue;
         var wrap = el("div", "body");
         if (b.title) wrap.appendChild(el("h2", "btitle", b.title));
@@ -907,12 +918,22 @@ const RUNTIME = String.raw`
   }
 
   // Handlers before connect(), or the first result is delivered into nothing.
+  var lastPayload = null;
+
   app.ontoolresult = function (res) {
     try {
       var data = res && res.structuredContent;
       if (!data && res && res.content && res.content[0] && res.content[0].text) {
         data = JSON.parse(res.content[0].text);
       }
+      // Hosts may deliver the same result more than once (re-mount, replay,
+      // reconnect). Re-rendering identical data is pure churn, and while the
+      // generation guard keeps it correct, skipping it avoids refetching every
+      // image over callServerTool for a panel that already shows them.
+      var sig = null;
+      try { sig = JSON.stringify(data); } catch (_) { sig = null; }
+      if (sig !== null && sig === lastPayload) return;
+      lastPayload = sig;
       render(data);
     } catch (e) {
       msg.textContent = "Could not read the payload: " + (e && e.message ? e.message : e);
