@@ -347,16 +347,26 @@ export const BUGS_SPEC: WidgetSpec = {
     // No subtitle. duration is milliseconds, and rendered as a bare subtitle it
     // read as "8563" under the title with nothing saying what it counted.
     facts: [
-      { field: "bugsFound", label: "bugs" },
+      // Distinct findings, not raw DOM occurrences: a carousel repeating five
+      // broken images across duplicated slides read as ten. The occurrence
+      // count is still in Run info for anyone who wants it.
+      { field: "distinctBugs", label: "bugs" },
       { field: "pagesVisited", label: "pages crawled" },
       { field: "duration", label: "ms" },
     ],
   },
   blocks: [
-    { type: "findings", title: "Findings, worst first", field: "bugs",
-      textKey: "description", severityKey: "severity", detailKey: "recommendation" },
+    // Grouped by page. A flat list across a multi-page crawl says nothing
+    // about which page a finding belongs to, and page attribution is exactly
+    // what was missing when the result was silently truncated to page one.
+    { type: "tabs", title: "Findings by page", field: "bugs", groupBy: "url",
+      render: { type: "findings", title: "Findings, worst first", field: "bugs",
+        textKey: "description", severityKey: "severity", detailKey: "recommendation" } },
     { type: "drawer", title: "Details", blocks: [
-      { type: "table", title: "Every bug", field: "bugs" },
+      // description and recommendation are shown in full by the findings list
+      // above; repeating them here is what made this table 1543px wide.
+      { type: "table", title: "Every bug", field: "bugs",
+        columns: ["severity", "type", "url", "selector", "occurrences"] },
       { type: "rest", title: "Run info" },
     ] },
   ],

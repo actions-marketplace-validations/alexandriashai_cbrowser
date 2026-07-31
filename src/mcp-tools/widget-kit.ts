@@ -59,7 +59,24 @@ export type BlockSpec =
   /** Key/value rows from an object (or a flat list of scalar fields). */
   | { type: "kv"; title: string; field?: FieldPath; fields?: FieldPath[] }
   /** A grid from an array of records; columns are the union of keys. */
-  | { type: "table"; title: string; field: FieldPath }
+  | { type: "table"; title: string; field: FieldPath;
+      /**
+       * Columns to show, in order. Without it every key becomes a column: the
+       * bug table rendered eight, including description and recommendation
+       * that the findings list above already shows in full, and came out
+       * 1543px wide inside an 864px panel. A table in a widget is an index,
+       * not a data dump.
+       */
+      columns?: string[] }
+  /**
+   * One tab per distinct value of `groupBy`, each holding the rows that share
+   * it. Built for "bugs by page": a flat list of 21 findings across 4 pages
+   * buries which page each belongs to, and the per-page counts were only
+   * visible as a summary object.
+   */
+  | { type: "tabs"; title: string; field: FieldPath; groupBy: string;
+      /** Block rendered inside each tab, over that group's rows. */
+      render: BlockSpec }
   /** A severity-ranked list: the shape audits and bug hunts actually produce. */
   | { type: "findings"; title: string; field: FieldPath;
       textKey: string; severityKey?: string; detailKey?: string }
@@ -381,9 +398,13 @@ const CSS = `
     .kv th{padding:.24rem 0 0;}
     .kv td{padding:0 0 .35rem;border-bottom:1px solid color-mix(in srgb,var(--line) 45%,transparent)}
   }
-  .grid thead th{text-align:left;padding:.18rem .7rem .3rem 0;font:.67rem/1 var(--mono);
+  .grid{table-layout:auto}
+  .grid thead th{text-align:left;padding:.18rem .7rem .3rem 0;font:.67rem/1.3 var(--mono);
     color:var(--sub);font-weight:400;text-transform:uppercase;letter-spacing:.07em;
-    border-bottom:1px solid var(--line);white-space:nowrap}
+    border-bottom:1px solid var(--line);white-space:normal}
+  /* Cells wrap. Long URLs and selectors used to push the table past the panel
+     and rely on the horizontal scroller to hide it. */
+  .grid td{overflow-wrap:anywhere;word-break:break-word;vertical-align:top;max-width:22rem}
   .grid td{padding:.28rem .7rem .28rem 0;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
   .grid tr:last-child td{border-bottom:0}
   .grid tbody tr:hover td{background:var(--raise)}
@@ -494,10 +515,27 @@ const CSS = `
   .lg li{display:flex;align-items:center;gap:.35rem;color:var(--sub)}
   .lgnote{font-size:.72rem;color:var(--sub);margin:.35rem 0 0;opacity:.85}
   .fmeta{display:flex;align-items:center;gap:.35rem}
+  /* Outlined, not filled. This read color:var(--bg) -- and --bg is defined
+     nowhere in this stylesheet, so the declaration was invalid at computed-
+     value time and the colour fell back to inherited: dark text on the
+     mid-dark --sub fill, in both themes. There is no --bg to define, either:
+     the widget body is transparent and sits on the host's background, so the
+     only foreground guaranteed to contrast is the one the body already uses.
+     Text is --ink on the page itself, which is exactly that. (2026-07-31) */
   .fnum{min-width:17px;height:17px;border-radius:9px;
-    background:var(--sub);color:var(--bg);font-size:11px;font-weight:700;
-    line-height:17px;text-align:center;padding:0 4px;
-    box-sizing:border-box;flex:none}
+    background:transparent;color:var(--ink);border:1px solid var(--line);
+    font-size:11px;font-weight:700;line-height:15px;text-align:center;
+    padding:0 4px;box-sizing:border-box;flex:none}
+  .tabs{display:flex;flex-wrap:wrap;gap:.3rem;margin:0 0 .7rem;padding:0;border-bottom:1px solid var(--line)}
+  .tab{background:none;border:0;border-bottom:2px solid transparent;padding:.35rem .6rem;
+    font:inherit;font-size:.8rem;color:var(--sub);cursor:pointer;border-radius:4px 4px 0 0;
+    display:flex;align-items:center;gap:.4rem;max-width:100%;overflow-wrap:anywhere;text-align:left}
+  .tab:hover{color:var(--ink)}
+  .tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+  .tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .tabn{font:.68rem/1 var(--mono);color:var(--sub);background:var(--raise);
+    border-radius:999px;padding:.15rem .35rem;flex:none}
+  .tab[aria-selected="true"] .tabn{color:var(--ink)}
   .sw{width:11px;height:11px;border-radius:2px;display:inline-block}
   .offlist{margin:.6rem 0 0;padding:0;list-style:none;font-size:.8rem}
   .offlist li{padding:.18rem 0;color:var(--sub)}
@@ -668,11 +706,19 @@ const RUNTIME = String.raw`
     t.appendChild(tb); return t;
   }
 
-  function gridTable(rows) {
+  function gridTable(rows, only) {
     var cols = [];
-    rows.forEach(function (r) {
-      Object.keys(r).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); });
-    });
+    if (only && only.length) {
+      // Keep only columns that at least one row actually carries, so a spec
+      // naming an optional field does not produce a column of dashes.
+      only.forEach(function (k) {
+        if (rows.some(function (r) { return r[k] !== undefined; })) cols.push(k);
+      });
+    } else {
+      rows.forEach(function (r) {
+        Object.keys(r).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); });
+      });
+    }
     var t = el("table", "grid"), thead = el("thead"), htr = el("tr");
     cols.forEach(function (c) { htr.appendChild(el("th", null, c)); });
     thead.appendChild(htr);
@@ -905,6 +951,21 @@ const RUNTIME = String.raw`
     minor: "#2563eb", low: "#2563eb", info: "#64748b", notice: "#64748b",
   };
 
+  // Whichever of near-white / near-black contrasts better with a fill, by WCAG
+  // relative luminance rather than by eye.
+  function readableOn(hex) {
+    var c = String(hex).replace("#", "");
+    if (c.length !== 6) return "#fff";
+    var lin = function (v) {
+      v = parseInt(v, 16) / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    var L = 0.2126 * lin(c.slice(0, 2)) + 0.7152 * lin(c.slice(2, 4)) + 0.0722 * lin(c.slice(4, 6));
+    var onWhite = 1.05 / (L + 0.05);
+    var onBlack = (L + 0.05) / 0.05;
+    return onWhite >= onBlack ? "#ffffff" : "#111418";
+  }
+
   async function overlayBlock(data, b) {
     var shots = at(data, b.field);
     var shot = Array.isArray(shots) ? shots[0] : shots;
@@ -963,6 +1024,11 @@ const RUNTIME = String.raw`
       if (r.finding) {
         var tag = el("span", "bxn", String(r.finding));
         tag.style.background = color;
+        // White was hardcoded, which fails on the lighter severity fills:
+        // white on the amber #ca8a04 is 2.6:1 and on the orange #ea580c is
+        // 3.4:1, both under the 4.5:1 an 11px bold label needs. Chosen by
+        // measured luminance so a new severity colour cannot reintroduce it.
+        tag.style.color = readableOn(color);
         box.appendChild(tag);
       }
       var label = (r.finding ? "Finding " + r.finding + " — " : "") +
@@ -1057,6 +1123,96 @@ const RUNTIME = String.raw`
     return d;
   }
 
+  var tabSeq = 0;
+  // Tabs, built to the WAI-ARIA tabs pattern rather than as styled buttons:
+  // roles, aria-selected, aria-controls, a roving tabindex so Tab enters the
+  // strip once, and Arrow/Home/End to move between tabs. This widget reports
+  // accessibility barriers; it does not get to introduce one.
+  async function tabsBlock(data, b) {
+    var rows = at(data, b.field);
+    if (!isObjArray(rows)) return null;
+    var order = [], groups = {};
+    rows.forEach(function (r) {
+      var key = String(r[b.groupBy] === undefined ? "unknown" : r[b.groupBy]);
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push(r);
+    });
+    if (order.length < 2) {
+      // One group is not a tab strip; render the inner block on its own.
+      var solo = await buildBlock(data, Object.assign({}, b.render, { field: b.field }));
+      return solo ? solo.node : null;
+    }
+
+    var wrap = el("div");
+    var strip = el("div", "tabs");
+    strip.setAttribute("role", "tablist");
+    var uid = "tb" + (++tabSeq);
+    var panels = [];
+
+    // A full URL is a poor tab label; the path is what distinguishes them.
+    var shortLabel = function (v) {
+      try {
+        var u = new URL(v);
+        return u.pathname === "/" ? u.hostname : u.pathname;
+      } catch (_) { return titleize(v); }
+    };
+
+    for (var i = 0; i < order.length; i++) {
+      var key = order[i];
+      var btn = el("button", "tab");
+      btn.type = "button";
+      btn.id = uid + "-t" + i;
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-controls", uid + "-p" + i);
+      btn.setAttribute("aria-selected", i === 0 ? "true" : "false");
+      btn.tabIndex = i === 0 ? 0 : -1;
+      btn.appendChild(document.createTextNode(shortLabel(key)));
+      btn.appendChild(el("span", "tabn", String(groups[key].length)));
+      // The full value stays reachable for anything the label abbreviates.
+      btn.title = key;
+      strip.appendChild(btn);
+
+      var panel = el("div");
+      panel.id = uid + "-p" + i;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", btn.id);
+      if (i !== 0) panel.hidden = true;
+      // The inner block reads its rows from a scoped object, so any block type
+      // works here without knowing it is inside a tab.
+      var scoped = {};
+      scoped[b.groupBy + "__rows"] = groups[key];
+      var inner = await buildBlock(scoped, Object.assign({}, b.render, { field: b.groupBy + "__rows" }));
+      if (inner) panel.appendChild(inner.node);
+      panels.push(panel);
+    }
+
+    var tabEls = [].slice.call(strip.children);
+    var select = function (idx) {
+      tabEls.forEach(function (t, j) {
+        var on = j === idx;
+        t.setAttribute("aria-selected", on ? "true" : "false");
+        t.tabIndex = on ? 0 : -1;
+        panels[j].hidden = !on;
+      });
+      tabEls[idx].focus();
+    };
+    tabEls.forEach(function (t, j) {
+      t.addEventListener("click", function () { select(j); });
+      t.addEventListener("keydown", function (e) {
+        var k = e.key, next = null;
+        if (k === "ArrowRight" || k === "ArrowDown") next = (j + 1) % tabEls.length;
+        else if (k === "ArrowLeft" || k === "ArrowUp") next = (j - 1 + tabEls.length) % tabEls.length;
+        else if (k === "Home") next = 0;
+        else if (k === "End") next = tabEls.length - 1;
+        if (next !== null) { e.preventDefault(); select(next); }
+      });
+    });
+
+    wrap.appendChild(strip);
+    panels.forEach(function (p) { wrap.appendChild(p); });
+    return wrap;
+  }
+
   async function buildBlock(data, b) {
     if (b.type === "kv") {
       var pairs = [];
@@ -1086,7 +1242,7 @@ const RUNTIME = String.raw`
         flattenPairs(rows[0], "", recPairs);
         return { node: kvTable(recPairs), count: 1 };
       }
-      return { node: gridTable(rows), count: rows.length };
+      return { node: gridTable(rows, b.columns), count: rows.length };
     }
     if (b.type === "findings") {
       used[b.field.split(".")[0]] = true;
@@ -1112,6 +1268,11 @@ const RUNTIME = String.raw`
         if (f) used[f.split(".")[0]] = true;
       });
       var node = levelsBlock(data, b);
+      return node ? { node: node, count: null } : null;
+    }
+    if (b.type === "tabs") {
+      used[b.field.split(".")[0]] = true;
+      var node = await tabsBlock(data, b);
       return node ? { node: node, count: null } : null;
     }
     if (b.type === "overlay") {
