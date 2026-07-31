@@ -256,8 +256,13 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               // there, concentration 0.292 against 0.65-0.90, transportCost
               // 0.460 against 0.756-1.010. Comparing a number from one against
               // a number from the other is meaningless, and nothing said so.
+              // Corrected: this is the SAME analyzeAttention implementation the
+              // attention_analysis tool calls, not a second one. The earlier
+              // note claimed otherwise, which was wrong -- the divergence comes
+              // from parameters, a 16px grid here against the tool's finer
+              // default and a viewport rather than full-page capture.
               attentionAnalysisNote: (r as any).attentionAnalysis
-                ? "Produced by the empathy audit's own attention pass, NOT by the attention_analysis tool. The metric names match but the implementations differ and their distributions do not overlap, so values are comparable within this tool's output only. Use attention_analysis directly if you need numbers comparable to other attention runs."
+                ? "Same analyzeAttention implementation the attention_analysis tool uses, run here on a 16px grid over the viewport rather than the tool's finer default — so the values are not comparable across the two and only entropy, concentration and transportCost are published, because those are the three that feed this audit's perceptual score. Call attention_analysis directly for attention metrics."
                 : undefined,
               // v18.29.0: Journey validation — evidence, path, forensics
               journeyValidation: (r as any).journeyValidation || undefined,

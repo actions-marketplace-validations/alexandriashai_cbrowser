@@ -2640,13 +2640,24 @@ export async function runEmpathyAudit(
           concentration: attnAnalysis.concentration,
           transportCost: attnAnalysis.transportCost,
         };
+        // Only the three values that feed the perceptual score are published.
+        //
+        // alignmentScore and topAttentionAreas fed nothing -- analyzePerceptual
+        // Transport reads entropy, concentration and transportCost and ignores
+        // the rest -- while being the parts that looked wrong: alignment 0.999
+        // for one persona, and four of five "top areas" pinned to page corners
+        // at saliency ~1.0, which is an edge artifact of the coarse grid rather
+        // than a finding about attention. Publishing a number that drives
+        // nothing and cannot be trusted is worse than not publishing it.
+        //
+        // Anyone who wants attention metrics should call attention_analysis,
+        // which runs the same function at the finer default grid.
         (result as any).attentionAnalysis = {
-          alignmentScore: attnAnalysis.alignmentScore,
           entropy: attnAnalysis.entropy,
           concentration: attnAnalysis.concentration,
           transportCost: attnAnalysis.transportCost,
-          topAttentionAreas: attnAnalysis.attentionCompetitors,
           computeTimeMs: Math.round(attnAnalysis.computeTimeMs),
+          gridCellPx: 16,
         };
 
         try { ulAttn(attnScreenshot); } catch {}
