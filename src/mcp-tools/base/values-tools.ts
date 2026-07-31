@@ -21,6 +21,50 @@ import {
 /**
  * Register values system tools (7 tools)
  */
+/**
+ * The one place a persona's Schwartz values are resolved.
+ *
+ * Two tools answered this question and only one of them knew about the second
+ * source: persona_lookup read the hand-authored registry AND the schwartzValues
+ * block a custom persona carries on its own file, while persona_values_lookup
+ * read the registry alone and hard-errored when it missed -- for a persona
+ * whose values were sitting on disk. Same question, two answers, because there
+ * were two implementations. (2026-07-31)
+ */
+export function resolvePersonaValues(name: string): {
+  values: Record<string, number> | null;
+  source: "registry" | "persona" | "none";
+  sdt?: Record<string, number>;
+  sdtSource?: "derived" | "default";
+} {
+  const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
+    "security", "conformity", "tradition", "benevolence", "universalism"] as const;
+  const registry = getPersonaValues(name) as Record<string, number> | undefined;
+  const persona = getAnyPersona(name) as unknown as Record<string, unknown> | undefined;
+  const own = persona?.schwartzValues as Record<string, number> | undefined;
+  const src = registry ?? own;
+  if (!src) return { values: null, source: "none" };
+
+  const values: Record<string, number> = {};
+  for (const k of KEYS) if (typeof src[k] === "number") values[k] = src[k];
+
+  const sdt: Record<string, number> = {};
+  ["autonomyNeed", "competenceNeed", "relatednessNeed"].forEach((k) => {
+    const v = (src as Record<string, number>)[k];
+    if (typeof v === "number") sdt[k] = v;
+  });
+  // Questionnaire-derived personas get SDT computed from answers; AI-generated
+  // ones get a flat 0.5/0.5/0.5 that is a placeholder, not a measurement. They
+  // were indistinguishable in the payload, so a caller could not tell a
+  // derivation from a default -- and 0.5 across all three is the tell.
+  const flat = Object.keys(sdt).length === 3 && Object.values(sdt).every((v) => v === 0.5);
+  return {
+    values,
+    source: registry ? "registry" : "persona",
+    ...(Object.keys(sdt).length ? { sdt, sdtSource: flat ? "default" : "derived" } : {}),
+  };
+}
+
 export function registerValuesTools(server: McpServer): void {
   server.registerTool("persona_values_list", {
     title: "List Persona Values",
@@ -128,45 +172,23 @@ export function registerValuesTools(server: McpServer): void {
         description: (p as { description?: string }).description ?? "",
         demographics: rec.demographics ?? {},
         traits: profile?.traits ?? {},
-        // Values from the shared registry, else the ones the persona carries
-        // itself, else an explicit statement that there are none.
-        //
-        // This read the registry alone and omitted the block entirely when it
-        // missed -- so a custom persona whose own file carries a full
-        // schwartzValues map (all ten values plus the three SDT needs)
-        // returned no values at all, from a tool whose description promises
-        // them. Silently, with no field saying anything was absent, while the
-        // data sat one key away in the same object. (2026-07-31)
+        // One resolver, shared with persona_values_lookup, so the two tools
+        // cannot answer the same question differently again.
         ...(() => {
-          const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
-            "security", "conformity", "tradition", "benevolence", "universalism"] as const;
-          const own = rec.schwartzValues as Record<string, number> | undefined;
-          const src = values ?? own;
-          if (!src) {
+          const r = resolvePersonaValues((p as { name: string }).name);
+          if (r.source === "none") {
             return {
               values: null,
               valuesSource: "none",
               valuesNote: "No Schwartz values for this persona. They come from a hand-authored registry, or from a schwartzValues block on the persona itself; this persona has neither. Anything weighting by values is running on defaults for it.",
             };
           }
-          const out: Record<string, number> = {};
-          for (const k of KEYS) {
-            const v = (src as Record<string, number>)[k];
-            if (typeof v === "number") out[k] = v;
-          }
           return {
-            values: out,
-            valuesSource: values ? "registry" : "persona",
-            // The SDT needs travel with a persona-authored block and are not
-            // part of the ten; passed through rather than dropped.
-            ...(!values && own
-              ? (() => {
-                  const extra: Record<string, number> = {};
-                  ["autonomyNeed", "competenceNeed", "relatednessNeed"].forEach((k) => {
-                    if (typeof own[k] === "number") extra[k] = own[k];
-                  });
-                  return Object.keys(extra).length ? { selfDeterminationNeeds: extra } : {};
-                })()
+            values: r.values,
+            valuesSource: r.source,
+            ...(r.sdt ? { selfDeterminationNeeds: r.sdt, selfDeterminationSource: r.sdtSource } : {}),
+            ...(r.sdtSource === "default"
+              ? { selfDeterminationNote: "All three needs read 0.5, which is the placeholder AI-generated personas ship with rather than a measurement. Questionnaire-derived personas carry computed values here." }
               : {}),
           };
         })(),
@@ -244,7 +266,10 @@ export function registerValuesTools(server: McpServer): void {
       openWorldHint: false,
     },
   }, async ({ persona, includeInfluencePatterns }) => {
-      const values = getPersonaValues(persona);
+      const resolved = resolvePersonaValues(persona);
+      const values = getPersonaValues(persona) ?? (resolved.source === "persona"
+        ? (resolved.values as unknown as ReturnType<typeof getPersonaValues>)
+        : undefined);
 
       if (!values) {
         const availablePersonas = PERSONA_VALUE_PROFILES.map(p => p.personaName);
@@ -310,10 +335,23 @@ export function registerValuesTools(server: McpServer): void {
                 conservation: { value: values.conservation, meaning: "(security + conformity + tradition) / 3" },
                 selfTranscendence: { value: values.selfTranscendence, meaning: "(benevolence + universalism) / 2" },
               },
+              // From the resolver, which carries the SDT numbers whichever
+              // source they came from. Reading them off `values` returned
+              // undefined on the persona-file path -- the block rendered three
+              // "meaning" strings with no values attached.
+              // Values exist here but the persona does not, so nothing can
+              // actually be RUN as it. Eight registry keys are in this state;
+              // finding that out previously meant diffing this tool's output
+              // against list_cognitive_personas by hand.
+              ...(getAnyPersona(persona)
+                ? {}
+                : { runnable: false,
+                    runnableNote: `A values profile exists for "${persona}" but no persona does, so it cannot be used by empathy_audit, cognitive_journey or any other tool that runs AS a persona. Values data without a persona behind it.` }),
+              ...(resolved.sdtSource ? { selfDeterminationSource: resolved.sdtSource } : {}),
               selfDeterminationTheory: {
-                autonomyNeed: { value: values.autonomyNeed, meaning: "Need for choice and control" },
-                competenceNeed: { value: values.competenceNeed, meaning: "Need to feel capable" },
-                relatednessNeed: { value: values.relatednessNeed, meaning: "Need for connection" },
+                autonomyNeed: { value: resolved.sdt?.autonomyNeed ?? values.autonomyNeed, meaning: "Need for choice and control" },
+                competenceNeed: { value: resolved.sdt?.competenceNeed ?? values.competenceNeed, meaning: "Need to feel capable" },
+                relatednessNeed: { value: resolved.sdt?.relatednessNeed ?? values.relatednessNeed, meaning: "Need for connection" },
               },
               maslowLevel: {
                 level: values.maslowLevel,
