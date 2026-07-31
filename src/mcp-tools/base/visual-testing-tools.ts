@@ -7,6 +7,17 @@
 
 import { z } from "zod";
 import { writeArtifact } from "../../artifact-store.js";
+
+/**
+ * Largest heatmap returned inline, in base64 characters.
+ *
+ * Hosts truncate tool results near 150k characters and substitute a file
+ * pointer in place of the payload, which downstream arrives as unparseable
+ * text. Measured: a 1280x800 heatmap is ~738k characters, five times the cap,
+ * so shipping it inline destroyed the JSON it accompanied. Anything above this
+ * goes through artifact_fetch instead.
+ */
+const INLINE_IMAGE_BUDGET = 100_000;
 import type { McpServer } from "../types.js";
 import {
   runVisualRegression,
@@ -662,17 +673,34 @@ export function registerVisualTestingTools(server: McpServer): void {
             }
 
             // Return both image content and URL
-            content.push({
-              type: "image" as const,
-              data: heatmapBase64,
-              mimeType: "image/png",
-            });
+            // The heatmap is 700KB+ of base64. Shipping it inline pushed the
+            // whole result past the host's ~150k cap, at which point the host
+            // substitutes a file pointer -- so the JSON above arrived as
+            // unparseable text and the view rendered nothing, while the image
+            // it was meant to show was the reason it broke.
+            //
+            // Small heatmaps still ride along, because a host with no view
+            // support should not lose the picture entirely. Anything larger is
+            // left to artifact_fetch, which is the channel built for it.
+            const inlineChars = heatmapBase64.length;
+            const inlineOk = inlineChars <= INLINE_IMAGE_BUDGET;
+            if (inlineOk) {
+              content.push({
+                type: "image" as const,
+                data: heatmapBase64,
+                mimeType: "image/png",
+              });
+            }
 
             // Add URL to the text response
             const firstBlock = content[0];
             if (firstBlock.type === "text") {
               const textContent = JSON.parse(firstBlock.text);
               textContent.heatmapUrl = publicUrl;
+              if (!inlineOk) {
+                textContent.inlineHeatmapOmitted =
+                  `Heatmap is ${(inlineChars / 1024).toFixed(0)}KB of base64, over the ${(INLINE_IMAGE_BUDGET / 1024).toFixed(0)}KB inline budget. Fetch it with artifact_fetch using heatmapFile, or open heatmapUrl.`;
+              }
               // The filename, not just the URL: the widget sandbox cannot fetch
               // that URL, so the view asks artifact_fetch for these bytes over
               // the MCP connection instead.

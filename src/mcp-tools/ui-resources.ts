@@ -208,13 +208,19 @@ export const PERSONA_SPEC: WidgetSpec = {
 export const ATTENTION_SPEC: WidgetSpec = {
   id: "attention",
   title: "Attention",
-  titleField: "url",
+  // Field names taken from a real tool result rather than assumed. The first
+  // pass guessed topElements/elementsAnalyzed/url; the payload actually carries
+  // topAttentionAreas, attentionQuality and no url at all, so every block was
+  // pointed at a field that did not exist.
+  titleField: "persona",
   hero: {
     variant: "gradient",
-    subtitle: { field: "persona" },
+    subtitle: { field: "attentionReasoning" },
     facts: [
-      { field: "elementsAnalyzed", label: "elements" },
-      { field: "topElements", label: "ranked" },
+      { field: "topAttentionAreas", label: "areas" },
+      { field: "attentionQuality", label: "quality" },
+      { field: "alignmentScore", label: "alignment" },
+      { field: "concentration", label: "concentration" },
     ],
   },
   blocks: [
@@ -225,8 +231,7 @@ export const ATTENTION_SPEC: WidgetSpec = {
       fetchArgs: { file: "heatmapFile" },
       caption: "heatmapNote",
     },
-    { type: "findings", title: "Where attention lands", field: "topElements",
-      textKey: "text", severityKey: "type", detailKey: "reason" },
+    { type: "table", title: "Where attention lands", field: "topAttentionAreas" },
     {
       type: "drawer",
       title: "Details",
