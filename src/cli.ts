@@ -675,7 +675,7 @@ WEBHOOKS (v2.5.0)
 
 PERSONA QUESTIONNAIRE
   persona-questionnaire start        Build a persona from a behavioural questionnaire
-    --comprehensive                  All 25 traits (default: 8 core traits)
+    --comprehensive                  All 26 traits (default: 8 core traits)
     --name <name>                    Persona name (prompted if omitted)
     --output <file>                  Save answers to JSON
   persona-questionnaire list-traits  List available traits with descriptions
@@ -7518,7 +7518,7 @@ Commands:
   persona-questionnaire lookup       Look up behaviors for a specific trait value
 
 Options for 'start':
-  --comprehensive     Include all 25 traits (default: 8 core traits)
+  --comprehensive     Include all 26 traits (default: 8 core traits)
   --name <name>       Name for the persona (prompted if not provided)
   --output <file>     Save questionnaire answers to JSON file
 

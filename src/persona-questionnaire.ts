@@ -549,7 +549,7 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
   {
     name: "satisficing",
     description: "Decision style: accept 'good enough' vs. seek optimal",
-    researchBasis: "Simon (1956) - Bounded Rationality; Schwartz (2002) - Maximizing vs Satisficing",
+    researchBasis: "Simon (1956) - Bounded Rationality; Schwartz, B. (2002) - Maximizing vs Satisficing",
     levels: [
       {
         value: 0.0,
@@ -2306,7 +2306,7 @@ export const TRAIT_VALUE_CORRELATIONS: Record<string, {
       { value: "security", direction: "negative", weight: 0.7 },
       { value: "stimulation", direction: "positive", weight: 0.4 },
     ],
-    researchBasis: "Schwartz (2012): Security opposes stimulation on value circumplex",
+    researchBasis: "Schwartz, S.H. (2012): Security opposes stimulation on value circumplex",
   },
   patience: {
     affects: [
@@ -2342,7 +2342,7 @@ export const TRAIT_VALUE_CORRELATIONS: Record<string, {
       { value: "tradition", direction: "positive", weight: 0.4 },
       { value: "selfDirection", direction: "negative", weight: 0.3 },
     ],
-    researchBasis: "Schwartz (2012): Authority acceptance aligns with conservation values",
+    researchBasis: "Schwartz, S.H. (2012): Authority acceptance aligns with conservation values",
   },
   fearOfMissingOut: {
     affects: [

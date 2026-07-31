@@ -70,7 +70,7 @@ export * from "./stealth/index.js";
 export * from "./persona-questionnaire.js";
 
 // Values System (v16.7.0) - Research-backed psychological values framework
-// Based on Schwartz's Theory of Basic Human Values, SDT, and Maslow
+// Based on Shalom Schwartz's Theory of Basic Human Values, SDT, and Maslow
 export * from "./values/index.js";
 
 // MCP Tools (v17.5.0) - Modular MCP tool registration
