@@ -126,6 +126,7 @@ const registered = new WeakSet<McpServer>();
  */
 export const STATUS_SPEC: WidgetSpec = {
   id: "status",
+  toolPage: "https://cbrowser.ai/tools/",
   title: "Status",
   hero: {
     variant: "gradient",
@@ -166,6 +167,7 @@ export const STATUS_SPEC: WidgetSpec = {
  */
 export const PERSONA_SPEC: WidgetSpec = {
   id: "persona",
+  toolPage: "https://cbrowser.ai/tools/",
   title: "Persona",
   // The name leads when there is one; "Persona" is the fallback for a payload
   // that has not named itself.
@@ -207,6 +209,7 @@ export const PERSONA_SPEC: WidgetSpec = {
  */
 export const ATTENTION_SPEC: WidgetSpec = {
   id: "attention",
+  toolPage: "https://cbrowser.ai/tools/",
   title: "Attention",
   // Field names taken from a real tool result rather than assumed. The first
   // pass guessed topElements/elementsAnalyzed/url; the payload actually carries
@@ -252,6 +255,7 @@ export const ATTENTION_SPEC: WidgetSpec = {
  */
 export const SCREENSHOT_SPEC: WidgetSpec = {
   id: "screenshot",
+  toolPage: "https://cbrowser.ai/tools/",
   title: "Screenshot",
   titleField: "url",
   hero: {
@@ -301,6 +305,7 @@ export const TRAIT_SPEC: WidgetSpec = {
   // ui://cbrowser/trait while the resource had not yet deployed, and kept the
   // failure. A fresh URI cannot have a stale entry.
   id: "trait-v2",
+  toolPage: "https://cbrowser.ai/tools/",
   title: "Trait",
   titleField: "trait",
   hero: {
@@ -335,6 +340,7 @@ export const TRAIT_SPEC: WidgetSpec = {
  */
 export const BUGS_SPEC: WidgetSpec = {
   id: "bugs",
+  toolPage: "https://cbrowser.ai/tools/hunt-bugs/",
   title: "Bug hunt",
   hero: {
     variant: "gradient",
@@ -369,7 +375,13 @@ export function buildBugsTemplate(): string {
  */
 export const EMPATHY_SPEC: WidgetSpec = {
   id: "empathy",
+  toolPage: "https://cbrowser.ai/tools/empathy-audit/",
   title: "Empathy audit",
+  // The persona is the subject of the audit, so it belongs in the title. The
+  // bare view name did not say who was audited, and the tool tests exactly one
+  // persona per call.
+  titleField: "testedPersona",
+  titlePrefix: "Empathy Audit: ",
   hero: {
     variant: "gradient",
     subtitle: { field: "scopeNote" },

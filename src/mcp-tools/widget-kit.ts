@@ -129,6 +129,22 @@ export interface WidgetSpec {
   title: string;
   /** Prefer this field from the payload as the title when present. */
   titleField?: FieldPath;
+  /**
+   * Prepended to the resolved titleField value. "Empathy Audit: " plus the
+   * persona says what the view IS and what it is OF; the persona name alone
+   * said only the second half.
+   */
+  titlePrefix?: string;
+  /**
+   * The tool's page on cbrowser.ai, rendered as a hero action on every view.
+   *
+   * Only three of the 120 tools have their own page today (empathy-audit,
+   * hunt-bugs, marketing-campaign, verified by fetching each and checking the
+   * title is not the homepage fallback the SPA serves for unknown paths). The
+   * rest point at the /tools/ index, which is a real page. When a tool page is
+   * built, this is the one line that changes.
+   */
+  toolPage?: string;
   hero?: {
     /** gradient: brand sweep with depth. solid: flat brand. bare: no band. */
     variant?: "gradient" | "solid" | "bare";
@@ -411,14 +427,25 @@ const CSS = `
      below-average read instantly, and a two-decimal monospace readout. */
   .traits{display:flex;flex-direction:column;gap:.28rem}
   .trait{display:flex;align-items:center;gap:.5rem}
-  .tname{font-size:.68rem;color:var(--sub);width:5.6rem;text-align:right;flex:0 0 auto;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* Labels wrap instead of truncating, in a column wide enough to hold a real
+     trait name. At .68rem in 5.6rem with nowrap+ellipsis these read
+     "Metacognitive...", "Interrupt Reco...", "Fear Of Missin..." -- 10.88px
+     text that also would not say which trait the bar belonged to. A label you
+     cannot read is not a label. (2026-07-31) */
+  .tname{font-size:.78rem;line-height:1.25;color:var(--sub);width:9rem;text-align:right;
+    flex:0 0 auto;white-space:normal;overflow-wrap:break-word;hyphens:auto}
   .track{flex:1;height:16px;border-radius:999px;background:var(--raise);position:relative;overflow:hidden}
   .track .base{position:absolute;top:0;bottom:0;left:50%;width:1px;background:color-mix(in srgb,var(--ink) 22%,transparent);z-index:1}
   .track i{display:block;height:100%;border-radius:999px}
-  .tval{font:.68rem/1 var(--mono);width:2.2rem;text-align:right;flex:0 0 auto;font-variant-numeric:tabular-nums}
-  button.tname{background:none;border:0;padding:0;font:inherit;font-size:.68rem;color:var(--sub);
-    cursor:help;text-align:right;text-decoration:underline dotted currentColor;text-underline-offset:2px}
+  .tval{font:.74rem/1 var(--mono);width:2.4rem;text-align:right;flex:0 0 auto;font-variant-numeric:tabular-nums}
+  button.tname{background:none;border:0;padding:0;font:inherit;font-size:.78rem;line-height:1.25;
+    color:var(--sub);cursor:help;text-align:right;white-space:normal;overflow-wrap:break-word;
+    text-decoration:underline dotted currentColor;text-underline-offset:2px}
+  /* Narrow viewports cannot afford 9rem of label AND a readable bar. */
+  @media (max-width:30rem){
+    .tname,button.tname{width:6.6rem;font-size:.72rem}
+    .tval{width:2.1rem;font-size:.7rem}
+  }
   button.tname:hover,button.tname:focus-visible{color:var(--ink)}
   button.tname:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
   /* position:fixed, not absolute: the trait list sits inside scroll and
@@ -521,9 +548,20 @@ const RUNTIME = String.raw`
     return Array.isArray(v) && v.length > 0 &&
       v.every(function (x) { return x && typeof x === "object" && !Array.isArray(x); });
   };
+  // Floating-point residue is not precision. computeTimeMs arrived as
+  // 574.0467359999966 and attentionMismatch as 0.300375; the trailing digits
+  // are artefacts of binary floating point, and printing them implies a
+  // confidence the measurement does not have. Trait values like 0.25 and
+  // integers are untouched.
+  var num = function (n) {
+    if (!isFinite(n)) return String(n);
+    if (Number.isInteger(n)) return String(n);
+    return String(Math.round(n * 1e4) / 1e4);
+  };
   var fmt = function (v) {
     if (v === true) return "yes";
     if (v === false) return "no";
+    if (typeof v === "number") return num(v);
     if (v === "" || v === null || v === undefined) return "—";
     if (Array.isArray(v)) {
       // An array of records has no useful join; String() on it yields a row of
@@ -531,14 +569,19 @@ const RUNTIME = String.raw`
       if (isObjArray(v)) return v.length + (v.length === 1 ? " entry" : " entries");
       return v.length ? v.join(", ") : "—";
     }
-    // Backstop. Callers flatten objects before reaching here, but a value that
-    // slips through should show its contents rather than "[object Object]",
-    // which tells a reader nothing and looks like a broken widget.
+    // Backstop for an object that reached a cell. Naming its fields beats both
+    // "[object Object]" (says nothing) and a raw JSON dump (says everything,
+    // illegibly, and blows the column width out). The empathy per-persona
+    // table carried six such columns -- perceptualTransport, scoreContext,
+    // cognitiveLoad and friends -- each printing serialised JSON into a table
+    // cell. (2026-07-31)
     if (typeof v === "object") {
       try {
-        var j = JSON.stringify(v);
-        return j.length > 220 ? j.slice(0, 217) + "…" : j;
-      } catch (_) { return "(unserialisable)"; }
+        var keys = Object.keys(v);
+        if (!keys.length) return "—";
+        var shown = keys.slice(0, 3).map(titleize).join(", ");
+        return keys.length > 3 ? shown + " +" + (keys.length - 3) + " more" : shown;
+      } catch (_) { return "(unreadable)"; }
     }
     return String(v);
   };
@@ -639,7 +682,7 @@ const RUNTIME = String.raw`
       cols.forEach(function (c) {
         var v = r[c], td = el("td");
         if (typeof v === "boolean") td.appendChild(el("span", "chip" + (v ? "" : " no"), v ? "yes" : "no"));
-        else if (typeof v === "number") { td.className = "num"; td.textContent = String(v); }
+        else if (typeof v === "number") { td.className = "num"; td.textContent = num(v); }
         else if (/path/i.test(c) || /^\//.test(String(v))) { td.className = "path"; td.textContent = fmt(v); }
         else td.textContent = fmt(v);
         tr.appendChild(td);
@@ -1032,7 +1075,18 @@ const RUNTIME = String.raw`
     if (b.type === "table") {
       used[b.field.split(".")[0]] = true;
       var rows = at(data, b.field);
-      return isObjArray(rows) ? { node: gridTable(rows), count: rows.length } : null;
+      if (!isObjArray(rows)) return null;
+      // One row is a record, not a table. Laying a single result out
+      // horizontally gives every field a column, so sixteen fields became
+      // sixteen columns of a one-row grid -- unreadable at any width, and the
+      // nested ones printed JSON. Flattened into label/value pairs it reads
+      // like the rest of the widget.
+      if (rows.length === 1) {
+        var recPairs = [];
+        flattenPairs(rows[0], "", recPairs);
+        return { node: kvTable(recPairs), count: 1 };
+      }
+      return { node: gridTable(rows), count: rows.length };
     }
     if (b.type === "findings") {
       used[b.field.split(".")[0]] = true;
@@ -1138,7 +1192,10 @@ const RUNTIME = String.raw`
     }
     // Payload title when the view is about a named thing; the spec title is the
     // fallback and the label for views that are about the tool itself.
-    var titleText = (SPEC.titleField && at(data, SPEC.titleField)) || SPEC.title;
+    var titleResolved = SPEC.titleField && at(data, SPEC.titleField);
+    var titleText = titleResolved
+      ? (SPEC.titlePrefix || "") + fmt(titleResolved)
+      : SPEC.title;
     hrow.appendChild(el("span", "htitle", String(titleText)));
 
     var h = healthOf(data, hero.health);
@@ -1158,9 +1215,11 @@ const RUNTIME = String.raw`
       if (sub) band.appendChild(el("p", "hnote", fmt(sub)));
     }
 
-    if (hero.actions && hero.actions.length) {
+    var actionList = (hero.actions || []).slice();
+    if (SPEC.toolPage) actionList.push({ label: "View tool docs", url: SPEC.toolPage });
+    if (actionList.length) {
       var acts = el("div", "acts");
-      hero.actions.forEach(function (a) {
+      actionList.forEach(function (a) {
         var url = a.urlField ? at(data, a.urlField) : a.url;
         if (!url) return;
         var btn = el("button", "act", a.label);

@@ -65,6 +65,12 @@ export interface PerceptualAnalysis {
   computeTimeMs: number;
 }
 
+/**
+ * Asymptotic ceiling for a single susceptibility bucket's deduction. Buckets
+ * approach it and never reach it, so no two can max out onto the same value.
+ */
+const BARRIER_DEDUCTION_CEILING = 30;
+
 // ── Persona Perceptual Profiles ──
 
 const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
@@ -644,8 +650,23 @@ export function calculatePerceptualScore(
 
     // Apply persona weight — this is the key differentiator
     const weighted = (criticalBase + majorBase + minorBase) * weight;
-    // Cap per-type deduction at 35 (even 3x multiplier shouldn't zero out from one type)
-    const capped = Math.min(35, weighted);
+    // Saturating ceiling rather than a hard clip.
+    //
+    // Math.min(35, weighted) flattened everything above the cap onto the same
+    // number. Once deductions were grouped by susceptibility key instead of by
+    // type the buckets got much finer, and a single critical barrier at weight
+    // 3.0 raws to 45 -- so the clip bound constantly and unequal findings came
+    // out equal: one undescribed video (raw 45) and three hover-only controls
+    // (raw 62.5) both reported exactly -35.
+    //
+    // Lowering the clip makes that worse, not better: it binds more often. An
+    // exponential approach to the ceiling is strictly increasing, so two
+    // buckets are equal only when their raw values are equal. They can get
+    // close to the ceiling but never reach it and never collide there. The
+    // ceiling also drops 35 -> 30, because finer buckets mean more of them.
+    // (2026-07-31)
+    const capped = BARRIER_DEDUCTION_CEILING *
+      (1 - Math.exp(-weighted / BARRIER_DEDUCTION_CEILING));
 
     if (capped > 0) {
       deductions[weightKey] = -Math.round(capped * 10) / 10;
