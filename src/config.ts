@@ -487,6 +487,7 @@ export interface DirStatus {
   name: string;
   path: string;
   exists: boolean;
+  /** Files on disk, counted recursively. Not the same as a registry count. */
   fileCount: number;
 }
 
@@ -528,12 +529,34 @@ export interface StatusInfo {
   toolCount?: number;
 }
 
-function countFiles(dir: string, ext?: string): number {
+/**
+ * Count files in a directory, including nested ones.
+ *
+ * Recursive because these directories are session-scoped: screenshots live in
+ * per-session subdirectories, and visual baselines under a nested store. A
+ * top-level readdir therefore reported 0 screenshots while 12 sat one level
+ * down, and 1 visual baseline against 34 on disk -- an extension filter also
+ * excludes the subdirectory entries themselves, so the count collapsed to
+ * zero rather than merely being low.
+ *
+ * Depth-limited because a runaway tree should not turn a status call into a
+ * filesystem walk; three levels covers every layout in use.
+ */
+function countFiles(dir: string, ext?: string | string[], depth = 3): number {
   if (!existsSync(dir)) return 0;
   try {
-    const files = readdirSync(dir);
-    if (ext) return files.filter(f => f.endsWith(ext)).length;
-    return files.filter(f => !f.startsWith(".")).length;
+    let total = 0;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) {
+        if (depth > 0) total += countFiles(join(dir, entry.name), ext, depth - 1);
+      } else if (!ext || (Array.isArray(ext)
+        ? ext.some((e) => entry.name.endsWith(e))
+        : entry.name.endsWith(ext))) {
+        total += 1;
+      }
+    }
+    return total;
   } catch {
     return 0;
   }
@@ -639,8 +662,11 @@ export async function getStatusInfo(version: string, toolCount?: number): Promis
   const screenshotStats = countScreenshotSessions(paths.screenshotsBaseDir);
 
   // Directory status
-  const dirEntries: Array<[string, string, string?]> = [
-    ["screenshots", paths.screenshotsBaseDir, ".png"],
+  const dirEntries: Array<[string, string, (string | string[])?]> = [
+    // Every extension screenshots are actually written in. It filtered on
+    // .png alone while remote-mode compression writes .jpg, so a directory
+    // holding twelve screenshots reported zero.
+    ["screenshots", paths.screenshotsBaseDir, [".png", ".jpg", ".jpeg", ".webp"]],
     ["sessions", paths.sessionsDir, ".json"],
     ["baselines", paths.baselinesDir, ".json"],
     ["visual-baselines", paths.visualBaselinesDir],
@@ -652,6 +678,11 @@ export async function getStatusInfo(version: string, toolCount?: number): Promis
     ["audit", paths.auditDir],
   ];
 
+  // Directory counts read the filesystem; the summary counts below read
+  // registries -- baselines.json for visualBaselines, the session store for
+  // screenshotSessions, the built-in table plus custom files for personas.
+  // They are different populations, not two views of one, and reporting both
+  // without saying so left a reader to guess which was authoritative.
   const directories: DirStatus[] = dirEntries.map(([name, dirPath, ext]) => ({
     name,
     path: dirPath,
