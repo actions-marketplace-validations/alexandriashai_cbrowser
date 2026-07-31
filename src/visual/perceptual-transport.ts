@@ -321,6 +321,10 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
       color_only: 0.5,
       cognitive_load: 0.8,
       timing: 1.5,            // Can't hear audio cues for time limits
+      // The criterion this persona exists to surface. Left unweighted it
+      // resolved to a neutral 1.0, so an audit run AS a deaf user rated
+      // missing captions no higher than anything else on the page.
+      captions: 3.0,
       missing_alt: 1.0,
       missing_label: 1.0,
       hover_dependent: 0.5,
@@ -618,7 +622,9 @@ export function calculatePerceptualScore(
   // bug -- but the name said otherwise, and a -7 charge sitting beside
   // "overloaded: false" reads as one of the two being broken.
   const cognitiveLoad = 1 - filter.noiseTolerance;
-  const cognitiveOverloadPenalty = cognitiveLoad * 10; // Up to 10 point penalty
+  // Rounded at the source. Binary floating point turns 1 - 0.9 into
+  // 0.09999999999999998, and that reached a report a customer reads.
+  const cognitiveOverloadPenalty = Math.round(cognitiveLoad * 10 * 1000) / 1000;
   score -= cognitiveOverloadPenalty;
 
   // Information loss estimate from filter properties
@@ -858,12 +864,79 @@ export function weightedSeverity(
   return { severity: SEVERITY_LADDER[idx] as BarrierSeverityLevel, shifted: idx - at };
 }
 
-/** Susceptibility weight this persona carries for a barrier type. 1.0 default. */
-export function barrierWeightFor(personaName: string, barrierType: string): number {
+/**
+ * Resolve a barrier to the key its susceptibility weight is stored under.
+ *
+ * The two vocabularies do not match and looking up the raw type silently
+ * returned 1.0 for most barriers. Emitted types are sensory, cognitive_load,
+ * motor_precision, visual_clarity, visual, motor, touch_target and timing;
+ * weights are keyed color_only, missing_alt, low_contrast, touch_target,
+ * cognitive_load, timing, missing_label, hover_dependent, form_complexity.
+ * Only three overlap, so `sensory` -- the most common type -- always defaulted.
+ *
+ * That is how a deaf-user audit reported weight 1.0 on a colour-only barrier
+ * while the persona's own table says 0.5: the table was right and the lookup
+ * never reached it.
+ *
+ * WCAG criteria are consulted first because they identify the barrier far more
+ * precisely than the type does: both a missing alt and a colour-only link are
+ * "sensory", and they have opposite susceptibility profiles.
+ */
+const WCAG_TO_WEIGHT_KEY: Record<string, string> = {
+  "1.4.1": "color_only",
+  "1.1.1": "missing_alt",
+  "1.4.3": "low_contrast",
+  "1.4.11": "low_contrast",
+  "2.5.8": "touch_target",
+  "2.5.5": "touch_target",
+  "1.2.1": "captions",
+  "1.2.2": "captions",
+  "1.2.3": "captions",
+  "1.2.5": "captions",
+  "2.2.1": "timing",
+  "2.2.2": "timing",
+  "3.3.2": "missing_label",
+  "1.3.1": "missing_label",
+};
+
+const TYPE_TO_WEIGHT_KEY: Record<string, string> = {
+  cognitive_load: "cognitive_load",
+  timing: "timing",
+  touch_target: "touch_target",
+  motor_precision: "touch_target",
+  motor: "touch_target",
+  visual_clarity: "low_contrast",
+  visual: "low_contrast",
+  form_complexity: "form_complexity",
+};
+
+export function weightKeyFor(barrierType: string, wcagCriteria?: string[]): string | null {
+  for (const c of wcagCriteria ?? []) {
+    const k = WCAG_TO_WEIGHT_KEY[c];
+    if (k) return k;
+  }
+  return TYPE_TO_WEIGHT_KEY[barrierType] ?? null;
+}
+
+/**
+ * Susceptibility weight for a barrier, and whether it was actually found.
+ *
+ * `defaulted` matters: an unmeasured 1.0 and a measured 1.0 mean different
+ * things, and presenting the first as the second is what made a deaf user look
+ * maximally susceptible to colour.
+ */
+export function barrierWeightFor(
+  personaName: string,
+  barrierType: string,
+  wcagCriteria?: string[],
+): { weight: number; key: string | null; defaulted: boolean } {
+  const key = weightKeyFor(barrierType, wcagCriteria);
   try {
     const profile = getPerceptualProfile(personaName);
-    return profile.barrierWeights?.[barrierType] ?? 1.0;
+    const w = key ? profile.barrierWeights?.[key] : undefined;
+    if (typeof w === "number") return { weight: w, key, defaulted: false };
+    return { weight: 1.0, key, defaulted: true };
   } catch {
-    return 1.0;
+    return { weight: 1.0, key, defaulted: true };
   }
 }

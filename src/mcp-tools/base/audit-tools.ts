@@ -292,12 +292,17 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             // more or less violated depending on who reads it -- so both ship
             // and the weight that separates them ships with them.
             return chosen.map((b) => {
-              const w = barrierWeightFor(testedPersona, String(b.type ?? ""));
-              const { severity, shifted } = weightedSeverity(String(b.severity ?? "minor"), w);
+              const { weight, key, defaulted } = barrierWeightFor(
+                testedPersona, String(b.type ?? ""), b.wcagCriteria);
+              const { severity, shifted } = weightedSeverity(String(b.severity ?? "minor"), weight);
               return {
                 ...b,
                 severityForPersona: severity,
-                personaWeight: w,
+                personaWeight: Math.round(weight * 100) / 100,
+                personaWeightKey: key,
+                // An unmeasured 1.0 and a measured 1.0 mean different things.
+                // Saying which prevents a default from reading as a finding.
+                personaWeightIsDefault: defaulted,
                 ...(shifted !== 0
                   ? { severityShiftedBy: shifted > 0 ? `+${shifted}` : String(shifted) }
                   : {}),
@@ -305,7 +310,16 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             });
           })(),
           topBarriersNote:
-            "The first five are the highest-severity barriers. Any entries after them are included because they carry a WCAG criterion the top five do not, so every criterion in allWcagViolations has at least one barrier explaining it.",
+            "The first five are the highest-severity barriers. Any entries after them are included because they carry a WCAG criterion the top five do not.",
+          // Asserting full coverage was itself a defect: the claim held only
+          // when a barrier existed for every criterion, and said nothing when
+          // one did not. Now it reports the gap instead of asserting there
+          // isn't one.
+          wcagCriteriaWithoutBarrier: (() => {
+            const covered = new Set(result.topBarriers.flatMap((b: any) => b.wcagCriteria ?? []));
+            const missing = Array.from(result.allWcagViolations ?? []).filter((c: any) => !covered.has(c));
+            return missing.length ? missing : undefined;
+          })(),
           // A barrier's affectedPersonas names the personas it hits HARDEST. It
           // is not an exclusion list, which is why a persona absent from it can
           // still take a deduction — susceptibility is applied as a weight, not
@@ -360,7 +374,12 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             // is stated. Reported rather than papered over, the same way
             // cognitiveLoadReadings reports its disagreement.
             barrierRectCoverage: (() => {
-              const rects = (r.barrierRects ?? []).length;
+              // Counted the same way barrierRects is built below, from
+              // barriers that resolved to a rect. Reading r.barrierRects gave
+              // 0 every time: that field is this payload's OUTPUT name, not an
+              // input, so the coverage line reported drawn:0 beside ten
+              // populated rects.
+              const rects = (r.barriers ?? []).filter((b: any) => b.rect).length;
               const affected = (r.barriers ?? []).reduce(
                 (n: number, b: any) => n + (b.affectedElementCount ?? 1), 0);
               return {

@@ -1624,7 +1624,12 @@ async function simulateAccessibilityJourney(
     cognitiveOverloadPenalty: perceptualResult.cognitiveOverloadPenalty,
     // The reading behind the prose above and behind cognitiveOverloadPenalty.
     // Named because two other numbers in this payload are also "cognitive load".
-    visualComplexityCognitiveLoad: perceptualResult.cognitiveLoad,
+    // Rounded: 1 - 0.9 is 0.09999999999999998 in binary floating point, and
+    // that reached a report a customer reads.
+    visualComplexityCognitiveLoad:
+      typeof perceptualResult.cognitiveLoad === "number"
+        ? Math.round(perceptualResult.cognitiveLoad * 1000) / 1000
+        : perceptualResult.cognitiveLoad,
     // Susceptibility weight applied per barrier type for THIS persona. Barriers
     // name a couple of exemplar affectedPersonas, which looks contradictory
     // beside a deduction charged to a different persona; the weight is what
@@ -1703,6 +1708,19 @@ async function simulateAccessibilityJourney(
 }
 
 function getDisabilityType(persona: AccessibilityPersona): string {
+  // Hearing first, and by name as well as by trait.
+  //
+  // Every other branch keys off a visual, motor or cognitive trait, and
+  // deafness is none of those -- so deaf-user fell through to "General
+  // accessibility" while carrying isDisabilityPersona: true, which reads as
+  // the tool not recognising the persona it was asked to audit.
+  const traits = persona.accessibilityTraits as Record<string, unknown>;
+  if (traits?.hearingLoss || traits?.deafness || traits?.hearingImpairment) {
+    return "Hearing (deaf/hard of hearing)";
+  }
+  if (/^(deaf|hard-of-hearing)/i.test(String(persona.name ?? ""))) {
+    return "Hearing (deaf/hard of hearing)";
+  }
   if (persona.accessibilityTraits.tremor) return "Motor impairment (tremor)";
   if (persona.accessibilityTraits.visionLevel && persona.accessibilityTraits.visionLevel < 0.5) return "Low vision";
   if (persona.accessibilityTraits.colorBlindness) return `Color blindness (${persona.accessibilityTraits.colorBlindness})`;
@@ -2368,7 +2386,16 @@ function deduplicateBarriers(
       element: elementCount > 1 ? `${elementCount} elements` : representative.element,
       description: aggregatedDescription,
       affectedPersonas: Array.from(data.personas),
-      wcagCriteria: representative.wcagCriteria,
+      // Union across the group, not the representative's alone.
+      //
+      // Barriers are deduplicated by TYPE, and "sensory" covers colour-only
+      // links, missing alt text and missing captions alike -- three different
+      // criteria collapsed into one entry that kept only the first barrier's.
+      // That is how 1.1.1 and 1.2.2 came to be reported in allWcagViolations
+      // with no barrier explaining them: the criteria were not missing, they
+      // were discarded here. On a deaf-user audit the dropped one was 1.2.2,
+      // captions -- the single criterion most relevant to that persona.
+      wcagCriteria: Array.from(new Set(data.barriers.flatMap((b) => b.wcagCriteria ?? []))),
       // This is the WORST severity across every element grouped under this
       // barrier type, not one element's severity — but it shipped under the same
       // field name `severity` that individual rects use, so the same 152x20
