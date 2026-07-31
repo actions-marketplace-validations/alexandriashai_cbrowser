@@ -257,7 +257,29 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             };
           }),
           allWcagViolations: result.allWcagViolations,
-          topBarriers: result.topBarriers.slice(0, 5),
+          // Top five, PLUS one barrier for every WCAG criterion the top five
+          // would otherwise drop.
+          //
+          // A flat slice made the audit unusable for compliance: 1.1.1 and
+          // 1.2.2 appeared in allWcagViolations while no barrier, remediation
+          // or rect mentioned them, so fixing everything listed still left two
+          // violations with nothing saying what they were. The criteria are
+          // reported either way, so the slice was hiding the explanation while
+          // keeping the accusation.
+          topBarriers: (() => {
+            const top = result.topBarriers.slice(0, 5);
+            const covered = new Set(top.flatMap((b) => b.wcagCriteria ?? []));
+            const rescued: typeof top = [];
+            for (const b of result.topBarriers.slice(5)) {
+              const missing = (b.wcagCriteria ?? []).filter((c) => !covered.has(c));
+              if (missing.length === 0) continue;
+              missing.forEach((c) => covered.add(c));
+              rescued.push(b);
+            }
+            return [...top, ...rescued];
+          })(),
+          topBarriersNote:
+            "The first five are the highest-severity barriers. Any entries after them are included because they carry a WCAG criterion the top five do not, so every criterion in allWcagViolations has at least one barrier explaining it.",
           // A barrier's affectedPersonas names the personas it hits HARDEST. It
           // is not an exclusion list, which is why a persona absent from it can
           // still take a deduction — susceptibility is applied as a weight, not
@@ -265,6 +287,13 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           // because the pairing otherwise reads as a contradiction: a
           // touch_target barrier listing motor and elderly personas, scored
           // against cognitive-adhd. (2026-07-29)
+          // Same treatment cognitiveLoadReadings got: state why two numbers
+          // that look contradictory are both right, rather than leaving a
+          // reader to conclude one is broken.
+          scoreFieldNotes: {
+            cognitiveOverloadPenalty:
+              "Persona susceptibility to visual noise, derived from the persona's own noiseTolerance and charged on every page — NOT a finding that this page overloaded anyone. It is non-zero for a sensitive persona even where cognitiveLoad.overloaded is false, because that flag is a separate page measurement against a threshold. The two disagreeing is expected.",
+          },
           barrierFieldNotes: {
             affectedPersonas: "Exemplars — the personas this barrier affects most. NOT an exclusion list; every tested persona is scored against every barrier, weighted by susceptibility.",
             severity: "On topBarriers entries this is the group maximum across all elements of that type (severityIsGroupMax), not one element's severity.",
@@ -364,8 +393,30 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
             const { buildBarrierOverlayHtml } = await import("../../visual/barrier-overlay-html.js");
             const shots = (response.pageScreenshots ?? []) as Array<Record<string, any>>;
             for (const shot of shots) {
+              // The screenshot is inlined, not linked. An https URL on
+              // cbrowser.ai is blocked by the sandbox CSP, and because the
+              // boxes are absolutely positioned the failure presents as
+              // outlines floating over empty space rather than a broken image.
+              // Falls back to the URL when the bytes cannot be read, which is
+              // no worse than before and still works outside a sandbox.
+              let inlineImage: string | undefined;
+              try {
+                const file = String(shot.screenshotFile ?? "");
+                const local = String(shot.screenshotPath ?? "");
+                const { readFileSync, existsSync } = await import("node:fs");
+                const { join, extname } = await import("node:path");
+                const { ARTIFACT_DIR } = await import("../../artifact-store.js");
+                const path = local && existsSync(local) ? local
+                  : file ? join(ARTIFACT_DIR, file) : "";
+                if (path && existsSync(path)) {
+                  const ext = extname(path).toLowerCase();
+                  const mime = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
+                  inlineImage = `data:${mime};base64,${readFileSync(path).toString("base64")}`;
+                }
+              } catch { /* fall through to the URL */ }
+
               const overlayHtml = buildBarrierOverlayHtml({
-                imageUrl: shot.screenshotUrl,
+                imageUrl: inlineImage ?? shot.screenshotUrl,
                 imageWidth: shot.viewportSize?.width,
                 captureHeight: shot.captureHeight ?? shot.viewportSize?.height,
                 barrierRects: shot.barrierRects ?? [],

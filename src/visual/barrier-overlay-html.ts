@@ -51,6 +51,16 @@ export interface OverlayRect {
 
 export interface BarrierOverlayInput {
   /** Publicly fetchable URL of the capture. Without it there is nothing to draw on. */
+  /**
+   * Screenshot to draw the boxes over.
+   *
+   * A data: URI when the caller can supply one. An https URL renders broken
+   * inside the widget sandbox, whose CSP allowlist does not include
+   * cbrowser.ai -- verified against the real policy: a control img on that
+   * origin was blocked with a logged violation while a data: URI rendered. The
+   * boxes are absolutely positioned, so a blocked image leaves them floating
+   * over nothing rather than failing visibly.
+   */
   imageUrl: string;
   /** Width of the capture in CSS px (viewportSize.width). */
   imageWidth: number;

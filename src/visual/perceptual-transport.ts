@@ -608,7 +608,15 @@ export function calculatePerceptualScore(
   const goalDeduction = goalAchieved ? 0 : 15 * filter.motorCostMultiplier;
   score -= Math.min(25, goalDeduction);
 
-  // Cognitive load penalty based on noise tolerance
+  // Persona susceptibility to visual noise, NOT a finding that the page
+  // overloaded anyone.
+  //
+  // Derived from the persona's own noiseTolerance and charged on every page,
+  // so it is non-zero for a sensitive persona even on a calm one. The separate
+  // `overloaded` flag is a page measurement from cognitive-transport.ts,
+  // computed against a threshold. The two disagreeing is expected and not a
+  // bug -- but the name said otherwise, and a -7 charge sitting beside
+  // "overloaded: false" reads as one of the two being broken.
   const cognitiveLoad = 1 - filter.noiseTolerance;
   const cognitiveOverloadPenalty = cognitiveLoad * 10; // Up to 10 point penalty
   score -= cognitiveOverloadPenalty;
