@@ -188,6 +188,14 @@ interface BarrierContext {
   viewportOnly: boolean;
   /** WCAG conformance level for this audit */
   wcagLevel: "A" | "AA" | "AAA";
+  /**
+   * Media whose accessibility cannot be decided from this page. Third-party
+   * embeds live in a cross-origin iframe, so the host DOM holds none of their
+   * tracks. Reported here rather than as a barrier: a scored deduction for
+   * something never measured is a false measurement, and silence about it is
+   * a false negative. This is the third option.
+   */
+  unverifiableMedia: Array<{ element: string; reason: string; checkAt: string }>;
 }
 
 /**
@@ -747,34 +755,78 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
     ctx.wcagViolations.add("1.1.1");
   }
 
-  // Check for videos without captions indicator
-  // v10.10.0: Always detect, not just for deaf-user persona
-  const videos = await page.$$eval('video, iframe[src*="youtube"], iframe[src*="vimeo"]', (elements) =>
+  // Captions, answerable only where the DOM actually holds the answer.
+  //
+  // This used to select 'video, iframe[src*="youtube"], iframe[src*="vimeo"]'
+  // and ask each for a track[kind="captions"] child. An iframe cannot have one
+  // in the host document, so every embed reported missing captions
+  // unconditionally -- a verdict the page could not support. It also had no
+  // decorative carve-out and emitted ONE barrier for every video at once, so
+  // the overlay drew a single box no matter how many videos failed.
+  // (2026-07-31)
+  const videos = await page.$$eval('video', (elements) =>
     elements.map(el => {
-      const r = el.getBoundingClientRect();
+      const v = el as HTMLVideoElement;
+      const r = v.getBoundingClientRect();
+      const decorative =
+        v.getAttribute("aria-hidden") === "true" ||
+        v.getAttribute("role") === "presentation" ||
+        v.getAttribute("role") === "none";
+      // Muted with no controls: the audio channel is not reachable by anyone,
+      // so there is no audio experience being withheld. Deliberately narrow --
+      // a muted video WITH controls can be unmuted and still needs captions.
+      const noAudioReachable = v.hasAttribute("muted") && !v.hasAttribute("controls");
       return {
-        selector: el.tagName.toLowerCase(),
-        hasCaptions: el.querySelector('track[kind="captions"]') !== null,
+        selector: v.id ? `video#${v.id}` : "video",
+        hasCaptions: v.querySelector('track[kind="captions"]') !== null,
+        // Subtitles translate dialogue for people who can hear; captions also
+        // carry speaker changes and non-speech audio. 1.2.2 asks for captions,
+        // so subtitles-only is a real gap -- just a smaller one than nothing.
+        hasSubtitlesOnly: v.querySelector('track[kind="captions"]') === null &&
+          v.querySelector('track[kind="subtitles"]') !== null,
+        decorative,
+        noAudioReachable,
         x: Math.round(r.left + window.scrollX),
         y: Math.round(r.top + window.scrollY),
         width: Math.round(r.width),
         height: Math.round(r.height),
       };
-    }).filter(el => !el.hasCaptions)
+    }).filter(el => !el.hasCaptions && !el.decorative && !el.noAudioReachable).slice(0, 10)
   );
 
-  if (videos.length > 0) {
+  // One barrier per element, each carrying its own rect, so the overlay can
+  // outline every failing video instead of the first one.
+  for (const v of videos) {
     barriers.push({
       type: "sensory",
-      element: "video",
-      description: `${videos.length} video(s) may not have captions - deaf users cannot access audio content`,
+      element: v.selector,
+      description: v.hasSubtitlesOnly
+        ? "Video has subtitles but no captions track - deaf users miss speaker changes and non-speech audio"
+        : "Video has no captions - deaf users cannot access its audio content",
       affectedPersonas: ["deaf-user"],
       wcagCriteria: ["1.2.2"],
-      severity: "critical",
-      remediation: "Add captions to all video content",
-      rect: { x: videos[0].x, y: videos[0].y, width: videos[0].width, height: videos[0].height },
+      severity: v.hasSubtitlesOnly ? "major" : "critical",
+      remediation: v.hasSubtitlesOnly
+        ? 'Add a track[kind="captions"] that includes speaker identification and non-speech audio, alongside the existing subtitles'
+        : 'Add a captions track (<track kind="captions">) covering dialogue and meaningful non-speech audio',
+      rect: { x: v.x, y: v.y, width: v.width, height: v.height },
     } as AccessibilityBarrier);
     ctx.wcagViolations.add("1.2.2");
+  }
+
+  // Third-party embeds: recorded, not scored, not claimed as a violation.
+  const embeds = await page.$$eval(
+    'iframe[src*="youtube"], iframe[src*="vimeo"], iframe[src*="wistia"], iframe[src*="brightcove"]',
+    (elements) => elements.map(el => ({
+      src: (el.getAttribute("src") ?? "").slice(0, 80),
+    })).slice(0, 10),
+  );
+  for (const e of embeds) {
+    ctx.unverifiableMedia.push({
+      element: `iframe[src="${e.src}"]`,
+      reason: "Captions and audio description live inside a cross-origin embed, which this page cannot inspect. Absence here is not evidence of absence.",
+      checkAt: "The provider's own caption/description settings for this video",
+    });
   }
 
   await detectMissingAudioDescription(ctx);
@@ -1449,6 +1501,7 @@ async function simulateAccessibilityJourney(
     stepCount: 0,
     viewportOnly: scope === "viewport",
     wcagLevel,
+    unverifiableMedia: [],
   };
 
   let goalAchieved = false;
@@ -1879,6 +1932,11 @@ async function simulateAccessibilityJourney(
     documentHeight,
     screenshotSize,
     captureScroll,
+    // Present only when there is something to say, so an empty list does not
+    // read as a finding.
+    ...(ctx.unverifiableMedia.length > 0
+      ? { unverifiableMedia: ctx.unverifiableMedia }
+      : {}),
   } as any;
 }
 

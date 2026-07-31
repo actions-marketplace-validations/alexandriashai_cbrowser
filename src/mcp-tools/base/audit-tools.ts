@@ -1233,6 +1233,12 @@ export function registerEmpathyAuditTool(server: McpServer): void {
               // v18.35.0: Non-disability persona flag
               isDisabilityPersona: (r as any).isDisabilityPersona !== false,
               personaNote: (r as any).personaNote || undefined,
+              // Media this page cannot decide about. Not barriers and not
+              // scored: a third-party embed keeps its caption and description
+              // tracks inside a cross-origin iframe, so the only honest report
+              // is that the question is open and where to go to close it.
+              // Previously these were asserted as missing captions.
+              unverifiableMedia: (r as any).unverifiableMedia || undefined,
             };
           }),
           allWcagViolations: result.allWcagViolations,
