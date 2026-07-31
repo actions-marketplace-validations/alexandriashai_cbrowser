@@ -126,7 +126,12 @@ const registered = new WeakSet<McpServer>();
  */
 export const STATUS_SPEC: WidgetSpec = {
   id: "status",
-  toolPage: "https://cbrowser.ai/tools/",
+  // The docs page, not the /tools/ marketing route. Every tool has a docs page
+  // -- 128 of them, generated from the wiki, with When to Use / Parameters /
+  // Example / Tips -- whereas only six tools have a /tools/ page and the SPA
+  // answers 200 with the homepage for the rest, so a link there would look
+  // like it worked and silently land somewhere else. (2026-07-31)
+  toolPage: "https://cbrowser.ai/docs/tool-status/",
   title: "Status",
   hero: {
     variant: "gradient",
@@ -167,7 +172,7 @@ export const STATUS_SPEC: WidgetSpec = {
  */
 export const PERSONA_SPEC: WidgetSpec = {
   id: "persona",
-  toolPage: "https://cbrowser.ai/tools/",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-lookup/",
   title: "Persona",
   // The name leads when there is one; "Persona" is the fallback for a payload
   // that has not named itself.
@@ -209,7 +214,7 @@ export const PERSONA_SPEC: WidgetSpec = {
  */
 export const ATTENTION_SPEC: WidgetSpec = {
   id: "attention",
-  toolPage: "https://cbrowser.ai/tools/",
+  toolPage: "https://cbrowser.ai/docs/tool-attention-analysis/",
   title: "Attention",
   // Field names taken from a real tool result rather than assumed. The first
   // pass guessed topElements/elementsAnalyzed/url; the payload actually carries
@@ -255,7 +260,7 @@ export const ATTENTION_SPEC: WidgetSpec = {
  */
 export const SCREENSHOT_SPEC: WidgetSpec = {
   id: "screenshot",
-  toolPage: "https://cbrowser.ai/tools/",
+  toolPage: "https://cbrowser.ai/docs/tool-screenshot/",
   title: "Screenshot",
   titleField: "url",
   hero: {
@@ -305,7 +310,7 @@ export const TRAIT_SPEC: WidgetSpec = {
   // ui://cbrowser/trait while the resource had not yet deployed, and kept the
   // failure. A fresh URI cannot have a stale entry.
   id: "trait-v2",
-  toolPage: "https://cbrowser.ai/tools/",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-trait-lookup/",
   title: "Trait",
   titleField: "trait",
   hero: {
@@ -340,7 +345,7 @@ export const TRAIT_SPEC: WidgetSpec = {
  */
 export const BUGS_SPEC: WidgetSpec = {
   id: "bugs",
-  toolPage: "https://cbrowser.ai/tools/hunt-bugs/",
+  toolPage: "https://cbrowser.ai/docs/tool-hunt-bugs/",
   title: "Bug hunt",
   hero: {
     variant: "gradient",
@@ -385,7 +390,7 @@ export function buildBugsTemplate(): string {
  */
 export const EMPATHY_SPEC: WidgetSpec = {
   id: "empathy",
-  toolPage: "https://cbrowser.ai/tools/empathy-audit/",
+  toolPage: "https://cbrowser.ai/docs/tool-empathy-audit/",
   title: "Empathy audit",
   // The persona is the subject of the audit, so it belongs in the title. The
   // bare view name did not say who was audited, and the tool tests exactly one
