@@ -111,3 +111,52 @@ describe("route disclosure", () => {
     expect(resolvePersonaValues("no-such-persona-xyz").source).toBe("none");
   });
 });
+
+describe("no disclosure field is computed and then dropped", () => {
+  /**
+   * The recurring defect in this file, caught six times in one day: a field is
+   * added to the resolver, the tool payload hand-picks fields by name, and the
+   * new one is silently absent. netNudge, maslowContamination, maslowRunnerUp,
+   * valueTransform, topScoring and higherOrderWithImputed each shipped that way.
+   *
+   * Patching the seventh occurrence is not a fix. This asserts the invariant
+   * instead: everything the resolver computes for a persona must be reachable
+   * somewhere in the JSON the tool actually returns. Adding a resolver field
+   * without surfacing it now fails here rather than being noticed by a reader.
+   */
+  test("every resolver field reaches the persona_values_lookup payload", async () => {
+    const { buildValuesPayloadForTest } = await import("../src/mcp-tools/base/values-tools.js");
+    const resolved = resolvePersonaValues(TRAIT_ROUTE);
+    const json = JSON.stringify(await buildValuesPayloadForTest(TRAIT_ROUTE));
+
+    // Structural fields consumed to BUILD the payload rather than printed in
+    // it. Each is deliberate; anything else missing is the bug above.
+    const consumedInternally = new Set(["values", "sdt", "hypothesisAxes"]);
+
+    // Resolver name -> payload name, where they differ. Listing them is the
+    // point as much as the check is: this is the only place the drift between
+    // the two vocabularies is written down, and every entry is a small tax a
+    // reader pays when moving between the resolver and the payload.
+    const renamedInPayload: Record<string, string> = {
+      storedIn: "valuesStoredIn",
+      sdtSource: "selfDeterminationSource",
+      higherOrder: "higherOrderValues",
+      maslowMargin: "marginOverRunnerUp",
+      source: "valuesSource",
+    };
+
+    const missing = Object.entries(resolved)
+      .filter(([k, v]) => !consumedInternally.has(k) && v !== undefined)
+      .filter(([k]) => {
+        // Surfaced if the resolver name, its payload rename, or the
+        // maslow-prefix-stripped form appears as a key in the JSON.
+        const bare = k.replace(/^maslow/, "");
+        const stripped = bare.charAt(0).toLowerCase() + bare.slice(1);
+        const candidates = [k, stripped, renamedInPayload[k]].filter(Boolean) as string[];
+        return !candidates.some((c) => json.includes(`"${c}"`));
+      })
+      .map(([k]) => k);
+
+    expect(missing).toEqual([]);
+  });
+});

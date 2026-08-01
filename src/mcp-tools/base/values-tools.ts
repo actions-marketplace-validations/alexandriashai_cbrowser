@@ -58,6 +58,10 @@ export function resolvePersonaValues(name: string): {
   valueTransform?: string;
   higherOrderContamination?: Record<string, string>;
   higherOrder?: Record<string, number>;
+  /** Pre-2026-08-01 imputed rollups, kept so the convention change is auditable. */
+  higherOrderWithImputed?: Record<string, number>;
+  /** The single imputation rule this payload follows, stated once. */
+  imputationPolicy?: string;
   maslowLevel?: string;
   maslowSource?: "stored" | "derived";
   /** The arithmetic behind the winning level, same contract as pattern basis. */
@@ -66,6 +70,10 @@ export function resolvePersonaValues(name: string): {
   maslowMargin?: number;
   /** The runner-up scored and shown, so the margin can be checked not trusted. */
   maslowRunnerUp?: string;
+  /** Bare argmax, for callers that need exactly one token even when it is a tie. */
+  maslowTopScoring?: string;
+  /** Present only when levels fall inside the tie threshold. */
+  maslowTied?: string[];
   /** Per-level: how many of its inputs are unpopulated. Mirrors higherOrderContamination. */
   maslowContamination?: Record<string, string>;
   maslowCaveat?: string;
@@ -132,6 +140,18 @@ export function resolvePersonaValues(name: string): {
   // were indistinguishable in the payload, so a caller could not tell a
   // derivation from a default -- and 0.5 across all three is the tell.
   const flat = Object.keys(sdt).length === 3 && Object.values(sdt).every((v) => v === 0.5);
+  // ONE definition of "this route cannot reach that axis", shared by every
+  // rollup, the Maslow scorer and the persuasion layer. Three sites computing
+  // it separately is how they ended up with three conventions.
+  const routeIsTraits = (persona?.valuesDerivation as { method?: string } | undefined)?.method === "traits";
+  const hoFrozen = new Set(
+    routeIsTraits
+      ? ["selfDirection", "stimulation", "hedonism", "achievement", "power", "security",
+         "conformity", "tradition", "benevolence", "universalism",
+         "autonomyNeed", "competenceNeed", "relatednessNeed"]
+          .filter((k) => !valueAxisCorrelationCounts()[k])
+      : [],
+  );
   // The four rollups. calculateHigherOrderValues has always existed and was
   // never called: both tools read values.openness and friends straight off the
   // base object, where those keys do not live, so every entry rendered its
@@ -142,12 +162,28 @@ export function resolvePersonaValues(name: string): {
   // visually identical to an axis nothing ever touched, which is the exact
   // confusion the primaries went to three decimals to remove. The collision
   // was fixed one layer down and survived one layer up. (2026-08-01)
-  const higherOrder = {
-    openness: round3((values.selfDirection + values.stimulation) / 2),
-    selfEnhancement: round3((values.achievement + values.power) / 2),
-    conservation: round3((values.security + values.conformity + values.tradition) / 3),
-    selfTranscendence: round3((values.benevolence + values.universalism) / 2),
+  //
+  // Same exclusion convention as maslowLevel. These imputed until 2026-08-01,
+  // which meant the Maslow caveat was arguing against a convention still
+  // running three fields away in the same payload: selfEnhancement read
+  // (0.698 + 0.5)/2 = 0.599 where the live-only value is 0.698, a 0.1 swing in
+  // exactly the direction the caveat warns about, and enough to reorder the
+  // four rollups for some personas. One convention, or the disclosure is
+  // advice the payload does not take.
+  const hoInputs: Record<string, string[]> = {
+    openness: ["selfDirection", "stimulation"],
+    selfEnhancement: ["achievement", "power"],
+    conservation: ["security", "conformity", "tradition"],
+    selfTranscendence: ["benevolence", "universalism"],
   };
+  const higherOrder: Record<string, number> = {};
+  const higherOrderWithImputed: Record<string, number> = {};
+  for (const [roll, ins] of Object.entries(hoInputs)) {
+    const live = ins.filter((k) => !hoFrozen.has(k));
+    const use = live.length ? live : ins;
+    higherOrder[roll] = round3(use.reduce((a, k) => a + values[k], 0) / use.length);
+    higherOrderWithImputed[roll] = round3(ins.reduce((a, k) => a + values[k], 0) / ins.length);
+  }
 
   const derivation = persona?.valuesDerivation as { method?: string } | undefined;
   const personaSource: ValuesRoute =
@@ -182,16 +218,25 @@ export function resolvePersonaValues(name: string): {
   // numbers. Deliberately NOT the `unpopulated` list below: that one also
   // requires the value to sit at baseline, so an axis with correlations whose
   // contributions happened to cancel would be misread as unreachable.
-  const maslowFrozen = new Set(
-    fromTraits
-      ? ["selfDirection", "stimulation", "hedonism", "achievement", "power", "security",
-         "conformity", "tradition", "benevolence", "universalism",
-         "autonomyNeed", "competenceNeed", "relatednessNeed"]
-          .filter((k) => !valueAxisCorrelationCounts()[k])
-      : [],
-  );
-  const maslowScores = scoreMaslow(values, sdt, maslowFrozen);
-  const derivedMaslow = maslowScores[0].level;
+  const maslowScores = scoreMaslow(values, sdt, hoFrozen);
+  //
+  // A tie is carried BY the value, not beside it.
+  //
+  // The caveat said "treat the top two as tied" while `level` went on
+  // returning one string, so a consumer reading `.level` and not `.caveat` got
+  // a coin flip rendered as a determination -- the same defect as the two
+  // kinds of 0.50, moved from a number to a category. The numeric case was
+  // fixed by adding a decimal so the distinction lives in the value; the
+  // categorical equivalent is a value that cannot be mistaken for a single
+  // answer. `topScoring` keeps a bare argmax for callers that genuinely need
+  // one token. (2026-08-01)
+  const MASLOW_TIE = 0.05;
+  const maslowTied = maslowScores
+    .filter((c) => maslowScores[0].score - c.score < MASLOW_TIE)
+    .map((c) => c.level);
+  const derivedMaslow = maslowTied.length > 1
+    ? `${maslowTied.join(" | ")} (tied, margin ${round3(maslowScores[0].score - maslowScores[1].score)})`
+    : maslowScores[0].level;
   const maslowMargin = round3(maslowScores[0].score - maslowScores[1].score);
   // "Unreliable" is the union of two independent problems: too close to call,
   // and decided by an axis carrying no signal. Either one alone is enough.
@@ -334,10 +379,16 @@ export function resolvePersonaValues(name: string): {
       : {}),
     ...(Object.keys(sdt).length ? { sdt, sdtSource: flat ? "default" : "derived" } : {}),
     higherOrder,
+    higherOrderWithImputed,
+    imputationPolicy: hoFrozen.size
+      ? `Axes this route cannot reach (${[...hoFrozen].join(", ")}) are EXCLUDED from every mean rather than imputed at 0.5. Imputing the midpoint shrinks a contaminated composite toward 0.5 while leaving a fully-populated one untouched, which reorders rankings instead of only widening them. Applies identically to higherOrder, maslowLevel and influencePatterns; the pre-change imputed figures are kept alongside each.`
+      : "Nothing is imputed on this route: every axis is reachable.",
     maslowLevel: stored ?? derivedMaslow,
     maslowSource: stored ? "stored" : "derived",
     ...(stored ? {} : {
       maslowBasis: maslowScores[0].basis,
+      maslowTopScoring: maslowScores[0].level,
+      ...(maslowTied.length > 1 ? { maslowTied } : {}),
       maslowRunnerUp: `${maslowScores[1].level} ${maslowScores[1].score} = ${maslowScores[1].basis}`,
       maslowMargin: maslowMargin,
       ...(Object.keys(maslowContamination).length ? { maslowContamination } : {}),
@@ -397,6 +448,237 @@ function scoreMaslow(
     };
   }).sort((a, b) => b.score - a.score);
 }
+
+/**
+ * The persona_values_lookup payload, extracted from the tool handler so it can
+ * be asserted directly.
+ *
+ * It lived inline, which meant the only way to see what the tool actually
+ * returns was to run an MCP server -- and that is precisely why six resolver
+ * fields shipped computed-but-undelivered in one day. A payload no test can
+ * reach is a payload nothing checks. (2026-08-01)
+ */
+export async function buildValuesPayload(
+  persona: string,
+  includeInfluencePatterns = true,
+): Promise<Record<string, unknown>> {
+      const resolved = resolvePersonaValues(persona);
+      // Keyed on "the resolver found something", not on an enumerated list of
+      // sources. This read `source === "persona"` and then a later change
+      // added "derived" for personas whose values the derivation wrote --
+      // which is every regenerated custom persona -- so they stopped matching
+      // and fell back into the not-found error the fallback exists to prevent.
+      // A condition that enumerates the valid cases has to be revisited every
+      // time a case is added; "not none" does not. (2026-07-31)
+      const values = getPersonaValues(persona) ?? (resolved.source !== "none"
+        ? (resolved.values as unknown as ReturnType<typeof getPersonaValues>)
+        : undefined);
+
+      if (!values) {
+        const availablePersonas = PERSONA_VALUE_PROFILES.map(p => p.personaName);
+        return {
+                error: `No values profile found for persona: ${persona}`,
+                availablePersonas,
+                // These are the registry's OWN keys, and several differ from
+                // the names every other tool advertises -- "adhd" here against
+                // "cognitive-adhd" in empathy_audit, "motor-tremor" against
+                // "motor-impairment-tremor". Both forms resolve, because
+                // resolvePersonaName aliases them, but a list that teaches the
+                // internal vocabulary sends a caller to a different name than
+                // the rest of the surface uses. Say so rather than let the
+                // list imply these are the canonical names. (2026-07-31)
+                availablePersonasNote: "Registry keys. The longer names used by empathy_audit and the persona tools (cognitive-adhd, motor-impairment-tremor, low-vision-magnified) alias onto these and resolve fine. list_cognitive_personas is the authoritative roster.",
+                note: "Values come from this registry, or from a schwartzValues block on a custom persona's own file — persona_lookup reads both. Custom personas can also have values added via the questionnaire.",
+              };
+      }
+
+      const profile = PERSONA_VALUE_PROFILES.find(
+        p => p.personaName.toLowerCase() === persona.toLowerCase()
+      );
+
+      let influencePatterns: Array<{pattern: string; susceptibility: number; description: string;
+        basis?: { values: string[]; traits: string[]; weighting: string; formula: string;
+          unpopulatedInputs: string; susceptibilityWithImputed?: number }}> | undefined;
+      let influencePatternsTotal: number | undefined;
+      let influencePatternsOmitted: string[] | undefined;
+      if (includeInfluencePatterns) {
+        // Traits passed through, so patterns sharing a value target set can
+        // differ and a trait named for its pattern actually reaches it.
+        const rankTraits = getCognitiveProfile(getAnyPersona(persona) as never)?.traits as
+          unknown as Record<string, number> | undefined;
+        const ranked = rankInfluencePatternsForProfile(values, rankTraits, new Set(resolved.unpopulatedAxes ?? []));
+        // A silent top-7 cut made a mapped pattern look unmapped: social_proof
+        // ranks 10th for some personas and simply vanished, with nothing in the
+        // response distinguishing "scored low and truncated" from "this trait
+        // never reaches the pattern list". The count and the omitted names are
+        // reported now. (2026-07-31)
+        influencePatternsTotal = ranked.length;
+        influencePatternsOmitted = ranked.slice(7).map(r => r.pattern.name);
+        // Each score's inputs, so a rank can be traced instead of guessed at.
+        // commitment topping the list was untraceable from the output: the
+        // reader could see 0.71 and had to reverse-engineer which values and
+        // which traits produced it.
+        // Unpopulated inputs marked INSIDE the basis, not only counted elsewhere.
+        // The blog widget already badged these ("scarcity - 1 of 3 frozen") while
+        // the API handed back a bare `power=0.5` that reads as a measured
+        // midpoint. The web UI was more honest than the tool output, which is
+        // backwards: the tool output is the one consumed programmatically, by a
+        // reader with no page to look at. (2026-08-01)
+        const frozen = new Set(resolved.unpopulatedAxes ?? []);
+        const vAll = values as unknown as Record<string, number>;
+        influencePatterns = ranked.slice(0, 7).map(r => {
+          const badValues = r.pattern.targetValues.filter((v) => frozen.has(v));
+          // The value mean is taken over DEFINED targets only, and the trait
+          // half is dropped entirely when a pattern has no related traits or
+          // none of them are on this persona (value-mappings.ts:609,618). So
+          // the weighting is 60/40 or 100/0 depending on the pattern, and the
+          // string said 60/40 unconditionally.
+          const definedValues = r.pattern.targetValues.filter((v) => typeof vAll[v] === "number");
+          const liveTraits = (r.pattern.relatedTraits ?? []).filter(
+            (t) => typeof rankTraits?.[t.trait] === "number");
+          const valueWeight = liveTraits.length ? 0.6 : 1;
+          // The fraction of the FINAL score that is placeholder, not the
+          // fraction of the value inputs. One frozen value out of three is a
+          // third of the value mean, which is 0.6 x 1/3 = 20% of the score --
+          // not 33%. A post about not overstating precision should not
+          // overstate its own contamination. (2026-08-01)
+          const syntheticShare = definedValues.length
+            ? valueWeight * (badValues.length / definedValues.length)
+            : 0;
+          return {
+          basis: {
+            values: r.pattern.targetValues.map((v) =>
+              `${v}=${vAll[v] ?? "n/a"}${frozen.has(v) ? " (unpopulated baseline, not a measurement)" : ""}`),
+            traits: (r.pattern.relatedTraits ?? []).map(
+              (t) => `${t.trait}=${rankTraits?.[t.trait] ?? "n/a"}${t.direction === "negative" ? " (inverted)" : ""}`),
+            // "defined" was accurate about the CHECK and wrong about the
+            // result: an axis this route cannot reach is defined -- it is
+            // sitting at 0.5 -- so the mean silently included placeholders
+            // while the string implied it did not. Says what it does now.
+            formula: liveTraits.length
+              ? "susceptibility = 0.6 * mean(target values that are populated on this route) + 0.4 * mean(related traits, inverted where direction is negative), rounded to 3dp"
+              : "susceptibility = mean(target values that are populated on this route)",
+            weighting: liveTraits.length
+              ? "60% value mean, 40% trait mean"
+              : "100% value mean (this pattern contributed no traits, so the 40% trait term is not applied)",
+            unpopulatedInputs: badValues.length
+              ? `${badValues.length} of ${definedValues.length} value inputs unpopulated (${badValues.join(", ")}) and EXCLUDED from the mean, so the score rests on ${definedValues.length - badValues.length}. Previously they were averaged in at 0.5, which at ${Math.round(valueWeight * 100)}% value weighting made ${Math.round(syntheticShare * 1000) / 10}% of the score placeholder.`
+              : `0 of ${definedValues.length} value inputs unpopulated`,
+            ...(r.susceptibilityWithImputed !== r.susceptibility
+              ? { susceptibilityWithImputed: r.susceptibilityWithImputed }
+              : {}),
+          },
+          pattern: r.pattern.name,
+          susceptibility: r.susceptibility,
+          description: r.pattern.description,
+        };});
+      }
+
+      return {
+              persona,
+              rationale: profile?.rationale,
+              schwartzValues: {
+                selfDirection: { value: values.selfDirection, meaning: "Independent thought, creativity, freedom" },
+                stimulation: { value: values.stimulation, meaning: "Excitement, novelty, challenge" },
+                hedonism: { value: values.hedonism, meaning: "Pleasure, sensuous gratification" },
+                achievement: { value: values.achievement, meaning: "Personal success through competence" },
+                power: { value: values.power, meaning: "Social status, prestige, control" },
+                security: { value: values.security, meaning: "Safety, harmony, stability" },
+                conformity: { value: values.conformity, meaning: "Restraint of actions that harm others" },
+                tradition: { value: values.tradition, meaning: "Respect for customs, heritage" },
+                benevolence: { value: values.benevolence, meaning: "Welfare of close others" },
+                universalism: { value: values.universalism, meaning: "Tolerance, social justice, environment" },
+              },
+              higherOrderValues: {
+                openness: { value: resolved.higherOrder?.openness, meaning: "(selfDirection + stimulation) / 2" },
+                selfEnhancement: { value: resolved.higherOrder?.selfEnhancement, meaning: "(achievement + power) / 2" },
+                conservation: { value: resolved.higherOrder?.conservation, meaning: "(security + conformity + tradition) / 3" },
+                selfTranscendence: { value: resolved.higherOrder?.selfTranscendence, meaning: "(benevolence + universalism) / 2" },
+              },
+              // From the resolver, which carries the SDT numbers whichever
+              // source they came from. Reading them off `values` returned
+              // undefined on the persona-file path -- the block rendered three
+              // "meaning" strings with no values attached.
+              // Values exist here but the persona does not, so nothing can
+              // actually be RUN as it. Eight registry keys are in this state;
+              // finding that out previously meant diffing this tool's output
+              // against list_cognitive_personas by hand.
+              ...(getAnyPersona(persona)
+                ? {}
+                : { runnable: false,
+                    runnableNote: `A values profile exists for "${persona}" but no persona does, so it cannot be used by empathy_audit, cognitive_journey or any other tool that runs AS a persona. Values data without a persona behind it.` }),
+              ...(resolved.sdtSource ? { selfDeterminationSource: resolved.sdtSource } : {}),
+              selfDeterminationTheory: {
+                autonomyNeed: { value: resolved.sdt?.autonomyNeed ?? values.autonomyNeed, meaning: "Need for choice and control" },
+                competenceNeed: { value: resolved.sdt?.competenceNeed ?? values.competenceNeed, meaning: "Need to feel capable" },
+                relatednessNeed: { value: resolved.sdt?.relatednessNeed ?? values.relatednessNeed, meaning: "Need for connection" },
+              },
+              maslowLevel: {
+                level: resolved.maslowLevel ?? values.maslowLevel,
+                source: resolved.maslowSource,
+                meaning: (resolved.maslowLevel ?? values.maslowLevel) === "physiological" ? "Basic survival needs"
+                  : (resolved.maslowLevel ?? values.maslowLevel) === "safety" ? "Security and stability"
+                  : (resolved.maslowLevel ?? values.maslowLevel) === "belonging" ? "Social connection and love"
+                  : (resolved.maslowLevel ?? values.maslowLevel) === "esteem" ? "Achievement and recognition"
+                  : "Self-fulfillment and growth",
+                // The level used to arrive bare. It is a rollup of four axes
+                // that can be a coin-flip apart, so it now ships its own
+                // arithmetic and says when the winner is not a finding.
+                ...(resolved.maslowBasis ? { basis: resolved.maslowBasis } : {}),
+                ...(resolved.maslowTopScoring ? { topScoring: resolved.maslowTopScoring } : {}),
+                ...(resolved.maslowTied ? { tied: resolved.maslowTied } : {}),
+                ...(resolved.maslowRunnerUp ? { runnerUp: resolved.maslowRunnerUp } : {}),
+                ...(resolved.maslowMargin !== undefined ? { marginOverRunnerUp: resolved.maslowMargin } : {}),
+                // Same contract as higherOrderContamination, and surfaced in the
+                // same breath as the fields it qualifies -- adding it to the
+                // resolver and forgetting it here is the exact defect this file
+                // has now produced four times.
+                ...(resolved.maslowContamination ? { contamination: resolved.maslowContamination } : {}),
+                ...(resolved.maslowCaveat ? { caveat: resolved.maslowCaveat } : {}),
+              },
+              influencePatterns,
+              ...(influencePatternsTotal !== undefined && influencePatternsOmitted?.length
+                ? {
+                    influencePatternsShown: influencePatterns?.length,
+                    influencePatternsTotal,
+                    influencePatternsOmitted,
+                    influencePatternsNote: "Ranked by susceptibility and cut to the top seven. The omitted names ARE mapped and scored -- they ranked below the cut, which is different from a pattern the persona's traits never reach.",
+                  }
+                : {}),
+              // The Schwartz block arrived unattributed here while
+              // persona_lookup labelled the same values. Provenance should not
+              // depend on which tool you asked.
+              valuesSource: resolved.source,
+              ...(resolved.higherOrderWithImputed ? { higherOrderWithImputed: resolved.higherOrderWithImputed } : {}),
+              ...(resolved.imputationPolicy ? { imputationPolicy: resolved.imputationPolicy } : {}),
+              ...(resolved.storedIn ? { valuesStoredIn: resolved.storedIn } : {}),
+              ...(resolved.unpopulatedAxes
+                ? { unpopulatedAxes: resolved.unpopulatedAxes, unpopulatedNote: resolved.unpopulatedNote }
+                : {}),
+              // Computed in the resolver since it was written and dropped on the
+              // floor here, so the field built to disambiguate a 0.5 never
+              // reached a single caller. Third producer with no consumer found
+              // in this file. (2026-08-01)
+              ...(resolved.netNudge
+                ? { netNudge: resolved.netNudge, netNudgeNote: resolved.netNudgeNote,
+                    ...(resolved.valueTransform ? { valueTransform: resolved.valueTransform } : {}) }
+                : {}),
+              ...(resolved.netZeroAxes
+                ? { netZeroAxes: resolved.netZeroAxes, netZeroNote: resolved.netZeroNote }
+                : {}),
+              ...(resolved.higherOrderContamination
+                ? { higherOrderContamination: resolved.higherOrderContamination }
+                : {}),
+              researchBasis: {
+                schwartz: "Schwartz, S. H. (1992, 2012). Theory of Basic Human Values. DOI: 10.1016/S0065-2601(08)60281-6",
+                sdt: "Deci, E. L., & Ryan, R. M. (1985, 2000). Self-Determination Theory. DOI: 10.1037/0003-066X.55.1.68",
+                maslow: "Maslow, A. H. (1943). A Theory of Human Motivation. DOI: 10.1037/h0054346",
+              },
+            };
+}
+
+/** Test-facing alias; same function, named so its purpose is obvious in specs. */
+export const buildValuesPayloadForTest = buildValuesPayload;
 
 export function registerValuesTools(server: McpServer): void {
   server.registerTool("persona_values_list", {
@@ -609,221 +891,9 @@ export function registerValuesTools(server: McpServer): void {
       openWorldHint: false,
     },
   }, async ({ persona, includeInfluencePatterns }) => {
-      const resolved = resolvePersonaValues(persona);
-      // Keyed on "the resolver found something", not on an enumerated list of
-      // sources. This read `source === "persona"` and then a later change
-      // added "derived" for personas whose values the derivation wrote --
-      // which is every regenerated custom persona -- so they stopped matching
-      // and fell back into the not-found error the fallback exists to prevent.
-      // A condition that enumerates the valid cases has to be revisited every
-      // time a case is added; "not none" does not. (2026-07-31)
-      const values = getPersonaValues(persona) ?? (resolved.source !== "none"
-        ? (resolved.values as unknown as ReturnType<typeof getPersonaValues>)
-        : undefined);
-
-      if (!values) {
-        const availablePersonas = PERSONA_VALUE_PROFILES.map(p => p.personaName);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: `No values profile found for persona: ${persona}`,
-                availablePersonas,
-                // These are the registry's OWN keys, and several differ from
-                // the names every other tool advertises -- "adhd" here against
-                // "cognitive-adhd" in empathy_audit, "motor-tremor" against
-                // "motor-impairment-tremor". Both forms resolve, because
-                // resolvePersonaName aliases them, but a list that teaches the
-                // internal vocabulary sends a caller to a different name than
-                // the rest of the surface uses. Say so rather than let the
-                // list imply these are the canonical names. (2026-07-31)
-                availablePersonasNote: "Registry keys. The longer names used by empathy_audit and the persona tools (cognitive-adhd, motor-impairment-tremor, low-vision-magnified) alias onto these and resolve fine. list_cognitive_personas is the authoritative roster.",
-                note: "Values come from this registry, or from a schwartzValues block on a custom persona's own file — persona_lookup reads both. Custom personas can also have values added via the questionnaire.",
-              }, null, 2),
-            },
-          ],
-        };
-      }
-
-      const profile = PERSONA_VALUE_PROFILES.find(
-        p => p.personaName.toLowerCase() === persona.toLowerCase()
-      );
-
-      let influencePatterns: Array<{pattern: string; susceptibility: number; description: string;
-        basis?: { values: string[]; traits: string[]; weighting: string; formula: string; unpopulatedInputs: string }}> | undefined;
-      let influencePatternsTotal: number | undefined;
-      let influencePatternsOmitted: string[] | undefined;
-      if (includeInfluencePatterns) {
-        // Traits passed through, so patterns sharing a value target set can
-        // differ and a trait named for its pattern actually reaches it.
-        const rankTraits = getCognitiveProfile(getAnyPersona(persona) as never)?.traits as
-          unknown as Record<string, number> | undefined;
-        const ranked = rankInfluencePatternsForProfile(values, rankTraits);
-        // A silent top-7 cut made a mapped pattern look unmapped: social_proof
-        // ranks 10th for some personas and simply vanished, with nothing in the
-        // response distinguishing "scored low and truncated" from "this trait
-        // never reaches the pattern list". The count and the omitted names are
-        // reported now. (2026-07-31)
-        influencePatternsTotal = ranked.length;
-        influencePatternsOmitted = ranked.slice(7).map(r => r.pattern.name);
-        // Each score's inputs, so a rank can be traced instead of guessed at.
-        // commitment topping the list was untraceable from the output: the
-        // reader could see 0.71 and had to reverse-engineer which values and
-        // which traits produced it.
-        // Unpopulated inputs marked INSIDE the basis, not only counted elsewhere.
-        // The blog widget already badged these ("scarcity - 1 of 3 frozen") while
-        // the API handed back a bare `power=0.5` that reads as a measured
-        // midpoint. The web UI was more honest than the tool output, which is
-        // backwards: the tool output is the one consumed programmatically, by a
-        // reader with no page to look at. (2026-08-01)
-        const frozen = new Set(resolved.unpopulatedAxes ?? []);
-        const vAll = values as unknown as Record<string, number>;
-        influencePatterns = ranked.slice(0, 7).map(r => {
-          const badValues = r.pattern.targetValues.filter((v) => frozen.has(v));
-          // The value mean is taken over DEFINED targets only, and the trait
-          // half is dropped entirely when a pattern has no related traits or
-          // none of them are on this persona (value-mappings.ts:609,618). So
-          // the weighting is 60/40 or 100/0 depending on the pattern, and the
-          // string said 60/40 unconditionally.
-          const definedValues = r.pattern.targetValues.filter((v) => typeof vAll[v] === "number");
-          const liveTraits = (r.pattern.relatedTraits ?? []).filter(
-            (t) => typeof rankTraits?.[t.trait] === "number");
-          const valueWeight = liveTraits.length ? 0.6 : 1;
-          // The fraction of the FINAL score that is placeholder, not the
-          // fraction of the value inputs. One frozen value out of three is a
-          // third of the value mean, which is 0.6 x 1/3 = 20% of the score --
-          // not 33%. A post about not overstating precision should not
-          // overstate its own contamination. (2026-08-01)
-          const syntheticShare = definedValues.length
-            ? valueWeight * (badValues.length / definedValues.length)
-            : 0;
-          return {
-          basis: {
-            values: r.pattern.targetValues.map((v) =>
-              `${v}=${vAll[v] ?? "n/a"}${frozen.has(v) ? " (unpopulated baseline, not a measurement)" : ""}`),
-            traits: (r.pattern.relatedTraits ?? []).map(
-              (t) => `${t.trait}=${rankTraits?.[t.trait] ?? "n/a"}${t.direction === "negative" ? " (inverted)" : ""}`),
-            formula: liveTraits.length
-              ? "susceptibility = 0.6 * mean(defined target values) + 0.4 * mean(related traits, inverted where direction is negative), rounded to 3dp"
-              : "susceptibility = mean(defined target values)",
-            weighting: liveTraits.length
-              ? "60% value mean, 40% trait mean"
-              : "100% value mean (this pattern contributed no traits, so the 40% trait term is not applied)",
-            unpopulatedInputs: badValues.length
-              ? `${badValues.length} of ${definedValues.length} value inputs unpopulated (${badValues.join(", ")}). At ${Math.round(valueWeight * 100)}% value weighting that is ${Math.round(syntheticShare * 1000) / 10}% of the final score, not ${Math.round((badValues.length / definedValues.length) * 1000) / 10}%.`
-              : `0 of ${definedValues.length} value inputs unpopulated`,
-          },
-          pattern: r.pattern.name,
-          susceptibility: r.susceptibility,
-          description: r.pattern.description,
-        };});
-      }
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              persona,
-              rationale: profile?.rationale,
-              schwartzValues: {
-                selfDirection: { value: values.selfDirection, meaning: "Independent thought, creativity, freedom" },
-                stimulation: { value: values.stimulation, meaning: "Excitement, novelty, challenge" },
-                hedonism: { value: values.hedonism, meaning: "Pleasure, sensuous gratification" },
-                achievement: { value: values.achievement, meaning: "Personal success through competence" },
-                power: { value: values.power, meaning: "Social status, prestige, control" },
-                security: { value: values.security, meaning: "Safety, harmony, stability" },
-                conformity: { value: values.conformity, meaning: "Restraint of actions that harm others" },
-                tradition: { value: values.tradition, meaning: "Respect for customs, heritage" },
-                benevolence: { value: values.benevolence, meaning: "Welfare of close others" },
-                universalism: { value: values.universalism, meaning: "Tolerance, social justice, environment" },
-              },
-              higherOrderValues: {
-                openness: { value: resolved.higherOrder?.openness, meaning: "(selfDirection + stimulation) / 2" },
-                selfEnhancement: { value: resolved.higherOrder?.selfEnhancement, meaning: "(achievement + power) / 2" },
-                conservation: { value: resolved.higherOrder?.conservation, meaning: "(security + conformity + tradition) / 3" },
-                selfTranscendence: { value: resolved.higherOrder?.selfTranscendence, meaning: "(benevolence + universalism) / 2" },
-              },
-              // From the resolver, which carries the SDT numbers whichever
-              // source they came from. Reading them off `values` returned
-              // undefined on the persona-file path -- the block rendered three
-              // "meaning" strings with no values attached.
-              // Values exist here but the persona does not, so nothing can
-              // actually be RUN as it. Eight registry keys are in this state;
-              // finding that out previously meant diffing this tool's output
-              // against list_cognitive_personas by hand.
-              ...(getAnyPersona(persona)
-                ? {}
-                : { runnable: false,
-                    runnableNote: `A values profile exists for "${persona}" but no persona does, so it cannot be used by empathy_audit, cognitive_journey or any other tool that runs AS a persona. Values data without a persona behind it.` }),
-              ...(resolved.sdtSource ? { selfDeterminationSource: resolved.sdtSource } : {}),
-              selfDeterminationTheory: {
-                autonomyNeed: { value: resolved.sdt?.autonomyNeed ?? values.autonomyNeed, meaning: "Need for choice and control" },
-                competenceNeed: { value: resolved.sdt?.competenceNeed ?? values.competenceNeed, meaning: "Need to feel capable" },
-                relatednessNeed: { value: resolved.sdt?.relatednessNeed ?? values.relatednessNeed, meaning: "Need for connection" },
-              },
-              maslowLevel: {
-                level: resolved.maslowLevel ?? values.maslowLevel,
-                source: resolved.maslowSource,
-                meaning: (resolved.maslowLevel ?? values.maslowLevel) === "physiological" ? "Basic survival needs"
-                  : (resolved.maslowLevel ?? values.maslowLevel) === "safety" ? "Security and stability"
-                  : (resolved.maslowLevel ?? values.maslowLevel) === "belonging" ? "Social connection and love"
-                  : (resolved.maslowLevel ?? values.maslowLevel) === "esteem" ? "Achievement and recognition"
-                  : "Self-fulfillment and growth",
-                // The level used to arrive bare. It is a rollup of four axes
-                // that can be a coin-flip apart, so it now ships its own
-                // arithmetic and says when the winner is not a finding.
-                ...(resolved.maslowBasis ? { basis: resolved.maslowBasis } : {}),
-                ...(resolved.maslowRunnerUp ? { runnerUp: resolved.maslowRunnerUp } : {}),
-                ...(resolved.maslowMargin !== undefined ? { marginOverRunnerUp: resolved.maslowMargin } : {}),
-                // Same contract as higherOrderContamination, and surfaced in the
-                // same breath as the fields it qualifies -- adding it to the
-                // resolver and forgetting it here is the exact defect this file
-                // has now produced four times.
-                ...(resolved.maslowContamination ? { contamination: resolved.maslowContamination } : {}),
-                ...(resolved.maslowCaveat ? { caveat: resolved.maslowCaveat } : {}),
-              },
-              influencePatterns,
-              ...(influencePatternsTotal !== undefined && influencePatternsOmitted?.length
-                ? {
-                    influencePatternsShown: influencePatterns?.length,
-                    influencePatternsTotal,
-                    influencePatternsOmitted,
-                    influencePatternsNote: "Ranked by susceptibility and cut to the top seven. The omitted names ARE mapped and scored -- they ranked below the cut, which is different from a pattern the persona's traits never reach.",
-                  }
-                : {}),
-              // The Schwartz block arrived unattributed here while
-              // persona_lookup labelled the same values. Provenance should not
-              // depend on which tool you asked.
-              valuesSource: resolved.source,
-              ...(resolved.storedIn ? { valuesStoredIn: resolved.storedIn } : {}),
-              ...(resolved.unpopulatedAxes
-                ? { unpopulatedAxes: resolved.unpopulatedAxes, unpopulatedNote: resolved.unpopulatedNote }
-                : {}),
-              // Computed in the resolver since it was written and dropped on the
-              // floor here, so the field built to disambiguate a 0.5 never
-              // reached a single caller. Third producer with no consumer found
-              // in this file. (2026-08-01)
-              ...(resolved.netNudge
-                ? { netNudge: resolved.netNudge, netNudgeNote: resolved.netNudgeNote,
-                    ...(resolved.valueTransform ? { valueTransform: resolved.valueTransform } : {}) }
-                : {}),
-              ...(resolved.netZeroAxes
-                ? { netZeroAxes: resolved.netZeroAxes, netZeroNote: resolved.netZeroNote }
-                : {}),
-              ...(resolved.higherOrderContamination
-                ? { higherOrderContamination: resolved.higherOrderContamination }
-                : {}),
-              researchBasis: {
-                schwartz: "Schwartz, S. H. (1992, 2012). Theory of Basic Human Values. DOI: 10.1016/S0065-2601(08)60281-6",
-                sdt: "Deci, E. L., & Ryan, R. M. (1985, 2000). Self-Determination Theory. DOI: 10.1037/0003-066X.55.1.68",
-                maslow: "Maslow, A. H. (1943). A Theory of Human Motivation. DOI: 10.1037/h0054346",
-              },
-            }, null, 2),
-          },
-        ],
-      };
+      // Delegates so the shape is testable without an MCP server.
+      const payload = await buildValuesPayload(persona, includeInfluencePatterns);
+      return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
     }
   );
 
