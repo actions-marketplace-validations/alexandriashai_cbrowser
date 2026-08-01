@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { PERSONA_CATEGORIES } from "../../persona-questionnaire.js";
 import { getAnyPersona, getCognitiveProfile } from "../../personas.js";
-import { valueAxisCorrelationCounts } from "../../persona-questionnaire.js";
+import { valueAxisCorrelationCounts, TRAIT_VALUE_CORRELATIONS } from "../../persona-questionnaire.js";
 import { deriveValuesFromBigFive, bigFiveReachableAxes } from "../../values/big-five-values.js";
 import { widgetUri } from "../widget-kit.js";
 import type { McpServer } from "../types.js";
@@ -308,6 +308,25 @@ export function resolvePersonaValues(name: string): {
   // Axes that ARE derived but whose contributions cancelled. A different fact
   // from an axis with no correlations, and the two are indistinguishable by
   // value alone -- both read 0.5.
+  // Which of the two zero-net shapes each axis is: a lone neutral input, or
+  // opposing inputs that cancelled. Reported rather than assumed.
+  const traitsForShape = getCognitiveProfile(persona as never)?.traits as
+    unknown as Record<string, number> | undefined;
+  const netZeroShape = (axis: string): string => {
+    // Traits whose correlation table entry targets this axis AND which this
+    // persona actually carries a number for.
+    const contributing = Object.entries(TRAIT_VALUE_CORRELATIONS)
+      .filter(([trait, c]) => c.affects.some((a) => a.value === axis)
+        && typeof traitsForShape?.[trait] === "number")
+      .map(([trait]) => trait);
+    if (contributing.length === 1) {
+      return `${axis} has a single contributing trait (${contributing[0]}) sitting at the midpoint — nothing opposed it, nothing pushed it`;
+    }
+    if (contributing.length > 1) {
+      return `${axis} has ${contributing.length} contributing traits (${contributing.join(", ")}) whose pulls cancel`;
+    }
+    return `${axis} has no contributing trait carrying a number on this persona`;
+  };
   const netZero = fromTraits
     ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !!counts[k])
     : [];
@@ -351,7 +370,15 @@ export function resolvePersonaValues(name: string): {
     ...(netZero.length
       ? {
           netZeroAxes: netZero,
-          netZeroNote: `These axes ARE derived — trait correlations exist and were applied — but this persona's traits pull them both ways and the contributions cancel near the baseline. Reading 0.5 here means "measured, no net lean", which is not the same as the unpopulated axes above.`,
+          // The note asserted OPPOSING FORCES ("pull them both ways"), which is
+          // only one of the two ways an axis lands at zero net. The other, and
+          // the more common one, is a single input sitting at exactly 0.5 —
+          // chen-wei's benevolence has one link (trustCalibration 0.5) and its
+          // autonomyNeed has one (selfEfficacy 0.5). Nothing cancelled; nothing
+          // pushed. Stating a mechanism the numbers do not show is the same
+          // defect as a value that overstates its own precision, so the note
+          // now reports WHICH case each axis is. (2026-08-01)
+          netZeroNote: `These axes ARE derived — trait correlations exist and were applied — but the net evidence lands at zero, so they sit at the baseline anyway. ${netZero.map(netZeroShape).join("; ")}. Reading 0.5 here means "measured, no net lean", which is not the same as the unpopulated axes above.`,
         }
       : {}),
     // Which rollups inherit a baseline input. openness can be clean while
