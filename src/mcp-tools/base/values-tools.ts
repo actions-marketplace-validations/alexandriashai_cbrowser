@@ -33,9 +33,12 @@ import {
  */
 export function resolvePersonaValues(name: string): {
   values: Record<string, number> | null;
-  source: "registry" | "persona" | "none";
+  source: "registry" | "persona" | "derived" | "none";
   sdt?: Record<string, number>;
   sdtSource?: "derived" | "default";
+  higherOrder?: Record<string, number>;
+  maslowLevel?: string;
+  maslowSource?: "stored" | "derived";
 } {
   const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
     "security", "conformity", "tradition", "benevolence", "universalism"] as const;
@@ -58,12 +61,50 @@ export function resolvePersonaValues(name: string): {
   // were indistinguishable in the payload, so a caller could not tell a
   // derivation from a default -- and 0.5 across all three is the tell.
   const flat = Object.keys(sdt).length === 3 && Object.values(sdt).every((v) => v === 0.5);
+  // The four rollups. calculateHigherOrderValues has always existed and was
+  // never called: both tools read values.openness and friends straight off the
+  // base object, where those keys do not live, so every entry rendered its
+  // formula string with an undefined value beside it. (2026-07-31)
+  const higherOrder = {
+    openness: round2((values.selfDirection + values.stimulation) / 2),
+    selfEnhancement: round2((values.achievement + values.power) / 2),
+    conservation: round2((values.security + values.conformity + values.tradition) / 3),
+    selfTranscendence: round2((values.benevolence + values.universalism) / 2),
+  };
+
+  // Stored on registry profiles; absent from a persona-authored block, where
+  // the closest honest answer is the level its own values point at. Which of
+  // the two happened is reported rather than left to be guessed.
+  const stored = (registry as unknown as { maslowLevel?: string })?.maslowLevel;
+  const derivedMaslow = (() => {
+    const candidates: Array<[string, number]> = [
+      ["safety", (values.security + values.conformity) / 2],
+      ["belonging", (values.benevolence + (sdt.relatednessNeed ?? 0.5)) / 2],
+      ["esteem", (values.achievement + values.power) / 2],
+      ["self-actualization", (values.selfDirection + values.universalism) / 2],
+    ];
+    return candidates.sort((a, b) => b[1] - a[1])[0][0];
+  })();
+
+  // A persona's values can be authored by hand or written by the derivation.
+  // Both live in the same field, and a value of exactly 0.5 means different
+  // things in each case: a deliberate midpoint, or the untouched baseline the
+  // derivation starts from. Anything treating values as evidence needs to be
+  // able to tell them apart. (2026-07-31)
+  const derivation = persona?.valuesDerivation as { method?: string } | undefined;
+  const personaSource = derivation?.method === "traits" ? "derived" : "persona";
+
   return {
     values,
-    source: registry ? "registry" : "persona",
+    source: registry ? "registry" : (personaSource as "persona"),
     ...(Object.keys(sdt).length ? { sdt, sdtSource: flat ? "default" : "derived" } : {}),
+    higherOrder,
+    maslowLevel: stored ?? derivedMaslow,
+    maslowSource: stored ? "stored" : "derived",
   };
 }
+
+const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 export function registerValuesTools(server: McpServer): void {
   server.registerTool("persona_values_list", {
@@ -187,6 +228,8 @@ export function registerValuesTools(server: McpServer): void {
             values: r.values,
             valuesSource: r.source,
             ...(r.sdt ? { selfDeterminationNeeds: r.sdt, selfDeterminationSource: r.sdtSource } : {}),
+            ...(r.higherOrder ? { higherOrderValues: r.higherOrder } : {}),
+            ...(r.maslowLevel ? { maslowLevel: r.maslowLevel, maslowSource: r.maslowSource } : {}),
             ...(r.sdtSource === "default"
               ? { selfDeterminationNote: "All three needs read 0.5, which is the placeholder AI-generated personas ship with rather than a measurement. Questionnaire-derived personas carry computed values here." }
               : {}),
@@ -302,7 +345,11 @@ export function registerValuesTools(server: McpServer): void {
 
       let influencePatterns: Array<{pattern: string; susceptibility: number; description: string}> | undefined;
       if (includeInfluencePatterns) {
-        const ranked = rankInfluencePatternsForProfile(values);
+        // Traits passed through, so patterns sharing a value target set can
+        // differ and a trait named for its pattern actually reaches it.
+        const rankTraits = getCognitiveProfile(getAnyPersona(persona) as never)?.traits as
+          unknown as Record<string, number> | undefined;
+        const ranked = rankInfluencePatternsForProfile(values, rankTraits);
         influencePatterns = ranked.slice(0, 7).map(r => ({
           pattern: r.pattern.name,
           susceptibility: r.susceptibility,
@@ -330,10 +377,10 @@ export function registerValuesTools(server: McpServer): void {
                 universalism: { value: values.universalism, meaning: "Tolerance, social justice, environment" },
               },
               higherOrderValues: {
-                openness: { value: values.openness, meaning: "(selfDirection + stimulation) / 2" },
-                selfEnhancement: { value: values.selfEnhancement, meaning: "(achievement + power) / 2" },
-                conservation: { value: values.conservation, meaning: "(security + conformity + tradition) / 3" },
-                selfTranscendence: { value: values.selfTranscendence, meaning: "(benevolence + universalism) / 2" },
+                openness: { value: resolved.higherOrder?.openness, meaning: "(selfDirection + stimulation) / 2" },
+                selfEnhancement: { value: resolved.higherOrder?.selfEnhancement, meaning: "(achievement + power) / 2" },
+                conservation: { value: resolved.higherOrder?.conservation, meaning: "(security + conformity + tradition) / 3" },
+                selfTranscendence: { value: resolved.higherOrder?.selfTranscendence, meaning: "(benevolence + universalism) / 2" },
               },
               // From the resolver, which carries the SDT numbers whichever
               // source they came from. Reading them off `values` returned
@@ -354,11 +401,12 @@ export function registerValuesTools(server: McpServer): void {
                 relatednessNeed: { value: resolved.sdt?.relatednessNeed ?? values.relatednessNeed, meaning: "Need for connection" },
               },
               maslowLevel: {
-                level: values.maslowLevel,
-                meaning: values.maslowLevel === "physiological" ? "Basic survival needs"
-                  : values.maslowLevel === "safety" ? "Security and stability"
-                  : values.maslowLevel === "belonging" ? "Social connection and love"
-                  : values.maslowLevel === "esteem" ? "Achievement and recognition"
+                level: resolved.maslowLevel ?? values.maslowLevel,
+                source: resolved.maslowSource,
+                meaning: (resolved.maslowLevel ?? values.maslowLevel) === "physiological" ? "Basic survival needs"
+                  : (resolved.maslowLevel ?? values.maslowLevel) === "safety" ? "Security and stability"
+                  : (resolved.maslowLevel ?? values.maslowLevel) === "belonging" ? "Social connection and love"
+                  : (resolved.maslowLevel ?? values.maslowLevel) === "esteem" ? "Achievement and recognition"
                   : "Self-fulfillment and growth",
               },
               influencePatterns,
