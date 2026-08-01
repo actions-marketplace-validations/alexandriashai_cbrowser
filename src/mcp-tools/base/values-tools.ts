@@ -33,7 +33,27 @@ import {
  * whose values were sitting on disk. Same question, two answers, because there
  * were two implementations. (2026-07-31)
  */
-export function resolvePersonaValues(name: string): {
+/**
+ * Optional caller-supplied persona data.
+ *
+ * The resolver finds a persona BY NAME, through the registry and the on-disk
+ * store. A caller that already holds the row -- list_cognitive_personas reads
+ * personas straight out of the CMS -- has nothing to gain from that lookup and
+ * everything to lose: in a process whose data dir is not scoped to that
+ * account, the name resolves to nothing and the resolver correctly reports
+ * `source: "none"`. Correct about the lookup, and a lie about the persona,
+ * which visibly has values right there in the payload.
+ *
+ * Passing the data in removes the question. Same arithmetic, same labels, no
+ * dependency on whether this process can find the persona by name. (2026-08-01)
+ */
+export interface PersonaValuesOverride {
+  values?: Record<string, number> | null;
+  valuesDerivation?: { method?: string } | null;
+  traits?: Record<string, number> | null;
+}
+
+export function resolvePersonaValues(name: string, override?: PersonaValuesOverride): {
   values: Record<string, number> | null;
   /**
    * WHICH ROUTE determined the numbers -- not where they are stored. The three
@@ -74,6 +94,8 @@ export function resolvePersonaValues(name: string): {
   maslowTopScoring?: string;
   /** Present only when levels fall inside the tie threshold. */
   maslowTied?: string[];
+  maslowTieSpan?: number;
+  maslowStoredNote?: string;
   /** Per-level: how many of its inputs are unpopulated. Mirrors higherOrderContamination. */
   maslowContamination?: Record<string, string>;
   maslowCaveat?: string;
@@ -83,8 +105,16 @@ export function resolvePersonaValues(name: string): {
   const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
     "security", "conformity", "tradition", "benevolence", "universalism"] as const;
   const registry = getPersonaValues(name) as Record<string, number> | undefined;
-  const persona = getAnyPersona(name) as unknown as Record<string, unknown> | undefined;
-  const own = persona?.schwartzValues as Record<string, number> | undefined;
+  const looked = getAnyPersona(name) as unknown as Record<string, unknown> | undefined;
+  // Supplied data wins over the lookup, and stands in for it entirely when the
+  // lookup finds nothing.
+  const persona = (override
+    ? { ...(looked ?? {}),
+        ...(override.valuesDerivation ? { valuesDerivation: override.valuesDerivation } : {}),
+        ...(override.values ? { schwartzValues: override.values } : {}),
+        ...(override.traits ? { cognitiveTraits: override.traits } : {}) }
+    : looked) as Record<string, unknown> | undefined;
+  const own = (override?.values ?? persona?.schwartzValues) as Record<string, number> | undefined;
 
   // Big Five, when the persona carries it and has no explicit values.
   //
@@ -241,13 +271,26 @@ export function resolvePersonaValues(name: string): {
   // answer. `topScoring` keeps a bare argmax for callers that genuinely need
   // one token. (2026-08-01)
   const MASLOW_TIE = 0.05;
-  const maslowTied = maslowScores
-    .filter((c) => maslowScores[0].score - c.score < MASLOW_TIE)
-    .map((c) => c.level);
-  const derivedMaslow = maslowTied.length > 1
-    ? `${maslowTied.join(" | ")} (tied, margin ${round3(maslowScores[0].score - maslowScores[1].score)})`
-    : maslowScores[0].level;
+  // ONE rounded margin, used by the label, the tie test and the caveat.
+  //
+  // These were three separate quantities and they disagreed. Membership
+  // filtered on the raw gap to the leader while the label printed the gap to
+  // the RUNNER-UP, so a four-level set could be announced as "tied, margin
+  // 0.008" with members 0.044 away. And the caveat tested the rounded margin
+  // against the same 0.05 the raw filter used, so a persona whose gap rounded
+  // up to exactly 0.05 was labelled tied by the string and denied by the prose.
+  // A payload that contradicts itself is worse than either answer alone.
+  // (2026-08-01)
   const maslowMargin = round3(maslowScores[0].score - maslowScores[1].score);
+  const tiedWith = maslowScores.filter((c) =>
+    round3(maslowScores[0].score - c.score) <= MASLOW_TIE);
+  const maslowTied = tiedWith.map((c) => c.level);
+  // The SPAN of the tie set, which is the number that describes the set. The
+  // top-two margin describes only its first two members.
+  const maslowTieSpan = round3(maslowScores[0].score - tiedWith[tiedWith.length - 1].score);
+  const derivedMaslow = maslowTied.length > 1
+    ? `${maslowTied.join(" | ")} (tied within ${maslowTieSpan}; next-best margin ${maslowMargin})`
+    : maslowScores[0].level;
   // "Unreliable" is the union of two independent problems: too close to call,
   // and decided by an axis carrying no signal. Either one alone is enough.
   //
@@ -272,17 +315,17 @@ export function resolvePersonaValues(name: string): {
       : `0 of ${c.inputsTotal} inputs unpopulated`;
   }
   const winnerBad = maslowScores[0].frozenInputs;
-  const tooClose = maslowMargin < 0.05;
+  const tooClose = maslowMargin <= MASLOW_TIE;
   const anyFrozen = maslowScores.some((c) => c.frozenInputs.length > 0);
   const maslowCaveat = [
     winnerBad.length
       ? `${maslowScores[0].level} is scored on ${maslowScores[0].inputsUsed} of ${maslowScores[0].inputsTotal} inputs; ${winnerBad.join(", ")} is unpopulated on this route and was excluded rather than imputed.`
       : undefined,
     anyFrozen
-      ? `Levels here rest on different numbers of inputs, so the ranking is thinner than it looks. Imputing 0.5 for the missing ones — which this used to do — is worse than excluding them: it shrinks a contaminated level halfway toward the midpoint, downward when its live input is above 0.5 and upward when below, while leaving fully-populated levels untouched. That reorders the ranking rather than only compressing it.`
+      ? `Levels here rest on different numbers of inputs, so the ranking is thinner than it looks. Imputing 0.5 for a missing input would be worse than excluding it: imputation shrinks a contaminated level halfway toward the midpoint, downward when its live input is above 0.5 and upward when below, while leaving fully-populated levels untouched. That reorders the ranking rather than only compressing it.`
       : undefined,
     tooClose
-      ? `Margin over ${maslowScores[1].level} is ${maslowMargin}. Too close to read as a finding; treat the top two as tied.`
+      ? `Margin over ${maslowScores[1].level} is ${maslowMargin}, and ${maslowTied.length} level(s) sit within ${maslowTieSpan}. Too close to read as a finding; treat ${maslowTied.length > 2 ? "all " + maslowTied.length + " as tied" : "the top two as tied"}.`
       : undefined,
   ].filter(Boolean).join(" ") || undefined;
 
@@ -422,15 +465,24 @@ export function resolvePersonaValues(name: string): {
       : "Nothing is imputed on this route: every axis is reachable.",
     maslowLevel: stored ?? derivedMaslow,
     maslowSource: stored ? "stored" : "derived",
-    ...(stored ? {} : {
-      maslowBasis: maslowScores[0].basis,
-      maslowTopScoring: maslowScores[0].level,
-      ...(maslowTied.length > 1 ? { maslowTied } : {}),
-      maslowRunnerUp: `${maslowScores[1].level} ${maslowScores[1].score} = ${maslowScores[1].basis}`,
-      maslowMargin: maslowMargin,
-      ...(Object.keys(maslowContamination).length ? { maslowContamination } : {}),
-      ...(maslowCaveat ? { maslowCaveat } : {}),
-    }),
+    // Tie facts ship even when the level is STORED. A stored maslowLevel is an
+    // authored answer and stays authoritative, but gating this whole block on
+    // it meant the 21 builtin and accessibility personas never got any of it.
+    // color-blind-deuteranopia is the proof: all ten Schwartz values and all
+    // three SDT needs are exactly 0.5, so every level scores exactly 0.5 -- a
+    // four-way tie at zero margin -- and it reported a bare "esteem". The one
+    // persona where a single winner is guaranteed meaningless was the one
+    // reporting it without qualification. (2026-08-01)
+    maslowBasis: maslowScores[0].basis,
+    maslowTopScoring: maslowScores[0].level,
+    ...(maslowTied.length > 1 ? { maslowTied, maslowTieSpan } : {}),
+    ...(stored && maslowTied.length > 1
+      ? { maslowStoredNote: `maslowLevel here is an authored value. Computed from this persona's own numbers, ${maslowTied.length} levels tie within ${maslowTieSpan} (${maslowTied.join(", ")}), so the stored answer is a choice among them rather than a result.` }
+      : {}),
+    maslowRunnerUp: `${maslowScores[1].level} ${maslowScores[1].score} = ${maslowScores[1].basis}`,
+    maslowMargin: maslowMargin,
+    ...(Object.keys(maslowContamination).length ? { maslowContamination } : {}),
+    ...(maslowCaveat ? { maslowCaveat } : {}),
   };
 }
 
@@ -700,6 +752,8 @@ export async function buildValuesPayload(
                 ...(resolved.maslowBasis ? { basis: resolved.maslowBasis } : {}),
                 ...(resolved.maslowTopScoring ? { topScoring: resolved.maslowTopScoring } : {}),
                 ...(resolved.maslowTied ? { tied: resolved.maslowTied } : {}),
+                ...(resolved.maslowTieSpan !== undefined ? { tieSpan: resolved.maslowTieSpan } : {}),
+                ...(resolved.maslowStoredNote ? { storedNote: resolved.maslowStoredNote } : {}),
                 ...(resolved.maslowRunnerUp ? { runnerUp: resolved.maslowRunnerUp } : {}),
                 ...(resolved.maslowMargin !== undefined ? { marginOverRunnerUp: resolved.maslowMargin } : {}),
                 // Same contract as higherOrderContamination, and surfaced in the

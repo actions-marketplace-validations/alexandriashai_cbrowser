@@ -937,7 +937,18 @@ Begin the simulation now. Narrate your thoughts as this persona.
           // copy, which is the argument against the copy existing. One
           // resolver now answers both, so they cannot drift again.
           // (2026-08-01)
-          const resolved = resolvePersonaValues(p.name);
+          // Data passed in, not looked up by name. These personas come from
+          // the CMS, so in a process whose data dir is not scoped to that
+          // account the name resolves to nothing and the resolver reports
+          // `source: "none"` -- correct about the lookup, and a lie about a
+          // persona whose values are right here in `p.values`. (2026-08-01)
+          const resolved = resolvePersonaValues(p.name, {
+            values: sv,
+            valuesDerivation: (p as { values_derivation?: { method?: string } }).values_derivation
+              ?? (p as { valuesDerivation?: { method?: string } }).valuesDerivation
+              ?? { method: "traits" },
+            traits: p.traits as Record<string, number> | undefined,
+          });
           return {
             schwartz: sv,
             higherOrder: resolved.higherOrder ?? {},
