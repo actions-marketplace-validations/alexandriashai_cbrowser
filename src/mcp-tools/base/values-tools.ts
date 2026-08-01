@@ -10,7 +10,7 @@ import { z } from "zod";
 import { PERSONA_CATEGORIES } from "../../persona-questionnaire.js";
 import { getAnyPersona, getCognitiveProfile } from "../../personas.js";
 import { valueAxisCorrelationCounts, TRAIT_VALUE_CORRELATIONS } from "../../persona-questionnaire.js";
-import { deriveValuesFromBigFive, bigFiveReachableAxes } from "../../values/big-five-values.js";
+import { deriveValuesFromBigFive, bigFiveReachableAxes, BIG_FIVE_VALUE_LINKS } from "../../values/big-five-values.js";
 import { widgetUri } from "../widget-kit.js";
 import type { McpServer } from "../types.js";
 import {
@@ -353,7 +353,16 @@ export function resolvePersonaValues(name: string, override?: PersonaValuesOverr
   // is a rollup of benevolence and universalism, so it is pulled toward 0.5 by
   // an input that was never populated. Stated rather than left to be inferred
   // from a suspicious row of 0.5s. (2026-07-31)
-  const counts = valueAxisCorrelationCounts();
+  // Which table has links to an axis depends on WHICH ROUTE produced the
+  // numbers. Using the trait counts on a Big Five route asks the wrong table:
+  // power has no trait link, so a genuinely cancelled power reads as having no
+  // inputs at all, and the cancellation goes unreported on the one route where
+  // it is the only thing a 0.5 can mean.
+  const traitCounts = valueAxisCorrelationCounts();
+  const bigFiveAxes = new Set(bigFiveReachableAxes());
+  const counts: Record<string, number> = fromTraits
+    ? traitCounts
+    : Object.fromEntries([...bigFiveAxes].map((a) => [a, 1]));
   const atBaseline = (k: string) => values[k] === 0.5 || sdt[k] === 0.5;
   const unpopulated = fromTraits
     ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !counts[k])
@@ -363,9 +372,25 @@ export function resolvePersonaValues(name: string, override?: PersonaValuesOverr
   // value alone -- both read 0.5.
   // Which of the two zero-net shapes each axis is: a lone neutral input, or
   // opposing inputs that cancelled. Reported rather than assumed.
+  const bigFiveScores = persona?.bigFive as Record<string, number> | undefined;
   const traitsForShape = getCognitiveProfile(persona as never)?.traits as
     unknown as Record<string, number> | undefined;
   const netZeroShape = (axis: string): string => {
+    // The explanation has to name the table the ROUTE actually used. Reporting
+    // "no contributing trait" for a Big Five persona describes a table that had
+    // nothing to do with its numbers, which is the same defect as a formula
+    // string that does not match its formula.
+    if (!fromTraits) {
+      const bfLinks = BIG_FIVE_VALUE_LINKS.filter((l) => l.value === axis);
+      const live = bfLinks.filter((l) => typeof bigFiveScores?.[l.factor] === "number");
+      if (live.length === 1) {
+        return `${axis} has a single contributing factor (${live[0].factor}) sitting at the midpoint — nothing opposed it, nothing pushed it`;
+      }
+      if (live.length > 1) {
+        return `${axis} draws on ${live.length} factors (${live.map((l) => (l.direction === "positive" ? "+" : "-") + l.factor).join(", ")}) whose contributions cancel`;
+      }
+      return `${axis} has no contributing Big Five factor on this persona`;
+    }
     // Traits whose correlation table entry targets this axis AND which this
     // persona actually carries a number for.
     const contributing = Object.entries(TRAIT_VALUE_CORRELATIONS)
@@ -380,7 +405,17 @@ export function resolvePersonaValues(name: string, override?: PersonaValuesOverr
     }
     return `${axis} has no contributing trait carrying a number on this persona`;
   };
-  const netZero = fromTraits
+  // Cancellation is reportable on EVERY derived route, not just the trait one.
+  //
+  // Gating this on fromTraits left the Big Five routes with no way to tell a
+  // cancelled axis from an untouched one -- the exact ambiguity netNudge exists
+  // to remove, reappearing on a newer route. It shows up immediately in
+  // practice: extraversion 0.33 and agreeableness 0.33 contribute +0.085 and
+  // -0.085 to power, which cancel to exactly 0, and 0 is the code for "nothing
+  // targets this axis". Nothing is UNPOPULATED on a Big Five route (all
+  // thirteen are reachable), so a 0.5 there can only be a cancellation, and
+  // saying so is strictly more information than silence. (2026-08-01)
+  const netZero = fromDerivation
     ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !!counts[k])
     : [];
   // The signed evidence behind each axis, recovered from the squash.
@@ -431,7 +466,7 @@ export function resolvePersonaValues(name: string, override?: PersonaValuesOverr
           // pushed. Stating a mechanism the numbers do not show is the same
           // defect as a value that overstates its own precision, so the note
           // now reports WHICH case each axis is. (2026-08-01)
-          netZeroNote: `These axes ARE derived — trait correlations exist and were applied — but the net evidence lands at zero, so they sit at the baseline anyway. ${netZero.map(netZeroShape).join("; ")}. Reading 0.5 here means "measured, no net lean", which is not the same as the unpopulated axes above.`,
+          netZeroNote: `These axes ARE derived — the correlations for this route exist and were applied — but the net evidence lands at zero, so they sit at the baseline anyway. ${netZero.map(netZeroShape).join("; ")}. Reading 0.5 here means "measured, no net lean", which is not the same as the unpopulated axes above.`,
         }
       : {}),
     // Which rollups inherit a baseline input. openness can be clean while
