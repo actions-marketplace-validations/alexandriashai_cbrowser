@@ -36,6 +36,8 @@ export function resolvePersonaValues(name: string): {
   source: "registry" | "persona" | "derived" | "none";
   sdt?: Record<string, number>;
   sdtSource?: "derived" | "default";
+  unpopulatedAxes?: string[];
+  unpopulatedNote?: string;
   higherOrder?: Record<string, number>;
   maslowLevel?: string;
   maslowSource?: "stored" | "derived";
@@ -94,9 +96,30 @@ export function resolvePersonaValues(name: string): {
   const derivation = persona?.valuesDerivation as { method?: string } | undefined;
   const personaSource = derivation?.method === "traits" ? "derived" : "persona";
 
+  // Axes the trait derivation cannot move.
+  //
+  // Four of the thirteen -- hedonism, power, universalism, relatednessNeed --
+  // have no entry in the trait-value correlation table at all, so a derived
+  // profile leaves them at the 0.5 baseline no matter what the traits say.
+  // That is not a measurement of a midpoint, and anything running with
+  // useValues:true will differentiate on the other nine only. selfTranscendence
+  // is a rollup of benevolence and universalism, so it is pulled toward 0.5 by
+  // an input that was never populated. Stated rather than left to be inferred
+  // from a suspicious row of 0.5s. (2026-07-31)
+  const UNDERIVABLE = ["hedonism", "power", "universalism", "relatednessNeed"];
+  const unpopulated = personaSource === "derived"
+    ? UNDERIVABLE.filter((k) => values[k] === 0.5 || sdt[k] === 0.5)
+    : [];
+
   return {
     values,
     source: registry ? "registry" : (personaSource as "persona"),
+    ...(unpopulated.length
+      ? {
+          unpopulatedAxes: unpopulated,
+          unpopulatedNote: `These axes have no trait correlation defined, so the derivation leaves them at the 0.5 baseline regardless of the persona's traits. They carry no signal; a values-weighted run differentiates on the others only.`,
+        }
+      : {}),
     ...(Object.keys(sdt).length ? { sdt, sdtSource: flat ? "default" : "derived" } : {}),
     higherOrder,
     maslowLevel: stored ?? derivedMaslow,
@@ -228,6 +251,7 @@ export function registerValuesTools(server: McpServer): void {
             values: r.values,
             valuesSource: r.source,
             ...(r.sdt ? { selfDeterminationNeeds: r.sdt, selfDeterminationSource: r.sdtSource } : {}),
+            ...(r.unpopulatedAxes ? { unpopulatedAxes: r.unpopulatedAxes, unpopulatedNote: r.unpopulatedNote } : {}),
             ...(r.higherOrder ? { higherOrderValues: r.higherOrder } : {}),
             ...(r.maslowLevel ? { maslowLevel: r.maslowLevel, maslowSource: r.maslowSource } : {}),
             ...(r.sdtSource === "default"
@@ -315,7 +339,14 @@ export function registerValuesTools(server: McpServer): void {
     },
   }, async ({ persona, includeInfluencePatterns }) => {
       const resolved = resolvePersonaValues(persona);
-      const values = getPersonaValues(persona) ?? (resolved.source === "persona"
+      // Keyed on "the resolver found something", not on an enumerated list of
+      // sources. This read `source === "persona"` and then a later change
+      // added "derived" for personas whose values the derivation wrote --
+      // which is every regenerated custom persona -- so they stopped matching
+      // and fell back into the not-found error the fallback exists to prevent.
+      // A condition that enumerates the valid cases has to be revisited every
+      // time a case is added; "not none" does not. (2026-07-31)
+      const values = getPersonaValues(persona) ?? (resolved.source !== "none"
         ? (resolved.values as unknown as ReturnType<typeof getPersonaValues>)
         : undefined);
 
