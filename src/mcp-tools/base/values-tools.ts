@@ -62,6 +62,10 @@ export function resolvePersonaValues(name: string): {
   maslowBasis?: string;
   /** Gap to the runner-up. Small means the level is not a finding. */
   maslowMargin?: number;
+  /** The runner-up scored and shown, so the margin can be checked not trusted. */
+  maslowRunnerUp?: string;
+  /** Per-level: how many of its inputs are unpopulated. Mirrors higherOrderContamination. */
+  maslowContamination?: Record<string, string>;
   maslowCaveat?: string;
 } {
   const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
@@ -176,12 +180,36 @@ export function resolvePersonaValues(name: string): {
   const maslowMargin = round3(maslowScores[0].score - maslowScores[1].score);
   // "Unreliable" is the union of two independent problems: too close to call,
   // and decided by an axis carrying no signal. Either one alone is enough.
-  const maslowRestsOnUnpopulated = fromTraits
-    && maslowScores[0].axes.some((k) => !valueAxisCorrelationCounts()[k]);
-  const maslowCaveat = maslowMargin < 0.05
-    ? `Margin over ${maslowScores[1].level} is ${maslowMargin}. Too close to read as a finding; treat the top two as tied.`
-    : maslowRestsOnUnpopulated
-      ? `Decided partly by ${maslowScores[0].axes.filter((k) => !valueAxisCorrelationCounts()[k]).join(" and ")}, which this route leaves at the 0.5 baseline. The level is resting on an axis with no signal.`
+  //
+  // Contamination is reported the same way higherOrderValues reports it, and
+  // for the same reason: a rollup over an unpopulated input is not a weaker
+  // measurement, it is partly not a measurement. The first version of this
+  // caveat blamed the MARGIN, which is the wrong diagnosis -- for alexa-eden
+  // both candidates are half composed of a 0.5 placeholder, so a decisive gap
+  // between them would not have made the winner a reading either. Composition
+  // is reported independently of margin, and it is what the caveat leads with.
+  // (2026-08-01)
+  const counts0 = valueAxisCorrelationCounts();
+  const maslowContamination: Record<string, string> = {};
+  if (fromTraits) {
+    for (const c of maslowScores) {
+      const bad = c.axes.filter((k) => !counts0[k]);
+      if (bad.length) {
+        maslowContamination[c.level] =
+          `${bad.length} of ${c.axes.length} inputs unpopulated (${bad.join(", ")})`;
+      }
+    }
+  }
+  const winnerBad = maslowScores[0].axes.filter((k) => fromTraits && !counts0[k]);
+  const runnerBad = maslowScores[1].axes.filter((k) => fromTraits && !counts0[k]);
+  const tooClose = maslowMargin < 0.05;
+  const maslowCaveat = winnerBad.length
+    ? `Not a reading. ${winnerBad.length} of ${maslowScores[0].axes.length} inputs to ${maslowScores[0].level} are unpopulated baselines rather than measurements (${winnerBad.join(", ")})`
+      + (runnerBad.length ? `, and the runner-up ${maslowScores[1].level} is composed the same way` : "")
+      + `. This holds regardless of the margin: a decisive gap between two part-synthetic composites is still not evidence.`
+      + (tooClose ? ` The margin is also only ${maslowMargin}.` : "")
+    : tooClose
+      ? `Margin over ${maslowScores[1].level} is ${maslowMargin}. Too close to read as a finding; treat the top two as tied.`
       : undefined;
 
   // A persona's values can be authored by hand or written by the derivation.
@@ -283,7 +311,9 @@ export function resolvePersonaValues(name: string): {
     maslowSource: stored ? "stored" : "derived",
     ...(stored ? {} : {
       maslowBasis: maslowScores[0].basis,
+      maslowRunnerUp: `${maslowScores[1].level} ${maslowScores[1].score} = ${maslowScores[1].basis}`,
       maslowMargin: maslowMargin,
+      ...(Object.keys(maslowContamination).length ? { maslowContamination } : {}),
       ...(maslowCaveat ? { maslowCaveat } : {}),
     }),
   };
@@ -571,7 +601,7 @@ export function registerValuesTools(server: McpServer): void {
       );
 
       let influencePatterns: Array<{pattern: string; susceptibility: number; description: string;
-        basis?: { values: string[]; traits: string[]; weighting: string }}> | undefined;
+        basis?: { values: string[]; traits: string[]; weighting: string; unpopulatedInputs?: string }}> | undefined;
       let influencePatternsTotal: number | undefined;
       let influencePatternsOmitted: string[] | undefined;
       if (includeInfluencePatterns) {
@@ -591,17 +621,30 @@ export function registerValuesTools(server: McpServer): void {
         // commitment topping the list was untraceable from the output: the
         // reader could see 0.71 and had to reverse-engineer which values and
         // which traits produced it.
-        influencePatterns = ranked.slice(0, 7).map(r => ({
+        // Unpopulated inputs marked INSIDE the basis, not only counted elsewhere.
+        // The blog widget already badged these ("scarcity - 1 of 3 frozen") while
+        // the API handed back a bare `power=0.5` that reads as a measured
+        // midpoint. The web UI was more honest than the tool output, which is
+        // backwards: the tool output is the one consumed programmatically, by a
+        // reader with no page to look at. (2026-08-01)
+        const frozen = new Set(resolved.unpopulatedAxes ?? []);
+        influencePatterns = ranked.slice(0, 7).map(r => {
+          const badValues = r.pattern.targetValues.filter((v) => frozen.has(v));
+          return {
           basis: {
-            values: r.pattern.targetValues.map((v) => `${v}=${(values as unknown as Record<string, number>)[v] ?? "n/a"}`),
+            values: r.pattern.targetValues.map((v) =>
+              `${v}=${(values as unknown as Record<string, number>)[v] ?? "n/a"}${frozen.has(v) ? " (unpopulated baseline, not a measurement)" : ""}`),
             traits: (r.pattern.relatedTraits ?? []).map(
               (t) => `${t.trait}=${rankTraits?.[t.trait] ?? "n/a"}${t.direction === "negative" ? " (inverted)" : ""}`),
             weighting: "60% value mean, 40% trait mean",
+            ...(badValues.length
+              ? { unpopulatedInputs: `${badValues.length} of ${r.pattern.targetValues.length} value inputs are unpopulated (${badValues.join(", ")}). The score is that fraction synthetic.` }
+              : {}),
           },
           pattern: r.pattern.name,
           susceptibility: r.susceptibility,
           description: r.pattern.description,
-        }));
+        };});
       }
 
       return {
@@ -659,7 +702,13 @@ export function registerValuesTools(server: McpServer): void {
                 // that can be a coin-flip apart, so it now ships its own
                 // arithmetic and says when the winner is not a finding.
                 ...(resolved.maslowBasis ? { basis: resolved.maslowBasis } : {}),
+                ...(resolved.maslowRunnerUp ? { runnerUp: resolved.maslowRunnerUp } : {}),
                 ...(resolved.maslowMargin !== undefined ? { marginOverRunnerUp: resolved.maslowMargin } : {}),
+                // Same contract as higherOrderContamination, and surfaced in the
+                // same breath as the fields it qualifies -- adding it to the
+                // resolver and forgetting it here is the exact defect this file
+                // has now produced four times.
+                ...(resolved.maslowContamination ? { contamination: resolved.maslowContamination } : {}),
                 ...(resolved.maslowCaveat ? { caveat: resolved.maslowCaveat } : {}),
               },
               influencePatterns,
