@@ -387,7 +387,18 @@ export function resolvePersonaValues(name: string, override?: PersonaValuesOverr
         return `${axis} has a single contributing factor (${live[0].factor}) sitting at the midpoint — nothing opposed it, nothing pushed it`;
       }
       if (live.length > 1) {
-        return `${axis} draws on ${live.length} factors (${live.map((l) => (l.direction === "positive" ? "+" : "-") + l.factor).join(", ")}) whose contributions cancel`;
+        // "Cancel" claims opposing non-zero forces. Two factors both sitting AT
+        // the midpoint contribute exactly nothing each -- nothing opposed
+        // anything, so calling it cancellation describes a mechanism that did
+        // not occur. Same distinction as the single-input case, one level up.
+        // (2026-08-01)
+        const contributions = live.map((l) => ({
+          l, c: ((bigFiveScores![l.factor] - 0.5) * l.weight * (l.direction === "positive" ? 1 : -1)),
+        }));
+        const label = live.map((l) => (l.direction === "positive" ? "+" : "-") + l.factor).join(", ");
+        return contributions.every((x) => Math.abs(x.c) < 1e-9)
+          ? `${axis} draws on ${live.length} factors (${label}), every one of which sits at the midpoint and so contributes nothing — not opposing forces, just no signal`
+          : `${axis} draws on ${live.length} factors (${label}) whose contributions cancel`;
       }
       return `${axis} has no contributing Big Five factor on this persona`;
     }
