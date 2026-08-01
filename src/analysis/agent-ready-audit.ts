@@ -139,6 +139,86 @@ interface DetectionContext {
 }
 
 /**
+ * Detect content that only exists after hydration.
+ *
+ * Every other check in this file inspects the live DOM, which is the DOM after
+ * JavaScript has run. That is the right surface for most questions and the
+ * wrong one for this: an audit that scores agent-readiness by driving a real
+ * browser cannot see what a reader without a browser cannot see.
+ *
+ * Measured on cbrowser's own blog before this existed: 186KB of markup
+ * carrying 554 characters of visible text against a 12,000-character article,
+ * because the body was fetched client-side. The audit graded that route B. A
+ * plain fetch, a crawler, and most agents got a page about nothing, and
+ * nothing in the report said so.
+ *
+ * The check fetches the URL with no browser at all, strips script and style,
+ * and compares visible text against what the hydrated page shows. A large
+ * shortfall means the content is invisible to anyone not executing JavaScript.
+ * (2026-08-01)
+ */
+async function detectClientOnlyContent(ctx: DetectionContext): Promise<void> {
+  const { page, issues, summary } = ctx;
+
+  const url = page.url();
+  if (!/^https?:/i.test(url)) return;
+
+  const hydratedChars: number = await page.evaluate(() => {
+    const main = document.querySelector("main") ?? document.body;
+    return (main?.innerText ?? "").replace(/\s+/g, " ").trim().length;
+  });
+  // Nothing to compare against on a page that is legitimately near-empty.
+  if (hydratedChars < 400) return;
+
+  let rawChars = 0;
+  let fetched = false;
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      headers: { "user-agent": "cbrowser-agent-ready-audit/1.0 (no-js probe)" },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.ok) {
+      const html = await res.text();
+      rawChars = html
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&[a-z#0-9]+;/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim().length;
+      fetched = true;
+    }
+  } catch {
+    // A probe that cannot run reports nothing rather than guessing. Claiming
+    // a page is fine because the check failed is the failure mode this whole
+    // detector exists to prevent.
+    return;
+  }
+  if (!fetched) return;
+
+  const ratio = rawChars / hydratedChars;
+  if (ratio >= 0.4) return;
+
+  const pct = Math.round(ratio * 100);
+  const severity: AgentReadyIssueSeverity = ratio < 0.15 ? "critical" : "high";
+  issues.push({
+    category: "findability",
+    severity,
+    element: "document",
+    description:
+      `Page content is only present after JavaScript runs: a plain fetch returns ${rawChars} characters of visible text against ${hydratedChars} in the rendered page (${pct}%). ` +
+      `Agents, crawlers and any reader that does not execute JavaScript see a shell.`,
+    detectionMethod: "no-JS fetch compared against the rendered DOM",
+    recommendation:
+      "Server-render the primary content, or pre-render it at build time, so it is present in the initial HTML. " +
+      "Client-side fetching is fine for updates and personalisation; it should not be the only way the main content exists.",
+  });
+  summary.problematicElements++;
+}
+
+/**
  * Detect elements without proper labels (findability)
  */
 async function detectUnlabeledElements(ctx: DetectionContext): Promise<void> {
@@ -1913,6 +1993,7 @@ export async function runAgentReadyAudit(
     await detectStatePersistence(ctx);
     await detectDynamicContent(ctx);
     await detectCaptcha(ctx);
+    await detectClientOnlyContent(ctx);
 
     // Update summary — count total interactive elements actually on the page
     summary.totalElements = await page.evaluate(() => {

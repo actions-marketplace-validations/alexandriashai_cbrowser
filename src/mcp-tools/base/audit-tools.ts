@@ -90,7 +90,34 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         score: result.score,
         grade: result.grade,
         summary: result.summary,
-        topIssues: result.issues.slice(0, 5),
+        // Worst-first, and the cut is reported.
+        //
+        // This was a plain slice(0,5) over the issues in detection order, so
+        // severity had no bearing on what survived: a critical finding placed
+        // sixth by the order detectors happen to run was dropped in favour of
+        // five low ones, with nothing saying anything had been dropped. Found
+        // when a new critical detector fired in the audit and was invisible in
+        // the tool that wraps it. (2026-08-01)
+        ...(() => {
+          const rank = (sev: string) =>
+            ({ critical: 0, high: 1, medium: 2, low: 3, info: 4 }[String(sev).toLowerCase()] ?? 5);
+          const sorted = [...result.issues].sort((a, b) => rank(a.severity) - rank(b.severity));
+          const shown = sorted.slice(0, 5);
+          const omitted = sorted.length - shown.length;
+          return {
+            topIssues: shown,
+            issuesFound: result.issues.length,
+            ...(omitted > 0
+              ? {
+                  issuesOmitted: omitted,
+                  issuesNote: `Showing the 5 most severe of ${result.issues.length}. Severity counts across ALL findings: ` +
+                    Object.entries(result.issues.reduce((m: Record<string, number>, i) => {
+                      const k = String(i.severity); m[k] = (m[k] ?? 0) + 1; return m;
+                    }, {})).map(([k, v]) => `${k} ${v}`).join(", ") + ".",
+                }
+              : {}),
+          };
+        })(),
         topRecommendations: result.recommendations.slice(0, 5),
         duration: result.duration,
       };
