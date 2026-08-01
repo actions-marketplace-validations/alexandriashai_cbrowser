@@ -35,7 +35,15 @@ import {
  */
 export function resolvePersonaValues(name: string): {
   values: Record<string, number> | null;
-  source: "registry" | "persona" | "derived" | "bigfive" | "none";
+  /**
+   * WHICH ROUTE determined the numbers -- not where they are stored. The three
+   * routes differ in how far they should be trusted, and that ordering is the
+   * whole point of having them; a source field that cannot express it is not
+   * reporting the fact a caller needs.
+   */
+  source: ValuesRoute;
+  /** Where the numbers live. A different question from how they were decided. */
+  storedIn?: "registry" | "persona";
   /** Axes whose Big Five link direction is a hypothesis rather than a finding. */
   hypothesisAxes?: string[];
   sdt?: Record<string, number>;
@@ -50,6 +58,11 @@ export function resolvePersonaValues(name: string): {
   higherOrder?: Record<string, number>;
   maslowLevel?: string;
   maslowSource?: "stored" | "derived";
+  /** The arithmetic behind the winning level, same contract as pattern basis. */
+  maslowBasis?: string;
+  /** Gap to the runner-up. Small means the level is not a finding. */
+  maslowMargin?: number;
+  maslowCaveat?: string;
 } {
   const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
     "security", "conformity", "tradition", "benevolence", "universalism"] as const;
@@ -66,6 +79,7 @@ export function resolvePersonaValues(name: string): {
   const bigFive = persona?.bigFive as Record<string, number> | undefined;
   if (!registry && !own && bigFive && Object.keys(bigFive).length) {
     const d = deriveValuesFromBigFive(bigFive);
+    const bfMaslow = scoreMaslow(d.values, d.values);
     const sdt: Record<string, number> = {};
     ["autonomyNeed", "competenceNeed", "relatednessNeed"].forEach((k) => {
       if (typeof d.values[k] === "number") sdt[k] = d.values[k];
@@ -76,18 +90,23 @@ export function resolvePersonaValues(name: string): {
     KEYS10.forEach((k) => { ten[k] = d.values[k]; });
     return {
       values: ten,
-      source: "bigfive",
+      source: "big_five",
       sdt,
       sdtSource: "derived",
       hypothesisAxes: d.hypothesisAxes,
       higherOrder: {
-        openness: round2((ten.selfDirection + ten.stimulation) / 2),
-        selfEnhancement: round2((ten.achievement + ten.power) / 2),
-        conservation: round2((ten.security + ten.conformity + ten.tradition) / 3),
-        selfTranscendence: round2((ten.benevolence + ten.universalism) / 2),
+        openness: round3((ten.selfDirection + ten.stimulation) / 2),
+        selfEnhancement: round3((ten.achievement + ten.power) / 2),
+        conservation: round3((ten.security + ten.conformity + ten.tradition) / 3),
+        selfTranscendence: round3((ten.benevolence + ten.universalism) / 2),
       },
-      maslowLevel: "esteem",
+      maslowLevel: bfMaslow[0].level,
       maslowSource: "derived",
+      maslowBasis: bfMaslow[0].basis,
+      maslowMargin: round3(bfMaslow[0].score - bfMaslow[1].score),
+      ...(round3(bfMaslow[0].score - bfMaslow[1].score) < 0.05
+        ? { maslowCaveat: `Margin over ${bfMaslow[1].level} is ${round3(bfMaslow[0].score - bfMaslow[1].score)}. Too close to read as a finding; treat the top two as tied.` }
+        : {}),
     };
   }
 
@@ -111,34 +130,73 @@ export function resolvePersonaValues(name: string): {
   // never called: both tools read values.openness and friends straight off the
   // base object, where those keys do not live, so every entry rendered its
   // formula string with an undefined value beside it. (2026-07-31)
+  //
+  // Three decimals, matching the primaries. At two, selfTranscendence for a
+  // persona with benevolence 0.493 and universalism 0.500 is (0.4965) -> 0.5:
+  // visually identical to an axis nothing ever touched, which is the exact
+  // confusion the primaries went to three decimals to remove. The collision
+  // was fixed one layer down and survived one layer up. (2026-08-01)
   const higherOrder = {
-    openness: round2((values.selfDirection + values.stimulation) / 2),
-    selfEnhancement: round2((values.achievement + values.power) / 2),
-    conservation: round2((values.security + values.conformity + values.tradition) / 3),
-    selfTranscendence: round2((values.benevolence + values.universalism) / 2),
+    openness: round3((values.selfDirection + values.stimulation) / 2),
+    selfEnhancement: round3((values.achievement + values.power) / 2),
+    conservation: round3((values.security + values.conformity + values.tradition) / 3),
+    selfTranscendence: round3((values.benevolence + values.universalism) / 2),
   };
+
+  const derivation = persona?.valuesDerivation as { method?: string } | undefined;
+  const personaSource: ValuesRoute =
+    derivation?.method === "traits" ? "cognitive_traits"
+    : derivation?.method === "bigfive" ? "big_five"
+    : "stated";
+  // Only the trait route is bounded by the trait correlation table. The Big
+  // Five table reaches all thirteen axes, so applying the trait-derived
+  // "unpopulated" logic to a big_five persona would report four axes as
+  // unreachable that its own route reaches.
+  const fromTraits = personaSource === "cognitive_traits";
+  const fromDerivation = fromTraits || personaSource === "big_five";
 
   // Stored on registry profiles; absent from a persona-authored block, where
   // the closest honest answer is the level its own values point at. Which of
   // the two happened is reported rather than left to be guessed.
   const stored = (registry as unknown as { maslowLevel?: string })?.maslowLevel;
-  const derivedMaslow = (() => {
-    const candidates: Array<[string, number]> = [
-      ["safety", (values.security + values.conformity) / 2],
-      ["belonging", (values.benevolence + (sdt.relatednessNeed ?? 0.5)) / 2],
-      ["esteem", (values.achievement + values.power) / 2],
-      ["self-actualization", (values.selfDirection + values.universalism) / 2],
-    ];
-    return candidates.sort((a, b) => b[1] - a[1])[0][0];
-  })();
+  //
+  // This reported a bare category and nothing else, and the category was not
+  // stable. For alexa-eden esteem scored 0.5990 and self-actualization 0.6015
+  // -- a 0.0025 margin -- so moving the primaries to three decimals flipped
+  // the answer with no other input changing. Worse, both of those scores are
+  // half-composed of power 0.5 and universalism 0.5, which for a trait-derived
+  // persona are UNPOPULATED BASELINES rather than measurements: the level was
+  // being decided by axes the route cannot reach.
+  //
+  // It stays, because a rollup is useful, but it now carries its own arithmetic
+  // the way the influence patterns do, and it says out loud when the winner is
+  // inside the noise or is resting on axes with no signal. (2026-08-01)
+  const maslowScores = scoreMaslow(values, sdt);
+  const derivedMaslow = maslowScores[0].level;
+  const maslowMargin = round3(maslowScores[0].score - maslowScores[1].score);
+  // "Unreliable" is the union of two independent problems: too close to call,
+  // and decided by an axis carrying no signal. Either one alone is enough.
+  const maslowRestsOnUnpopulated = fromTraits
+    && maslowScores[0].axes.some((k) => !valueAxisCorrelationCounts()[k]);
+  const maslowCaveat = maslowMargin < 0.05
+    ? `Margin over ${maslowScores[1].level} is ${maslowMargin}. Too close to read as a finding; treat the top two as tied.`
+    : maslowRestsOnUnpopulated
+      ? `Decided partly by ${maslowScores[0].axes.filter((k) => !valueAxisCorrelationCounts()[k]).join(" and ")}, which this route leaves at the 0.5 baseline. The level is resting on an axis with no signal.`
+      : undefined;
 
   // A persona's values can be authored by hand or written by the derivation.
   // Both live in the same field, and a value of exactly 0.5 means different
   // things in each case: a deliberate midpoint, or the untouched baseline the
   // derivation starts from. Anything treating values as evidence needs to be
   // able to tell them apart. (2026-07-31)
-  const derivation = persona?.valuesDerivation as { method?: string } | undefined;
-  const personaSource = derivation?.method === "traits" ? "derived" : "persona";
+  //
+  // Named for the ROUTE that determined the numbers, because that is the
+  // question a caller has. "derived" answered a different one: it covered both
+  // the Big Five derivation and the cognitive-trait derivation, which are the
+  // two routes that differ most in how far you should trust them -- one is
+  // published correlation, the other is our own bridge across a gap the
+  // literature does not cover. A field that collapses them cannot express the
+  // ordering the whole three-route account exists to make. (2026-08-01)
 
   // Axes the trait derivation cannot move.
   //
@@ -152,13 +210,13 @@ export function resolvePersonaValues(name: string): {
   // from a suspicious row of 0.5s. (2026-07-31)
   const counts = valueAxisCorrelationCounts();
   const atBaseline = (k: string) => values[k] === 0.5 || sdt[k] === 0.5;
-  const unpopulated = personaSource === "derived"
+  const unpopulated = fromTraits
     ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !counts[k])
     : [];
   // Axes that ARE derived but whose contributions cancelled. A different fact
   // from an axis with no correlations, and the two are indistinguishable by
   // value alone -- both read 0.5.
-  const netZero = personaSource === "derived"
+  const netZero = fromTraits
     ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !!counts[k])
     : [];
   // The signed evidence behind each axis, recovered from the squash.
@@ -168,7 +226,7 @@ export function resolvePersonaValues(name: string): {
   // always: an axis nothing targets has exactly 0, an axis whose inputs
   // cancelled has a small non-zero. Beside every value rather than in a
   // separate list someone has to think to read.
-  const netNudge = personaSource === "derived"
+  const netNudge = fromDerivation
     ? Object.fromEntries(Object.entries({ ...values, ...sdt }).map(([k, v]) => {
         // invert 0.5 + 0.5*tanh(raw) -> raw
         // Clamp MAGNITUDE, keep sign. Flooring at a positive epsilon turned
@@ -184,7 +242,8 @@ export function resolvePersonaValues(name: string): {
 
   return {
     values,
-    source: registry ? "registry" : (personaSource as "persona"),
+    source: personaSource,
+    storedIn: registry ? "registry" : "persona",
     ...(unpopulated.length
       ? {
           unpopulatedAxes: unpopulated,
@@ -222,10 +281,42 @@ export function resolvePersonaValues(name: string): {
     higherOrder,
     maslowLevel: stored ?? derivedMaslow,
     maslowSource: stored ? "stored" : "derived",
+    ...(stored ? {} : {
+      maslowBasis: maslowScores[0].basis,
+      maslowMargin: maslowMargin,
+      ...(maslowCaveat ? { maslowCaveat } : {}),
+    }),
   };
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+
+export type ValuesRoute = "stated" | "big_five" | "cognitive_traits" | "none";
+
+/**
+ * Score the four Maslow levels from the value axes, worst-first sorted.
+ *
+ * Module-level because the Big Five branch used to return `maslowLevel:
+ * "esteem"` as a literal -- the same answer for every persona that took that
+ * route, derived from nothing. A shared scorer is the only way one path cannot
+ * quietly disagree with the other. (2026-08-01)
+ */
+function scoreMaslow(values: Record<string, number>, sdt: Record<string, number>) {
+  const spec: Array<[string, string[]]> = [
+    ["safety", ["security", "conformity"]],
+    ["belonging", ["benevolence", "relatednessNeed"]],
+    ["esteem", ["achievement", "power"]],
+    ["self-actualization", ["selfDirection", "universalism"]],
+  ];
+  const pick = (k: string) => values[k] ?? sdt[k] ?? 0.5;
+  return spec.map(([level, axes]) => ({
+    level,
+    score: round3(axes.reduce((a, k) => a + pick(k), 0) / axes.length),
+    basis: `(${axes.map((k) => `${k} ${pick(k)}`).join(" + ")}) / ${axes.length}`,
+    axes,
+  })).sort((a, b) => b.score - a.score);
+}
 
 export function registerValuesTools(server: McpServer): void {
   server.registerTool("persona_values_list", {
@@ -564,6 +655,12 @@ export function registerValuesTools(server: McpServer): void {
                   : (resolved.maslowLevel ?? values.maslowLevel) === "belonging" ? "Social connection and love"
                   : (resolved.maslowLevel ?? values.maslowLevel) === "esteem" ? "Achievement and recognition"
                   : "Self-fulfillment and growth",
+                // The level used to arrive bare. It is a rollup of four axes
+                // that can be a coin-flip apart, so it now ships its own
+                // arithmetic and says when the winner is not a finding.
+                ...(resolved.maslowBasis ? { basis: resolved.maslowBasis } : {}),
+                ...(resolved.maslowMargin !== undefined ? { marginOverRunnerUp: resolved.maslowMargin } : {}),
+                ...(resolved.maslowCaveat ? { caveat: resolved.maslowCaveat } : {}),
               },
               influencePatterns,
               ...(influencePatternsTotal !== undefined && influencePatternsOmitted?.length
@@ -578,8 +675,16 @@ export function registerValuesTools(server: McpServer): void {
               // persona_lookup labelled the same values. Provenance should not
               // depend on which tool you asked.
               valuesSource: resolved.source,
+              ...(resolved.storedIn ? { valuesStoredIn: resolved.storedIn } : {}),
               ...(resolved.unpopulatedAxes
                 ? { unpopulatedAxes: resolved.unpopulatedAxes, unpopulatedNote: resolved.unpopulatedNote }
+                : {}),
+              // Computed in the resolver since it was written and dropped on the
+              // floor here, so the field built to disambiguate a 0.5 never
+              // reached a single caller. Third producer with no consumer found
+              // in this file. (2026-08-01)
+              ...(resolved.netNudge
+                ? { netNudge: resolved.netNudge, netNudgeNote: resolved.netNudgeNote }
                 : {}),
               ...(resolved.netZeroAxes
                 ? { netZeroAxes: resolved.netZeroAxes, netZeroNote: resolved.netZeroNote }

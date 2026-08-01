@@ -88,10 +88,23 @@ describe("htmlUiResource", () => {
     }
   });
 
-  test("our own served artifacts are allowed — they are the point", () => {
+  test("our own origin is blocked too — measured, not assumed", () => {
+    // This asserted the opposite until 2026-08-01, on the reasoning that
+    // cbrowser.ai is same-site with the product. True in a browser tab, false
+    // in the widget sandbox: measured against the real CSP, a control img on
+    // cbrowser.ai was blocked with a logged violation while a data: URI
+    // rendered. The exemption admitted exactly the HTML that cannot work, and
+    // because overlay boxes are absolutely positioned the failure looked like
+    // outlines floating over nothing rather than a broken image.
     const html = `<img src="https://cbrowser.ai/heatmaps/story-attn-x.png" alt="overlay">`;
+    expect(hasRemoteReference(html)).toBe(true);
+    expect(htmlUiResource("ui://cbrowser/test/seven", html)).toBeNull();
+  });
+
+  test("inlined bytes are how an artifact actually reaches the widget", () => {
+    const html = `<img src="data:image/png;base64,iVBORw0KGgo=" alt="overlay">`;
     expect(hasRemoteReference(html)).toBe(false);
-    expect(htmlUiResource("ui://cbrowser/test/seven", html)).not.toBeNull();
+    expect(htmlUiResource("ui://cbrowser/test/eight", html)).not.toBeNull();
   });
 });
 
