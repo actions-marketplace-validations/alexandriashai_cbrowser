@@ -54,6 +54,8 @@ export function resolvePersonaValues(name: string): {
   netZeroNote?: string;
   netNudge?: Record<string, number>;
   netNudgeNote?: string;
+  /** The squash, named so it need not be recovered by fitting. */
+  valueTransform?: string;
   higherOrderContamination?: Record<string, string>;
   higherOrder?: Record<string, number>;
   maslowLevel?: string;
@@ -83,7 +85,7 @@ export function resolvePersonaValues(name: string): {
   const bigFive = persona?.bigFive as Record<string, number> | undefined;
   if (!registry && !own && bigFive && Object.keys(bigFive).length) {
     const d = deriveValuesFromBigFive(bigFive);
-    const bfMaslow = scoreMaslow(d.values, d.values);
+    const bfMaslow = scoreMaslow(d.values, d.values); // Big Five reaches all 13, nothing frozen
     const sdt: Record<string, number> = {};
     ["autonomyNeed", "competenceNeed", "relatednessNeed"].forEach((k) => {
       if (typeof d.values[k] === "number") sdt[k] = d.values[k];
@@ -175,7 +177,20 @@ export function resolvePersonaValues(name: string): {
   // It stays, because a rollup is useful, but it now carries its own arithmetic
   // the way the influence patterns do, and it says out loud when the winner is
   // inside the noise or is resting on axes with no signal. (2026-08-01)
-  const maslowScores = scoreMaslow(values, sdt);
+  // Frozen = the route structurally cannot reach the axis (no correlation
+  // entry), which is a property of the route rather than of this persona's
+  // numbers. Deliberately NOT the `unpopulated` list below: that one also
+  // requires the value to sit at baseline, so an axis with correlations whose
+  // contributions happened to cancel would be misread as unreachable.
+  const maslowFrozen = new Set(
+    fromTraits
+      ? ["selfDirection", "stimulation", "hedonism", "achievement", "power", "security",
+         "conformity", "tradition", "benevolence", "universalism",
+         "autonomyNeed", "competenceNeed", "relatednessNeed"]
+          .filter((k) => !valueAxisCorrelationCounts()[k])
+      : [],
+  );
+  const maslowScores = scoreMaslow(values, sdt, maslowFrozen);
   const derivedMaslow = maslowScores[0].level;
   const maslowMargin = round3(maslowScores[0].score - maslowScores[1].score);
   // "Unreliable" is the union of two independent problems: too close to call,
@@ -189,28 +204,32 @@ export function resolvePersonaValues(name: string): {
   // between them would not have made the winner a reading either. Composition
   // is reported independently of margin, and it is what the caveat leads with.
   // (2026-08-01)
-  const counts0 = valueAxisCorrelationCounts();
+  //
+  // EVERY level reports its input count, including the clean ones. Reporting
+  // only the contaminated levels encodes "clean" as an absent key, which is the
+  // same shape as the defect this whole field exists to fix: a reader has to
+  // know the field could have been there and infer meaning from its absence.
+  // Two extra lines make both states explicit. (2026-08-01)
   const maslowContamination: Record<string, string> = {};
-  if (fromTraits) {
-    for (const c of maslowScores) {
-      const bad = c.axes.filter((k) => !counts0[k]);
-      if (bad.length) {
-        maslowContamination[c.level] =
-          `${bad.length} of ${c.axes.length} inputs unpopulated (${bad.join(", ")})`;
-      }
-    }
+  for (const c of maslowScores) {
+    maslowContamination[c.level] = c.frozenInputs.length
+      ? `${c.frozenInputs.length} of ${c.inputsTotal} inputs unpopulated (${c.frozenInputs.join(", ")}); scored on the remaining ${c.inputsUsed}`
+      : `0 of ${c.inputsTotal} inputs unpopulated`;
   }
-  const winnerBad = maslowScores[0].axes.filter((k) => fromTraits && !counts0[k]);
-  const runnerBad = maslowScores[1].axes.filter((k) => fromTraits && !counts0[k]);
+  const winnerBad = maslowScores[0].frozenInputs;
   const tooClose = maslowMargin < 0.05;
-  const maslowCaveat = winnerBad.length
-    ? `Not a reading. ${winnerBad.length} of ${maslowScores[0].axes.length} inputs to ${maslowScores[0].level} are unpopulated baselines rather than measurements (${winnerBad.join(", ")})`
-      + (runnerBad.length ? `, and the runner-up ${maslowScores[1].level} is composed the same way` : "")
-      + `. This holds regardless of the margin: a decisive gap between two part-synthetic composites is still not evidence.`
-      + (tooClose ? ` The margin is also only ${maslowMargin}.` : "")
-    : tooClose
+  const anyFrozen = maslowScores.some((c) => c.frozenInputs.length > 0);
+  const maslowCaveat = [
+    winnerBad.length
+      ? `${maslowScores[0].level} is scored on ${maslowScores[0].inputsUsed} of ${maslowScores[0].inputsTotal} inputs; ${winnerBad.join(", ")} is unpopulated on this route and was excluded rather than imputed.`
+      : undefined,
+    anyFrozen
+      ? `Levels here rest on different numbers of inputs, so the ranking is thinner than it looks. Imputing 0.5 for the missing ones — which this used to do — is worse than excluding them: it shrinks a contaminated level halfway toward the midpoint, downward when its live input is above 0.5 and upward when below, while leaving fully-populated levels untouched. That reorders the ranking rather than only compressing it.`
+      : undefined,
+    tooClose
       ? `Margin over ${maslowScores[1].level} is ${maslowMargin}. Too close to read as a finding; treat the top two as tied.`
-      : undefined;
+      : undefined,
+  ].filter(Boolean).join(" ") || undefined;
 
   // A persona's values can be authored by hand or written by the derivation.
   // Both live in the same field, and a value of exactly 0.5 means different
@@ -278,7 +297,12 @@ export function resolvePersonaValues(name: string): {
           unpopulatedNote: `These axes have no trait correlation defined, so the derivation leaves them at the 0.5 baseline regardless of the persona's traits. They carry no signal; a values-weighted run differentiates on the others only.`,
         }
       : {}),
-    ...(netNudge ? { netNudge, netNudgeNote: "Signed evidence behind each axis before the squash. Exactly 0 means no trait targets it at all; a small non-zero means the contributions cancelled. Both can round to 0.5." } : {}),
+    ...(netNudge ? { netNudge, netNudgeNote: "Signed evidence behind each axis before the squash. Exactly 0 means no trait targets it at all; a small non-zero means the contributions cancelled. Both can round to 0.5.",
+        // Named, not left to be recovered by fitting. A reader checked the
+        // disclosure by inferring this transform from thirteen (nudge, value)
+        // pairs, which worked -- and is exactly the work the disclosure exists
+        // to remove. (2026-08-01)
+        valueTransform: "value = 0.5 + tanh(netNudge) / 2, applied per axis, then rounded to 3dp. Invertible: netNudge = atanh((value - 0.5) * 2)." } : {}),
     ...(netZero.length
       ? {
           netZeroAxes: netZero,
@@ -295,14 +319,17 @@ export function resolvePersonaValues(name: string): {
             conservation: ["security", "conformity", "tradition"],
             selfTranscendence: ["benevolence", "universalism"],
           };
+          // Clean rollups say so rather than being omitted. Encoding "clean"
+          // as a missing key makes the reader infer meaning from absence --
+          // the same shape as the 0.5 ambiguity this field exists to remove.
           const contaminated: Record<string, string> = {};
           for (const [roll, ins] of Object.entries(inputs)) {
             const bad = ins.filter((i) => unpopulated.includes(i));
-            if (bad.length) contaminated[roll] = `${bad.length} of ${ins.length} inputs unpopulated (${bad.join(", ")})`;
+            contaminated[roll] = bad.length
+              ? `${bad.length} of ${ins.length} inputs unpopulated (${bad.join(", ")})`
+              : `0 of ${ins.length} inputs unpopulated`;
           }
-          return Object.keys(contaminated).length
-            ? { higherOrderContamination: contaminated }
-            : {};
+          return { higherOrderContamination: contaminated };
         })()
       : {}),
     ...(Object.keys(sdt).length ? { sdt, sdtSource: flat ? "default" : "derived" } : {}),
@@ -332,7 +359,11 @@ export type ValuesRoute = "stated" | "big_five" | "cognitive_traits" | "none";
  * route, derived from nothing. A shared scorer is the only way one path cannot
  * quietly disagree with the other. (2026-08-01)
  */
-function scoreMaslow(values: Record<string, number>, sdt: Record<string, number>) {
+function scoreMaslow(
+  values: Record<string, number>,
+  sdt: Record<string, number>,
+  frozen: Set<string> = new Set(),
+) {
   const spec: Array<[string, string[]]> = [
     ["safety", ["security", "conformity"]],
     ["belonging", ["benevolence", "relatednessNeed"]],
@@ -340,12 +371,31 @@ function scoreMaslow(values: Record<string, number>, sdt: Record<string, number>
     ["self-actualization", ["selfDirection", "universalism"]],
   ];
   const pick = (k: string) => values[k] ?? sdt[k] ?? 0.5;
-  return spec.map(([level, axes]) => ({
-    level,
-    score: round3(axes.reduce((a, k) => a + pick(k), 0) / axes.length),
-    basis: `(${axes.map((k) => `${k} ${pick(k)}`).join(" + ")}) / ${axes.length}`,
-    axes,
-  })).sort((a, b) => b.score - a.score);
+  return spec.map(([level, axes]) => {
+    const live = axes.filter((k) => !frozen.has(k));
+    const dead = axes.filter((k) => frozen.has(k));
+    // Live inputs only. Averaging a live axis against a frozen 0.5 does not
+    // merely add noise -- it shrinks that level halfway to the midpoint, DOWN
+    // when the live input is above 0.5 and UP when it is below, while a level
+    // with no frozen input is not shrunk at all. So contamination reorders the
+    // ranking as well as compressing it, and the direction depends on the sign
+    // of each level's live input. That is imputation-with-shrinkage presented
+    // as a complete case. Dropping the imputed inputs removes the bias; it
+    // cannot remove the fact that some levels rest on fewer inputs, which is
+    // what `inputsUsed` is for. (2026-08-01)
+    const denom = live.length || axes.length;
+    const used = live.length ? live : axes;
+    return {
+      level,
+      score: round3(used.reduce((a, k) => a + pick(k), 0) / denom),
+      scoreWithImputed: round3(axes.reduce((a, k) => a + pick(k), 0) / axes.length),
+      basis: `(${used.map((k) => `${k} ${pick(k)}`).join(" + ")}) / ${denom}`,
+      inputsUsed: live.length,
+      inputsTotal: axes.length,
+      frozenInputs: dead,
+      axes,
+    };
+  }).sort((a, b) => b.score - a.score);
 }
 
 export function registerValuesTools(server: McpServer): void {
@@ -601,7 +651,7 @@ export function registerValuesTools(server: McpServer): void {
       );
 
       let influencePatterns: Array<{pattern: string; susceptibility: number; description: string;
-        basis?: { values: string[]; traits: string[]; weighting: string; unpopulatedInputs?: string }}> | undefined;
+        basis?: { values: string[]; traits: string[]; weighting: string; formula: string; unpopulatedInputs: string }}> | undefined;
       let influencePatternsTotal: number | undefined;
       let influencePatternsOmitted: string[] | undefined;
       if (includeInfluencePatterns) {
@@ -628,18 +678,41 @@ export function registerValuesTools(server: McpServer): void {
         // backwards: the tool output is the one consumed programmatically, by a
         // reader with no page to look at. (2026-08-01)
         const frozen = new Set(resolved.unpopulatedAxes ?? []);
+        const vAll = values as unknown as Record<string, number>;
         influencePatterns = ranked.slice(0, 7).map(r => {
           const badValues = r.pattern.targetValues.filter((v) => frozen.has(v));
+          // The value mean is taken over DEFINED targets only, and the trait
+          // half is dropped entirely when a pattern has no related traits or
+          // none of them are on this persona (value-mappings.ts:609,618). So
+          // the weighting is 60/40 or 100/0 depending on the pattern, and the
+          // string said 60/40 unconditionally.
+          const definedValues = r.pattern.targetValues.filter((v) => typeof vAll[v] === "number");
+          const liveTraits = (r.pattern.relatedTraits ?? []).filter(
+            (t) => typeof rankTraits?.[t.trait] === "number");
+          const valueWeight = liveTraits.length ? 0.6 : 1;
+          // The fraction of the FINAL score that is placeholder, not the
+          // fraction of the value inputs. One frozen value out of three is a
+          // third of the value mean, which is 0.6 x 1/3 = 20% of the score --
+          // not 33%. A post about not overstating precision should not
+          // overstate its own contamination. (2026-08-01)
+          const syntheticShare = definedValues.length
+            ? valueWeight * (badValues.length / definedValues.length)
+            : 0;
           return {
           basis: {
             values: r.pattern.targetValues.map((v) =>
-              `${v}=${(values as unknown as Record<string, number>)[v] ?? "n/a"}${frozen.has(v) ? " (unpopulated baseline, not a measurement)" : ""}`),
+              `${v}=${vAll[v] ?? "n/a"}${frozen.has(v) ? " (unpopulated baseline, not a measurement)" : ""}`),
             traits: (r.pattern.relatedTraits ?? []).map(
               (t) => `${t.trait}=${rankTraits?.[t.trait] ?? "n/a"}${t.direction === "negative" ? " (inverted)" : ""}`),
-            weighting: "60% value mean, 40% trait mean",
-            ...(badValues.length
-              ? { unpopulatedInputs: `${badValues.length} of ${r.pattern.targetValues.length} value inputs are unpopulated (${badValues.join(", ")}). The score is that fraction synthetic.` }
-              : {}),
+            formula: liveTraits.length
+              ? "susceptibility = 0.6 * mean(defined target values) + 0.4 * mean(related traits, inverted where direction is negative), rounded to 3dp"
+              : "susceptibility = mean(defined target values)",
+            weighting: liveTraits.length
+              ? "60% value mean, 40% trait mean"
+              : "100% value mean (this pattern contributed no traits, so the 40% trait term is not applied)",
+            unpopulatedInputs: badValues.length
+              ? `${badValues.length} of ${definedValues.length} value inputs unpopulated (${badValues.join(", ")}). At ${Math.round(valueWeight * 100)}% value weighting that is ${Math.round(syntheticShare * 1000) / 10}% of the final score, not ${Math.round((badValues.length / definedValues.length) * 1000) / 10}%.`
+              : `0 of ${definedValues.length} value inputs unpopulated`,
           },
           pattern: r.pattern.name,
           susceptibility: r.susceptibility,
@@ -733,7 +806,8 @@ export function registerValuesTools(server: McpServer): void {
               // reached a single caller. Third producer with no consumer found
               // in this file. (2026-08-01)
               ...(resolved.netNudge
-                ? { netNudge: resolved.netNudge, netNudgeNote: resolved.netNudgeNote }
+                ? { netNudge: resolved.netNudge, netNudgeNote: resolved.netNudgeNote,
+                    ...(resolved.valueTransform ? { valueTransform: resolved.valueTransform } : {}) }
                 : {}),
               ...(resolved.netZeroAxes
                 ? { netZeroAxes: resolved.netZeroAxes, netZeroNote: resolved.netZeroNote }
