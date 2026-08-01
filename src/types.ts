@@ -767,6 +767,12 @@ export interface CognitiveProfile {
    */
   attentionPatternSource?: "declared" | "derived" | "default";
   decisionStyleSource?: "declared" | "derived" | "default";
+  /**
+   * Gap between the winning decision style's score and the runner-up. A small
+   * margin means the trait vector does not clearly favour one, and the label
+   * should be read as weak rather than as a finding.
+   */
+  decisionStyleMargin?: number;
   /** Template for generating inner monologue */
   innerVoiceTemplate?: string;
 }

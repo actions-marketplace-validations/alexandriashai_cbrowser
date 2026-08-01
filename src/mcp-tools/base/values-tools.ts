@@ -244,6 +244,11 @@ export function registerValuesTools(server: McpServer): void {
         // this persona, and it should not be acted on as one.
         ...(profile?.attentionPatternSource ? { attentionPatternSource: profile.attentionPatternSource } : {}),
         ...(profile?.decisionStyleSource ? { decisionStyleSource: profile.decisionStyleSource } : {}),
+        // Gap to the runner-up style. Near zero means the traits do not favour
+        // one, and the label is a weak reading rather than a finding.
+        ...(profile?.decisionStyleMargin !== undefined
+          ? { decisionStyleMargin: profile.decisionStyleMargin }
+          : {}),
         // Author-declared summaries that disagree with the trait vector.
         //
         // A persona can declare attentionPattern "thorough" while carrying

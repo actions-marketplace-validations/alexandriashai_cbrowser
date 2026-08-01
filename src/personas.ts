@@ -845,6 +845,7 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   // Derive decision style from traits
   let decisionStyle: DecisionStyleType = "cautious";
   let decisionStyleSource: "declared" | "derived" | "default" = "default";
+  let decisionStyleMargin: number | undefined;
   const traits = persona.cognitiveTraits;
 
   // v16.7.1: Validate trait completeness
@@ -865,32 +866,57 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     const comprehension = traits.comprehension ?? 0.5;
     const readingTendency = traits.readingTendency ?? 0.5;
 
-    // The chain had no branch for a bold persona at all: every condition
-    // tested for low risk tolerance, low patience or mobile, so someone with
-    // riskTolerance 0.8 matched nothing and kept the initial "cautious" --
-    // the exact opposite of the trait vector. Boundaries were also exclusive
-    // in a way that bit: patience 0.4 misses `patience < 0.4` by zero and
-    // fell through to the default rather than landing on "efficient".
-    // (2026-07-31)
-    const satisficing = traits.satisficing ?? 0.5;
-    if (patience < 0.3 && riskTolerance > 0.6) {
-      decisionStyle = "impulsive";
-    } else if (comprehension > 0.8 && patience <= 0.4) {
-      decisionStyle = "efficient";
-    } else if (riskTolerance < 0.3) {
-      decisionStyle = "cautious";
-    } else if (readingTendency > 0.8 && patience > 0.7) {
-      decisionStyle = "deliberate";
-    } else if (riskTolerance > 0.65 && satisficing < 0.4) {
-      // High tolerance for risk, low tolerance for "good enough": explores
-      // deliberately rather than cautiously.
-      decisionStyle = "deliberate";
-    } else if (riskTolerance > 0.65) {
-      decisionStyle = "impulsive";
-    } else if (persona.demographics.device === "mobile") {
-      decisionStyle = "quick-tap";
+    // Scored, not branched.
+    //
+    // An if/else chain is partial by construction: it answers only for the
+    // trait combinations someone thought to write a condition for, and every
+    // combination nobody covered silently inherits the initial literal. Six of
+    // twenty-one personas landed there -- first-timer among them -- reporting
+    // "cautious" because no branch matched, not because anything about them is
+    // cautious. Adding more branches moves the gap rather than closing it.
+    //
+    // Every style is scored from the trait vector and the highest wins, so a
+    // style is always chosen on evidence and the derivation is total: there is
+    // no combination left with no answer. (2026-07-31)
+    const t = (k: keyof CognitiveTraits, d = 0.5): number => {
+      const v = traits[k];
+      return typeof v === "number" ? v : d;
+    };
+    const mean = (...xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const patienceV = t("patience");
+    const riskV = t("riskTolerance");
+    const satisficeV = t("satisficing");
+    const readingV = t("readingTendency");
+
+    const scores: Array<[DecisionStyleType, number]> = [
+      // Acts before evaluating: tolerant of risk, short on patience, unplanned,
+      // and content with the first adequate option. Satisficing belongs here --
+      // without it someone with riskTolerance 0.8 and satisficing 0.25 scored
+      // impulsive, when refusing to settle is the opposite of impulsive.
+      ["impulsive", mean(riskV, 1 - patienceV, 1 - t("metacognitivePlanning"), satisficeV)],
+      // Knows the pattern and takes the shortest path that works.
+      ["efficient", mean(t("comprehension"), t("proceduralFluency"), satisficeV, 1 - readingV)],
+      // Checks before committing, and does not extend trust by default.
+      ["cautious", mean(1 - riskV, 1 - t("trustCalibration"), patienceV)],
+      // Reads, plans, and refuses to settle for the first adequate option.
+      ["deliberate", mean(readingV, patienceV, 1 - satisficeV, t("metacognitivePlanning"))],
+    ];
+    // Only reachable on a touch device, where it describes the input mode
+    // rather than the disposition.
+    if (persona.demographics.device === "mobile") {
+      // Weighted to win on mobile unless the trait evidence clearly says
+      // otherwise. Device was previously a terminal branch, so every mobile
+      // persona was quick-tap; letting it compete unweighted relabelled all of
+      // them at once, which is a bigger claim than closing a coverage gap
+      // should be making.
+      scores.push(["quick-tap", mean(1 - patienceV, satisficeV, riskV) + 0.2]);
     }
-    if (decisionStyle !== "cautious" || riskTolerance < 0.3) decisionStyleSource = "derived";
+    scores.sort((a, b) => b[1] - a[1]);
+    decisionStyle = scores[0][0];
+    decisionStyleSource = "derived";
+    // A near-tie is a weak reading, and saying so beats presenting the winner
+    // as though it were clear.
+    decisionStyleMargin = Math.round((scores[0][1] - scores[1][1]) * 100) / 100;
   }
   if (persona.behaviors?.decisionStyle) {
     decisionStyle = persona.behaviors.decisionStyle as DecisionStyleType;
@@ -937,6 +963,7 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     decisionStyle,
     attentionPatternSource,
     decisionStyleSource,
+    ...(decisionStyleMargin !== undefined ? { decisionStyleMargin } : {}),
     innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,
   };
 }
