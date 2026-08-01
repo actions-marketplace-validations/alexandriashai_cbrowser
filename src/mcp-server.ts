@@ -31,6 +31,7 @@ import {
 } from "./mcp-tools/base/capture-tools.js";
 import { registerEmpathyAuditTool } from "./mcp-tools/base/audit-tools.js";
 import { registerValuesTools } from "./mcp-tools/base/values-tools.js";
+import { registerPersonaComparisonTools } from "./mcp-tools/base/persona-comparison-tools.js";
 import { registerUiResources } from "./mcp-tools/ui-resources.js";
 import { applySecurityLayer } from "./mcp-tools/security-layer.js";
 
@@ -1831,61 +1832,6 @@ async function registerCBrowserTools(): Promise<McpServer> {
     }
   );
 
-  server.tool(
-    "compare_personas",
-    "Compare how different user personas experience a journey. REQUIRES API KEY for internal simulation. For API-free usage over remote MCP, use compare_personas_init + browser tools + compare_personas_record_result + compare_personas_summarize instead.",
-    {
-      url: z.string().url().describe("Starting URL"),
-      goal: z.string().describe("Goal to accomplish"),
-      personas: z.array(z.string()).describe("Persona names to compare"),
-    },
-    async ({ url, goal, personas }) => {
-      try {
-        const result = await comparePersonas({
-          startUrl: url,
-          goal,
-          personas,
-        });
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                url: result.url,
-                goal: result.goal,
-                personasCompared: result.personas.length,
-                summary: result.summary,
-              }, null, 2),
-            },
-          ],
-        };
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        if (errorMessage.includes("API key")) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  error: "API key required for all-in-one compare_personas",
-                  solution: "Use the API-free session bridge pattern instead:",
-                  steps: [
-                    "1. Call compare_personas_init with url, goal, personas",
-                    "2. For each persona, use browser tools (navigate, click, fill) to attempt the goal",
-                    "3. Call cognitive_journey_update_state after each action to track cognitive state",
-                    "4. Call compare_personas_record_result when each persona completes (success or abandon)",
-                    "5. Call compare_personas_summarize to get the comparison report",
-                  ],
-                  note: "Claude orchestrates the simulation - no API key needed when YOU are the brain!",
-                }, null, 2),
-              },
-            ],
-          };
-        }
-        throw error;
-      }
-    }
-  );
 
   server.tool(
     "find_element_by_intent",
@@ -2455,122 +2401,6 @@ Begin the simulation now. Narrate your thoughts as this persona.
   // Persona Comparison Session Bridge (API-free via Claude orchestration)
   // =========================================================================
 
-  server.tool(
-    "compare_personas_init",
-    "Initialize a multi-persona comparison session. Returns all persona profiles and initial states. Claude orchestrates the journeys using browser tools + cognitive_journey_update_state, then records results. NO API KEY NEEDED - Claude is the brain.",
-    {
-      url: z.string().url().describe("Starting URL for all journeys"),
-      goal: z.string().describe("Goal to accomplish"),
-      personas: z.array(z.string()).describe("Persona names to compare (e.g., ['first-timer', 'elderly-user', 'power-user'])"),
-    },
-    async ({ url, goal, personas: personaNames }) => {
-      // Cleanup old sessions
-      cleanupOldSessions();
-
-      // Generate session ID
-      const sessionId = `cmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-      // Build persona profiles
-      // v16.14.1: Use getAnyPersona to find personas in ALL registries
-      // (builtin, accessibility, emotional, custom) - fixes name mismatch bug
-      // v17.0.0: Filter out agent personas - cognitive journeys don't support them
-      const personas = personaNames
-        .filter(name => {
-          const persona = getAnyPersona(name);
-          if (persona && isAgentPersonaObject(persona)) {
-            console.warn(`[CBrowser] Skipping agent persona "${name}" - not supported for persona comparison`);
-            return false;
-          }
-          return true;
-        })
-        .map(name => {
-        const existingPersona = getAnyPersona(name);
-        let personaObj: Persona | AccessibilityPersona;
-
-        if (!existingPersona) {
-          // Only create generic stub if persona truly doesn't exist
-          personaObj = createCognitivePersona(name, name, {});
-        } else {
-          // Safe cast - we filtered out agent personas above
-          personaObj = existingPersona as Persona | AccessibilityPersona;
-        }
-
-        const profile = getCognitiveProfile(personaObj);
-
-        // Initial cognitive state
-        const initialState: CognitiveState = {
-          patienceRemaining: 1.0,
-          confusionLevel: 0.0,
-          frustrationLevel: 0.0,
-          goalProgress: 0.0,
-          confidenceLevel: 0.5,
-          currentMood: "neutral",
-          memory: {
-            pagesVisited: [url],
-            actionsAttempted: [],
-            errorsEncountered: [],
-            backtrackCount: 0,
-          },
-          timeElapsed: 0,
-          stepCount: 0,
-        };
-
-        // Abandonment thresholds
-        const traits = profile.traits;
-        const thresholds: AbandonmentThresholds = {
-          patienceMin: 0.1,
-          confusionMax: traits.comprehension < 0.4 ? 0.6 : 0.8,
-          frustrationMax: traits.patience < 0.3 ? 0.7 : 0.85,
-          maxStepsWithoutProgress: traits.persistence > 0.7 ? 15 : 10,
-          loopDetectionThreshold: 3,
-          timeLimit: traits.patience > 0.7 ? 180 : (traits.patience < 0.3 ? 60 : 120),
-        };
-
-        return {
-          name,
-          description: personaObj.description || name,
-          profile,
-          initialState,
-          thresholds,
-        };
-      });
-
-      // Store session
-      const session: ComparisonSession = {
-        id: sessionId,
-        url,
-        goal,
-        personas,
-        results: [],
-        createdAt: Date.now(),
-      };
-      comparisonSessions.set(sessionId, session);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              sessionId,
-              url,
-              goal,
-              personaCount: personas.length,
-              personas: personas.map(p => ({
-                name: p.name,
-                description: p.description,
-                cognitiveTraits: p.profile.traits,
-                attentionPattern: p.profile.attentionPattern,
-                decisionStyle: p.profile.decisionStyle,
-                initialState: p.initialState,
-                thresholds: p.thresholds,
-              })),
-              instructions: "For each persona: 1) Use browser tools (navigate, click, fill) to attempt the goal. 2) Call cognitive_journey_update_state after each action. 3) Call compare_personas_record_result when done (success or abandon). 4) After all personas, call compare_personas_summarize.",
-            }, null, 2),
-          },
-        ],
-      };
-    }
-  );
 
   server.tool(
     "compare_personas_record_result",
@@ -3274,6 +3104,16 @@ Begin the simulation now. Narrate your thoughts as this persona.
   // the remote one for the same call. Removed 2026-07-31.
   registerEmpathyAuditTool(server);
   registerValuesTools(server);
+  // The eight cognitive/comparison tools were registered only on the PUBLIC
+  // path, so the hosted server had them and `npx cbrowser mcp-server` did not:
+  // compare_personas, compare_personas_init, compare_personas_complete,
+  // cognitive_distance, cognitive_coverage, cognitive_interpolate,
+  // cognitive_load_estimate and cognitive_effort. Two of them existed here as
+  // separate older copies, which is how the gap stayed invisible -- the two
+  // most-used names were present locally, so the absence of the other six read
+  // as "those are enterprise features" rather than as a registration gap.
+  // Same split, same fix as the values family earlier today. (2026-08-01)
+  registerPersonaComparisonTools(server, { getBrowser });
 
   // =========================================================================
   // Diagnostics Tools
