@@ -1515,7 +1515,7 @@ const RUNTIME = String.raw`
  * Sourced from TRAIT_DEFINITIONS, the authoritative reference matrix, rather
  * than written fresh -- a tooltip that disagrees with the docs is worse than
  * no tooltip. Keys are short because this ships inside every view; ~4KB for
- * all 25 traits, against a 300KB runtime bundle.
+ * all 26 traits, against a 300KB runtime bundle.
  *
  * Schwartz values have no runtime description map (they are interfaces with
  * JSDoc), so value meters currently render without tooltips rather than with

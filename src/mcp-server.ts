@@ -1920,7 +1920,8 @@ async function registerCBrowserTools(): Promise<McpServer> {
         // Create from description
         personaObj = createCognitivePersona(personaName, personaName, customTraits || {});
       } else if (customTraits) {
-        // v16.11.0: Full 25-trait default set (was only 7, causing trait dropout)
+        // v16.11.0: full default trait set (was only 7, causing trait dropout).
+        // Said 25 until 2026-08-01; the model has 26 and has for some time.
         const defaultTraits: CognitiveTraits = {
           // Core 7 traits
           patience: 0.5,
@@ -3333,7 +3334,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
     "Start creating a custom persona. YOU MUST USE YOUR AskUserQuestion TOOL to present the choice to the user.",
     {
       persona_name: z.string().describe("Name for the new persona"),
-      comprehensive: z.boolean().optional().describe("Include all 25 traits (true) or just core 8 traits (false)"),
+      comprehensive: z.boolean().optional().describe("Include all 26 traits (true) or just the core 8 (false)"),
     },
     async ({ persona_name, comprehensive = false }) => {
       const sessionId = "local-session";
@@ -3383,7 +3384,7 @@ IMPORTANT: Do NOT show this text to the user. USE AskUserQuestion to present the
     "Start the questionnaire mode for persona creation. YOU MUST USE AskUserQuestion to present each question interactively.",
     {
       persona_name: z.string().describe("Name for the new persona"),
-      comprehensive: z.boolean().optional().describe("Include all 25 traits (default: false)"),
+      comprehensive: z.boolean().optional().describe("Include all 26 traits (default: false)"),
     },
     async ({ persona_name, comprehensive = false }) => {
       const sessionId = "local-session";

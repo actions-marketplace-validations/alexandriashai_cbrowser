@@ -19,6 +19,7 @@ import type { Persona, CognitiveTraits, CognitiveProfile, AttentionPatternType, 
 import { applyTraitCorrelations } from "./persona-questionnaire.js";
 import { AGENT_PERSONAS, isAgentPersona, getAgentPersona, listAgentPersonas, isAgentPersonaObject } from "./agent-personas.js";
 import { scopedDataDir } from "./persona-scope.js";
+import { TRAIT_DEFINITIONS } from "./trait-reference.js";
 
 // ============================================================================
 // Custom Personas Storage
@@ -867,12 +868,18 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
 
   // v16.7.1: Validate trait completeness
   if (traits) {
-    const expectedTraitCount = 25; // 7 required + 18 optional
+    // Derived from the trait definitions rather than hardcoded. This was the
+    // literal 25 while the model had 26, so a persona missing exactly one trait
+    // counted as complete and the warning could never fire for it. A count that
+    // has to be updated by hand in step with a table is a count that will drift
+    // from it -- this file, mcp-server.ts, cognitive/index.ts, widget-kit.ts and
+    // cognitive-transport.ts had all drifted to 25 by 2026-08-01.
+    const expectedTraitCount = Object.keys(TRAIT_DEFINITIONS).length;
     const actualTraitCount = Object.keys(traits).filter(k => traits[k as keyof typeof traits] !== undefined).length;
     if (actualTraitCount < expectedTraitCount) {
       console.warn(
         `[CBrowser] Persona "${persona.name}" has ${actualTraitCount}/${expectedTraitCount} traits. ` +
-        `Missing traits will use defaults. Consider regenerating the persona for full 25-trait model.`
+        `Missing traits will use defaults. Consider regenerating the persona for the full ${expectedTraitCount}-trait model.`
       );
     }
   }

@@ -916,7 +916,8 @@ export async function runCognitiveJourney(
       options.customTraits || {}
     );
   } else if (options.customTraits) {
-    // v16.7.1: Full 25-trait default set (was only 7, causing trait dropout)
+    // v16.7.1: full default trait set (was only 7, causing trait dropout).
+    // Said 25 until 2026-08-01; the model has 26.
     const defaultTraits: CognitiveTraits = {
       // Required traits (7)
       patience: 0.5,

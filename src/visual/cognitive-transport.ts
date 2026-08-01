@@ -16,7 +16,7 @@
  * - Thual et al. (NeurIPS 2022): unbalanced GW aligns individual brain representations
  * - Esfahani & Kuhn (Math Programming 2018): DRO with Wasserstein balls
  *
- * All computations are O(d³) or better for d=25 traits. Sub-millisecond. No GPU.
+ * All computations are O(d³) or better for d=26 traits. Sub-millisecond. No GPU.
  *
  * @version 1.0.0
  * @since v18.27.0
