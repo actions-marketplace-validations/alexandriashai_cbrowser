@@ -10,6 +10,8 @@
 
 import type { PersonaValues, MaslowLevel } from "./schwartz-values.js";
 import { createPersonaValues } from "./schwartz-values.js";
+import { getAnyPersona } from "../personas.js";
+import { deriveValuesFromBigFive } from "./big-five-values.js";
 
 /**
  * Value profile with persona name for lookup.
@@ -654,4 +656,37 @@ export function registerPersonaValues(profiles: PersonaValueProfile[]): void {
       PERSONA_VALUE_PROFILES.push(profile);
     }
   }
+}
+
+
+/**
+ * Values for any persona, from whichever source has them.
+ *
+ * getPersonaValues consults the hand-authored registry ONLY, and six call
+ * sites used it directly — including the values-to-LLM path and the
+ * useValues:true saliency path. A custom persona therefore reached those with
+ * no values at all: not defaults, nothing, because the registry has never
+ * heard of it. The lookup tools had this same bug and were fixed twice; the
+ * consumers behind them were still on the narrow function.
+ *
+ * Order: registry, then the persona's own schwartzValues block, then a Big
+ * Five derivation. Explicit numbers beat derived ones, and a derivation
+ * through the Big Five beats one through cognitive traits because that is the
+ * layer the published correlations relate to values. (2026-08-01)
+ */
+export function resolveValuesForPersona(personaName: string): PersonaValues | undefined {
+  const registry = getPersonaValues(personaName);
+  if (registry) return registry;
+
+  const persona = getAnyPersona(personaName) as unknown as Record<string, unknown> | undefined;
+  if (!persona) return undefined;
+
+  const own = persona.schwartzValues as PersonaValues | undefined;
+  if (own) return own;
+
+  const bigFive = persona.bigFive as Record<string, number> | undefined;
+  if (bigFive && Object.keys(bigFive).length) {
+    return deriveValuesFromBigFive(bigFive).values as unknown as PersonaValues;
+  }
+  return undefined;
 }

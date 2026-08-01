@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { resolveValuesForPersona } from "../../values/persona-values.js";
 import { writeArtifact } from "../../artifact-store.js";
 
 /**
@@ -552,7 +553,7 @@ export function registerVisualTestingTools(server: McpServer): void {
           if (useValues) {
             try {
               const { getPersonaValues, registerPersonaValues, createPersonaValues } = await import("../../values/index.js");
-              let vals = getPersonaValues(persona);
+              let vals = resolveValuesForPersona(persona);
 
               // If not found in built-ins, check CMS for custom persona values
               if (!vals) {

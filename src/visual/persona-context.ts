@@ -24,11 +24,11 @@ export interface ResolvedPersonaContext {
 export async function resolvePersonaContext(name: string): Promise<ResolvedPersonaContext> {
   try {
     const { getAnyPersona, getCognitiveProfile } = await import("../personas.js");
-    const { getPersonaValues } = await import("../values/index.js");
+    const { resolveValuesForPersona } = await import("../values/index.js");
     const resolved = getAnyPersona(name);
     if (!resolved) return {};
     const profile = getCognitiveProfile(resolved as never);
-    const v = getPersonaValues((resolved as { name: string }).name);
+    const v = resolveValuesForPersona((resolved as { name: string }).name);
     const description = (resolved as { description?: string }).description;
     return {
       ...(description ? { personaDescription: description } : {}),

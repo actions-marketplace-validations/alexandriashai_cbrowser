@@ -31,7 +31,7 @@ import {
   listAllPersonas,
 } from "../../personas.js";
 import type { PersonaValues } from "../../values/schwartz-values.js";
-import { getPersonaValues } from "../../values/persona-values.js";
+import { getPersonaValues, resolveValuesForPersona } from "../../values/persona-values.js";
 
 // ============================================================================
 // Types
@@ -139,7 +139,7 @@ function getMarketingPersonas(): MarketingPersonaProfile[] {
 
   // Get built-in cognitive personas
   for (const [name, persona] of Object.entries(BUILTIN_PERSONAS)) {
-    const values = getPersonaValues(name);
+    const values = resolveValuesForPersona(name);
     if (values) {
       profiles.push({
         name: persona.name,
@@ -153,7 +153,7 @@ function getMarketingPersonas(): MarketingPersonaProfile[] {
 
   // Get accessibility personas
   for (const [name, persona] of Object.entries(ACCESSIBILITY_PERSONAS)) {
-    const values = getPersonaValues(name);
+    const values = resolveValuesForPersona(name);
     if (values) {
       profiles.push({
         name: persona.name,

@@ -799,8 +799,8 @@ export async function analyzeAttentionFromDOM(
   let values = schwartzValues;
   if (!values) {
     try {
-      const { getPersonaValues } = await import('../values/index.js');
-      const pv = getPersonaValues(personaName);
+      const { resolveValuesForPersona } = await import('../values/index.js');
+      const pv = resolveValuesForPersona(personaName);
       if (pv) {
         values = {
           selfDirection: pv.selfDirection, stimulation: pv.stimulation,
@@ -902,8 +902,8 @@ export async function analyzeAttention(
   let values = schwartzValues;
   if (!values) {
     try {
-      const { getPersonaValues } = await import('../values/index.js');
-      const pv = getPersonaValues(personaName);
+      const { resolveValuesForPersona } = await import('../values/index.js');
+      const pv = resolveValuesForPersona(personaName);
       if (pv) {
         values = {
           selfDirection: pv.selfDirection, stimulation: pv.stimulation,

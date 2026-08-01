@@ -16,7 +16,7 @@ import {
   isAgentPersonaObject,
 } from "../../personas.js";
 import { listAccessibilityPersonas, getAccessibilityPersona } from "../../personas.js";
-import { getPersonaValues, rankInfluencePatternsForProfile } from "../../values/index.js";
+import { getPersonaValues, rankInfluencePatternsForProfile, resolveValuesForPersona } from "../../values/index.js";
 import type {
   CognitiveState,
   AbandonmentThresholds,
@@ -407,7 +407,7 @@ export function registerCognitiveTools(
         }
       }
 
-      const personaValues = getPersonaValues(personaObj.name);
+      const personaValues = resolveValuesForPersona(personaObj.name);
       const influencePatterns = personaValues
         ? rankInfluencePatternsForProfile(personaValues).slice(0, 5)
         : undefined;
@@ -748,7 +748,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
         const p = getPersona(name);
         if (!p) return null;
         const profile = getCognitiveProfile(p);
-        const values = getPersonaValues(p.name);
+        const values = resolveValuesForPersona(p.name);
         return {
           name: p.name,
           description: p.description,
@@ -822,7 +822,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
           else if (p.name.includes("cognitive") || p.name.includes("adhd")) disabilityType = "Cognitive";
         }
 
-        const values = getPersonaValues(p.name);
+        const values = resolveValuesForPersona(p.name);
         return {
           name: p.name,
           description: p.description,

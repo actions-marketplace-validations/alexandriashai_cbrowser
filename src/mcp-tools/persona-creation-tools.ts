@@ -19,6 +19,7 @@ import type { McpServer } from "./types.js";
 import {
   generatePersonaQuestionnaire,
   buildTraitsFromAnswers,
+  buildBigFiveFromAnswers,
   deriveValuesFromTraits,
   TRAIT_REFERENCE_MATRIX,
 } from "../persona-questionnaire.js";
@@ -441,6 +442,13 @@ IMPORTANT: Use AskUserQuestion - do NOT just display this text.`,
       // Check if completely done
       if (session.phase === "values" && session.currentIndex >= session.valueQuestions.length) {
         const traits = buildTraitsFromAnswers(session.answers);
+        // Big Five answers, if the questionnaire included them. Kept on the
+        // persona so anything deriving values later has the layer the research
+        // actually relates to values, rather than re-deriving from cognitive
+        // traits and crossing a gap the literature does not cover. Without
+        // this the five items would have been asked and thrown away.
+        // (2026-08-01)
+        const bigFive = buildBigFiveFromAnswers(session.answers);
         const derivedResult = deriveValuesFromTraits(traits);
         const derivedValues = derivedResult.values;
         const values = {
@@ -466,6 +474,7 @@ IMPORTANT: Use AskUserQuestion - do NOT just display this text.`,
             text: JSON.stringify({
               questionnaire_complete: true,
               persona_name: personaName,
+              ...(Object.keys(bigFive).length ? { bigFive } : {}),
               duration_seconds: Math.round(duration / 1000),
               traits,
               values,

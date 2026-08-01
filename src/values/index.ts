@@ -40,6 +40,7 @@ export {
   type PersonaValueProfile,
   PERSONA_VALUE_PROFILES,
   getPersonaValues,
+  resolveValuesForPersona,
   hasPersonaValues,
   resolvePersonaName,
   registerPersonaValues,

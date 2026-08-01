@@ -1631,71 +1631,22 @@ export function buildBigFiveFromAnswers(answers: Record<string, number>): Record
   return out;
 }
 
-export const VALUE_AXIS_QUESTIONS: QuestionnaireQuestion[] = [
-  {
-    id: "value-hedonism",
-    trait: "patience" as keyof CognitiveTraits, // unused; valueAxis takes precedence
-    valueAxis: "hedonism",
-    question: "How much does this person choose things because they are enjoyable in the moment?",
-    options: [
-      { value: 0, label: "Almost never", description: "Picks the useful option over the pleasant one, consistently" },
-      { value: 0.33, label: "Sometimes", description: "Enjoyment matters, but rarely decides anything" },
-      { value: 0.67, label: "Often", description: "Actively prefers experiences that feel good along the way" },
-      { value: 1, label: "Nearly always", description: "Pleasure in the moment is a primary reason for choosing" },
-    ],
-  },
-  {
-    id: "value-power",
-    trait: "patience" as keyof CognitiveTraits,
-    valueAxis: "power",
-    question: "How much does this person want control over outcomes and standing relative to others?",
-    options: [
-      { value: 0, label: "Not at all", description: "Uninterested in status or being the one who decides" },
-      { value: 0.33, label: "A little", description: "Prefers some control but does not seek authority" },
-      { value: 0.67, label: "Quite a lot", description: "Wants a say in decisions and notices where they rank" },
-      { value: 1, label: "Strongly", description: "Status and control over outcomes drive a lot of behaviour" },
-    ],
-  },
-  {
-    id: "value-universalism",
-    trait: "patience" as keyof CognitiveTraits,
-    valueAxis: "universalism",
-    question: "How much does this person weigh fairness and the wider good beyond people they know?",
-    options: [
-      { value: 0, label: "Rarely", description: "Concern extends to their own circle, not much further" },
-      { value: 0.33, label: "Somewhat", description: "Cares in principle, seldom acts on it" },
-      { value: 0.67, label: "Considerably", description: "Fairness to strangers genuinely affects their choices" },
-      { value: 1, label: "Centrally", description: "Justice, tolerance and the common good are core commitments" },
-    ],
-  },
-  {
-    id: "value-relatednessNeed",
-    trait: "patience" as keyof CognitiveTraits,
-    valueAxis: "relatednessNeed",
-    question: "How much does this person need to feel connected to and cared for by others?",
-    options: [
-      { value: 0, label: "Very little", description: "Comfortable operating alone; connection is optional" },
-      { value: 0.33, label: "Some", description: "Values close ties but does not need them present" },
-      { value: 0.67, label: "A good deal", description: "Seeks belonging and is affected by its absence" },
-      { value: 1, label: "Strongly", description: "Feeling close to others is a central need" },
-    ],
-  },
-];
-
 /**
- * Values taken straight from questionnaire answers, for the axes that have no
- * other route. Returns only the axes actually answered — an unanswered axis is
- * left absent rather than defaulted, so the caller can still tell the
- * difference between "said 0.5" and "never asked".
+ * There is no VALUE_AXIS_QUESTIONS here on purpose.
+ *
+ * A first pass added four direct questions for hedonism, power, universalism
+ * and relatedness — the axes no cognitive trait can reach. They were redundant:
+ * persona-creation-tools.ts already carries VALUES_QUESTIONS, ten items, one
+ * per Schwartz value, and the questionnaire flow already prefers an answered
+ * value over a derived one. The four axes were never broken for personas built
+ * through the questionnaire; they are broken for every other route, which is
+ * what the Big Five items above are for.
+ *
+ * Two competing sets of questions for the same axes would have been the worse
+ * outcome — whichever one a caller found first would silently decide which
+ * wording a persona was scored against. (2026-08-01)
  */
-export function buildValuesFromAnswers(answers: Record<string, number>): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const q of VALUE_AXIS_QUESTIONS) {
-    const a = answers[q.id];
-    if (typeof a === "number" && q.valueAxis) out[q.valueAxis] = a;
-  }
-  return out;
-}
+
 
 export function generatePersonaQuestionnaire(options?: {
   comprehensive?: boolean;  // All traits vs. core subset
@@ -1750,7 +1701,9 @@ export function generatePersonaQuestionnaire(options?: {
   // correlations. The four direct value questions stay as an override for
   // anyone who would rather state an axis than have it inferred, and as the
   // fallback when the Big Five items go unanswered.
-  return [...traitQuestions, ...BIG_FIVE_QUESTIONS, ...VALUE_AXIS_QUESTIONS];
+  // Big Five rides along because it is the only route to values for personas
+  // that never go through the creation questionnaire's own ten value items.
+  return [...traitQuestions, ...BIG_FIVE_QUESTIONS];
 }
 
 function generateQuestionText(trait: TraitReference): string {

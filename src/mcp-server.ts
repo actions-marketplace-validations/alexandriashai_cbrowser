@@ -113,7 +113,7 @@ import {
 
 // Values system (Schwartz's 10 Universal Values)
 import {
-  getPersonaValues,
+  resolveValuesForPersona,
   hasPersonaValues,
   PERSONA_VALUE_PROFILES,
   calculatePatternSusceptibility,
@@ -2053,7 +2053,7 @@ async function registerCBrowserTools(): Promise<McpServer> {
       await b.navigate(startUrl);
 
       // v16.12.0: Include persona values for influence pattern analysis
-      const personaValues = getPersonaValues(personaObj.name);
+      const personaValues = resolveValuesForPersona(personaObj.name);
       const influencePatterns = personaValues
         ? rankInfluencePatternsForProfile(personaValues).slice(0, 5) // Top 5 most effective patterns
         : undefined;
@@ -2290,7 +2290,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
         if (!p) return null;
         const profile = getCognitiveProfile(p);
         // v16.12.0: Include Schwartz values for each persona
-        const values = getPersonaValues(p.name);
+        const values = resolveValuesForPersona(p.name);
         return {
           name: p.name,
           description: p.description,
@@ -2368,7 +2368,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
         }
 
         // v16.12.0: Include Schwartz values for accessibility personas
-        const values = getPersonaValues(p.name);
+        const values = resolveValuesForPersona(p.name);
         return {
           name: p.name,
           description: p.description,
@@ -2778,7 +2778,7 @@ This ensures personas are grounded in research, not stereotypes.
       includeInfluencePatterns: z.boolean().optional().default(true).describe("Include ranked influence patterns this persona is susceptible to"),
     },
     async ({ persona, includeInfluencePatterns }) => {
-      const values = getPersonaValues(persona);
+      const values = resolveValuesForPersona(persona);
 
       if (!values) {
         // List available personas with values

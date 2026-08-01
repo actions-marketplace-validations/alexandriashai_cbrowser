@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { resolveValuesForPersona } from "../../values/persona-values.js";
 import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { comparePersonas } from "../../analysis/index.js";
@@ -849,7 +850,7 @@ Begin with the first persona: ${personas[0]}
       // Modulate demand by motivational values (opt-in, default off)
       if (useValues) try {
         const { getPersonaValues, registerPersonaValues: regPV2, createPersonaValues: createPV2 } = await import("../../values/index.js");
-        let pValues = getPersonaValues(personaName);
+        let pValues = resolveValuesForPersona(personaName);
 
         // Custom persona CMS fallback
         if (!pValues) {
