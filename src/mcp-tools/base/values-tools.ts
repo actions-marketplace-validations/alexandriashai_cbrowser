@@ -528,6 +528,7 @@ export async function buildValuesPayload(
           unpopulatedInputs: string; susceptibilityWithImputed?: number }}> | undefined;
       let influencePatternsTotal: number | undefined;
       let influencePatternsOmitted: string[] | undefined;
+      let influencePatternsOmittedNote: string | undefined;
       if (includeInfluencePatterns) {
         // Traits passed through, so patterns sharing a value target set can
         // differ and a trait named for its pattern actually reaches it.
@@ -541,6 +542,21 @@ export async function buildValuesPayload(
         // reported now. (2026-07-31)
         influencePatternsTotal = ranked.length;
         influencePatternsOmitted = ranked.slice(7).map(r => r.pattern.name);
+        // The cut is applied AFTER scoring, so the patterns the imputation
+        // policy moves most are systematically the ones most likely to be
+        // truncated away: scarcity and liking both target an axis this route
+        // cannot reach, which drags them down the ranking, which pushes them
+        // past the cut. On a low-achievement persona the two patterns whose
+        // scores changed are precisely the two the caller never sees. Naming
+        // them in the omission note is the difference between "these ranked
+        // low" and "these ranked low partly because of a policy stated
+        // elsewhere in this same payload". (2026-08-01)
+        const omittedContaminated = ranked.slice(7)
+          .filter(r => r.pattern.targetValues.some(v => (resolved.unpopulatedAxes ?? []).includes(v)))
+          .map(r => r.pattern.name);
+        if (omittedContaminated.length) {
+          influencePatternsOmittedNote = `${omittedContaminated.join(", ")} ${omittedContaminated.length === 1 ? "was" : "were"} cut AND ${omittedContaminated.length === 1 ? "is" : "are"} scored on axes this route cannot reach. The ranking is computed before the cut, so a pattern held down by an unpopulated input is more likely to fall past it — the patterns the imputation policy affects most are the ones you are least likely to see.`;
+        }
         // Each score's inputs, so a rank can be traced instead of guessed at.
         // commitment topping the list was untraceable from the output: the
         // reader could see 0.71 and had to reverse-engineer which values and
@@ -667,6 +683,7 @@ export async function buildValuesPayload(
               ...(influencePatternsTotal !== undefined && influencePatternsOmitted?.length
                 ? {
                     influencePatternsShown: influencePatterns?.length,
+                    ...(influencePatternsOmittedNote ? { influencePatternsOmittedNote } : {}),
                     influencePatternsTotal,
                     influencePatternsOmitted,
                     influencePatternsNote: "Ranked by susceptibility and cut to the top seven. The omitted names ARE mapped and scored -- they ranked below the cut, which is different from a pattern the persona's traits never reach.",
