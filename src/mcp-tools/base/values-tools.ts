@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { PERSONA_CATEGORIES } from "../../persona-questionnaire.js";
 import { getAnyPersona, getCognitiveProfile } from "../../personas.js";
+import { valueAxisCorrelationCounts } from "../../persona-questionnaire.js";
 import { widgetUri } from "../widget-kit.js";
 import type { McpServer } from "../types.js";
 import {
@@ -38,6 +39,9 @@ export function resolvePersonaValues(name: string): {
   sdtSource?: "derived" | "default";
   unpopulatedAxes?: string[];
   unpopulatedNote?: string;
+  netZeroAxes?: string[];
+  netZeroNote?: string;
+  higherOrderContamination?: Record<string, string>;
   higherOrder?: Record<string, number>;
   maslowLevel?: string;
   maslowSource?: "stored" | "derived";
@@ -106,9 +110,16 @@ export function resolvePersonaValues(name: string): {
   // is a rollup of benevolence and universalism, so it is pulled toward 0.5 by
   // an input that was never populated. Stated rather than left to be inferred
   // from a suspicious row of 0.5s. (2026-07-31)
-  const UNDERIVABLE = ["hedonism", "power", "universalism", "relatednessNeed"];
+  const counts = valueAxisCorrelationCounts();
+  const atBaseline = (k: string) => values[k] === 0.5 || sdt[k] === 0.5;
   const unpopulated = personaSource === "derived"
-    ? UNDERIVABLE.filter((k) => values[k] === 0.5 || sdt[k] === 0.5)
+    ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !counts[k])
+    : [];
+  // Axes that ARE derived but whose contributions cancelled. A different fact
+  // from an axis with no correlations, and the two are indistinguishable by
+  // value alone -- both read 0.5.
+  const netZero = personaSource === "derived"
+    ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !!counts[k])
     : [];
 
   return {
@@ -119,6 +130,32 @@ export function resolvePersonaValues(name: string): {
           unpopulatedAxes: unpopulated,
           unpopulatedNote: `These axes have no trait correlation defined, so the derivation leaves them at the 0.5 baseline regardless of the persona's traits. They carry no signal; a values-weighted run differentiates on the others only.`,
         }
+      : {}),
+    ...(netZero.length
+      ? {
+          netZeroAxes: netZero,
+          netZeroNote: `These axes ARE derived — trait correlations exist and were applied — but this persona's traits pull them both ways and the contributions cancel near the baseline. Reading 0.5 here means "measured, no net lean", which is not the same as the unpopulated axes above.`,
+        }
+      : {}),
+    // Which rollups inherit a baseline input. openness can be clean while
+    // selfTranscendence is half synthetic, and the composite hides that.
+    ...(unpopulated.length
+      ? (() => {
+          const inputs: Record<string, string[]> = {
+            openness: ["selfDirection", "stimulation"],
+            selfEnhancement: ["achievement", "power"],
+            conservation: ["security", "conformity", "tradition"],
+            selfTranscendence: ["benevolence", "universalism"],
+          };
+          const contaminated: Record<string, string> = {};
+          for (const [roll, ins] of Object.entries(inputs)) {
+            const bad = ins.filter((i) => unpopulated.includes(i));
+            if (bad.length) contaminated[roll] = `${bad.length} of ${ins.length} inputs unpopulated (${bad.join(", ")})`;
+          }
+          return Object.keys(contaminated).length
+            ? { higherOrderContamination: contaminated }
+            : {};
+        })()
       : {}),
     ...(Object.keys(sdt).length ? { sdt, sdtSource: flat ? "default" : "derived" } : {}),
     higherOrder,
@@ -252,6 +289,8 @@ export function registerValuesTools(server: McpServer): void {
             valuesSource: r.source,
             ...(r.sdt ? { selfDeterminationNeeds: r.sdt, selfDeterminationSource: r.sdtSource } : {}),
             ...(r.unpopulatedAxes ? { unpopulatedAxes: r.unpopulatedAxes, unpopulatedNote: r.unpopulatedNote } : {}),
+            ...(r.netZeroAxes ? { netZeroAxes: r.netZeroAxes, netZeroNote: r.netZeroNote } : {}),
+            ...(r.higherOrderContamination ? { higherOrderContamination: r.higherOrderContamination } : {}),
             ...(r.higherOrder ? { higherOrderValues: r.higherOrder } : {}),
             ...(r.maslowLevel ? { maslowLevel: r.maslowLevel, maslowSource: r.maslowSource } : {}),
             ...(r.sdtSource === "default"
@@ -379,7 +418,8 @@ export function registerValuesTools(server: McpServer): void {
         p => p.personaName.toLowerCase() === persona.toLowerCase()
       );
 
-      let influencePatterns: Array<{pattern: string; susceptibility: number; description: string}> | undefined;
+      let influencePatterns: Array<{pattern: string; susceptibility: number; description: string;
+        basis?: { values: string[]; traits: string[]; weighting: string }}> | undefined;
       let influencePatternsTotal: number | undefined;
       let influencePatternsOmitted: string[] | undefined;
       if (includeInfluencePatterns) {
@@ -395,7 +435,17 @@ export function registerValuesTools(server: McpServer): void {
         // reported now. (2026-07-31)
         influencePatternsTotal = ranked.length;
         influencePatternsOmitted = ranked.slice(7).map(r => r.pattern.name);
+        // Each score's inputs, so a rank can be traced instead of guessed at.
+        // commitment topping the list was untraceable from the output: the
+        // reader could see 0.71 and had to reverse-engineer which values and
+        // which traits produced it.
         influencePatterns = ranked.slice(0, 7).map(r => ({
+          basis: {
+            values: r.pattern.targetValues.map((v) => `${v}=${(values as unknown as Record<string, number>)[v] ?? "n/a"}`),
+            traits: (r.pattern.relatedTraits ?? []).map(
+              (t) => `${t.trait}=${rankTraits?.[t.trait] ?? "n/a"}${t.direction === "negative" ? " (inverted)" : ""}`),
+            weighting: "60% value mean, 40% trait mean",
+          },
           pattern: r.pattern.name,
           susceptibility: r.susceptibility,
           description: r.pattern.description,
@@ -469,6 +519,12 @@ export function registerValuesTools(server: McpServer): void {
               valuesSource: resolved.source,
               ...(resolved.unpopulatedAxes
                 ? { unpopulatedAxes: resolved.unpopulatedAxes, unpopulatedNote: resolved.unpopulatedNote }
+                : {}),
+              ...(resolved.netZeroAxes
+                ? { netZeroAxes: resolved.netZeroAxes, netZeroNote: resolved.netZeroNote }
+                : {}),
+              ...(resolved.higherOrderContamination
+                ? { higherOrderContamination: resolved.higherOrderContamination }
                 : {}),
               researchBasis: {
                 schwartz: "Schwartz, S. H. (1992, 2012). Theory of Basic Human Values. DOI: 10.1016/S0065-2601(08)60281-6",

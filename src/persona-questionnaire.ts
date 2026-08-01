@@ -2391,6 +2391,24 @@ export const TRAIT_VALUE_CORRELATIONS: Record<string, {
  * @param traits - Cognitive traits (0-1 scale)
  * @returns Derived values with research basis
  */
+/**
+ * How many trait correlations target each value axis.
+ *
+ * Lets a consumer tell two very different 0.5s apart: an axis with no
+ * correlations can never leave the baseline, while an axis whose correlations
+ * happen to cancel is a real reading that landed near the middle. tradition on
+ * one persona nets to -0.01 from patience and authoritySensitivity pulling
+ * opposite ways -- indistinguishable from unpopulated in the output, and not
+ * the same thing at all. (2026-08-01)
+ */
+export function valueAxisCorrelationCounts(): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const c of Object.values(TRAIT_VALUE_CORRELATIONS)) {
+    for (const e of c.affects) counts[e.value] = (counts[e.value] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function deriveValuesFromTraits(
   traits: Partial<CognitiveTraits> | Record<string, number>
 ): {
