@@ -1,5 +1,13 @@
 /**
- * Schwartz's Theory of Basic Human Values
+ * Shalom Schwartz's Theory of Basic Human Values
+ *
+ * Named in full deliberately. cbrowser cites two different Schwartzes: Shalom
+ * Schwartz for this value circumplex, and Barry Schwartz (2002, The Paradox of
+ * Choice) for the satisficing trait. Both appeared as a bare "Schwartz" in
+ * tool output, which reads as one researcher spanning two unrelated
+ * literatures -- a reviewer who spots it calls it sloppy citation, and one who
+ * does not may conflate them. Every citation of either now carries an
+ * initial.
  *
  * Implements Schwartz's 10 universal values with research citations.
  * This is the foundation for understanding WHO a persona is at a motivational level.

@@ -128,6 +128,15 @@ export interface ScreenshotOptions {
   scale?: number;
   /** Target max file size in bytes - will auto-adjust quality/scale if needed */
   maxSize?: number;
+  /**
+   * Never resize the viewport to hit the size budget; drop quality instead.
+   *
+   * The compression loop shrinks files by calling setViewportSize, which
+   * reflows the page for real -- it can cross responsive breakpoints, and
+   * during a screen capture it puts a resize into the recording. Callers that
+   * own the viewport (a running capture) set this so the page is left alone.
+   */
+  noResize?: boolean;
   /** Full page screenshot (default: false) */
   fullPage?: boolean;
   /**
@@ -5339,7 +5348,15 @@ For more help: https://playwright.dev/docs/browsers
       const compressionOpts = {
         ...opts,
         compress: true,
-        maxSize: opts.maxSize || Math.floor(MAX_RESPONSE_SIZE / 1.37), // ~110KB raw = ~150KB base64
+        // Reserve room for the JSON the image ships beside.
+        //
+        // This targeted MAX_RESPONSE_SIZE / 1.37, which compresses the image
+        // to fill the entire response budget on its own -- a measured 144,731
+        // base64 characters against a 150k cap, 96.7% of it, leaving nothing
+        // for the payload. Anything but the barest JSON then tipped the result
+        // over, at which point the host swaps in a file pointer and the whole
+        // thing arrives unreadable.
+        maxSize: opts.maxSize || Math.floor((MAX_RESPONSE_SIZE - 28_000) / 1.37),
       };
       return this.screenshotCompressed(path, compressionOpts);
     }
@@ -5390,7 +5407,18 @@ For more help: https://playwright.dev/docs/browsers
 
     // Quality and scale steps to try
     const qualitySteps = [85, 70, 55, 45, 35, 25];
-    const scaleSteps = [1.0, 0.75, 0.5, 0.4, 0.3];
+    // Viewport scaling is skipped for two cases.
+    //
+    // noResize: the caller owns the viewport (a capture is running) and a
+    // resize would reflow the page into the recording.
+    //
+    // fullPage: shrinking the viewport does not shrink a full-page capture,
+    // it just makes the page taller and narrower. Measured on a marketing
+    // page: stepping the viewport down to 0.3 moved the file from 645KB to
+    // 580KB against an 87KB target, and left a 384px-wide picture of a whole
+    // page that no one could read. The image downscale below does the work
+    // instead, from a full-width capture.
+    const scaleSteps = (options?.noResize || fullPage) ? [1.0] : [1.0, 0.75, 0.5, 0.4, 0.3];
 
     let quality = options?.quality || 85;
     let scale = options?.scale || 1.0;
@@ -5468,10 +5496,53 @@ For more help: https://playwright.dev/docs/browsers
       }
     }
 
-    // Return best effort (smallest we could get)
-    if (this.config.verbose) {
-      console.log(`  Screenshot compression: used minimum quality settings`);
-    }
+    // Viewport scaling cannot shrink a full-page capture: making the viewport
+    // narrower just makes the page taller, so the loop above exhausts every
+    // step and still returns something far over budget. Measured: a full-page
+    // shot of a marketing page came back at 567KB against an ~89KB target,
+    // which then could not be delivered inline at all.
+    //
+    // So the last resort resizes the IMAGE rather than the viewport. A smaller
+    // picture of the whole page is still readable and still shows the layout;
+    // no picture at all is what the caller was getting.
+    try {
+      const sharp = (await import("sharp")).default;
+      let current = statSync(filename).size;
+      if (current > maxSize) {
+        const meta = await sharp(filename).metadata();
+        if (meta.width) {
+          // Width is computed from the size ratio rather than stepped through
+          // fixed factors. Stepping overshot badly -- it landed on a 211px-wide
+          // picture of a whole page, which meets the byte target and cannot be
+          // read, and it also stalled when re-encoding a quality-25 input at a
+          // higher quality made the file grow instead of shrink.
+          //
+          // File size scales roughly with area, so width scales with the square
+          // root of the ratio. MIN_READABLE_WIDTH is the floor: past it the
+          // screenshot stops being something a reader can use, and an honest
+          // omission beats an unreadable thumbnail.
+          const MIN_READABLE_WIDTH = 700;
+          const ratio = Math.sqrt(maxSize / current) * 0.92;
+          const target = Math.max(MIN_READABLE_WIDTH, Math.round(meta.width * ratio));
+          if (target < meta.width) {
+            const buf = await sharp(filename)
+              .resize({ width: target })
+              .jpeg({ quality: 62 })
+              .toBuffer();
+            // Only keep it if it actually helped; a re-encode that grew the file
+            // is worse than the original on every axis.
+            if (buf.length < current) {
+              writeFileSync(filename, buf);
+              current = buf.length;
+            }
+          }
+        }
+      }
+      if (this.config.verbose) {
+        console.log(`  Screenshot final size ${(current / 1024).toFixed(0)}KB (target ${(maxSize / 1024).toFixed(0)}KB)`);
+      }
+    } catch { /* an oversized screenshot still beats no screenshot */ }
+
     return filename;
   }
 

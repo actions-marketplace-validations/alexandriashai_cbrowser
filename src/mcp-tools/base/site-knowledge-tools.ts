@@ -97,6 +97,29 @@ export function registerSiteKnowledgeTools(
           );
         } catch { /* a fingerprint is not worth failing the analysis over */ }
 
+        // Persist what was just discovered. Affordances came back fully formed —
+        // selector, action, confidence — and were previously thrown away, so
+        // trackedElements never grew and the workflow site_model_status
+        // recommends produced a graph node and nothing a persona could use.
+        //
+        // Discovery only: entries land with zero attempts, and an element that
+        // has since accumulated real outcomes is not reset by rediscovery.
+        let elementsLearned = 0;
+        try {
+          const { SiteModelManager } = await import("../../site-model/manager.js");
+          const siteModel = SiteModelManager.getInstance();
+          const selectors = understanding.affordances
+            .map((a) => a.element)
+            .filter((sel): sel is string => typeof sel === "string" && sel.length > 0);
+          if (selectors.length > 0) {
+            elementsLearned = siteModel.recordDiscoveredElements(
+              new URL(understanding.url).hostname,
+              understanding.url,
+              selectors,
+            );
+          }
+        } catch { /* a page model is still useful when the store is unavailable */ }
+
         return {
           content: [
             {
@@ -106,6 +129,9 @@ export function registerSiteKnowledgeTools(
                   url: understanding.url,
                   type: understanding.type,
                   affordanceCount: understanding.affordances.length,
+                  // How many of those were NEW to the site model, so a caller can
+                  // tell learning from re-reading.
+                  elementsLearned,
                   formCount: understanding.structure.forms.length,
                   ctaCount: understanding.structure.ctas.length,
                   navigationGroups: understanding.structure.navigation.length,

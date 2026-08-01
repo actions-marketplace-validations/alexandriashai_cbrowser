@@ -549,7 +549,7 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
   {
     name: "satisficing",
     description: "Decision style: accept 'good enough' vs. seek optimal",
-    researchBasis: "Simon (1956) - Bounded Rationality; Schwartz (2002) - Maximizing vs Satisficing",
+    researchBasis: "Simon (1956) - Bounded Rationality; Schwartz, B. (2002) - Maximizing vs Satisficing",
     levels: [
       {
         value: 0.0,
@@ -2306,7 +2306,7 @@ export const TRAIT_VALUE_CORRELATIONS: Record<string, {
       { value: "security", direction: "negative", weight: 0.7 },
       { value: "stimulation", direction: "positive", weight: 0.4 },
     ],
-    researchBasis: "Schwartz (2012): Security opposes stimulation on value circumplex",
+    researchBasis: "Schwartz, S.H. (2012): Security opposes stimulation on value circumplex",
   },
   patience: {
     affects: [
@@ -2342,7 +2342,7 @@ export const TRAIT_VALUE_CORRELATIONS: Record<string, {
       { value: "tradition", direction: "positive", weight: 0.4 },
       { value: "selfDirection", direction: "negative", weight: 0.3 },
     ],
-    researchBasis: "Schwartz (2012): Authority acceptance aligns with conservation values",
+    researchBasis: "Schwartz, S.H. (2012): Authority acceptance aligns with conservation values",
   },
   fearOfMissingOut: {
     affects: [
@@ -2415,6 +2415,11 @@ export function deriveValuesFromTraits(
     relatednessNeed: 0.5,
   };
 
+  // Signed evidence per value, before any squashing. Kept separate from
+  // derivedValues so nothing is discarded mid-accumulation.
+  const rawTotals: Record<string, number> = {};
+  for (const k of Object.keys(derivedValues)) rawTotals[k] = 0;
+
   const derivations: Array<{ trait: string; affectedValue: string; contribution: number }> = [];
   const researchBasis: string[] = [];
 
@@ -2430,10 +2435,19 @@ export function deriveValuesFromTraits(
       // Calculate contribution: deviation * weight * direction
       const contribution = traitDeviation * effect.weight * (effect.direction === "positive" ? 1 : -1);
 
-      // Apply to value (clamped to 0-1)
-      if (derivedValues[effect.value] !== undefined) {
-        const oldValue = derivedValues[effect.value];
-        derivedValues[effect.value] = Math.max(0, Math.min(1, oldValue + contribution));
+      // Accumulated raw, squashed once at the end.
+      //
+      // This clamped to [0,1] on every step, and the values with the MOST
+      // trait evidence are the ones that overflow: stimulation is driven by 5
+      // traits summing to at most 1.15 against 0.5 of headroom, security by 4
+      // (0.95), competenceNeed by 4 (0.85). A persona whose traits point
+      // consistently one way pinned those to exactly 1.0 or 0, and the clamp
+      // destroyed the excess, so the rail was reached and never left. The
+      // derivation was least informative precisely where it had the most
+      // evidence, and two personas differing in strength were reported
+      // identical at the wall. (2026-07-31)
+      if (rawTotals[effect.value] !== undefined) {
+        rawTotals[effect.value] += contribution;
 
         if (Math.abs(contribution) > 0.05) {
           derivations.push({
@@ -2450,9 +2464,18 @@ export function deriveValuesFromTraits(
     }
   }
 
-  // Round values for cleaner output
+  // Map accumulated evidence onto [0,1] once, with a curve that approaches the
+  // rails without reaching them. tanh is monotone, so more evidence always
+  // moves a value further out and two personas that differ in strength stay
+  // distinguishable — which a clamp cannot promise, because everything past
+  // the wall lands on the same number. K is set so the strongest signal the
+  // correlation table can produce (raw 1.15) lands near 0.91 rather than 1.0,
+  // and a lone moderate signal (raw 0.3) still moves to about 0.65.
+  const SQUASH_K = 1.0;
   for (const key of Object.keys(derivedValues)) {
-    derivedValues[key] = Math.round(derivedValues[key] * 100) / 100;
+    const raw = rawTotals[key] ?? 0;
+    const squashed = 0.5 + 0.5 * Math.tanh(raw / SQUASH_K);
+    derivedValues[key] = Math.round(squashed * 100) / 100;
   }
 
   return {

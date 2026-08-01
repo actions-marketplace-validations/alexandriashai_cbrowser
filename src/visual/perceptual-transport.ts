@@ -65,6 +65,12 @@ export interface PerceptualAnalysis {
   computeTimeMs: number;
 }
 
+/**
+ * Asymptotic ceiling for a single susceptibility bucket's deduction. Buckets
+ * approach it and never reach it, so no two can max out onto the same value.
+ */
+const BARRIER_DEDUCTION_CEILING = 30;
+
 // ── Persona Perceptual Profiles ──
 
 const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
@@ -220,6 +226,7 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
       color_only: 2.0,         // May not distinguish subtle color differences
       missing_alt: 2.5,        // Relies heavily on alt text
       missing_label: 2.0,      // Relies on labels
+      audio_description: 1.5,  // Sees the video, loses on-screen detail and text
       cognitive_load: 1.0,
       timing: 1.5,             // Needs more time to scan magnified view
       hover_dependent: 1.0,
@@ -311,6 +318,54 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
     },
   },
 
+  /**
+   * Navigating by audio, not by sight.
+   *
+   * Absent entirely before, so screen-reader-user fell through to
+   * DEFAULT_PROFILE and every barrier weighed a flat 1.0. That is not neutral:
+   * with no damping, full deductions applied and the persona scored 2 out of
+   * 100 -- worse than any recognised one -- because nothing was weighting the
+   * arithmetic, not because the page was worse for them.
+   *
+   * The weights invert the visual defaults. Touch-target size and contrast are
+   * close to irrelevant to someone who never sees the target; missing alt text
+   * and missing labels are the whole experience, since they are the only
+   * description of an image or control that exists.
+   */
+  'screen-reader-user': {
+    persona: 'screen-reader-user',
+    category: 'vision',
+    barrierWeights: {
+      missing_alt: 3.0,        // The image IS the alt text; without it there is nothing
+      missing_label: 3.0,      // An unlabelled control is unusable, not just awkward
+      audio_description: 3.0,  // The only route to a video's visual content
+      // Captions transcribe audio this persona can already hear. Near-zero is
+      // the honest weight; it read 1.0 while audio description had no key at
+      // all, so "add captions" ranked as their top media fix.
+      captions: 0.2,
+      hover_dependent: 2.5,    // Hover has no keyboard or AT equivalent
+      timing: 2.0,             // Re-reading by audio takes longer than by eye
+      form_complexity: 1.8,
+      cognitive_load: 1.2,     // Linear audio traversal of a busy page is costly
+      low_contrast: 0.1,       // Not perceived
+      color_only: 0.1,         // Not perceived
+      touch_target: 0.1,       // Not pointed at
+    },
+    visualFilter: {
+      contrastThreshold: 0,
+      blurRadius: 0,
+      colorAttenuation: [1, 1, 1],
+      noiseTolerance: 0.8,
+      motorCostMultiplier: 1.0,
+      // text-focused: the page reaches this persona as text in DOM order.
+      // The union has no 'sequential' member and adding one would change a type
+      // other code switches on, for a distinction this model does not yet act
+      // on -- text-focused is the closest true statement available.
+      attentionMode: 'text-focused',
+      processingSpeed: 1.0,
+    },
+  },
+
   'deaf-user': {
     persona: 'deaf-user',
     category: 'hearing',
@@ -321,6 +376,11 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
       color_only: 0.5,
       cognitive_load: 0.8,
       timing: 1.5,            // Can't hear audio cues for time limits
+      // The criterion this persona exists to surface. Left unweighted it
+      // resolved to a neutral 1.0, so an audit run AS a deaf user rated
+      // missing captions no higher than anything else on the page.
+      captions: 3.0,
+      audio_description: 0.1,  // Visual content is perceived directly
       missing_alt: 1.0,
       missing_label: 1.0,
       hover_dependent: 0.5,
@@ -349,6 +409,7 @@ const PERCEPTUAL_PROFILES: Record<string, PerceptualProfile> = {
       color_only: 1.5,
       missing_alt: 1.5,
       missing_label: 2.0,
+      audio_description: 1.5,
       hover_dependent: 1.5,
     },
     visualFilter: {
@@ -421,6 +482,10 @@ export function getPerceptualProfile(
   }
   if (name.includes('adhd') || name.includes('cognitive') || name.includes('dyslexic')) {
     return { ...PERCEPTUAL_PROFILES['cognitive-adhd'], persona: personaName };
+  }
+  if (name.includes('screen-reader') || name.includes('screenreader')
+      || name.includes('nvda') || name.includes('jaws') || name.includes('voiceover')) {
+    return { ...PERCEPTUAL_PROFILES['screen-reader-user'], persona: personaName };
   }
   if (name.includes('deaf') || name.includes('hearing')) {
     return { ...PERCEPTUAL_PROFILES['deaf-user'], persona: personaName };
@@ -514,7 +579,7 @@ function synthesizePerceptualProfile(
  * @returns Weighted score and breakdown
  */
 export function calculatePerceptualScore(
-  barriers: Array<{ type: string; severity: string; element?: string }>,
+  barriers: Array<{ type: string; severity: string; element?: string; wcagCriteria?: string[] }>,
   frictionPoints: Array<{ impact: string }>,
   goalAchieved: boolean,
   personaName: string,
@@ -542,25 +607,36 @@ export function calculatePerceptualScore(
   /** Per-barrier-type susceptibility weight actually applied for this persona. */
   const appliedWeights: Record<string, number> = {};
 
-  // Group barriers by type
-  const byType = new Map<string, Array<{ severity: string }>>();
+  // Grouped by the susceptibility key that WEIGHTS them, not by the detector's
+  // type label.
+  //
+  // Grouping by type meant one weight for the whole bucket, and "sensory"
+  // holds barriers that could not be more different for the same person:
+  // missing alt text (3.0 for a screen-reader user), missing audio description
+  // (3.0), missing captions (0.2) and colour-only information (0.1). The
+  // type-level lookup resolved sensory to colour-only, so the two findings
+  // ranked #1 and #2 for that persona -- both critical, both weight 3.0 in the
+  // list -- were scored at 0.1 and deducted 4.2 points between them, while
+  // hover interaction at 2.5 dominated the score.
+  //
+  // That left two weighting systems in one payload: per-key weights driving
+  // severityForPersona and the ordering, per-type weights driving the
+  // arithmetic. They disagreed and the arithmetic used the coarser one.
+  // (2026-07-31)
+  const byKey = new Map<string, Array<{ severity: string }>>();
   for (const b of barriers) {
-    const existing = byType.get(b.type) || [];
+    const key = weightKeyFor(b.type, b.wcagCriteria) ?? b.type;
+    const existing = byKey.get(key) || [];
     existing.push(b);
-    byType.set(b.type, existing);
+    byKey.set(key, existing);
   }
 
-  // Map detector-emitted barrier type keys to profile weight keys
-  const BARRIER_KEY_MAP: Record<string, string> = {
-    'contrast': 'low_contrast',
-    'sensory': 'color_only',
-    'motor_precision': 'hover_dependent',
-    'visual_clarity': 'low_contrast',
-  };
-
   // Apply persona-weighted deductions
-  for (const [type, typeBarriers] of byType) {
-    const weightKey = BARRIER_KEY_MAP[type] || type;
+  for (const [weightKey, typeBarriers] of byKey) {
+    // The group key IS the susceptibility key, resolved by the same
+    // weightKeyFor the payload reports as personaWeightKey. Scoring and
+    // display therefore cannot disagree: there is one lookup, one table, one
+    // answer per barrier. (2026-07-31)
     const weight = profile.barrierWeights[weightKey] ?? 1.0;
 
     const critical = typeBarriers.filter(b => b.severity === 'critical').length;
@@ -574,11 +650,26 @@ export function calculatePerceptualScore(
 
     // Apply persona weight — this is the key differentiator
     const weighted = (criticalBase + majorBase + minorBase) * weight;
-    // Cap per-type deduction at 35 (even 3x multiplier shouldn't zero out from one type)
-    const capped = Math.min(35, weighted);
+    // Saturating ceiling rather than a hard clip.
+    //
+    // Math.min(35, weighted) flattened everything above the cap onto the same
+    // number. Once deductions were grouped by susceptibility key instead of by
+    // type the buckets got much finer, and a single critical barrier at weight
+    // 3.0 raws to 45 -- so the clip bound constantly and unequal findings came
+    // out equal: one undescribed video (raw 45) and three hover-only controls
+    // (raw 62.5) both reported exactly -35.
+    //
+    // Lowering the clip makes that worse, not better: it binds more often. An
+    // exponential approach to the ceiling is strictly increasing, so two
+    // buckets are equal only when their raw values are equal. They can get
+    // close to the ceiling but never reach it and never collide there. The
+    // ceiling also drops 35 -> 30, because finer buckets mean more of them.
+    // (2026-07-31)
+    const capped = BARRIER_DEDUCTION_CEILING *
+      (1 - Math.exp(-weighted / BARRIER_DEDUCTION_CEILING));
 
     if (capped > 0) {
-      deductions[type] = -Math.round(capped * 10) / 10;
+      deductions[weightKey] = -Math.round(capped * 10) / 10;
       // Barriers carry an affectedPersonas list naming a couple of exemplars,
       // which reads as exclusive next to a deduction charged to some other
       // persona. It is not a contradiction — susceptibility is applied here as a
@@ -586,7 +677,7 @@ export function calculatePerceptualScore(
       // motor-impairment-tremor's 3.0). Recording the weight makes the payload
       // explain its own arithmetic instead of looking self-contradictory.
       // (2026-07-28)
-      appliedWeights[type] = weight;
+      appliedWeights[weightKey] = weight;
       score -= capped;
     }
   }
@@ -608,9 +699,19 @@ export function calculatePerceptualScore(
   const goalDeduction = goalAchieved ? 0 : 15 * filter.motorCostMultiplier;
   score -= Math.min(25, goalDeduction);
 
-  // Cognitive load penalty based on noise tolerance
+  // Persona susceptibility to visual noise, NOT a finding that the page
+  // overloaded anyone.
+  //
+  // Derived from the persona's own noiseTolerance and charged on every page,
+  // so it is non-zero for a sensitive persona even on a calm one. The separate
+  // `overloaded` flag is a page measurement from cognitive-transport.ts,
+  // computed against a threshold. The two disagreeing is expected and not a
+  // bug -- but the name said otherwise, and a -7 charge sitting beside
+  // "overloaded: false" reads as one of the two being broken.
   const cognitiveLoad = 1 - filter.noiseTolerance;
-  const cognitiveOverloadPenalty = cognitiveLoad * 10; // Up to 10 point penalty
+  // Rounded at the source. Binary floating point turns 1 - 0.9 into
+  // 0.09999999999999998, and that reached a report a customer reads.
+  const cognitiveOverloadPenalty = Math.round(cognitiveLoad * 10 * 1000) / 1000;
   score -= cognitiveOverloadPenalty;
 
   // Information loss estimate from filter properties
@@ -816,4 +917,138 @@ export async function analyzePerceptualTransport(
  */
 export function listPerceptualProfiles(): string[] {
   return Object.keys(PERCEPTUAL_PROFILES);
+}
+
+/**
+ * Severity of a barrier as this persona actually experiences it.
+ *
+ * Susceptibility weights already exist and already drive scoring, but the
+ * severity a reader sees was persona-blind -- so a 169-item navigation
+ * displayed as "minor" to cognitive-adhd while being charged at a 3.0
+ * cognitive_load weight and driving the top bottleneck. The number said one
+ * thing and the label said another, and the label is what gets acted on.
+ *
+ * The base severity is kept alongside, because it is the one that maps to WCAG
+ * conformance: a criterion does not become more or less violated because of
+ * who is reading. This is about triage order, not compliance.
+ */
+export type BarrierSeverityLevel = "minor" | "major" | "critical";
+
+const SEVERITY_LADDER: BarrierSeverityLevel[] = ["minor", "major", "critical"];
+
+export function weightedSeverity(
+  base: string,
+  weight: number,
+): { severity: BarrierSeverityLevel; shifted: number } {
+  const at = SEVERITY_LADDER.indexOf(base as BarrierSeverityLevel);
+  if (at < 0) return { severity: "minor", shifted: 0 };
+  // Thresholds chosen against the real weight table, which clusters at 0.3-0.5
+  // for "not my problem", ~1.0 for baseline, and 2.5-3.0 for "this is the one
+  // that stops me". Two steps only at the top of that range, so escalation
+  // stays rare enough to mean something.
+  const shift = weight >= 2.5 ? 2 : weight >= 1.5 ? 1 : weight <= 0.5 ? -1 : 0;
+  const idx = Math.max(0, Math.min(SEVERITY_LADDER.length - 1, at + shift));
+  return { severity: SEVERITY_LADDER[idx] as BarrierSeverityLevel, shifted: idx - at };
+}
+
+/**
+ * Resolve a barrier to the key its susceptibility weight is stored under.
+ *
+ * The two vocabularies do not match and looking up the raw type silently
+ * returned 1.0 for most barriers. Emitted types are sensory, cognitive_load,
+ * motor_precision, visual_clarity, visual, motor, touch_target and timing;
+ * weights are keyed color_only, missing_alt, low_contrast, touch_target,
+ * cognitive_load, timing, missing_label, hover_dependent, form_complexity.
+ * Only three overlap, so `sensory` -- the most common type -- always defaulted.
+ *
+ * That is how a deaf-user audit reported weight 1.0 on a colour-only barrier
+ * while the persona's own table says 0.5: the table was right and the lookup
+ * never reached it.
+ *
+ * WCAG criteria are consulted first because they identify the barrier far more
+ * precisely than the type does: both a missing alt and a colour-only link are
+ * "sensory", and they have opposite susceptibility profiles.
+ */
+/**
+ * The single map from a detector-emitted barrier type to a profile weight key.
+ *
+ * Barrier types and susceptibility keys are different vocabularies, and this
+ * file used to hold two independent translations between them -- one used to
+ * SCORE, one used to DISPLAY the weight that was applied. They disagreed on
+ * motor_precision, so an audit reported a 0.1 weight beside a deduction
+ * computed at 2.5. Both paths read this now.
+ */
+export const BARRIER_TYPE_TO_WEIGHT_KEY: Record<string, string> = {
+  contrast: "low_contrast",
+  visual_clarity: "low_contrast",
+  visual: "low_contrast",
+  sensory: "color_only",
+  motor_precision: "hover_dependent",
+  motor: "touch_target",
+  touch_target: "touch_target",
+  cognitive_load: "cognitive_load",
+  timing: "timing",
+  form_complexity: "form_complexity",
+};
+
+const WCAG_TO_WEIGHT_KEY: Record<string, string> = {
+  "1.4.1": "color_only",
+  "1.1.1": "missing_alt",
+  "1.4.3": "low_contrast",
+  "1.4.11": "low_contrast",
+  "2.5.8": "touch_target",
+  "2.5.5": "touch_target",
+  "1.2.1": "captions",
+  "1.2.2": "captions",
+  // Audio description is not captions, and collapsing them made the audit
+  // recommend the wrong remedy to the wrong person: captions carry a video's
+  // AUDIO to someone who cannot hear, audio description carries its VISUALS to
+  // someone who cannot see. Under one key a blind user's top media finding was
+  // "add captions" -- a fix that does nothing for them -- while the barrier
+  // they actually hit had no criterion of its own. (2026-07-31)
+  "1.2.3": "audio_description",
+  "1.2.5": "audio_description",
+  "2.2.1": "timing",
+  "2.2.2": "timing",
+  "3.3.2": "missing_label",
+  "1.3.1": "missing_label",
+};
+
+const TYPE_TO_WEIGHT_KEY: Record<string, string> = BARRIER_TYPE_TO_WEIGHT_KEY;
+
+export function weightKeyFor(barrierType: string, wcagCriteria?: string[]): string | null {
+  for (const c of wcagCriteria ?? []) {
+    const k = WCAG_TO_WEIGHT_KEY[c];
+    if (k) return k;
+  }
+  return TYPE_TO_WEIGHT_KEY[barrierType] ?? null;
+}
+
+/**
+ * Susceptibility weight for a barrier, and whether it was actually found.
+ *
+ * `defaulted` matters: an unmeasured 1.0 and a measured 1.0 mean different
+ * things, and presenting the first as the second is what made a deaf user look
+ * maximally susceptible to colour.
+ */
+export function barrierWeightFor(
+  personaName: string,
+  barrierType: string,
+  wcagCriteria?: string[],
+): { weight: number; key: string | null; defaulted: boolean } {
+  const key = weightKeyFor(barrierType, wcagCriteria);
+  try {
+    const profile = getPerceptualProfile(personaName);
+    // A profile that resolved to the generic default is not a configured
+    // weight, whatever value it holds. DEFAULT_PROFILE carries 1.0 for every
+    // key, so an unrecognised persona previously reported defaulted:false on
+    // five identical 1.0s -- the field asserted "explicitly configured" about
+    // numbers nobody had chosen for that persona.
+    const isGeneric = profile.persona === "default";
+    const w = key ? profile.barrierWeights?.[key] : undefined;
+    if (typeof w === "number" && !isGeneric) return { weight: w, key, defaulted: false };
+    return { weight: typeof w === "number" ? w : 1.0, key, defaulted: true };
+  } catch {
+    return { weight: 1.0, key, defaulted: true };
+  }
 }

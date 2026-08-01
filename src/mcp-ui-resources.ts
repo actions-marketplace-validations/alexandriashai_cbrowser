@@ -56,11 +56,21 @@ export interface HtmlUiResourceOptions {
 
 /**
  * Patterns that would make the HTML depend on a network the iframe may not be
- * allowed to reach. `src="https://cbrowser.ai/heatmaps/…"` is the deliberate
- * exception: our own served artifacts are the entire point of the overlay, and
- * they are same-site with the product.
+ * allowed to reach.
+ *
+ * cbrowser.ai was previously exempted here on the grounds that our own served
+ * artifacts are same-site with the product. That is true of a browser tab and
+ * false of the widget sandbox, whose CSP allowlists a fixed set of origins not
+ * including ours -- measured against the real policy, a control img on
+ * cbrowser.ai was blocked with a logged violation while a data: URI rendered.
+ * The exemption therefore let through exactly the HTML that cannot work, and
+ * because overlay boxes are absolutely positioned, the failure looked like ten
+ * outlines floating over empty space rather than a broken image.
+ *
+ * No exemption now: HTML that reaches off-origin for something it needs is
+ * rejected, and callers inline the bytes instead.
  */
-const REMOTE_REF = /(?:\bsrc\s*=\s*["']https?:\/\/(?!cbrowser\.ai\/)|@import\s|<link[^>]+href\s*=\s*["']https?:|\bfetch\s*\(|XMLHttpRequest|new\s+WebSocket)/i;
+const REMOTE_REF = /(?:\bsrc\s*=\s*["']https?:\/\/|@import\s|<link[^>]+href\s*=\s*["']https?:|\bfetch\s*\(|XMLHttpRequest|new\s+WebSocket)/i;
 
 /** True when the HTML reaches outside itself for something it needs. */
 export function hasRemoteReference(html: string): boolean {

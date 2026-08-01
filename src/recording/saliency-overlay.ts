@@ -73,6 +73,20 @@ export interface AttentionOverlayOptions {
   keyFrames?: number[];
   /** Per-frame timestamps, used to place moments on the recording timeline. */
   frameTimesMs?: number[];
+  /**
+   * DOM as it stood at points in time, captured on navigation during recording.
+   *
+   * A judged frame uses the snapshot in effect AT ITS TIMESTAMP. Without this,
+   * every frame was scored against the page the capture ended on — so a frame
+   * on the pricing page got ranked against a post-click verification screen,
+   * every moment came back identical, and the summary read that uniformity as a
+   * UX finding rather than as the artifact it was.
+   */
+  domTimeline?: Array<{ atMs: number; scrollY?: number; elements: DOMAttentionElement[] }>;
+  /** Scroll position over time, used to correct rects for drift since capture. */
+  scrollTrack?: Array<{ atMs: number; scrollY: number }>;
+  /** Real interactions, for the click pulse and for the summary's action log. */
+  interactions?: Array<{ atMs: number; type: string; x: number; y: number; label: string }>;
   /** Persona context for the relevance judge and the closing summary. */
   relevanceContext?: Omit<RelevanceContext, "screenshot">;
   /** Produce a narrative of the whole recording after the frames are overlaid. */
@@ -94,6 +108,17 @@ export interface OverlayResult {
   usedDom: boolean;
   /** The quantity that was painted, for callers that label the artifact. */
   quantity: "predicted-attention" | "visual-contrast-only";
+  /**
+   * Whether the requested persona actually exists.
+   *
+   * An unknown name does not error — it falls through keyword inference to a
+   * default, which is right for custom personas and silent for typos. A caller
+   * who asks for "alexa-eden" and gets a generic profile has no way to tell,
+   * and every number downstream is then attributed to a persona that never ran.
+   */
+  personaResolved?: boolean;
+  /** The persona actually used, which may differ from the one requested. */
+  personaUsed?: string;
 }
 
 /**
@@ -115,6 +140,52 @@ function heatColour(v: number, opacity: number, floor: number): [number, number,
   else { const u = (t - 0.75) / 0.25; r = 255; g = Math.round(255 * (1 - u)); b = 0; }
 
   return [r, g, b, Math.round(255 * opacity * Math.min(1, 0.35 + t))];
+}
+
+/** How long a click pulse stays visible. Long enough to see at 2x, short enough not to smear. */
+const PULSE_MS = 900;
+/** Ring radius at the start and end of the pulse. */
+const PULSE_R0 = 22;
+const PULSE_R1 = 86;
+
+/**
+ * Draw an expanding ring over an interaction point.
+ *
+ * Painted in a colour outside the heat ramp (blue->red) so it cannot be mistaken
+ * for attention: an interaction is something that HAPPENED, attention is
+ * something the model PREDICTED, and a viewer must never have to guess which a
+ * mark represents. White with a dark rim reads on both light and dark pages.
+ */
+function drawPulse(
+  buf: Buffer, w: number, h: number,
+  cx: number, cy: number, progress: number,
+): void {
+  const radius = PULSE_R0 + (PULSE_R1 - PULSE_R0) * progress;
+  const alpha = Math.round(235 * (1 - progress));
+  if (alpha <= 0) return;
+  const thickness = 5;
+
+  const y0 = Math.max(0, Math.floor(cy - radius - thickness));
+  const y1 = Math.min(h - 1, Math.ceil(cy + radius + thickness));
+  const x0 = Math.max(0, Math.floor(cx - radius - thickness));
+  const x1 = Math.min(w - 1, Math.ceil(cx + radius + thickness));
+
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const d = Math.hypot(x - cx, y - cy);
+      const edge = Math.abs(d - radius);
+      if (edge > thickness) continue;
+      // Soft edge so the ring does not alias into a jagged circle.
+      const a = Math.round(alpha * (1 - edge / thickness));
+      if (a <= 0) continue;
+      const i = (y * w + x) * 4;
+      const dark = edge > thickness * 0.6;
+      buf[i] = dark ? 20 : 255;
+      buf[i + 1] = dark ? 20 : 255;
+      buf[i + 2] = dark ? 30 : 255;
+      buf[i + 3] = Math.max(buf[i + 3], a);
+    }
+  }
 }
 
 /**
@@ -158,12 +229,25 @@ async function renderHeatLayer(
   for (const c of cells) if (c > peak) peak = c;
   const norm = peak > 0 ? peak : 1;
 
+  // Bilinear sample, not nearest-cell. Nearest-cell paints every pixel of a
+  // cell the same value, which is why the overlay read as a mosaic of hard
+  // squares rather than a field of attention.
+  const at = (r: number, c: number): number =>
+    cells[Math.min(rows - 1, Math.max(0, r)) * cols + Math.min(cols - 1, Math.max(0, c))] / norm;
+
   const out = Buffer.alloc(frameWidth * frameHeight * 4);
   for (let y = 0; y < frameHeight; y++) {
-    const row = Math.min(rows - 1, Math.floor((y / frameHeight) * rows));
+    const fy = (y / frameHeight) * rows - 0.5;
+    const r0 = Math.floor(fy), ty = fy - r0;
     for (let x = 0; x < frameWidth; x++) {
-      const col = Math.min(cols - 1, Math.floor((x / frameWidth) * cols));
-      const [r, g, b, a] = heatColour(cells[row * cols + col] / norm, opts.opacity, opts.floor);
+      const fx = (x / frameWidth) * cols - 0.5;
+      const c0 = Math.floor(fx), tx = fx - c0;
+      const v =
+        at(r0, c0) * (1 - tx) * (1 - ty) +
+        at(r0, c0 + 1) * tx * (1 - ty) +
+        at(r0 + 1, c0) * (1 - tx) * ty +
+        at(r0 + 1, c0 + 1) * tx * ty;
+      const [r, g, b, a] = heatColour(v, opts.opacity, opts.floor);
       const i = (y * frameWidth + x) * 4;
       out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = a;
     }
@@ -186,8 +270,8 @@ export async function overlayAttentionOnFrames(
 ): Promise<OverlayResult> {
   const opts = {
     opacity: options.opacity ?? 0.55,
-    floor: options.floor ?? 0.35,
-    cellSize: options.cellSize ?? 16,
+    floor: options.floor ?? 0.12,
+    cellSize: options.cellSize ?? 4,
     persona: options.persona ?? "first-timer",
     domElements: options.domElements,
     goal: options.goal,
@@ -199,10 +283,49 @@ export async function overlayAttentionOnFrames(
   const dir = join(outDir, "frames-attention");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
+  /**
+   * DOM in effect at a moment — the newest snapshot at or before it.
+   *
+   * Used by BOTH rendering and judging. Rendering previously passed one
+   * stop-time DOM into every frame, which made the semantic half of the blend —
+   * 65% of it — byte-identical across the whole recording. Only the visual 35%
+   * varied, so the overlay looked static no matter what happened on the page,
+   * and a capture measured nothing a single screenshot did not.
+   */
+  const scrollAt = (tMs: number): number => {
+    const track = options.scrollTrack;
+    if (!track || track.length === 0) return 0;
+    let best = track[0];
+    for (const s of track) if (s.atMs <= tMs) best = s;
+    return best.scrollY;
+  };
+
+  const domAt = (tMs: number): DOMAttentionElement[] => {
+    const tl = options.domTimeline;
+    if (!tl || tl.length === 0) return options.domElements ?? [];
+    let best = tl[0];
+    for (const snap of tl) if (snap.atMs <= tMs) best = snap;
+
+    // Correct for scroll drift since the snapshot was taken. Rects are
+    // viewport-relative at extraction, so if the page scrolled DOWN by d
+    // afterwards, every element is now d pixels higher than its stored y —
+    // painting at the stored value puts the heat that far below the element.
+    const drift = scrollAt(tMs) - (best.scrollY ?? scrollAt(best.atMs));
+    if (Math.abs(drift) < 1) return best.elements;
+
+    return best.elements.map((el) => ({
+      ...el,
+      y: el.y - drift,
+      ...(el.words
+        ? { words: el.words.map((w) => ({ ...w, y: w.y - drift })) }
+        : {}),
+    }));
+  };
+
   const frames: string[] = [];
   let failed = 0;
 
-  for (const framePath of framePaths) {
+  for (const [frameIdx, framePath] of framePaths.entries()) {
     const target = join(dir, basename(framePath));
     try {
       const meta = await sharp(framePath).metadata();
@@ -210,11 +333,39 @@ export async function overlayAttentionOnFrames(
       const height = meta.height ?? 0;
       if (!width || !height) throw new Error("frame has no dimensions");
 
-      const heat = await renderHeatLayer(framePath, width, height, opts);
+      const heat = await renderHeatLayer(framePath, width, height, {
+        ...opts,
+        domElements: domAt(options.frameTimesMs?.[frameIdx] ?? 0),
+      });
       if (!heat) throw new Error("no attention map produced");
 
+      // Blur at foveal scale. The saliency literature smooths fixation maps with
+      // a Gaussian at sigma ~= 1 degree of visual angle BECAUSE that is the size
+      // of the fovea — roughly 35-60 CSS px at laptop viewing distance. An
+      // attention map with edges sharper than the eye's own acuity is claiming a
+      // precision no measurement supports, so this is the honest rendering as
+      // well as the one that reads correctly.
+      const blurred = await sharp(heat, { raw: { width, height, channels: 4 } })
+        .blur(Math.max(2, Math.round(Math.min(width, height) * 0.012)))
+        .raw()
+        .toBuffer();
+
+      // Pulses go on AFTER the blur. Blurring a ring turns it into a smudge, and
+      // the whole point of the mark is that it is crisp where the heat is soft —
+      // that contrast is what separates "this happened" from "this is predicted".
+      const tNow = options.frameTimesMs?.[frameIdx] ?? 0;
+      const scrollNow = scrollAt(tNow);
+      for (const it of options.interactions ?? []) {
+        const age = tNow - it.atMs;
+        if (age < 0 || age > PULSE_MS) continue;
+        // Interaction coords are viewport-relative at click time, so they need
+        // the same scroll correction the element rects get.
+        const y = it.y - (scrollNow - scrollAt(it.atMs));
+        drawPulse(blurred, width, height, it.x, y, age / PULSE_MS);
+      }
+
       await sharp(framePath)
-        .composite([{ input: heat, raw: { width, height, channels: 4 }, blend: "over" }])
+        .composite([{ input: blurred, raw: { width, height, channels: 4 }, blend: "over" }])
         .toFile(target);
 
       frames.push(target);
@@ -226,6 +377,12 @@ export async function overlayAttentionOnFrames(
 
   const usedDom = (opts.domElements?.length ?? 0) > 0;
 
+  let personaResolved = true;
+  try {
+    const { getAnyPersona } = await import("../personas.js");
+    personaResolved = Boolean(getAnyPersona(opts.persona));
+  } catch { /* registry unavailable; assume resolved rather than cry wolf */ }
+
   // Judge the persona's attention at each KEYFRAME, not each frame. The engine's
   // SSIM keyframes are the moments the interface actually changed, so between
   // them the page — and therefore the judgement — is identical. This turns an
@@ -235,18 +392,31 @@ export async function overlayAttentionOnFrames(
 
   const ctx = options.relevanceContext;
   const getApiKey = options.getApiKey;
-  if (ctx && getApiKey && usedDom && options.keyFrames && options.keyFrames.length > 0) {
-    const elements: RelevanceElement[] = (options.domElements ?? []).map((el, i) => ({
-      index: i,
-      type: el.type,
-      text: el.text ?? "",
-      x: el.x, y: el.y, width: el.width, height: el.height,
-    }));
 
+  // Frame 0 is ALWAYS judged, then each keyframe after it.
+  //
+  // Keying purely on keyframes meant a page that never changed produced no
+  // judgement at all — and a static page is precisely where "what does this
+  // persona attend to" is worth asking. Measured on a real pricing capture:
+  // key_frames was empty, so twelve frames were overlaid and nothing was ever
+  // judged. Deduped because frame 0 is sometimes a keyframe too.
+  const judgeAt = ctx && getApiKey && usedDom
+    ? Array.from(new Set([0, ...(options.keyFrames ?? [])])).sort((a, b) => a - b)
+    : [];
+
+  if (ctx && getApiKey && usedDom && judgeAt.length > 0) {
     moments = [];
-    for (const frameIndex of options.keyFrames) {
+    for (const frameIndex of judgeAt) {
       if (frameIndex < 0 || frameIndex >= framePaths.length) continue;
       try {
+        const tMs = options.frameTimesMs?.[frameIndex] ?? 0;
+        const frameDom = domAt(tMs);
+        const elements: RelevanceElement[] = frameDom.map((el, i) => ({
+          index: i,
+          type: el.type,
+          text: el.text ?? "",
+          x: el.x, y: el.y, width: el.width, height: el.height,
+        }));
         const judged = await judgeRelevance(elements, { ...ctx, screenshot: undefined }, getApiKey);
         const top = Object.entries(judged.scores)
           .map(([i, score]) => ({ el: elements[Number(i)], score }))
@@ -258,6 +428,8 @@ export async function overlayAttentionOnFrames(
           frameIndex,
           tMs: options.frameTimesMs?.[frameIndex] ?? 0,
           ...(judged.reasoning ? { reasoning: judged.reasoning } : {}),
+          source: judged.source,
+          ...(judged.unavailable ? { unavailable: judged.unavailable } : {}),
           topElements: top,
         });
       } catch { /* one unjudged moment must not cost the recording */ }
@@ -270,6 +442,9 @@ export async function overlayAttentionOnFrames(
           ...ctx,
           durationMs: options.frameTimesMs?.[framePaths.length - 1] ?? 0,
           frameCount: framePaths.length,
+          actions: (options.interactions ?? []).map((i) => ({
+            atMs: i.atMs, type: i.type, label: i.label,
+          })),
         },
         getApiKey,
       );
@@ -283,6 +458,8 @@ export async function overlayAttentionOnFrames(
     failed,
     usedDom,
     quantity: usedDom ? "predicted-attention" : "visual-contrast-only",
+    personaResolved,
+    personaUsed: opts.persona,
     ...(moments && moments.length > 0 ? { moments } : {}),
     ...(summary ? { summary } : {}),
   };

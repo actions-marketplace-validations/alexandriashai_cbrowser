@@ -343,6 +343,25 @@ export interface InfluencePattern {
   description: string;
   researchBasis: string;
   targetValues: (keyof SchwartzValues)[];
+  /**
+   * Cognitive traits that modulate this pattern, and which way.
+   *
+   * Susceptibility was the plain mean of targetValues, so three pairs sharing
+   * a target set -- social_proof/default_bias, commitment/decoy_effect,
+   * anchoring/loss_aversion -- were mathematically forced to identical scores.
+   * Traits never entered at all, which is why a persona with anchoringBias
+   * 0.35 still scored 0.545 on anchoring: the trait named for the pattern had
+   * no path into it. (2026-07-31)
+   */
+  /**
+   * Direction is susceptibility-facing, not virtue-facing: "positive" means a
+   * higher trait value makes the persona MORE susceptible. trustCalibration
+   * reads high for someone who trusts readily -- impatient-user carries 0.7,
+   * commented "clicks through without reading" -- so it is positive on the
+   * persuasion patterns. Coding it negative inverted three of them and scored
+   * a skeptic as more persuadable than a credulous user. (2026-07-31)
+   */
+  relatedTraits?: Array<{ trait: string; direction: "positive" | "negative" }>;
   mechanism: string;
   examples: string[];
   /** Empirical effectiveness data when available */
@@ -362,6 +381,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Limited availability or time creates urgency",
     researchBasis: "Cialdini (2001): Scarcity increases perceived value",
     targetValues: ["stimulation", "achievement", "power"],
+    relatedTraits: [{ trait: "fearOfMissingOut", direction: "positive" }, { trait: "patience", direction: "negative" }, { trait: "trustCalibration", direction: "positive" }],
     mechanism: "FOMO activation, loss aversion trigger",
     examples: ["Only 3 left in stock", "Offer ends in 2 hours", "Limited edition"],
     effectivenessData: {
@@ -375,6 +395,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Evidence of others' behavior guides decisions",
     researchBasis: "Goldstein et al. (2008): Social norms drive behavior",
     targetValues: ["conformity", "security"],
+    relatedTraits: [{ trait: "socialProofSensitivity", direction: "positive" }],
     mechanism: "Uncertainty reduction through social validation",
     examples: ["Trusted by 1M users", "4.8 stars from 10K reviews", "Most popular choice"],
     effectivenessData: {
@@ -388,6 +409,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Expert endorsement increases credibility",
     researchBasis: "Milgram (1963): Authority figures drive compliance",
     targetValues: ["security", "conformity", "tradition"],
+    relatedTraits: [{ trait: "authoritySensitivity", direction: "positive" }, { trait: "trustCalibration", direction: "positive" }],
     mechanism: "Trust transfer from authority to product",
     examples: ["Recommended by doctors", "Used by Fortune 500", "Expert endorsed"],
   },
@@ -396,6 +418,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Giving something creates obligation to return",
     researchBasis: "Cialdini (2001): Reciprocity norm is universal",
     targetValues: ["benevolence", "conformity"],
+    relatedTraits: [{ trait: "emotionalContagion", direction: "positive" }],
     mechanism: "Obligation creation through value provision",
     examples: ["Free ebook download", "No-obligation trial", "Free assessment"],
   },
@@ -404,6 +427,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Small commitments lead to larger ones",
     researchBasis: "Cialdini (2001): Consistency principle",
     targetValues: ["achievement", "selfDirection"],
+    relatedTraits: [{ trait: "persistence", direction: "positive" }, { trait: "satisficing", direction: "negative" }],
     mechanism: "Self-consistency motivation after initial commitment",
     examples: ["Save progress", "Quiz completion", "Profile building"],
   },
@@ -412,6 +436,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Attractiveness and similarity increase persuasion",
     researchBasis: "Cialdini (2001): We comply with those we like",
     targetValues: ["hedonism", "benevolence"],
+    relatedTraits: [{ trait: "emotionalContagion", direction: "positive" }, { trait: "trustCalibration", direction: "positive" }],
     mechanism: "Positive affect transfer to product",
     examples: ["Friendly tone", "Similar user stories", "Attractive design"],
   },
@@ -420,6 +445,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Shared identity creates belonging",
     researchBasis: "Cialdini (2016): The 7th principle of persuasion",
     targetValues: ["benevolence", "tradition", "conformity"],
+    relatedTraits: [{ trait: "socialProofSensitivity", direction: "positive" }, { trait: "emotionalContagion", direction: "positive" }],
     mechanism: "In-group identification and loyalty",
     examples: ["Join our community", "Fellow founders", "Part of the family"],
   },
@@ -428,6 +454,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "First number sets reference point for comparison",
     researchBasis: "Tversky & Kahneman (1974): Anchoring heuristic",
     targetValues: ["achievement", "security"],
+    relatedTraits: [{ trait: "anchoringBias", direction: "positive" }],
     mechanism: "Reference point manipulation for value perception",
     examples: ["Was $99, now $49", "Compare at $199", "Save 50%"],
     effectivenessData: {
@@ -441,6 +468,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Inferior option makes target look better",
     researchBasis: "Heath & Chatterjee (1995): Asymmetric dominance",
     targetValues: ["achievement", "selfDirection"],
+    relatedTraits: [{ trait: "satisficing", direction: "positive" }, { trait: "comprehension", direction: "negative" }],
     mechanism: "Comparative evaluation bias toward target",
     examples: ["Basic/Pro/Enterprise tiers", "Odd pricing structures"],
     effectivenessData: {
@@ -454,6 +482,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Framing as loss is more motivating than gain",
     researchBasis: "Kahneman & Tversky (1979): Losses felt 2-2.5x more than gains",
     targetValues: ["security", "achievement"],
+    relatedTraits: [{ trait: "riskTolerance", direction: "negative" }],
     mechanism: "Fear of loss activation",
     examples: ["Don't miss out", "Stop losing leads", "Avoid costly mistakes"],
   },
@@ -462,6 +491,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Pre-selected options are more likely to be chosen",
     researchBasis: "Thaler & Sunstein (2008): Nudge theory",
     targetValues: ["conformity", "security"],
+    relatedTraits: [{ trait: "satisficing", direction: "positive" }, { trait: "metacognitivePlanning", direction: "negative" }],
     mechanism: "Status quo bias, effort minimization",
     examples: ["Pre-checked boxes", "Recommended tier highlighted", "Auto-enrolled"],
     effectivenessData: {
@@ -553,7 +583,8 @@ export const VALUE_PROFILE_PATTERNS: ValueProfilePattern[] = [
  */
 export function calculatePatternSusceptibility(
   values: Partial<SchwartzValues>,
-  pattern: InfluencePattern
+  pattern: InfluencePattern,
+  traits?: Record<string, number>,
 ): number {
   const targetValues = pattern.targetValues;
   if (targetValues.length === 0) return 0.5;
@@ -568,7 +599,28 @@ export function calculatePatternSusceptibility(
     }
   }
 
-  return count > 0 ? sum / count : 0.5;
+  const valueScore = count > 0 ? sum / count : 0.5;
+
+  // Traits modulate the value-derived score. Without this the formula reads
+  // only Schwartz values, so two patterns with the same targetValues can never
+  // differ no matter how the persona's traits point, and a trait named for its
+  // pattern (anchoringBias -> anchoring) is ignored entirely.
+  const related = pattern.relatedTraits;
+  if (!traits || !related?.length) return valueScore;
+
+  let tSum = 0, tCount = 0;
+  for (const { trait, direction } of related) {
+    const v = traits[trait];
+    if (typeof v !== "number") continue;
+    tSum += direction === "positive" ? v : 1 - v;
+    tCount++;
+  }
+  if (tCount === 0) return valueScore;
+
+  // Values carry the motivational frame, traits the individual disposition.
+  // 60/40 keeps the Schwartz grounding dominant while letting a strong trait
+  // move the result and break ties.
+  return Math.round((valueScore * 0.6 + (tSum / tCount) * 0.4) * 1000) / 1000;
 }
 
 /**
@@ -577,12 +629,13 @@ export function calculatePatternSusceptibility(
  * @returns Influence patterns sorted by susceptibility (most effective first)
  */
 export function rankInfluencePatternsForProfile(
-  values: Partial<SchwartzValues>
+  values: Partial<SchwartzValues>,
+  traits?: Record<string, number>,
 ): Array<{ pattern: InfluencePattern; susceptibility: number }> {
   return INFLUENCE_PATTERNS
     .map((pattern) => ({
       pattern,
-      susceptibility: calculatePatternSusceptibility(values, pattern),
+      susceptibility: calculatePatternSusceptibility(values, pattern, traits),
     }))
     .sort((a, b) => b.susceptibility - a.susceptibility);
 }

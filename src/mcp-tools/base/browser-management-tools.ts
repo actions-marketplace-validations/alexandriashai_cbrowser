@@ -34,6 +34,15 @@ export function registerBrowserManagementTools(
     title: "Browser Status",
     description: "Get CBrowser environment status and diagnostics including data directories, installed browsers, configuration, self-healing cache statistics, and MCP tool count",
     inputSchema: {},
+    // The view for this tool. Nested form: the SDK resolver reads
+    // _meta.ui.resourceUri first and falls back to the flat "ui/resourceUri"
+    // key, so both are valid and this is the preferred one.
+    //
+    // status is deliberately the first tool to get a view. It needs no
+    // subresources at all, so it exercises the whole ui:// path -- declaration,
+    // resources/read, iframe injection, hydration -- while leaving the separate
+    // question of what the sandbox CSP will fetch for the capture player.
+    _meta: { ui: { resourceUri: "ui://cbrowser/status" } },
     annotations: {
       title: "Browser Status",
       readOnlyHint: true,
@@ -44,6 +53,15 @@ export function registerBrowserManagementTools(
   }, async () => {
       const toolCount = getToolCount?.();
       const info = await getStatusInfo(VERSION, toolCount);
+      // The host fetches the declared ui:// resource itself and pushes THIS
+      // result into the iframe, where the view renders from it. Returning HTML
+      // here instead put several KB of markup into the model's context as a
+      // string and rendered nothing: a content block is not a view.
+      //
+      // No outputSchema, and so no structuredContent: an empty outputSchema is
+      // expanded by the SDK into a closed schema that permits no properties,
+      // which every real payload violates. The view falls back to parsing this
+      // text block, which is what Anthropic's own example does.
       return {
         content: [
           {

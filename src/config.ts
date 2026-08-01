@@ -12,7 +12,7 @@
  * Default: ~/.cbrowser/
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, statSync, rmdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, statSync, rmdirSync, rmSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
@@ -313,6 +313,9 @@ export function ensureDirectories(paths?: CBrowserPaths): CBrowserPaths {
   // Automatic cleanup of OLD screenshot sessions on startup
   // This is safe for multi-user: only deletes sessions older than retention period
   cleanupOldScreenshotSessions(p);
+  // Both no-ops unless their env var is set; see getVideoRetention.
+  cleanupOldVideos(p);
+  cleanupOldBrowserState(p);
 
   return p;
 }
@@ -385,6 +388,179 @@ function formatRetention(ms: number): string {
  * Called automatically on CBrowser startup.
  * Returns the number of session directories deleted.
  */
+/**
+ * What the sweepers would remove, without removing anything.
+ *
+ * Retention ships disabled, so the honest way to decide whether to enable it
+ * is to see the cost first. Reports against the given windows regardless of
+ * whether the env vars are set.
+ */
+export function previewRetention(videoHours = 24, browserStateDays = 30, paths?: CBrowserPaths): {
+  videos: { directories: number; files: number };
+  browserState: { profiles: number };
+} {
+  const p = paths || getPaths();
+  const now = Date.now();
+  const out = { videos: { directories: 0, files: 0 }, browserState: { profiles: 0 } };
+  const scan = (base: string, cutoff: number, onHit: (dir: string) => void): void => {
+    if (!existsSync(base)) return;
+    try {
+      for (const entry of readdirSync(base)) {
+        if (entry.startsWith(".") || entry === p.sessionId) continue;
+        const dir = join(base, entry);
+        try {
+          if (!statSync(dir).isDirectory()) continue;
+          if (newestMtime(dir) > cutoff) continue;
+          onHit(dir);
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+  };
+  scan(p.videosDir, now - videoHours * 3600_000, (dir) => {
+    out.videos.directories += 1;
+    out.videos.files += countFiles(dir);
+  });
+  scan(p.browserStateDir, now - browserStateDays * 86400_000, () => {
+    out.browserState.profiles += 1;
+  });
+  return out;
+}
+
+/**
+ * Retention for capture output, in milliseconds. 0 disables cleanup.
+ *
+ * Capture artifacts are regenerable: frames, GIFs and manifests can be
+ * produced again by re-running the capture. Measured on this box before any
+ * retention existed: 10,169 files and 344MB, growing with every capture and
+ * never shrinking. A default of 24 hours keeps recent work reviewable while
+ * bounding the directory.
+ */
+export function getVideoRetention(): number {
+  const raw = process.env.CBROWSER_VIDEO_RETENTION;
+  // Off unless asked for. Turning this on deletes existing captures on the
+  // next start -- 344MB of them on this box at the time it was written -- and
+  // that is a decision for whoever owns the data, not a default to inherit.
+  // Set CBROWSER_VIDEO_RETENTION to a number of hours to enable.
+  if (!raw || raw === "0" || raw === "off") return 0;
+  const hours = parseFloat(raw);
+  return Number.isFinite(hours) && hours > 0 ? hours * 3600_000 : 0;
+}
+
+/**
+ * Retention for browser profiles, in milliseconds. 0 disables cleanup.
+ *
+ * Deliberately far longer than the others and measured from last use, because
+ * unlike a screenshot or a capture frame this data is NOT regenerable: a
+ * browser-state directory holds cookies and saved logins, and deleting one
+ * signs the user out of whatever they had authenticated. 110MB across 1,659
+ * files is worth bounding, but not at the cost of silently destroying a
+ * session someone still relies on -- so the default is 30 days of disuse, and
+ * the active profile is never touched.
+ */
+export function getBrowserStateRetention(): number {
+  const raw = process.env.CBROWSER_BROWSER_STATE_RETENTION;
+  // Off unless asked for, and doubly so here: these profiles hold cookies and
+  // saved logins, so a sweep signs people out of whatever they had
+  // authenticated. Set CBROWSER_BROWSER_STATE_RETENTION to a number of days.
+  if (!raw || raw === "0" || raw === "off") return 0;
+  const days = parseFloat(raw);
+  return Number.isFinite(days) && days > 0 ? days * 86400_000 : 0;
+}
+
+/**
+ * Delete capture directories older than the video retention period.
+ *
+ * Whole directories only, and only when every entry inside is older than the
+ * cutoff -- the same rule the screenshot sweeper uses, so a capture still
+ * being written is never half-removed.
+ *
+ * Returns the number of directories deleted.
+ */
+export function cleanupOldVideos(paths?: CBrowserPaths): number {
+  const p = paths || getPaths();
+  const retention = getVideoRetention();
+  if (retention === 0) return 0;
+  if (!existsSync(p.videosDir)) return 0;
+
+  const now = Date.now();
+  let deleted = 0;
+  try {
+    for (const entry of readdirSync(p.videosDir)) {
+      if (entry.startsWith(".")) continue;
+      const dir = join(p.videosDir, entry);
+      try {
+        const stats = statSync(dir);
+        if (!stats.isDirectory()) {
+          if (now - stats.mtimeMs > retention) { unlinkSync(dir); deleted += 1; }
+          continue;
+        }
+        if (entry === p.sessionId) continue;
+        if (newestMtime(dir) > now - retention) continue;
+        rmSync(dir, { recursive: true, force: true });
+        deleted += 1;
+      } catch { /* a directory that vanished mid-sweep needs no action */ }
+    }
+  } catch { /* an unreadable videos dir is not worth failing startup over */ }
+  return deleted;
+}
+
+/**
+ * Delete browser profiles untouched for longer than the retention period.
+ *
+ * Never removes the profile in use. Keyed on the newest mtime anywhere inside
+ * the profile, so a directory whose top-level entry is old but whose cookies
+ * were written this morning counts as active.
+ */
+export function cleanupOldBrowserState(paths?: CBrowserPaths): number {
+  const p = paths || getPaths();
+  const retention = getBrowserStateRetention();
+  if (retention === 0) return 0;
+  const base = p.browserStateDir;
+  if (!existsSync(base)) return 0;
+
+  const now = Date.now();
+  let deleted = 0;
+  try {
+    for (const entry of readdirSync(base)) {
+      if (entry.startsWith(".")) continue;
+      const dir = join(base, entry);
+      try {
+        const stats = statSync(dir);
+        if (!stats.isDirectory()) continue;
+        if (entry === p.sessionId) continue;
+        if (newestMtime(dir) > now - retention) continue;
+        rmSync(dir, { recursive: true, force: true });
+        deleted += 1;
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+  return deleted;
+}
+
+/**
+ * Newest mtime anywhere under a directory, depth-limited.
+ *
+ * A directory's own mtime only reflects its immediate entries, so a capture
+ * whose frames were written minutes ago can present an hours-old timestamp at
+ * the top level. Deleting on that reading would remove live work.
+ */
+function newestMtime(dir: string, depth = 3): number {
+  let newest = 0;
+  try {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          if (depth > 0) newest = Math.max(newest, newestMtime(full, depth - 1));
+        } else {
+          newest = Math.max(newest, statSync(full).mtimeMs);
+        }
+      } catch { /* skip */ }
+    }
+  } catch { /* skip */ }
+  return newest;
+}
+
 export function cleanupOldScreenshotSessions(paths?: CBrowserPaths): number {
   const p = paths || getPaths();
   const retention = getScreenshotRetention();
@@ -487,6 +663,7 @@ export interface DirStatus {
   name: string;
   path: string;
   exists: boolean;
+  /** Files on disk, counted recursively. Not the same as a registry count. */
   fileCount: number;
 }
 
@@ -528,12 +705,34 @@ export interface StatusInfo {
   toolCount?: number;
 }
 
-function countFiles(dir: string, ext?: string): number {
+/**
+ * Count files in a directory, including nested ones.
+ *
+ * Recursive because these directories are session-scoped: screenshots live in
+ * per-session subdirectories, and visual baselines under a nested store. A
+ * top-level readdir therefore reported 0 screenshots while 12 sat one level
+ * down, and 1 visual baseline against 34 on disk -- an extension filter also
+ * excludes the subdirectory entries themselves, so the count collapsed to
+ * zero rather than merely being low.
+ *
+ * Depth-limited because a runaway tree should not turn a status call into a
+ * filesystem walk; three levels covers every layout in use.
+ */
+function countFiles(dir: string, ext?: string | string[], depth = 3): number {
   if (!existsSync(dir)) return 0;
   try {
-    const files = readdirSync(dir);
-    if (ext) return files.filter(f => f.endsWith(ext)).length;
-    return files.filter(f => !f.startsWith(".")).length;
+    let total = 0;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) {
+        if (depth > 0) total += countFiles(join(dir, entry.name), ext, depth - 1);
+      } else if (!ext || (Array.isArray(ext)
+        ? ext.some((e) => entry.name.endsWith(e))
+        : entry.name.endsWith(ext))) {
+        total += 1;
+      }
+    }
+    return total;
   } catch {
     return 0;
   }
@@ -639,8 +838,11 @@ export async function getStatusInfo(version: string, toolCount?: number): Promis
   const screenshotStats = countScreenshotSessions(paths.screenshotsBaseDir);
 
   // Directory status
-  const dirEntries: Array<[string, string, string?]> = [
-    ["screenshots", paths.screenshotsBaseDir, ".png"],
+  const dirEntries: Array<[string, string, (string | string[])?]> = [
+    // Every extension screenshots are actually written in. It filtered on
+    // .png alone while remote-mode compression writes .jpg, so a directory
+    // holding twelve screenshots reported zero.
+    ["screenshots", paths.screenshotsBaseDir, [".png", ".jpg", ".jpeg", ".webp"]],
     ["sessions", paths.sessionsDir, ".json"],
     ["baselines", paths.baselinesDir, ".json"],
     ["visual-baselines", paths.visualBaselinesDir],
@@ -652,6 +854,11 @@ export async function getStatusInfo(version: string, toolCount?: number): Promis
     ["audit", paths.auditDir],
   ];
 
+  // Directory counts read the filesystem; the summary counts below read
+  // registries -- baselines.json for visualBaselines, the session store for
+  // screenshotSessions, the built-in table plus custom files for personas.
+  // They are different populations, not two views of one, and reporting both
+  // without saying so left a reader to guess which was authoritative.
   const directories: DirStatus[] = dirEntries.map(([name, dirPath, ext]) => ({
     name,
     path: dirPath,

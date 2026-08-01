@@ -106,6 +106,8 @@ interface RawInteractiveElement {
   rect: { top: number; left: number; width: number; height: number };
   formIndex: number;
   nthOfType: number;
+  /** Document-unique selector, verified in-page. Preferred over every fallback. */
+  uniqueSelector: string;
 }
 
 interface RawHeading {
@@ -452,6 +454,57 @@ export class PageUnderstandingEngine {
         return (source.textContent || "").trim().replace(/\s+/g, " ").slice(0, 80);
       }
 
+      /**
+       * Build a selector that resolves to exactly ONE node, verified before it
+       * is returned.
+       *
+       * getNthOfType below counts previous SIBLINGS, so it is parent-scoped —
+       * but an unscoped `button:nth-of-type(1)` matches the first button inside
+       * every container on the page. Two different buttons each first in their
+       * own card collided on one selector, which silently corrupts anything
+       * keyed on it: the self-healing cache, element tracking, test generation.
+       *
+       * Strategy order matches CBrowser's documented priority (id, testid,
+       * aria/role, then a scoped structural path), and every candidate is
+       * checked with querySelectorAll before being accepted. A selector that
+       * matches != 1 node is not an answer.
+       */
+      function uniqueSelector(el: Element): string {
+        const ok = (sel: string): boolean => {
+          try { return document.querySelectorAll(sel).length === 1; } catch { return false; }
+        };
+        const esc = (v: string): string => v.replace(/["\\]/g, "\\$&");
+
+        if (el.id && ok(`#${CSS.escape(el.id)}`)) return `#${CSS.escape(el.id)}`;
+        for (const attr of ["data-testid", "data-test-id", "data-cy", "data-qa"]) {
+          const v = el.getAttribute(attr);
+          if (v && ok(`[${attr}="${esc(v)}"]`)) return `[${attr}="${esc(v)}"]`;
+        }
+        const role = el.getAttribute("role");
+        const label = el.getAttribute("aria-label");
+        if (role && label && ok(`[role="${esc(role)}"][aria-label="${esc(label)}"]`)) {
+          return `[role="${esc(role)}"][aria-label="${esc(label)}"]`;
+        }
+        if (label && ok(`${el.tagName.toLowerCase()}[aria-label="${esc(label)}"]`)) {
+          return `${el.tagName.toLowerCase()}[aria-label="${esc(label)}"]`;
+        }
+
+        // Scoped structural path: walk up adding :nth-child until unique, which
+        // terminates at <html> in the worst case and is unique by construction.
+        const parts: string[] = [];
+        let node: Element | null = el;
+        while (node && node.nodeType === 1 && node.tagName !== "HTML") {
+          const parent: Element | null = node.parentElement;
+          if (!parent) break;
+          const idx = Array.from(parent.children).indexOf(node) + 1;
+          parts.unshift(`${node.tagName.toLowerCase()}:nth-child(${idx})`);
+          const candidate = parts.join(" > ");
+          if (ok(candidate)) return candidate;
+          node = parent;
+        }
+        return parts.length > 0 ? parts.join(" > ") : el.tagName.toLowerCase();
+      }
+
       function getNthOfType(el: Element): number {
         const tag = el.tagName;
         let nth = 1;
@@ -507,6 +560,7 @@ export class PageUnderstandingEngine {
           rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
           formIndex,
           nthOfType: getNthOfType(el),
+          uniqueSelector: uniqueSelector(el),
         });
       });
 
@@ -1202,6 +1256,9 @@ function computeRelationships(raw: RawDOMExtraction, structure: PageStructure): 
 // ============================================================================
 
 function buildSelector(el: RawInteractiveElement): string {
+  // Verified unique in the page it came from — nothing computed out here can
+  // beat a selector that was checked against the live document.
+  if (el.uniqueSelector) return el.uniqueSelector;
   if (el.id) return `#${cssEscape(el.id)}`;
   if (el.role && el.ariaLabel) return `[role="${el.role}"][aria-label="${cssEscapeAttr(el.ariaLabel)}"]`;
   if (el.name && el.tag === "input") return `input[name="${cssEscapeAttr(el.name)}"]`;

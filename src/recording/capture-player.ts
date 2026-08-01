@@ -34,6 +34,12 @@ export interface CapturePlayerData {
   /** Public URLs by format, as returned by capture_stop. */
   artifactUrls: Record<string, string>;
   contactSheetUrl?: string;
+  /**
+   * Real interactions, in capture time. Rendered as a seekable track under the
+   * media so a viewer can jump to the moment a click happened rather than
+   * scrubbing for it.
+   */
+  interactions?: Array<{ atMs: number; type: string; x: number; y: number; label: string }>;
   moments?: JudgedMoment[];
   summary?: string;
   /**
@@ -75,11 +81,45 @@ export function buildCapturePlayer(data: CapturePlayerData): string {
   const image = data.artifactUrls.gif ?? data.artifactUrls.webp;
   const poster = data.contactSheetUrl;
 
+  // Speed control only exists for video. A GIF's frame delays are baked into the
+  // file and no browser API changes them, so offering a slider that silently did
+  // nothing would be worse than saying which artifact supports it.
+  const speedBar = video
+    ? `<div class="speed" role="group" aria-label="Playback speed">
+        <span class="lbl">Speed</span>
+        ${[0.25, 0.5, 1, 2].map((r) => `<button type="button" data-rate="${r}"${r === 1 ? ' aria-pressed="true"' : ' aria-pressed="false"'}>${r}&times;</button>`).join("")}
+        <button type="button" data-step="-1" title="Previous frame">&#9666;</button>
+        <button type="button" data-step="1" title="Next frame">&#9656;</button>
+       </div>`
+    : image
+      ? `<p class="speednote">Speed control needs the video artifact &mdash; capture with <code>format: "gif,webm"</code> to get it.</p>`
+      : "";
+
   const media = video
-    ? `<video controls loop muted playsinline${poster ? ` poster="${esc(poster)}"` : ""} src="${esc(video)}"></video>`
+    ? `<video id="rec" controls loop muted playsinline${poster ? ` poster="${esc(poster)}"` : ""} src="${esc(video)}"></video>`
     : image
       ? `<img src="${esc(image)}" alt="Recording of ${esc(data.targetUrl ?? data.slug)}">`
       : `<p class="empty">No playable artifact was produced for this capture.</p>`;
+
+  const acts = (data.interactions ?? []).slice().sort((a, b) => a.atMs - b.atMs);
+  const dur = Math.max(1, data.durationMs);
+  // Markers are positioned by fraction of capture duration, so the track lines up
+  // with the media above it regardless of artifact format. Only the video can be
+  // seeked -- for a GIF the markers still read as a record of what happened, they
+  // just do not drive playback, and the note says so rather than silently no-op.
+  const actTrack = acts.length === 0
+    ? ""
+    : `
+    <section class="acts">
+      <h2>Interactions</h2>
+      <p class="lede">${acts.length} recorded ${acts.length === 1 ? "event" : "events"}${video ? " &mdash; select one to jump there." : " &mdash; seeking needs the video artifact."}</p>
+      <div class="track" role="list">
+        ${acts.map((a) => `<button type="button" role="listitem" class="mark" data-at="${a.atMs}" style="--x:${((a.atMs / dur) * 100).toFixed(2)}%" title="${esc(a.type)} &middot; ${esc(a.label.slice(0, 60))}"><span class="dot" data-type="${esc(a.type)}"></span></button>`).join("")}
+      </div>
+      <ol class="actlist">
+        ${acts.map((a) => `<li><button type="button" data-at="${a.atMs}"><span class="t">${esc(fmtTime(a.atMs))}</span><span class="kind" data-type="${esc(a.type)}">${esc(a.type)}</span><span class="lab">${esc(a.label.slice(0, 90) || "(no label)")}</span></button></li>`).join("")}
+      </ol>
+    </section>`;
 
   const moments = data.moments ?? [];
   const timeline = moments.length === 0
@@ -148,6 +188,38 @@ h2{font-size:1.2rem;margin:0 0 .5rem;padding-bottom:.35rem;border-bottom:1px sol
 figure{margin:0;background:var(--card);border:1px solid var(--rule);border-radius:6px;overflow:hidden}
 video,img{display:block;width:100%;height:auto;background:#000}
 .lede{color:var(--muted);margin:.2rem 0 1rem;font-size:.95rem}
+.speed{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;margin-top:-1.4rem}
+.speed .lbl{font-family:var(--mono);font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:.2rem}
+.speed button{font-family:var(--mono);font-size:.76rem;padding:.28rem .6rem;border:1px solid var(--rule);
+  border-radius:3px;background:var(--card);color:var(--ink);cursor:pointer}
+.speed button:hover{border-color:var(--accent)}
+.speed button[aria-pressed="true"]{background:var(--accent);color:var(--card);border-color:var(--accent)}
+.speed button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.speednote{font-size:.85rem;color:var(--muted);margin-top:-1.4rem}
+.acts .lede{margin-bottom:.5rem}
+.acts .track{position:relative;height:26px;margin:.2rem 0 .9rem;border-radius:4px;
+  background:linear-gradient(90deg,color-mix(in srgb,var(--rule) 55%,transparent),color-mix(in srgb,var(--rule) 20%,transparent));
+  border:1px solid var(--rule)}
+.acts .mark{position:absolute;left:var(--x);top:0;height:100%;width:18px;transform:translateX(-9px);
+  background:none;border:0;padding:0;cursor:pointer;display:grid;place-items:center}
+.acts .mark .dot{width:11px;height:11px;border-radius:50%;background:var(--accent);
+  border:2px solid var(--card);box-shadow:0 0 0 1px var(--accent)}
+.acts .mark .dot[data-type="submit"]{background:#d1495b;box-shadow:0 0 0 1px #d1495b}
+.acts .mark .dot[data-type="input"]{background:#e0a458;box-shadow:0 0 0 1px #e0a458}
+.acts .mark:hover .dot{transform:scale(1.35)}
+.acts .mark:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:3px}
+.actlist{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:.15rem}
+.actlist button{display:flex;gap:.6rem;align-items:baseline;width:100%;text-align:left;
+  background:none;border:0;border-radius:4px;padding:.3rem .45rem;cursor:pointer;color:inherit;font:inherit}
+.actlist button:hover{background:color-mix(in srgb,var(--accent) 9%,transparent)}
+.actlist button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.actlist .t{font-family:var(--mono);font-size:.74rem;color:var(--muted);flex:0 0 3.6rem;font-variant-numeric:tabular-nums}
+.actlist .kind{font-family:var(--mono);font-size:.66rem;text-transform:uppercase;letter-spacing:.08em;
+  padding:.08rem .34rem;border-radius:3px;background:color-mix(in srgb,var(--accent) 16%,transparent);flex:0 0 auto}
+.actlist .kind[data-type="submit"]{background:color-mix(in srgb,#d1495b 18%,transparent)}
+.actlist .kind[data-type="input"]{background:color-mix(in srgb,#e0a458 22%,transparent)}
+.actlist .lab{font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.acts .mark:hover .dot{transform:none}}
 .moments{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:.9rem}
 .moments>li{display:grid;grid-template-columns:5.5rem 1fr;gap:0 1rem;background:var(--card);
   border:1px solid var(--rule);border-left:3px solid var(--accent);border-radius:4px;padding:.9rem 1rem}
@@ -197,6 +269,8 @@ a:focus-visible,video:focus-visible{outline:2px solid var(--accent);outline-offs
   </header>
 
   <figure>${media}</figure>
+  ${speedBar}
+  ${actTrack}
 
   ${summary}
   ${timeline}
@@ -211,6 +285,58 @@ a:focus-visible,video:focus-visible{outline:2px solid var(--accent);outline-offs
       : "No attention overlay was applied to this capture."}
   </footer>
 </div>
+<script>
+// Interaction seeking lives in its own IIFE: the player script below returns
+// early when there is no <video>, and the markers must still render and respond
+// on a GIF-only capture even though nothing can be seeked.
+(function () {
+  var v = document.getElementById("rec");
+  document.querySelectorAll("[data-at]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      var t = parseInt(b.getAttribute("data-at"), 10) / 1000;
+      if (v && isFinite(t)) { v.currentTime = t; v.pause(); }
+      document.querySelectorAll("[data-at]").forEach(function (o) {
+        o.setAttribute("aria-current", o === b ? "true" : "false");
+      });
+    });
+  });
+})();
+(function () {
+  var v = document.getElementById("rec");
+  if (!v) return;
+  var bar = document.querySelector(".speed");
+  if (!bar) return;
+
+  // Frame step uses the capture's real rate, not a guessed 30fps — stepping by
+  // the wrong interval lands between frames and looks like nothing happened.
+  var FRAME = ${data.actualFps > 0 ? (1 / data.actualFps).toFixed(4) : "0.25"};
+
+  bar.addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.rate) {
+      v.playbackRate = parseFloat(b.dataset.rate);
+      bar.querySelectorAll("[data-rate]").forEach(function (o) {
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      return;
+    }
+    if (b.dataset.step) {
+      v.pause();
+      v.currentTime = Math.max(0, v.currentTime + parseInt(b.dataset.step, 10) * FRAME);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.target && /input|textarea/i.test(e.target.tagName)) return;
+    if (e.key === "," || e.key === ".") {
+      e.preventDefault();
+      v.pause();
+      v.currentTime = Math.max(0, v.currentTime + (e.key === "." ? FRAME : -FRAME));
+    }
+  });
+})();
+</script>
 </body>
 </html>`;
 }

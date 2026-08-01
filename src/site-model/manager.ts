@@ -221,6 +221,64 @@ export class SiteModelManager {
   /**
    * Record the result (success/failure) of interacting with a specific element.
    */
+  /**
+   * Record elements DISCOVERED on a page, without asserting anything about
+   * their reliability.
+   *
+   * page_understand returns fully-formed affordances — selector, action,
+   * confidence — and persisted none of them, so trackedElements never grew and
+   * the workflow that site_model_status recommends produced a graph node and
+   * nothing a persona could use.
+   *
+   * Discovery and reliability are deliberately separate. An entry created here
+   * carries totalAttempts 0, which reads as "never tried" rather than "always
+   * fails" — writing a 0 successRate for an untried element would poison every
+   * consumer that treats the number as evidence. Re-running on the same page
+   * MUST NOT reset an element that has since accumulated real outcomes, so an
+   * existing entry only has its lastSeen refreshed.
+   *
+   * Returns how many entries were newly created, so a caller can report whether
+   * the run actually learned anything.
+   */
+  recordDiscoveredElements(
+    domain: string,
+    pageUrl: string,
+    selectors: string[],
+  ): number {
+    const normalized = this.normalizeDomain(domain);
+    const model = this.getOrCreateModel(normalized);
+    const pagePattern = this.normalizeUrl(pageUrl);
+
+    let created = 0;
+    for (const selector of selectors) {
+      if (!selector) continue;
+      const key = `${pagePattern}::${selector}`;
+      const existing = model.elements[key];
+      if (existing) {
+        // Idempotent: a rediscovery is not new evidence about reliability.
+        existing.lastVerified = Date.now();
+        continue;
+      }
+      model.elements[key] = {
+        selector,
+        domain: normalized,
+        pageUrlPattern: pagePattern,
+        successRate: 0,
+        totalAttempts: 0,
+        alternatives: [],
+        lastVerified: Date.now(),
+        decayFactor: 1.0,
+      };
+      created++;
+    }
+
+    if (selectors.length > 0) {
+      model.lastUpdated = new Date().toISOString();
+      this.markDirty(normalized);
+    }
+    return created;
+  }
+
   recordElementResult(
     domain: string,
     pageUrl: string,

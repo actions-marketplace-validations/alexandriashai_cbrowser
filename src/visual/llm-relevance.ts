@@ -131,6 +131,17 @@ export interface RelevanceResult {
 /** The model rung this layer runs on. Judgement task, not a reasoning task. */
 const RELEVANCE_MODEL = "claude-sonnet-5";
 
+/**
+ * Cache generation. Bump when a change makes existing entries wrong.
+ *
+ * v2: entries written before the partial-result guard can hold scores with no
+ * reasoning, from a truncated response. Refusing to WRITE those does not stop
+ * the ones already on disk from replaying forever — a content-addressed cache
+ * has no other way to expire them, and the observed symptom was four of five
+ * moments returning source "llm" with no reasoning, indefinitely.
+ */
+const CACHE_VERSION = "v2";
+
 function cacheKey(elements: RelevanceElement[], ctx: RelevanceContext): string {
   const h = createHash("sha256");
   // Geometry and colour are part of the question, so they must be part of the
@@ -142,7 +153,7 @@ function cacheKey(elements: RelevanceElement[], ctx: RelevanceContext): string {
     e.x, e.y, e.width, e.height,
     e.color, e.backgroundColor, e.fontSize, e.fontWeight,
   ])));
-  h.update(`|${ctx.personaName}|${ctx.goal ?? ""}|${RELEVANCE_MODEL}|`);
+  h.update(`|${CACHE_VERSION}|${ctx.personaName}|${ctx.goal ?? ""}|${RELEVANCE_MODEL}|`);
   h.update(JSON.stringify(ctx.traits ?? {}));
   h.update(JSON.stringify(ctx.values ?? {}));
   if (ctx.screenshot) h.update(ctx.screenshot);
@@ -296,9 +307,10 @@ export async function judgeRelevance(
     "labels and headings before controls. Let these genuinely change the ranking — two personas " +
     "with the same goal should not produce the same scores.\n\n" +
     "Return ONLY JSON: {\"scores\": {\"<index>\": <0.0-1.0>, ...}, \"reasoning\": \"<two sentences>\"}. " +
-    "Omit elements scoring 0. In `reasoning`, say what this persona is drawn to on THIS page and " +
-    "what they ignore, referring to their traits by name. Write it so a designer reading it knows " +
-    "what to change.";
+    "Omit elements scoring 0. Keep `reasoning` to TWO sentences, under 60 words total — it is " +
+    "emitted after the scores and a long one gets truncated, losing itself. Say what this persona " +
+    "is drawn to on THIS page and what they ignore, naming their traits. Write it so a designer " +
+    "reading it knows what to change.";
 
   const user = [
     `Persona: ${ctx.personaName}`,
@@ -417,7 +429,13 @@ export async function judgeRelevance(
       sawScreenshot: Boolean(ctx.screenshot),
       ...(typeof parsed.reasoning === "string" ? { reasoning: parsed.reasoning } : {}),
     };
-    writeCache(key, result);
+    // Only cache a COMPLETE judgement. A salvaged response carries scores but no
+    // reasoning, and caching it meant every later frame sharing that DOM
+    // replayed the reasoning-less result — observed as four of five moments
+    // reporting source "llm" with no reasoning at all, while the one frame with
+    // a different DOM came back complete. A partial answer should cost one
+    // retry, not poison every subsequent lookup.
+    if (result.reasoning) writeCache(key, result);
     return result;
   } catch (e) {
     return keywordFallback(elements, ctx, `LLM relevance failed: ${(e as Error).message}`);
@@ -436,6 +454,16 @@ export interface JudgedMoment {
   tMs: number;
   /** Why this moment scored the way it did, in the persona's terms. */
   reasoning?: string;
+  /**
+   * Which method produced this moment's scores.
+   *
+   * Carried per-moment because a moment with no elements is otherwise
+   * indistinguishable from a moment that was never judged, and the two need
+   * completely different fixes.
+   */
+  source?: "llm" | "keyword-fallback";
+  /** Why the judgement was unusable, when it was. */
+  unavailable?: string;
   /** The elements that scored highest, already resolved to text. */
   topElements: Array<{ text: string; type: string; score: number }>;
 }
@@ -461,7 +489,19 @@ export interface CaptureSummary {
  */
 export async function summarizeCapture(
   moments: JudgedMoment[],
-  ctx: RelevanceContext & { durationMs: number; frameCount: number },
+  ctx: RelevanceContext & {
+    durationMs: number;
+    frameCount: number;
+    /**
+     * What actually happened, captured from the page.
+     *
+     * Without this the model had only timestamps, and read the gaps between them
+     * as a person deliberating. With it, silence is attributable: nothing
+     * happened because nothing was driven, which is a fact about the script and
+     * not about a user.
+     */
+    actions?: Array<{ atMs: number; type: string; label: string }>;
+  },
   getApiKey: () => string | null,
 ): Promise<CaptureSummary> {
   if (moments.length === 0) {
@@ -478,10 +518,25 @@ export async function summarizeCapture(
   const system =
     "You narrate how one specific person experienced a screen recording of a web page. " +
     "You are given the moments where the interface changed enough to re-judge their attention. " +
-    "Write 3-5 sentences covering: what pulled them first, how their attention shifted as the page " +
-    "changed, whether what they came to do ever became obvious, and the single change that would " +
-    "most improve this experience for THIS person. Refer to their traits by name where it explains " +
-    "a shift. Write for a designer who will act on it — concrete, no hedging, no restating the brief. " +
+    "Write 3-5 sentences covering: what the model predicts pulled attention first, how the predicted " +
+    "attention differs between the moments shown, whether what the persona came to do is prominent, " +
+    "and the single change that would most improve this page for THIS person. Refer to their traits " +
+    "by name where it explains a difference. Write for a designer who will act on it — concrete, no " +
+    "hedging.\n\n" +
+    "An ACTION LOG may be supplied. It is the complete record of what was driven " +
+    "on the page — every click, input and submit. Anything not in it did not happen. " +
+    "You may say what an action led to; you may not invent one that is not listed.\n\n" +
+    "CRITICAL — DO NOT INFER BEHAVIOUR FROM TIME. These timestamps are when an automation issued " +
+    "its next command; the gaps between them are script cadence, NOT a person deliberating. Never " +
+    "write that the user hesitated, stalled, lingered, re-read, second-guessed, hovered, or 'took N " +
+    "seconds to decide'. There is no human in this recording and no dwell data. A four-second gap " +
+    "means nothing called the tool for four seconds. Describe what the page shows and what the model " +
+    "predicts about it — never a mental state, and never a duration as evidence of one.\n\n" +
+    "This holds for the RECOMMENDATION too. Do not justify a fix with what a user 'will stall on' " +
+    "or 'would hesitate over' — that reads as an observed finding to anyone skimming, and nothing " +
+    "here observed a user. Argue from the model instead: 'this persona weights security signals " +
+    "heavily and the page has none above the fold' is defensible; 'they stall before signing up' " +
+    "is not, even as a prediction.\n\n" +
     "Return ONLY JSON: {\"narrative\": \"<3-5 sentences>\"}.";
 
   const user = [
@@ -491,6 +546,12 @@ export async function summarizeCapture(
     ctx.values ? `Motivational values:${describeValues(ctx.values)}` : "",
     ctx.goal ? `Goal: ${ctx.goal}` : "No stated goal.",
     `Recording: ${ctx.frameCount} frames over ${(ctx.durationMs / 1000).toFixed(1)}s, ${moments.length} judged moments.`,
+    "",
+    ctx.actions && ctx.actions.length > 0
+      ? "Action log (complete — nothing else was driven):\n" +
+        ctx.actions.map((a) => `  t=${(a.atMs / 1000).toFixed(1)}s ${a.type}${a.label ? ` on "${a.label}"` : ""}`).join("\n")
+      : "Action log: EMPTY. Nothing was clicked or typed during this recording. " +
+        "Do not describe the persona as doing anything.",
     "",
     "Moments:",
     ...moments.map((m) => [
@@ -507,7 +568,7 @@ export async function summarizeCapture(
     const client = new Anthropic({ apiKey });
     const response = await client.messages.create({
       model: RELEVANCE_MODEL,
-      max_tokens: 1200,
+      max_tokens: 2000,
       system,
       messages: [{ role: "user", content: user }],
     });
@@ -518,8 +579,18 @@ export async function summarizeCapture(
       .join("\n")
       .replace(/```(?:json)?/gi, "");
 
+    // Salvage a truncated narrative rather than returning the raw JSON envelope.
+    // A cut-off response has no closing brace, so the brace scan failed and the
+    // "prose without JSON" fallback handed back the literal {"narrative":"...
+    // string — which then rendered verbatim in the player.
+    const narrativeOnly = text.match(/"narrative"\s*:\s*"((?:[^"\\]|\\.)*)/);
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
+    if ((start < 0 || end <= start) && narrativeOnly) {
+      const salvaged = narrativeOnly[1]
+        .replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\\\\/g, "\\").trim();
+      if (salvaged) return { narrative: salvaged, source: "llm" };
+    }
     if (start < 0 || end <= start) {
       // Prose without JSON is still a usable narrative; losing it to a parse
       // rule would discard the answer over its packaging.

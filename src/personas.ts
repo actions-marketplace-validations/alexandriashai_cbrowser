@@ -821,7 +821,9 @@ export function createCognitivePersona(
 export function getCognitiveProfile(persona: Persona | AccessibilityPersona): CognitiveProfile {
   // Derive attention pattern from humanBehavior.attention.pattern or behaviors
   let attentionPattern: AttentionPatternType = "f-pattern";
+  let attentionPatternSource: "declared" | "derived" | "default" = "default";
   if (persona.humanBehavior?.attention?.pattern) {
+    attentionPatternSource = "declared";
     const pattern = persona.humanBehavior.attention.pattern;
     if (pattern === "skim") attentionPattern = "skim";
     else if (pattern === "thorough") attentionPattern = "thorough";
@@ -837,10 +839,13 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   // it. (2026-07-28)
   if (persona.behaviors?.attentionPattern) {
     attentionPattern = persona.behaviors.attentionPattern as AttentionPatternType;
+    attentionPatternSource = "declared";
   }
 
   // Derive decision style from traits
   let decisionStyle: DecisionStyleType = "cautious";
+  let decisionStyleSource: "declared" | "derived" | "default" = "default";
+  let decisionStyleMargin: number | undefined;
   const traits = persona.cognitiveTraits;
 
   // v16.7.1: Validate trait completeness
@@ -861,20 +866,61 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     const comprehension = traits.comprehension ?? 0.5;
     const readingTendency = traits.readingTendency ?? 0.5;
 
-    if (patience < 0.3 && riskTolerance > 0.6) {
-      decisionStyle = "impulsive";
-    } else if (comprehension > 0.8 && patience < 0.4) {
-      decisionStyle = "efficient";
-    } else if (riskTolerance < 0.3) {
-      decisionStyle = "cautious";
-    } else if (readingTendency > 0.8 && patience > 0.7) {
-      decisionStyle = "deliberate";
-    } else if (persona.demographics.device === "mobile") {
-      decisionStyle = "quick-tap";
+    // Scored, not branched.
+    //
+    // An if/else chain is partial by construction: it answers only for the
+    // trait combinations someone thought to write a condition for, and every
+    // combination nobody covered silently inherits the initial literal. Six of
+    // twenty-one personas landed there -- first-timer among them -- reporting
+    // "cautious" because no branch matched, not because anything about them is
+    // cautious. Adding more branches moves the gap rather than closing it.
+    //
+    // Every style is scored from the trait vector and the highest wins, so a
+    // style is always chosen on evidence and the derivation is total: there is
+    // no combination left with no answer. (2026-07-31)
+    const t = (k: keyof CognitiveTraits, d = 0.5): number => {
+      const v = traits[k];
+      return typeof v === "number" ? v : d;
+    };
+    const mean = (...xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const patienceV = t("patience");
+    const riskV = t("riskTolerance");
+    const satisficeV = t("satisficing");
+    const readingV = t("readingTendency");
+
+    const scores: Array<[DecisionStyleType, number]> = [
+      // Acts before evaluating: tolerant of risk, short on patience, unplanned,
+      // and content with the first adequate option. Satisficing belongs here --
+      // without it someone with riskTolerance 0.8 and satisficing 0.25 scored
+      // impulsive, when refusing to settle is the opposite of impulsive.
+      ["impulsive", mean(riskV, 1 - patienceV, 1 - t("metacognitivePlanning"), satisficeV)],
+      // Knows the pattern and takes the shortest path that works.
+      ["efficient", mean(t("comprehension"), t("proceduralFluency"), satisficeV, 1 - readingV)],
+      // Checks before committing, and does not extend trust by default.
+      ["cautious", mean(1 - riskV, 1 - t("trustCalibration"), patienceV)],
+      // Reads, plans, and refuses to settle for the first adequate option.
+      ["deliberate", mean(readingV, patienceV, 1 - satisficeV, t("metacognitivePlanning"))],
+    ];
+    // Only reachable on a touch device, where it describes the input mode
+    // rather than the disposition.
+    if (persona.demographics.device === "mobile") {
+      // Weighted to win on mobile unless the trait evidence clearly says
+      // otherwise. Device was previously a terminal branch, so every mobile
+      // persona was quick-tap; letting it compete unweighted relabelled all of
+      // them at once, which is a bigger claim than closing a coverage gap
+      // should be making.
+      scores.push(["quick-tap", mean(1 - patienceV, satisficeV, riskV) + 0.2]);
     }
+    scores.sort((a, b) => b[1] - a[1]);
+    decisionStyle = scores[0][0];
+    decisionStyleSource = "derived";
+    // A near-tie is a weak reading, and saying so beats presenting the winner
+    // as though it were clear.
+    decisionStyleMargin = Math.round((scores[0][1] - scores[1][1]) * 100) / 100;
   }
   if (persona.behaviors?.decisionStyle) {
     decisionStyle = persona.behaviors.decisionStyle as DecisionStyleType;
+    decisionStyleSource = "declared";
   }
 
   // v16.14.1: Merge traits with defaults to ensure complete CognitiveTraits
@@ -915,6 +961,9 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     traits: traits ? { ...defaultTraits, ...traits } : defaultTraits,
     attentionPattern,
     decisionStyle,
+    attentionPatternSource,
+    decisionStyleSource,
+    ...(decisionStyleMargin !== undefined ? { decisionStyleMargin } : {}),
     innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,
   };
 }
@@ -1385,6 +1434,130 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       viewport: [1280, 800],
     },
   },
+
+  // Four personas that had a values profile in the Schwartz registry and no
+  // definition here, so nothing could be RUN as them: empathy_audit,
+  // cognitive_journey and every other persona-driven tool rejected the name
+  // while persona_values_lookup happily returned a full motivational profile.
+  // The values were authored and coherent -- explorer at selfDirection 0.9 /
+  // stimulation 0.9 / security 0.2 is a deliberate description, not a stub --
+  // so the missing half is written here rather than the authored half deleted.
+  // Traits are chosen to be consistent with each one's existing values.
+  // (2026-07-31)
+
+  "distracted-user": {
+    name: "distracted-user",
+    description: "Attention repeatedly pulled away mid-task; returns with context lost",
+    demographics: { age_range: "18-55", tech_level: "intermediate", device: "desktop" },
+    behaviors: { loses_place: true, task_switches: true, rereads: true },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 250, max: 1400 }, clickDelay: { min: 120, max: 500 },
+        typeSpeed: { min: 25, max: 70 }, readingSpeed: 200,
+        scrollPauseTime: { min: 200, max: 1500 },
+      },
+      errors: { misClickRate: 0.09, doubleClickAccidental: 0.04, typoRate: 0.08, backtrackRate: 0.35 },
+      mouse: { curvature: 0.4, jitter: 8, overshoot: 0.15, speed: "normal" },
+      attention: { pattern: "skim", scrollBehavior: "jump", focusAreas: ["header", "cta"], distractionRate: 0.85 },
+    },
+    cognitiveTraits: {
+      patience: 0.4, riskTolerance: 0.5, comprehension: 0.5, persistence: 0.3,
+      curiosity: 0.6, workingMemory: 0.25, readingTendency: 0.3, resilience: 0.4,
+      selfEfficacy: 0.45, satisficing: 0.7, trustCalibration: 0.5,
+      interruptRecovery: 0.1,      // The defining trait: context is not recovered
+      informationForaging: 0.6, changeBlindness: 0.8, anchoringBias: 0.6,
+      timeHorizon: 0.7, attributionStyle: 0.4, metacognitivePlanning: 0.2,
+      proceduralFluency: 0.5, transferLearning: 0.5, authoritySensitivity: 0.5,
+      emotionalContagion: 0.5, fearOfMissingOut: 0.7, socialProofSensitivity: 0.5,
+      mentalModelRigidity: 0.5, siteFamiliarity: 0.3,
+    },
+    context: { viewport: [1280, 800] },
+  },
+
+  "careful-reader": {
+    name: "careful-reader",
+    description: "Reads before acting; verifies details and dislikes surprises",
+    demographics: { age_range: "25-65", tech_level: "intermediate", device: "desktop" },
+    behaviors: { reads_fully: true, verifies_before_submit: true, avoids_risk: true },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 600, max: 2500 }, clickDelay: { min: 300, max: 900 },
+        typeSpeed: { min: 30, max: 80 }, readingSpeed: 130,
+        scrollPauseTime: { min: 800, max: 3000 },
+      },
+      errors: { misClickRate: 0.02, doubleClickAccidental: 0.01, typoRate: 0.02, backtrackRate: 0.08 },
+      mouse: { curvature: 0.2, jitter: 3, overshoot: 0.03, speed: "slow" },
+      attention: { pattern: "thorough", scrollBehavior: "continuous", focusAreas: ["text", "prices"], distractionRate: 0.1 },
+    },
+    cognitiveTraits: {
+      patience: 0.9, riskTolerance: 0.15, comprehension: 0.8, persistence: 0.8,
+      curiosity: 0.5, workingMemory: 0.7, readingTendency: 0.95, resilience: 0.7,
+      selfEfficacy: 0.6, satisficing: 0.1, trustCalibration: 0.25,
+      interruptRecovery: 0.7, informationForaging: 0.4, changeBlindness: 0.2,
+      anchoringBias: 0.3, timeHorizon: 0.3, attributionStyle: 0.6,
+      metacognitivePlanning: 0.8, proceduralFluency: 0.6, transferLearning: 0.6,
+      authoritySensitivity: 0.6, emotionalContagion: 0.3, fearOfMissingOut: 0.15,
+      socialProofSensitivity: 0.4, mentalModelRigidity: 0.4, siteFamiliarity: 0.4,
+    },
+    context: { viewport: [1280, 800] },
+  },
+
+  "explorer": {
+    name: "explorer",
+    description: "Wanders the interface by choice, opening things to see what they do",
+    demographics: { age_range: "18-45", tech_level: "expert", device: "desktop" },
+    behaviors: { wanders: true, tries_everything: true, ignores_happy_path: true },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 200, max: 900 }, clickDelay: { min: 100, max: 350 },
+        typeSpeed: { min: 45, max: 110 }, readingSpeed: 250,
+        scrollPauseTime: { min: 200, max: 1200 },
+      },
+      errors: { misClickRate: 0.05, doubleClickAccidental: 0.02, typoRate: 0.04, backtrackRate: 0.25 },
+      mouse: { curvature: 0.5, jitter: 6, overshoot: 0.12, speed: "fast" },
+      attention: { pattern: "z-pattern", scrollBehavior: "chunked", focusAreas: ["header", "images", "cta"], distractionRate: 0.5 },
+    },
+    cognitiveTraits: {
+      patience: 0.7, riskTolerance: 0.9, comprehension: 0.75, persistence: 0.7,
+      curiosity: 0.95, workingMemory: 0.65, readingTendency: 0.4, resilience: 0.8,
+      selfEfficacy: 0.85, satisficing: 0.2, trustCalibration: 0.6,
+      interruptRecovery: 0.7, informationForaging: 0.9, changeBlindness: 0.3,
+      anchoringBias: 0.25, timeHorizon: 0.35, attributionStyle: 0.7,
+      metacognitivePlanning: 0.5, proceduralFluency: 0.7, transferLearning: 0.85,
+      authoritySensitivity: 0.2, emotionalContagion: 0.4, fearOfMissingOut: 0.4,
+      socialProofSensitivity: 0.25, mentalModelRigidity: 0.75, siteFamiliarity: 0.5,
+    },
+    context: { viewport: [1440, 900] },
+  },
+
+  "task-focused": {
+    name: "task-focused",
+    description: "Came to finish one thing; ignores everything that is not on the path",
+    demographics: { age_range: "25-55", tech_level: "intermediate", device: "desktop" },
+    behaviors: { goal_directed: true, ignores_promotions: true, resents_detours: true },
+    humanBehavior: {
+      timing: {
+        reactionTime: { min: 200, max: 800 }, clickDelay: { min: 100, max: 300 },
+        typeSpeed: { min: 40, max: 100 }, readingSpeed: 260,
+        scrollPauseTime: { min: 150, max: 600 },
+      },
+      errors: { misClickRate: 0.04, doubleClickAccidental: 0.02, typoRate: 0.04, backtrackRate: 0.12 },
+      mouse: { curvature: 0.2, jitter: 4, overshoot: 0.06, speed: "fast" },
+      attention: { pattern: "f-pattern", scrollBehavior: "jump", focusAreas: ["cta", "text"], distractionRate: 0.15 },
+    },
+    cognitiveTraits: {
+      patience: 0.6, riskTolerance: 0.5, comprehension: 0.7, persistence: 0.9,
+      curiosity: 0.2, workingMemory: 0.7, readingTendency: 0.35, resilience: 0.75,
+      selfEfficacy: 0.8, satisficing: 0.5, trustCalibration: 0.5,
+      interruptRecovery: 0.8, informationForaging: 0.7, changeBlindness: 0.6,
+      anchoringBias: 0.45, timeHorizon: 0.6, attributionStyle: 0.6,
+      metacognitivePlanning: 0.75, proceduralFluency: 0.8, transferLearning: 0.7,
+      authoritySensitivity: 0.4, emotionalContagion: 0.25, fearOfMissingOut: 0.3,
+      socialProofSensitivity: 0.2, mentalModelRigidity: 0.6, siteFamiliarity: 0.5,
+    },
+    context: { viewport: [1280, 800] },
+  },
+
 };
 
 /**

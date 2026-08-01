@@ -34,6 +34,7 @@
  */
 
 import { type Page } from "playwright";
+import { weightKeyFor, barrierWeightFor, weightedSeverity } from "../visual/perceptual-transport.js";
 import { VERSION } from "../version.js";
 import { CBrowser } from "../browser.js";
 import type {
@@ -78,6 +79,15 @@ import {
 
 const WCAG_CRITERIA: Record<string, { level: "A" | "AA" | "AAA"; description: string }> = {
   "1.1.1": { level: "A", description: "Non-text Content" },
+  // The media criteria were absent from this table while 1.2.2 was already
+  // being emitted, and violations are filtered by looking their level up here:
+  // an unknown code is kept unconditionally. So an audit run at wcagLevel "A"
+  // still reported AA media findings, because the filter had no level to test
+  // them against. (2026-07-31)
+  "1.2.1": { level: "A", description: "Audio-only and Video-only (Prerecorded)" },
+  "1.2.2": { level: "A", description: "Captions (Prerecorded)" },
+  "1.2.3": { level: "A", description: "Audio Description or Media Alternative (Prerecorded)" },
+  "1.2.5": { level: "AA", description: "Audio Description (Prerecorded)" },
   "1.3.1": { level: "A", description: "Info and Relationships" },
   "1.4.1": { level: "A", description: "Use of Color" },
   "1.4.3": { level: "AA", description: "Contrast (Minimum)" },
@@ -178,6 +188,14 @@ interface BarrierContext {
   viewportOnly: boolean;
   /** WCAG conformance level for this audit */
   wcagLevel: "A" | "AA" | "AAA";
+  /**
+   * Media whose accessibility cannot be decided from this page. Third-party
+   * embeds live in a cross-origin iframe, so the host DOM holds none of their
+   * tracks. Reported here rather than as a barrier: a scored deduction for
+   * something never measured is a false measurement, and silence about it is
+   * a false negative. This is the third option.
+   */
+  unverifiableMedia: Array<{ element: string; reason: string; checkAt: string }>;
 }
 
 /**
@@ -664,10 +682,24 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
   const imagesWithoutAlt = await page.$$eval('img:not([alt])', (elements) =>
     elements.map(el => {
       const imgEl = el as HTMLImageElement;
+      // Identified by FILENAME, not by the first 50 characters of the URL.
+      // Barriers are deduplicated into a Set of these strings, and on a CDN
+      // path the first 50 characters are the part every image shares -- four
+      // distinct images collapsed to two keys, so the finding said "affects 2
+      // elements" beside four drawn rects. The tail is what differs.
+      // (2026-07-31)
+      //
+      // Document coordinates, matching every other rect in this file: the
+      // overlay maps them onto a full-page capture.
+      const r = imgEl.getBoundingClientRect();
       return {
-        selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
+        selector: `img[src$="${(imgEl.currentSrc || imgEl.src).split("?")[0].split("/").pop() || imgEl.src.slice(-40)}"]`,
         isDecorative: imgEl.width < 20 || imgEl.height < 20,
         issue: "missing",
+        x: Math.round(r.left + window.scrollX),
+        y: Math.round(r.top + window.scrollY),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
       };
     }).filter(el => !el.isDecorative).slice(0, 10)
   );
@@ -686,9 +718,11 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
         String((imgEl.className as unknown as { baseVal?: string })?.baseVal ?? imgEl.className ?? "").includes('separator') ||
         imgEl.getAttribute('role') === 'presentation';
       return {
-        selector: `img[src="${imgEl.src.slice(0, 50)}..."]`,
+        selector: `img[src$="${(imgEl.currentSrc || imgEl.src).split("?")[0].split("/").pop() || imgEl.src.slice(-40)}"]`,
         isDecorative: isLikelyDecorative,
         issue: "empty",
+        x: Math.round(rect.left + window.scrollX),
+        y: Math.round(rect.top + window.scrollY),
         width: rect.width,
         height: rect.height,
       };
@@ -700,11 +734,16 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
       type: "sensory",
       element: img.selector,
       description: "Image without alt text - screen reader users cannot understand the content",
-      affectedPersonas: ["deaf-user", "low-vision-magnified"],
+      affectedPersonas: ["screen-reader-user", "low-vision-magnified"],
       wcagCriteria: ["1.1.1"],
       severity: "major",
       remediation: "Add descriptive alt text, or alt=\"\" if image is purely decorative",
-    });
+      // Without this the overlay drew ten touch targets and none of the
+      // findings that actually drove the score: only 2 of 22 barrier sites in
+      // this file recorded geometry, so the highest-weighted barriers were
+      // structurally undrawable. (2026-07-31)
+      rect: { x: img.x, y: img.y, width: img.width, height: img.height },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("1.1.1");
   }
 
@@ -714,34 +753,189 @@ async function detectMissingAltText(ctx: BarrierContext): Promise<void> {
       type: "sensory",
       element: img.selector,
       description: `Large image (${Math.round(img.width)}x${Math.round(img.height)}px) has empty alt text - may be incorrectly marked as decorative`,
-      affectedPersonas: ["deaf-user", "low-vision-magnified"],
+      affectedPersonas: ["screen-reader-user", "low-vision-magnified"],
       wcagCriteria: ["1.1.1"],
       severity: "minor",
       remediation: "Verify this image is purely decorative. If it conveys meaning, add descriptive alt text",
-    });
+      rect: { x: img.x, y: img.y, width: Math.round(img.width), height: Math.round(img.height) },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("1.1.1");
   }
 
-  // Check for videos without captions indicator
-  // v10.10.0: Always detect, not just for deaf-user persona
-  const videos = await page.$$eval('video, iframe[src*="youtube"], iframe[src*="vimeo"]', (elements) =>
-    elements.map(el => ({
-      selector: el.tagName.toLowerCase(),
-      hasCaptions: el.querySelector('track[kind="captions"]') !== null,
-    })).filter(el => !el.hasCaptions)
+  // Captions, answerable only where the DOM actually holds the answer.
+  //
+  // This used to select 'video, iframe[src*="youtube"], iframe[src*="vimeo"]'
+  // and ask each for a track[kind="captions"] child. An iframe cannot have one
+  // in the host document, so every embed reported missing captions
+  // unconditionally -- a verdict the page could not support. It also had no
+  // decorative carve-out and emitted ONE barrier for every video at once, so
+  // the overlay drew a single box no matter how many videos failed.
+  // (2026-07-31)
+  const videos = await page.$$eval('video', (elements) =>
+    elements.map(el => {
+      const v = el as HTMLVideoElement;
+      const r = v.getBoundingClientRect();
+      const decorative =
+        v.getAttribute("aria-hidden") === "true" ||
+        v.getAttribute("role") === "presentation" ||
+        v.getAttribute("role") === "none";
+      // Muted with no controls: the audio channel is not reachable by anyone,
+      // so there is no audio experience being withheld. Deliberately narrow --
+      // a muted video WITH controls can be unmuted and still needs captions.
+      const noAudioReachable = v.hasAttribute("muted") && !v.hasAttribute("controls");
+      return {
+        selector: v.id ? `video#${v.id}` : "video",
+        hasCaptions: v.querySelector('track[kind="captions"]') !== null,
+        // Subtitles translate dialogue for people who can hear; captions also
+        // carry speaker changes and non-speech audio. 1.2.2 asks for captions,
+        // so subtitles-only is a real gap -- just a smaller one than nothing.
+        hasSubtitlesOnly: v.querySelector('track[kind="captions"]') === null &&
+          v.querySelector('track[kind="subtitles"]') !== null,
+        decorative,
+        noAudioReachable,
+        x: Math.round(r.left + window.scrollX),
+        y: Math.round(r.top + window.scrollY),
+        width: Math.round(r.width),
+        height: Math.round(r.height),
+      };
+    }).filter(el => !el.hasCaptions && !el.decorative && !el.noAudioReachable).slice(0, 10)
   );
 
-  if (videos.length > 0) {
+  // One barrier per element, each carrying its own rect, so the overlay can
+  // outline every failing video instead of the first one.
+  for (const v of videos) {
     barriers.push({
       type: "sensory",
-      element: "video",
-      description: `${videos.length} video(s) may not have captions - deaf users cannot access audio content`,
+      element: v.selector,
+      description: v.hasSubtitlesOnly
+        ? "Video has subtitles but no captions track - deaf users miss speaker changes and non-speech audio"
+        : "Video has no captions - deaf users cannot access its audio content",
       affectedPersonas: ["deaf-user"],
       wcagCriteria: ["1.2.2"],
-      severity: "critical",
-      remediation: "Add captions to all video content",
-    });
+      severity: v.hasSubtitlesOnly ? "major" : "critical",
+      remediation: v.hasSubtitlesOnly
+        ? 'Add a track[kind="captions"] that includes speaker identification and non-speech audio, alongside the existing subtitles'
+        : 'Add a captions track (<track kind="captions">) covering dialogue and meaningful non-speech audio',
+      rect: { x: v.x, y: v.y, width: v.width, height: v.height },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("1.2.2");
+  }
+
+  // Third-party embeds: recorded, not scored, not claimed as a violation.
+  const embeds = await page.$$eval(
+    'iframe[src*="youtube"], iframe[src*="vimeo"], iframe[src*="wistia"], iframe[src*="brightcove"]',
+    (elements) => elements.map(el => ({
+      src: (el.getAttribute("src") ?? "").slice(0, 80),
+    })).slice(0, 10),
+  );
+  for (const e of embeds) {
+    ctx.unverifiableMedia.push({
+      element: `iframe[src="${e.src}"]`,
+      reason: "Captions and audio description live inside a cross-origin embed, which this page cannot inspect. Absence here is not evidence of absence.",
+      checkAt: "The provider's own caption/description settings for this video",
+    });
+  }
+
+  await detectMissingAudioDescription(ctx);
+}
+
+/**
+ * Detect video that carries visual information with no audio description.
+ *
+ * The counterpart to the captions check above, and the reason it exists: they
+ * are opposite remedies for opposite senses. Captions carry a video's AUDIO to
+ * someone who cannot hear it; audio description carries its VISUALS to someone
+ * who cannot see it. Only captions were detected, so an audit run as a blind
+ * user reported "add captions" as their headline media fix -- a change that
+ * does nothing for them -- while the barrier they actually hit, a video whose
+ * on-screen content is never spoken, had no criterion in the set at all.
+ *
+ * Scoped to real <video> elements on purpose. A third-party embed is an
+ * <iframe>, and an iframe cannot contain a <track> child in the host document,
+ * so asking the host DOM whether a YouTube video has descriptions cannot
+ * return anything but "no". That is a guaranteed false positive rather than a
+ * measurement, and this detector declines to make it. (2026-07-31)
+ */
+async function detectMissingAudioDescription(ctx: BarrierContext): Promise<void> {
+  const { page, barriers } = ctx;
+
+  const undescribed = await page.$$eval('video', (elements) =>
+    elements
+      .map((el) => {
+        const v = el as HTMLVideoElement;
+        const rect = v.getBoundingClientRect();
+        // A described track satisfies the criterion outright.
+        const hasDescriptions = v.querySelector('track[kind="descriptions"]') !== null;
+        // Explicitly decorative content is exempt: it is declared to carry no
+        // information, so there is nothing to describe. Trusting the author's
+        // own declaration beats guessing from size or autoplay flags.
+        const decorative =
+          v.getAttribute("aria-hidden") === "true" ||
+          v.getAttribute("role") === "presentation" ||
+          v.getAttribute("role") === "none";
+        // A transcript link near the video can satisfy 1.2.3 (Level A offers
+        // "audio description OR media alternative") while leaving 1.2.5 (AA,
+        // audio description specifically) unmet. Worth separating: the fix is
+        // different and so is the conformance claim.
+        const scope = v.closest("figure, section, article, div") ?? v.parentElement;
+        const nearbyText = (scope?.textContent ?? "").toLowerCase();
+        const hasTranscript =
+          /transcript|described version|audio description/.test(nearbyText) ||
+          !!scope?.querySelector('a[href*="transcript"]');
+        return {
+          selector: v.id ? `video#${v.id}` : (v.getAttribute("src") ? `video[src]` : "video"),
+          hasDescriptions,
+          decorative,
+          hasTranscript,
+          visible: rect.width > 0 && rect.height > 0,
+          x: Math.round(rect.left + window.scrollX),
+          y: Math.round(rect.top + window.scrollY),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        };
+      })
+      .filter((v) => !v.hasDescriptions && !v.decorative)
+      .slice(0, 10),
+  );
+
+  if (undescribed.length === 0) return;
+
+  // Split by whether a media alternative appears to be present, because the
+  // two carry different criteria and different remediation.
+  const withTranscript = undescribed.filter((v) => v.hasTranscript);
+  const withNothing = undescribed.filter((v) => !v.hasTranscript);
+
+  if (withNothing.length > 0) {
+    barriers.push({
+      type: "sensory",
+      element: withNothing[0].selector,
+      description: `${withNothing.length} video(s) have no audio description and no transcript - blind and low-vision users cannot access what is shown on screen`,
+      affectedPersonas: ["screen-reader-user", "low-vision-magnified"],
+      wcagCriteria: ["1.2.3", "1.2.5"],
+      severity: "critical",
+      remediation:
+        "Add an audio description track (<track kind=\"descriptions\">) narrating on-screen information that is not already spoken, or publish a described version. A full text transcript satisfies 1.2.3 but not 1.2.5.",
+      affectedElementCount: withNothing.length,
+      rect: { x: withNothing[0].x, y: withNothing[0].y, width: withNothing[0].width, height: withNothing[0].height },
+    } as AccessibilityBarrier);
+    ctx.wcagViolations.add("1.2.3");
+    ctx.wcagViolations.add("1.2.5");
+  }
+
+  if (withTranscript.length > 0) {
+    barriers.push({
+      type: "sensory",
+      element: withTranscript[0].selector,
+      description: `${withTranscript.length} video(s) appear to have a transcript but no audio description track - meets WCAG 1.2.3 (A) but not 1.2.5 (AA)`,
+      affectedPersonas: ["screen-reader-user", "low-vision-magnified"],
+      wcagCriteria: ["1.2.5"],
+      severity: "major",
+      remediation:
+        "Add an audio description track so on-screen information is available during playback, not only in a separate transcript",
+      affectedElementCount: withTranscript.length,
+      rect: { x: withTranscript[0].x, y: withTranscript[0].y, width: withTranscript[0].width, height: withTranscript[0].height },
+    } as AccessibilityBarrier);
+    ctx.wcagViolations.add("1.2.5");
   }
 }
 
@@ -867,7 +1061,8 @@ async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
   const hoverOnlyElements = await page.$$eval(
     '[class*="hover"], [class*="dropdown"], [class*="menu"], [class*="tooltip"]',
     (elements) => {
-      const results: Array<{ selector: string; hasClickAlternative: boolean; text: string }> = [];
+      const results: Array<{ selector: string; hasClickAlternative: boolean; text: string;
+        x: number; y: number; width: number; height: number }> = [];
 
       for (const el of elements.slice(0, 20)) {
         // Check if element or children have click handlers
@@ -875,10 +1070,15 @@ async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
                          el.querySelector('[onclick]') !== null ||
                          el.querySelector('a, button') !== null;
 
+        const r = el.getBoundingClientRect();
         results.push({
           selector: el.tagName.toLowerCase() + (el.className ? `.${String(((el as HTMLElement).className as unknown as { baseVal?: string })?.baseVal ?? (el as HTMLElement).className ?? "").split(' ')[0]}` : ''),
           hasClickAlternative: hasClick,
           text: el.textContent?.trim().slice(0, 30) || '',
+          x: Math.round(r.left + window.scrollX),
+          y: Math.round(r.top + window.scrollY),
+          width: Math.round(r.width),
+          height: Math.round(r.height),
         });
       }
 
@@ -895,7 +1095,8 @@ async function detectMotorBarriers(ctx: BarrierContext): Promise<void> {
       wcagCriteria: ["2.1.1", "2.5.1"],
       severity: "major",
       remediation: "Add click/tap alternative to hover interactions, or make hover content accessible via keyboard focus",
-    });
+      rect: { x: el.x, y: el.y, width: el.width, height: el.height },
+    } as AccessibilityBarrier);
     ctx.wcagViolations.add("2.1.1");
   }
 
@@ -1307,6 +1508,7 @@ async function simulateAccessibilityJourney(
     stepCount: 0,
     viewportOnly: scope === "viewport",
     wcagLevel,
+    unverifiableMedia: [],
   };
 
   let goalAchieved = false;
@@ -1624,7 +1826,12 @@ async function simulateAccessibilityJourney(
     cognitiveOverloadPenalty: perceptualResult.cognitiveOverloadPenalty,
     // The reading behind the prose above and behind cognitiveOverloadPenalty.
     // Named because two other numbers in this payload are also "cognitive load".
-    visualComplexityCognitiveLoad: perceptualResult.cognitiveLoad,
+    // Rounded: 1 - 0.9 is 0.09999999999999998 in binary floating point, and
+    // that reached a report a customer reads.
+    visualComplexityCognitiveLoad:
+      typeof perceptualResult.cognitiveLoad === "number"
+        ? Math.round(perceptualResult.cognitiveLoad * 1000) / 1000
+        : perceptualResult.cognitiveLoad,
     // Susceptibility weight applied per barrier type for THIS persona. Barriers
     // name a couple of exemplar affectedPersonas, which looks contradictory
     // beside a deduction charged to a different persona; the weight is what
@@ -1651,7 +1858,7 @@ async function simulateAccessibilityJourney(
   };
 
   // Generate remediation priorities
-  const remediationPriority = generateRemediationPriority(ctx.barriers);
+  const remediationPriority = generateRemediationPriority(ctx.barriers, persona.name);
 
   // Capture page screenshot for WCAG overlay visualization
   let pageScreenshotBase64: string | undefined;
@@ -1661,14 +1868,45 @@ async function simulateAccessibilityJourney(
   // coordinates against the VIEWPORT height flagged every rect as outside.
   // (2026-07-29)
   let documentHeight: number | undefined;
+  // The real pixel dimensions of the image above, read from the PNG header
+  // rather than inferred. The overlay divides rect coordinates by this to get
+  // percentages, so it has to be the height of the picture that actually
+  // exists -- not a separately-measured document height that the picture may
+  // not cover. (2026-07-31)
+  let screenshotSize: { width: number; height: number } | undefined;
+  // Scroll offset at the moment of capture. Document-space rects are only
+  // comparable to a viewport image after subtracting this.
+  let captureScroll: { x: number; y: number } | undefined;
   try {
-    const screenshotBuffer = await page.screenshot({ type: 'png', fullPage: false });
+    // Capture the region the coordinates describe. Rects are DOCUMENT-space
+    // (scroll offset added at capture), so a full_page audit needs a full_page
+    // image or the two are in different spaces: measured on ucdenver.edu,
+    // barriers spanned document y 6-4787 of a 5363px page while the image was
+    // the top 800px, and the overlay divided by 5363. Six of ten boxes were
+    // drawn over elements that had nothing to do with the barrier, and the
+    // bounds test compared against documentHeight so none were flagged.
+    // (2026-07-31)
+    const screenshotBuffer = await page.screenshot({
+      type: 'png',
+      fullPage: scope === "full_page",
+    });
     pageScreenshotBase64 = Buffer.from(screenshotBuffer).toString('base64');
+    // PNG IHDR: width at byte 16, height at byte 20, both big-endian uint32.
+    if (screenshotBuffer.length > 24) {
+      screenshotSize = {
+        width: screenshotBuffer.readUInt32BE(16),
+        height: screenshotBuffer.readUInt32BE(20),
+      };
+    }
     const vp = page.viewportSize();
     if (vp) viewportSize = { width: vp.width, height: vp.height };
-    documentHeight = await page.evaluate(() =>
-      Math.max(document.body?.scrollHeight ?? 0, document.documentElement?.scrollHeight ?? 0)
-    );
+    const metrics = await page.evaluate(() => ({
+      docHeight: Math.max(document.body?.scrollHeight ?? 0, document.documentElement?.scrollHeight ?? 0),
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+    }));
+    documentHeight = metrics.docHeight;
+    captureScroll = { x: metrics.scrollX, y: metrics.scrollY };
   } catch {}
 
   return {
@@ -1699,10 +1937,33 @@ async function simulateAccessibilityJourney(
     pageScreenshot: pageScreenshotBase64, // v18.60.0: For WCAG overlay visualization
     viewportSize, // v18.60.0
     documentHeight,
+    screenshotSize,
+    captureScroll,
+    // Present only when there is something to say, so an empty list does not
+    // read as a finding.
+    ...(ctx.unverifiableMedia.length > 0
+      ? { unverifiableMedia: ctx.unverifiableMedia }
+      : {}),
   } as any;
 }
 
 function getDisabilityType(persona: AccessibilityPersona): string {
+  // Hearing first, and by name as well as by trait.
+  //
+  // Every other branch keys off a visual, motor or cognitive trait, and
+  // deafness is none of those -- so deaf-user fell through to "General
+  // accessibility" while carrying isDisabilityPersona: true, which reads as
+  // the tool not recognising the persona it was asked to audit.
+  const traits = persona.accessibilityTraits as Record<string, unknown>;
+  if (traits?.hearingLoss || traits?.deafness || traits?.hearingImpairment) {
+    return "Hearing (deaf/hard of hearing)";
+  }
+  if (/^(deaf|hard-of-hearing)/i.test(String(persona.name ?? ""))) {
+    return "Hearing (deaf/hard of hearing)";
+  }
+  if (/screen-?reader|nvda|jaws|voiceover/i.test(String(persona.name ?? ""))) {
+    return "Blind / screen reader";
+  }
   if (persona.accessibilityTraits.tremor) return "Motor impairment (tremor)";
   if (persona.accessibilityTraits.visionLevel && persona.accessibilityTraits.visionLevel < 0.5) return "Low vision";
   if (persona.accessibilityTraits.colorBlindness) return `Color blindness (${persona.accessibilityTraits.colorBlindness})`;
@@ -1842,19 +2103,30 @@ function calculateEmpathyScore(
   return calculateEmpathyScoreWithContext(barriers, frictionPoints, goalAchieved).score;
 }
 
-function generateRemediationPriority(barriers: AccessibilityBarrier[]): RemediationItem[] {
+function generateRemediationPriority(
+  barriers: AccessibilityBarrier[],
+  personaName?: string,
+): RemediationItem[] {
   const items: RemediationItem[] = [];
   let priority = 1;
 
-  // Sort barriers by severity
-  const sorted = [...barriers].sort((a, b) => {
-    const severityOrder: Record<AccessibilityBarrierSeverity, number> = {
-      critical: 0,
-      major: 1,
-      minor: 2,
-    };
-    return severityOrder[a.severity] - severityOrder[b.severity];
-  });
+  // Sorted by severity FOR THIS PERSONA, not the raw WCAG grade.
+  //
+  // The list is capped at ten and the payload surfaces the top five, so the
+  // sort decides what reaches the action list at all. Sorting by the WCAG
+  // grade dropped the single highest-weighted issue in a screen-reader audit:
+  // empty alt text carries severity "minor" and weight 3.0, so it graded
+  // critical for the persona, sorted below five lighter findings, and fell off
+  // the list -- while the payload's own field notes said severityForPersona
+  // "is what should drive triage order". (2026-07-31)
+  const severityOrder: Record<string, number> = { critical: 0, major: 1, minor: 2 };
+  const rank = (b: AccessibilityBarrier): number => {
+    if (!personaName) return severityOrder[b.severity] ?? 3;
+    const { weight } = barrierWeightFor(personaName, b.type, b.wcagCriteria);
+    const { severity } = weightedSeverity(b.severity, weight);
+    return severityOrder[String(severity).toLowerCase()] ?? 3;
+  };
+  const sorted = [...barriers].sort((a, b) => rank(a) - rank(b));
 
   // Group by type to avoid duplicates
   const seen = new Set<string>();
@@ -1864,12 +2136,32 @@ function generateRemediationPriority(barriers: AccessibilityBarrier[]): Remediat
     if (seen.has(key)) continue;
     seen.add(key);
 
+    // Effort by what the fix actually costs. Four types were named and
+    // everything else fell through to "trivial", which is how captions
+    // (transcription plus a caption file per video) and hover-to-keyboard
+    // alternatives (real JS on a carousel) were both rated trivial. A field
+    // that says "trivial" for almost everything carries no triage signal,
+    // which is the only reason it exists. Keyed on the criterion where the
+    // type is too coarse to separate an alt attribute from a caption track.
+    // (2026-07-31)
+    const criteria = barrier.wcagCriteria ?? [];
+    const has = (c: string) => criteria.includes(c);
     const effort: AgentReadyEffort =
+      // Media alternatives: authoring work per asset, not a code change.
+      has("1.2.1") || has("1.2.2") || has("1.2.3") || has("1.2.5") ? "hard" :
+      // Replacing a hover-only affordance means new interaction code.
+      barrier.type === "motor_precision" ? "hard" :
+      // Restructuring navigation or reducing page-level load.
+      barrier.type === "cognitive_load" ? "hard" :
+      barrier.type === "timing" || barrier.type === "temporal" ? "medium" :
+      // Adding a non-colour cue touches markup and styling per instance.
+      has("1.4.1") ? "medium" :
+      // Attribute- or token-level edits.
+      has("1.1.1") ? "easy" :
       barrier.type === "contrast" ? "easy" :
       barrier.type === "touch_target" ? "easy" :
-      barrier.type === "cognitive_load" ? "medium" :
-      barrier.type === "timing" ? "medium" :
-      "trivial";
+      has("3.3.2") || has("1.3.1") ? "easy" :
+      "medium";
 
     items.push({
       priority: priority++,
@@ -2312,7 +2604,8 @@ function deduplicateBarriers(
   results: AccessibilityEmpathyResult[]
 ): AccessibilityBarrier[] {
   // Group by barrier TYPE only (not element)
-  const barriersByType = new Map<AccessibilityBarrierType, {
+  // Keyed "type|weightKey" now, not a bare type.
+  const barriersByType = new Map<string, {
     barriers: AccessibilityBarrier[];
     personas: Set<string>;
     elements: Set<string>;
@@ -2321,7 +2614,19 @@ function deduplicateBarriers(
 
   for (const result of results) {
     for (const barrier of result.barriers) {
-      const existing = barriersByType.get(barrier.type);
+      // Grouped by type AND the susceptibility key its criteria resolve to,
+      // not by type alone.
+      //
+      // "sensory" covers colour-only links (1.4.1), missing alt text (1.1.1)
+      // and missing captions (1.2.2) -- three different problems, three
+      // different fixes, and wildly different susceptibility per persona. Type
+      // alone merged them into one entry carrying one description and one
+      // remediation, so on a screen-reader audit the alt-text criterion that
+      // matters most arrived bundled inside a colour barrier whose fix was
+      // "add patterns alongside colour". Unioning the criteria made them
+      // visible; separating the groups makes them actionable.
+      const groupKey = `${barrier.type}|${weightKeyFor(barrier.type, barrier.wcagCriteria) ?? ""}`;
+      const existing = barriersByType.get(groupKey);
       // Use the barrier's OWN affectedPersonas (set by the detector — accurate)
       // rather than the test persona's name. Previously we overwrote with
       // result.persona, which made every barrier appear to affect only the
@@ -2339,7 +2644,7 @@ function deduplicateBarriers(
           existing.highestSeverity = barrier.severity;
         }
       } else {
-        barriersByType.set(barrier.type, {
+        barriersByType.set(groupKey, {
           barriers: [barrier],
           personas: new Set(barrierPersonas),
           elements: new Set([barrier.element]),
@@ -2349,10 +2654,13 @@ function deduplicateBarriers(
     }
   }
 
-  // Create one deduplicated barrier per type
+  // One deduplicated barrier per type-and-criterion group.
   const deduplicated: AccessibilityBarrier[] = [];
 
-  for (const [type, data] of barriersByType) {
+  for (const [groupKey, data] of barriersByType) {
+    // The map is keyed "type|weightKey"; the emitted barrier keeps the plain
+    // type, since that is what downstream weighting and styling read.
+    const type = groupKey.split("|")[0] as AccessibilityBarrier["type"];
     const elementCount = data.elements.size;
     const representative = data.barriers[0]; // Use first barrier as template
 
@@ -2368,7 +2676,16 @@ function deduplicateBarriers(
       element: elementCount > 1 ? `${elementCount} elements` : representative.element,
       description: aggregatedDescription,
       affectedPersonas: Array.from(data.personas),
-      wcagCriteria: representative.wcagCriteria,
+      // Union across the group, not the representative's alone.
+      //
+      // Barriers are deduplicated by TYPE, and "sensory" covers colour-only
+      // links, missing alt text and missing captions alike -- three different
+      // criteria collapsed into one entry that kept only the first barrier's.
+      // That is how 1.1.1 and 1.2.2 came to be reported in allWcagViolations
+      // with no barrier explaining them: the criteria were not missing, they
+      // were discarded here. On a deaf-user audit the dropped one was 1.2.2,
+      // captions -- the single criterion most relevant to that persona.
+      wcagCriteria: Array.from(new Set(data.barriers.flatMap((b) => b.wcagCriteria ?? []))),
       // This is the WORST severity across every element grouped under this
       // barrier type, not one element's severity — but it shipped under the same
       // field name `severity` that individual rects use, so the same 152x20
@@ -2531,6 +2848,16 @@ export async function runEmpathyAudit(
         const hasVisionHint = name.includes("vision") || name.includes("blind") || name.includes("elderly") || name.includes("magnif");
         const hasMotorHint = name.includes("motor") || name.includes("tremor") || name.includes("parkinsons");
         const hasCognitiveHint = name.includes("adhd") || name.includes("dyslexic") || name.includes("cognitive") || name.includes("memory");
+        // Assistive-technology and hearing personas were in neither bucket, so
+        // screen-reader-user came back isDisabilityPersona: false -- while the
+        // same payload listed it as an exemplar on a sensory barrier and
+        // list_cognitive_personas filed it under accessibility. Three parts of
+        // the system disagreeing about whether a screen reader user has a
+        // disability, and the "no" was the one that drove the score.
+        const hasScreenReaderHint = name.includes("screen-reader") || name.includes("screenreader")
+          || name.includes("nvda") || name.includes("jaws") || name.includes("voiceover");
+        const hasHearingHint = name.includes("deaf") || name.includes("hearing")
+          || name.includes("hard-of-hearing");
 
         persona = {
           ...cognitivePersona,
@@ -2546,8 +2873,9 @@ export async function runEmpathyAudit(
           },
         } as any;
         // If the name hints at a disability, treat it as a disability persona for routing
-        isDisabilityPersona = hasVisionHint || hasMotorHint || hasCognitiveHint;
-        console.log(`[empathy_audit] "${disability}" wrapped as ${isDisabilityPersona ? "disability" : "general"} persona (vision=${hasVisionHint}, motor=${hasMotorHint}, cognitive=${hasCognitiveHint})`);
+        isDisabilityPersona = hasVisionHint || hasMotorHint || hasCognitiveHint
+          || hasScreenReaderHint || hasHearingHint;
+        console.log(`[empathy_audit] "${disability}" wrapped as ${isDisabilityPersona ? "disability" : "general"} persona (vision=${hasVisionHint}, motor=${hasMotorHint}, cognitive=${hasCognitiveHint}, screenReader=${hasScreenReaderHint}, hearing=${hasHearingHint})`);
       } else {
         // Return an explicit error instead of silently skipping
         console.error(`[empathy_audit] Persona "${disability}" not found in any registry (built-in, custom, CMS)`);
@@ -2613,13 +2941,24 @@ export async function runEmpathyAudit(
           concentration: attnAnalysis.concentration,
           transportCost: attnAnalysis.transportCost,
         };
+        // Only the three values that feed the perceptual score are published.
+        //
+        // alignmentScore and topAttentionAreas fed nothing -- analyzePerceptual
+        // Transport reads entropy, concentration and transportCost and ignores
+        // the rest -- while being the parts that looked wrong: alignment 0.999
+        // for one persona, and four of five "top areas" pinned to page corners
+        // at saliency ~1.0, which is an edge artifact of the coarse grid rather
+        // than a finding about attention. Publishing a number that drives
+        // nothing and cannot be trusted is worse than not publishing it.
+        //
+        // Anyone who wants attention metrics should call attention_analysis,
+        // which runs the same function at the finer default grid.
         (result as any).attentionAnalysis = {
-          alignmentScore: attnAnalysis.alignmentScore,
           entropy: attnAnalysis.entropy,
           concentration: attnAnalysis.concentration,
           transportCost: attnAnalysis.transportCost,
-          topAttentionAreas: attnAnalysis.attentionCompetitors,
           computeTimeMs: Math.round(attnAnalysis.computeTimeMs),
+          gridCellPx: 16,
         };
 
         try { ulAttn(attnScreenshot); } catch {}
@@ -2780,8 +3119,15 @@ export async function runEmpathyAudit(
   // v11.10.0: Deduplicate barriers by element+type, list affected personas (issue #86)
   const deduplicatedBarriers = deduplicateBarriers(allBarriers, results);
 
-  // Generate combined remediation from deduplicated barriers
-  const combinedRemediation = generateRemediationPriority(deduplicatedBarriers);
+  // Generate combined remediation from deduplicated barriers.
+  //
+  // Weighted when exactly one persona was audited -- which is what the MCP
+  // tool does, and the path whose topRemediation dropped a critical-for-blind
+  // alt-text finding below five lighter ones. Across several personas there is
+  // no single susceptibility to sort by, so the raw WCAG grade is the honest
+  // ordering and the weighting is left off rather than silently picking one.
+  const soloPersona = results.length === 1 ? results[0].persona : undefined;
+  const combinedRemediation = generateRemediationPriority(deduplicatedBarriers, soloPersona);
 
   // Calculate overall score
   const overallScore = results.length > 0

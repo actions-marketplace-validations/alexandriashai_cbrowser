@@ -12,7 +12,7 @@
 /**
  * Cognitive Trait Reference Matrix (v15.0.0)
  *
- * This module provides authoritative definitions for all 25 cognitive traits.
+ * This module provides authoritative definitions for all 26 cognitive traits.
  * Use this as a reference when creating custom personas.
  *
  * Scale Convention: All traits use 0.0 to 1.0
@@ -60,7 +60,7 @@ export interface TraitDefinition {
 }
 
 /**
- * Complete trait definitions for all 25 cognitive traits
+ * Complete trait definitions for all 26 cognitive traits
  */
 export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
   // ============================================================================
@@ -264,7 +264,18 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
     description: "Accepts 'good enough' vs. seeks optimal solution",
     lowEnd: "Maximizer - seeks perfect option",
     highEnd: "Satisficer - accepts first adequate option",
-    research: "Simon (1956) - Bounded Rationality; Schwartz et al. (2002)",
+    /**
+     * ⚠️ DIRECTION WARNING:
+     * This measures SATISFICING, not optimising. Low is the maximiser.
+     * - LOW (0.0) = maximiser: compares alternatives, seeks the best option
+     * - HIGH (1.0) = satisficer: takes the first option that is good enough
+     *
+     * "Low satisficing" in a reasoning string reads to most people as "does
+     * not settle" when it means "compares everything" -- the same trap the
+     * mentalModelRigidity note above exists for. Describe the behaviour, not
+     * the trait direction.
+     */
+    research: "Simon (1956) - Bounded Rationality; Schwartz, B. et al. (2002) - Maximizing vs Satisficing",
     examples: {
       veryLow: "Compares all options exhaustively before deciding",
       low: "Evaluates 3-4 options before choosing",
@@ -580,17 +591,22 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
     defaultValue: 0.5,
   },
 
-  mentalModelRigidity: {
-    name: "mentalModelRigidity",
+  mentalModelFlexibility: {
+    name: "mentalModelFlexibility",
     description: "Ability to adapt mental models to unexpected UI patterns",
     /**
-     * ⚠️ SEMANTIC INVERSION WARNING:
-     * Despite the name "rigidity", this trait measures FLEXIBILITY.
-     * - LOW (0.0) = MORE rigid (struggles with change)
-     * - HIGH (1.0) = MORE flexible (adapts quickly)
+     * Renamed from mentalModelRigidity, which asserted the opposite of what it
+     * measured: 1.0 meant maximally FLEXIBLE while the name said rigid.
      *
-     * This naming was kept for backward compatibility with existing personas.
-     * When setting this trait, think: "How flexible is this user?"
+     * The old name is kept as an alias rather than dropped, and every stored
+     * value is untouched. Inverting the numbers instead would have meant
+     * rewriting 29 personas and everything computed from them, to fix a defect
+     * that lives entirely in the label.
+     *
+     * This is not cosmetic. The relevance layer reads trait vectors as text,
+     * so a model reasoning from the name rather than the scale would predict
+     * behaviour exactly backwards -- a persona called inflexible while its
+     * number says the reverse -- and nothing in the output would look wrong.
      */
     lowEnd: "Rigid - struggles when conventions are broken",
     highEnd: "Highly adaptive - quickly forms new mental models",
@@ -607,6 +623,39 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
       low: ["elderly-user", "elderly-low-vision", "anxious-user"],
     },
     correlates: ["transferLearning", "comprehension", "resilience"],
+    defaultValue: 0.5,
+  },
+  /**
+   * The 26th trait.
+   *
+   * Present on every persona profile but absent from this matrix, so it had no
+   * description, no tooltip in the widget, and no behavioural line in the LLM
+   * prompt -- the judge saw a bare "siteFamiliarity 0.50" and had to guess.
+   * That absence is also the 25-vs-26 disagreement between the questionnaire
+   * copy and what persona_lookup returns. Definitions taken from the
+   * questionnaire's own entry rather than written fresh.
+   */
+  siteFamiliarity: {
+    name: "siteFamiliarity",
+    description: "How much the persona knows about a site from prior visits",
+    lowEnd: "Brand new visitor - no memory of layout or navigation",
+    highEnd: "Daily regular - navigates from memory, uses shortcuts",
+    research: "Cockburn et al. (2007) - Familiar Interfaces; Tauscher & Greenberg (1997) - How people revisit web pages",
+    examples: {
+      veryLow: "Has never visited; explores blindly with no shortcuts",
+      low: "Visited once or twice; recognises little",
+      medium: "Occasional visitor; remembers the main sections",
+      high: "Frequent visitor; goes straight to what they need",
+      veryHigh: "Daily user; navigates from memory and ignores nav entirely",
+    },
+    typicalScores: {
+      high: ["power-user", "confident-user"],
+      low: ["first-timer", "mobile-user"],
+    },
+    correlates: ["proceduralFluency", "changeBlindness", "transferLearning"],
+    // 0.5 matches the questionnaire's own default, which cites Tauscher &
+    // Greenberg: roughly 58% of page visits are revisits, so a persona with no
+    // stated history is closer to "some familiarity" than to first-time.
     defaultValue: 0.5,
   },
 };
@@ -717,8 +766,24 @@ export const PERSONA_TRAIT_GUIDELINES: Record<string, Record<string, number>> = 
 /**
  * Get trait definition by name
  */
+/**
+ * Deprecated trait names, mapped to their canonical replacement.
+ *
+ * Stored personas and saved results still carry the old keys, so lookups
+ * resolve through here rather than failing. Expand now, contract once nothing
+ * on disk uses the old name.
+ */
+export const TRAIT_ALIASES: Record<string, string> = {
+  mentalModelRigidity: "mentalModelFlexibility",
+};
+
+/** Canonical name for a trait, resolving any deprecated alias. */
+export function canonicalTraitName(traitName: string): string {
+  return TRAIT_ALIASES[traitName] ?? traitName;
+}
+
 export function getTraitDefinition(traitName: string): TraitDefinition | undefined {
-  return TRAIT_DEFINITIONS[traitName];
+  return TRAIT_DEFINITIONS[canonicalTraitName(traitName)];
 }
 
 /**

@@ -163,6 +163,11 @@ const DEFAULT_FPS = 10;
 const DEFAULT_QUALITY = 80;
 const DEFAULT_MAX_FRAMES = 3000;
 
+/** How often to check whether the page scrolled far enough to re-read the DOM. */
+const SCROLL_SNAPSHOT_INTERVAL_MS = 200;
+/** Scroll distance that changes the viewport enough to warrant a fresh snapshot. */
+const SCROLL_SNAPSHOT_THRESHOLD_PX = 200;
+
 /*
  * The change thresholds and the saturation ratio live in types.ts, next to the
  * schema that documents them, and are imported rather than restated here.
@@ -258,6 +263,42 @@ export class VideoCaptureSession {
   private startedAtIso = "";
   private stopWallMs = 0;
   private frames: PendingFrame[] = [];
+  /**
+   * DOM as it stood at a point in time, captured on navigation.
+   *
+   * Reading the DOM once at stop and stamping it across every frame is wrong the
+   * moment a capture navigates: frame 0 on the pricing page was being judged
+   * against the post-click verification screen, which made every judged moment
+   * identical and let the summary confabulate a UX finding out of a tool
+   * artifact. One extract per navigation is cheap; per frame would be a
+   * page.evaluate on every screencast tick.
+   */
+  private domSnapshots: Array<{ atMs: number; scrollY: number; elements: unknown[] }> = [];
+  /**
+   * Scroll position over time, sampled cheaply.
+   *
+   * Element rects come from getBoundingClientRect, which is VIEWPORT-relative at
+   * the instant of extraction. Between snapshots the page keeps scrolling, so a
+   * rect captured before a scroll describes a position the element has since
+   * left — the heat lands below where the element now is, by exactly the drift.
+   * Storing scroll per sample lets the renderer correct each frame back to what
+   * was actually on screen.
+   */
+  private scrollTrack: Array<{ atMs: number; scrollY: number }> = [];
+  /**
+   * Real interactions, captured from the page rather than inferred.
+   *
+   * The capture summary previously read the gap between two scripted tool calls
+   * as a user deliberating, and recommended a design change to fix the stall it
+   * had invented. Gagging the prompt stops the bad sentence; recording what
+   * actually happened is what makes the good one possible — and it is the same
+   * data needed to draw a ring where a click landed.
+   */
+  private interactions: Array<{
+    atMs: number; type: string; x: number; y: number; label: string;
+  }> = [];
+  private navListener?: () => void;
+  private scrollTimer?: ReturnType<typeof setInterval>;
   private nextDueMs = 0;
   private writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -379,7 +420,9 @@ export class VideoCaptureSession {
       }
     }
 
-    this.attachPageListeners();
+    // Awaited: the interaction binding must exist before the first frame, or a
+    // click in the opening moments is silently unrecorded.
+    await this.attachPageListeners();
 
     this.startWallMs = Date.now();
     this.startedAtIso = new Date(this.startWallMs).toISOString();
@@ -860,7 +903,7 @@ export class VideoCaptureSession {
     }).catch(() => { /* reported via the frame-count mismatch check at stop */ });
   }
 
-  private attachPageListeners(): void {
+  private async attachPageListeners(): Promise<void> {
     this.consoleListener = (msg: ConsoleMessage) => {
       if (this.state !== "recording") return;
       this.consoleEvents.push({
@@ -881,6 +924,96 @@ export class VideoCaptureSession {
 
     this.page.on("console", this.consoleListener);
     this.page.on("request", this.requestListener);
+
+    // Snapshot the DOM now and again whenever the page navigates, so a judged
+    // frame is scored against the page as it was AT THAT MOMENT.
+    const snapshot = async (): Promise<void> => {
+      try {
+        const { extractPageElementsForAttention } = await import("../visual/attention-quality.js");
+        const elements = await extractPageElementsForAttention(this.page);
+        const scrollY = await this.page.evaluate(() => window.scrollY).catch(() => 0);
+        this.domSnapshots.push({ atMs: Date.now() - this.startWallMs, scrollY, elements });
+      } catch { /* a missing snapshot degrades that frame, never the recording */ }
+    };
+    void snapshot();
+    this.navListener = () => { void snapshot(); };
+    this.page.on("framenavigated", this.navListener);
+
+    // Scroll changes what is on screen just as much as navigation does, and
+    // extractPageElementsForAttention filters to the viewport — so a snapshot
+    // taken before a 700px scroll describes elements that are no longer visible
+    // and carries stale coordinates for the ones that are. Without this, a
+    // time-series capture returns the same judgement at every scroll position,
+    // which is to say it measures nothing a single static call did not.
+    //
+    // Polled rather than event-driven: scroll fires far too often to snapshot
+    // on, and a threshold poll costs one cheap evaluate per interval.
+    // Interactions are reported to Node the INSTANT they happen, and the
+    // listener re-arms on every navigation.
+    //
+    // The first version buffered events in a page global and drained them on the
+    // 200ms poll. That loses precisely the events worth having: a click that
+    // navigates destroys the buffer before the next drain, and the listener
+    // itself dies with the document, so nothing after the first navigation was
+    // ever recorded. Nothing showed up at all.
+    //
+    // exposeFunction costs a binding call per event rather than one evaluate per
+    // tick — the cost I was avoiding — but an event that arrives late is still
+    // an event, and one that is never recorded is not.
+    const BINDING = "__cbReportInteraction";
+    try {
+      await this.page.exposeFunction(BINDING, (raw: unknown) => {
+        const it = raw as Record<string, unknown>;
+        this.interactions.push({
+          atMs: Date.now() - this.startWallMs,
+          type: String(it?.type ?? "click"),
+          x: Number(it?.x ?? 0),
+          y: Number(it?.y ?? 0),
+          label: String(it?.label ?? ""),
+        });
+      });
+    } catch { /* already bound on this page; the init script below still runs */ }
+
+    const initScript = `(() => {
+      if (window.__cbArmed) return;
+      window.__cbArmed = true;
+      const send = (type) => (e) => {
+        try {
+          const t = e.target;
+          const label = (t && (t.innerText || (t.getAttribute && t.getAttribute("aria-label")) || t.tagName) || "")
+            .toString().trim().slice(0, 60);
+          if (window.${BINDING}) {
+            window.${BINDING}({ type, x: e.clientX || 0, y: e.clientY || 0, label });
+          }
+        } catch (_) {}
+      };
+      document.addEventListener("click", send("click"), true);
+      document.addEventListener("change", send("input"), true);
+      document.addEventListener("submit", send("submit"), true);
+    })();`;
+
+    // addInitScript runs on EVERY document, so the listener survives navigation.
+    try { await this.page.addInitScript({ content: initScript }); } catch { /* CSP */ }
+    // ...and once now, since the current document already loaded.
+    try { await this.page.evaluate(initScript); } catch { /* CSP or closed page */ }
+
+    let lastScrollY = 0;
+    this.scrollTimer = setInterval(() => {
+      void (async () => {
+        try {
+          const y = await this.page.evaluate(() => window.scrollY);
+          // Sampled every tick regardless of the snapshot threshold: the
+          // correction needs fine-grained scroll, even where a fresh DOM read
+          // would be wasteful.
+          this.scrollTrack.push({ atMs: Date.now() - this.startWallMs, scrollY: y });
+
+          if (Math.abs(y - lastScrollY) >= SCROLL_SNAPSHOT_THRESHOLD_PX) {
+            lastScrollY = y;
+            await snapshot();
+          }
+        } catch { /* page gone; the stop path handles it */ }
+      })();
+    }, SCROLL_SNAPSHOT_INTERVAL_MS);
   }
 
   private detachPageListeners(): void {
@@ -899,6 +1032,13 @@ export class VideoCaptureSession {
     if (this.loopTimer) { clearInterval(this.loopTimer); this.loopTimer = null; }
     if (this.trackTimer) { clearInterval(this.trackTimer); this.trackTimer = null; }
     if (this.stopTriggerTimer) { clearInterval(this.stopTriggerTimer); this.stopTriggerTimer = null; }
+    // A leaked interval holds the event loop open and keeps a finished capture's
+    // process alive.
+    if (this.scrollTimer) { clearInterval(this.scrollTimer); this.scrollTimer = undefined; }
+    if (this.navListener) {
+      try { this.page.off("framenavigated", this.navListener); } catch { /* page already gone */ }
+      this.navListener = undefined;
+    }
     if (this.stopTimeoutTimer) { clearTimeout(this.stopTimeoutTimer); this.stopTimeoutTimer = null; }
 
     // Close the window with a real frame when the stream has gone quiet, so the
@@ -963,6 +1103,7 @@ export class VideoCaptureSession {
       version: MANIFEST_VERSION,
       slug: this.slug,
       engine: this.engine,
+      ...(this.interactions.length > 0 ? { interactions: this.interactions } : {}),
       capture_method: this.captureMethod,
       target_fps: this.opts.fps,
       actual_fps: durationMs > 0 ? frames.length / (durationMs / 1000) : 0,
@@ -1075,19 +1216,51 @@ export class VideoCaptureSession {
         const { overlayAttentionOnFrames } = await import("./saliency-overlay.js");
         const { extractPageElementsForAttention } = await import("../visual/attention-quality.js");
 
+        // Prefer snapshots taken DURING the recording. Falling back to a
+        // stop-time read is only correct for a capture that never navigated.
         let domElements: Awaited<ReturnType<typeof extractPageElementsForAttention>> | undefined;
-        try {
-          domElements = await extractPageElementsForAttention(this.page);
-        } catch {
-          // A navigated-away or closed page still yields a visual-only overlay.
+        if (this.domSnapshots.length === 0) {
+          try {
+            domElements = await extractPageElementsForAttention(this.page);
+          } catch {
+            // A navigated-away or closed page still yields a visual-only overlay.
+          }
+        } else {
+          domElements = this.domSnapshots[this.domSnapshots.length - 1]
+            .elements as Awaited<ReturnType<typeof extractPageElementsForAttention>>;
         }
 
+        // Everything the judging path needs must actually be handed over.
+        // Previously getApiKey was never passed, keyFrames and frameTimesMs were
+        // never passed, and relevanceContext was built only when `entitled` was
+        // defined — which no CLI caller sets. The guard inside the overlay then
+        // failed silently on every path, so an overlay ran, painted frames, and
+        // produced zero judged moments while reporting success.
+        const { getAnthropicApiKey } = await import("../cognitive/index.js");
+        const { resolvePersonaContext } = await import("../visual/persona-context.js");
         const overlay = await overlayAttentionOnFrames(encodePaths, this.outDir, {
           ...cfg,
           ...(domElements ? { domElements: domElements as never } : {}),
-          ...(cfg.entitled !== undefined
-            ? { relevanceContext: { personaName: cfg.persona ?? "first-timer", goal: cfg.goal, entitled: cfg.entitled } }
-            : {}),
+          relevanceContext: {
+            personaName: cfg.persona ?? "first-timer",
+            // Traits, values and description. This path had the same defect as
+            // attention_analysis: only the name reached the judge, so every
+            // frame was scored against a persona the model had to imagine.
+            ...(await resolvePersonaContext(cfg.persona ?? "first-timer")),
+            ...(cfg.goal ? { goal: cfg.goal } : {}),
+            // Undefined means "no entitlement opinion" — the judge treats only
+            // an explicit false as a block, so CLI and self-hosted callers work.
+            ...(cfg.entitled !== undefined ? { entitled: cfg.entitled } : {}),
+          },
+          keyFrames: manifest.key_frames ?? [],
+          // Time-indexed DOM, so a frame is judged against the page as it was
+          // at that moment rather than against wherever the capture ended up.
+          domTimeline: this.domSnapshots as never,
+          scrollTrack: this.scrollTrack,
+          interactions: this.interactions,
+          frameTimesMs: manifest.frames.map((f) => f.t_ms),
+          summarize: true,
+          getApiKey: getAnthropicApiKey,
         });
         encodePaths = overlay.frames;
         manifest.attention_overlay = {
@@ -1096,6 +1269,23 @@ export class VideoCaptureSession {
           used_dom: overlay.usedDom,
           dom_elements: domElements?.length ?? 0,
           frames_failed: overlay.failed,
+          ...(overlay.personaResolved !== undefined ? { persona_resolved: overlay.personaResolved } : {}),
+          ...(overlay.personaUsed ? { persona_used: overlay.personaUsed } : {}),
+          // These were computed and thrown away. A per-keyframe judgement that
+          // never leaves the function is an LLM call spent for nothing.
+          ...(overlay.moments && overlay.moments.length > 0
+            ? {
+                moments: overlay.moments.map((m) => ({
+                  frame_index: m.frameIndex,
+                  t_ms: m.tMs,
+                  ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+                  ...(m.source ? { source: m.source } : {}),
+                  ...(m.unavailable ? { unavailable: m.unavailable } : {}),
+                  top_elements: m.topElements,
+                })),
+              }
+            : {}),
+          ...(overlay.summary ? { summary: overlay.summary } : {}),
         };
       } catch (err) {
         // An overlay failure must never cost the recording.

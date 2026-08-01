@@ -8,6 +8,7 @@
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { buildContentWithScreenshots } from "../screenshot-utils.js";
+import { activeRecordingViewport } from "./capture-tools.js";
 import { refuseUnboundSession } from "../session-policy.js";
 
 /**
@@ -24,6 +25,9 @@ export function registerExtractionTools(
       path: z.string().optional().describe("Optional path to save the screenshot"),
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call"),
     },
+    // Declares the screenshot view. The image is the whole result, and the
+    // JSON beside it only says what the picture is of.
+    _meta: { ui: { resourceUri: "ui://cbrowser/screenshot" } },
     annotations: {
       title: "Take Screenshot",
       readOnlyHint: true,
@@ -41,9 +45,36 @@ export function registerExtractionTools(
       } else {
         b = await getBrowser();
       }
-      const file = await b.screenshot(path);
+      // A capture in progress owns the viewport. Taking a screenshot at a
+      // different size reflows the page, so the image would show a layout the
+      // recording never contained -- and the two artifacts of the same moment
+      // would disagree. Coerce to the recording's size rather than let that happen.
+      let viewportForced: { width: number; height: number } | undefined;
+      let recording: { width: number; height: number } | undefined;
+      try {
+        recording = activeRecordingViewport(token);
+        if (recording) {
+          const page = await b.getPage();
+          const now = page.viewportSize();
+          if (!now || now.width !== recording.width || now.height !== recording.height) {
+            await page.setViewportSize(recording);
+            viewportForced = recording;
+          }
+        }
+      } catch { /* never let viewport matching break a screenshot */ }
+
+      // Forcing the viewport before the shot is not enough on its own: the
+      // compression path shrinks oversized files by resizing the viewport, which
+      // would undo the match and put a reflow into the recording. noResize makes
+      // it hit the budget with quality instead.
+      const file = recording
+        ? await b.screenshot(path, { noResize: true })
+        : await b.screenshot(path);
       return {
-        content: buildContentWithScreenshots({ screenshot: file, ...(token ? { _browserToken: token } : {}) }, file),
+        content: buildContentWithScreenshots({ screenshot: file,
+          ...(viewportForced
+            ? { viewport_forced: `${viewportForced.width}x${viewportForced.height}`, viewport_forced_reason: "matched to the capture in progress" }
+            : {}), ...(token ? { _browserToken: token } : {}) }, file),
       };
     }
   );

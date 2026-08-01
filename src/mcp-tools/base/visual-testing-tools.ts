@@ -7,6 +7,17 @@
 
 import { z } from "zod";
 import { writeArtifact } from "../../artifact-store.js";
+
+/**
+ * Largest heatmap returned inline, in base64 characters.
+ *
+ * Hosts truncate tool results near 150k characters and substitute a file
+ * pointer in place of the payload, which downstream arrives as unparseable
+ * text. Measured: a 1280x800 heatmap is ~738k characters, five times the cap,
+ * so shipping it inline destroyed the JSON it accompanied. Anything above this
+ * goes through artifact_fetch instead.
+ */
+const INLINE_IMAGE_BUDGET = 100_000;
 import type { McpServer } from "../types.js";
 import {
   runVisualRegression,
@@ -440,6 +451,9 @@ export function registerVisualTestingTools(server: McpServer): void {
       idempotentHint: true,
       openWorldHint: true,
     },
+    // Declares the attention view. The heatmap is the finding here, and a JSON
+    // list of scores is a lossy description of where a persona actually looks.
+    _meta: { ui: { resourceUri: "ui://cbrowser/attention" } },
   }, async ({ url, persona, goal, cellSize, heatmap, device, useValues }) => {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({
@@ -477,6 +491,14 @@ export function registerVisualTestingTools(server: McpServer): void {
 
         // Run attention analysis with DOM semantic layer (visual + semantic blend)
         const { analyzeAttention } = await import("../../visual/attention-transport.js");
+        // Same reason as capture: a persona created through the account lives in
+        // the CMS, and attention_analysis resolves personas through the registry.
+        try {
+          const { loadAccountPersonas } = await import("../account-personas.js");
+          const { getSessionApiKey } = await import("./cognitive-tools.js");
+          await loadAccountPersonas(getSessionApiKey());
+        } catch { /* falls back to disk and built-ins */ }
+
         const domAttentionElements = await collectDomAttentionElements(page).catch(() => []);
 
         // Persona-judged relevance, replacing keyword overlap in the semantic
@@ -495,6 +517,11 @@ export function registerVisualTestingTools(server: McpServer): void {
             const tier = getActiveTier();
             const entitled = tier === null ? true : tierHasAccess(tier, "pro");
 
+            // Traits, values and description -- not just the name. Shared with
+            // the capture path so the two cannot drift.
+            const { resolvePersonaContext } = await import("../../visual/persona-context.js");
+            const pctx = await resolvePersonaContext(persona);
+
             const judged = await judgeRelevance(
               domAttentionElements.map((el, i) => ({
                 index: i,
@@ -502,7 +529,7 @@ export function registerVisualTestingTools(server: McpServer): void {
                 text: el.text ?? "",
                 x: el.x, y: el.y, width: el.width, height: el.height,
               })),
-              { personaName: persona, goal, entitled },
+              { personaName: persona, goal, entitled, ...pctx },
               getAnthropicApiKey,
             );
             relevanceScores = judged.scores;
@@ -651,17 +678,38 @@ export function registerVisualTestingTools(server: McpServer): void {
             }
 
             // Return both image content and URL
-            content.push({
-              type: "image" as const,
-              data: heatmapBase64,
-              mimeType: "image/png",
-            });
+            // The heatmap is 700KB+ of base64. Shipping it inline pushed the
+            // whole result past the host's ~150k cap, at which point the host
+            // substitutes a file pointer -- so the JSON above arrived as
+            // unparseable text and the view rendered nothing, while the image
+            // it was meant to show was the reason it broke.
+            //
+            // Small heatmaps still ride along, because a host with no view
+            // support should not lose the picture entirely. Anything larger is
+            // left to artifact_fetch, which is the channel built for it.
+            const inlineChars = heatmapBase64.length;
+            const inlineOk = inlineChars <= INLINE_IMAGE_BUDGET;
+            if (inlineOk) {
+              content.push({
+                type: "image" as const,
+                data: heatmapBase64,
+                mimeType: "image/png",
+              });
+            }
 
             // Add URL to the text response
             const firstBlock = content[0];
             if (firstBlock.type === "text") {
               const textContent = JSON.parse(firstBlock.text);
               textContent.heatmapUrl = publicUrl;
+              if (!inlineOk) {
+                textContent.inlineHeatmapOmitted =
+                  `Heatmap is ${(inlineChars / 1024).toFixed(0)}KB of base64, over the ${(INLINE_IMAGE_BUDGET / 1024).toFixed(0)}KB inline budget. Fetch it with artifact_fetch using heatmapFile, or open heatmapUrl.`;
+              }
+              // The filename, not just the URL: the widget sandbox cannot fetch
+              // that URL, so the view asks artifact_fetch for these bytes over
+              // the MCP connection instead.
+              textContent.heatmapFile = `${heatmapId}.png`;
               textContent.heatmapNote = "Show this heatmap image to the user. The red areas show where this persona's attention concentrates. Blue areas receive little attention.";
               content[0] = { type: "text" as const, text: JSON.stringify(textContent, null, 2) };
             }

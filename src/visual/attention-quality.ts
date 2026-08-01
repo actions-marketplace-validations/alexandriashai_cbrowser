@@ -558,6 +558,62 @@ export async function extractPageElementsForAttention(page: unknown): Promise<Ar
     });
 
     // Images (decorative) — viewport only
+    // Body content, prices and form fields.
+    //
+    // The extractor emitted only headings, links/buttons and images, which made
+    // ELEMENT_TYPE_WEIGHTS' `content`, `form`, `search`, `price` and `error`
+    // entries unreachable — the semantic layer had literally nothing to say
+    // about the text of a page. Visibly: a pricing page rendered heat on its
+    // heading and nav while every plan card, price and feature line sat dead,
+    // because none of them were extracted.
+    const priceRe = /(?:[$£€¥]\s?\d|\d+\s?(?:USD|EUR|GBP)|\/\s?(?:mo|month|year|yr)\b)/i;
+    const CONTENT_LIMIT = 120;
+    let contentSeen = 0;
+    document.querySelectorAll("p, li, td, th, dd, blockquote").forEach(el => {
+      if (contentSeen >= CONTENT_LIMIT) return;
+      const rect = (el as HTMLElement).getBoundingClientRect();
+      if (!inViewport(rect)) return;
+      // Skip wrappers: a <li> containing a link is represented by the link.
+      if (el.querySelector("a, button, input, p, li")) return;
+      const text = (el as HTMLElement).innerText?.trim() || "";
+      if (!text || text.length < 2) return;
+      contentSeen++;
+      elements.push({
+        selector: el.tagName.toLowerCase(),
+        text: text.slice(0, 200),
+        type: priceRe.test(text) ? "price" : "content",
+        x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+        isHeading: false,
+        isCTA: false,
+        isNav: !!(el.closest("nav") || el.closest('[role="navigation"]')),
+        isDecorative: false,
+        classList: (el as HTMLElement).className || "",
+        ...styleOf(el),
+        words: wordRects(el),
+      });
+    });
+
+    // Form fields — the `form` and `search` weights were equally unreachable.
+    document.querySelectorAll("input:not([type=submit]):not([type=hidden]), textarea, select").forEach(el => {
+      const rect = (el as HTMLElement).getBoundingClientRect();
+      if (!inViewport(rect)) return;
+      const input = el as HTMLInputElement;
+      const label = input.getAttribute("aria-label") || input.placeholder || input.name || "";
+      const isSearch = input.type === "search" || /search/i.test(label);
+      elements.push({
+        selector: el.tagName.toLowerCase(),
+        text: label.slice(0, 100),
+        type: isSearch ? "search" : "form",
+        x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+        isHeading: false,
+        isCTA: false,
+        isNav: false,
+        isDecorative: false,
+        classList: (el as HTMLElement).className || "",
+        ...styleOf(el),
+      });
+    });
+
     document.querySelectorAll("img, svg, video").forEach(el => {
       const rect = (el as HTMLElement).getBoundingClientRect();
       if (!inViewport(rect)) return;

@@ -80,7 +80,9 @@ const MIN_USEFUL_SHEET_BYTES = 12000;
  * same `_browserToken` that carries page continuity means a caller driving two
  * browsers gets two independent captures.
  */
-const sessions = new Map<string, { session: VideoCaptureSession; url?: string }>();
+const MCP_APP_MIME_LOCAL = "text/html;profile=mcp-app";
+
+const sessions = new Map<string, { session: VideoCaptureSession; url?: string; viewport?: { width: number; height: number } }>();
 
 /** Summary of a capture that has already stopped. */
 interface FinishedCapture {
@@ -108,6 +110,18 @@ function sessionKey(token?: string): string {
 }
 
 /** Exposed for tests and for `reset_browser`-style teardown. */
+/**
+ * Viewport of the capture currently recording, if any.
+ *
+ * Exported so the screenshot tool can match it. Returns undefined when nothing
+ * is recording, which is the common case and must stay a no-op.
+ */
+export function activeRecordingViewport(token?: string): { width: number; height: number } | undefined {
+  const entry = sessions.get(sessionKey(token));
+  if (!entry || entry.session.status().state !== "recording") return undefined;
+  return entry.viewport;
+}
+
 export function clearCaptureSessions(): void {
   sessions.clear();
   finished.clear();
@@ -332,6 +346,11 @@ export function buildCaptureStopPayload(
       : {}),
     ...(extra.contactSheetUrl ? { contact_sheet_url: extra.contactSheetUrl } : {}),
     ...(extra.playerUrl ? { player_url: extra.playerUrl } : {}),
+    // The manifest carried this and the player rendered it, but the MCP
+    // response never surfaced it — so a caller who asked for an overlay had no
+    // way to learn whether one ran, which persona it used, or whether the DOM
+    // was read. Silence read as "not applied" whether or not it was.
+    ...(manifest.attention_overlay ? { attention_overlay: manifest.attention_overlay } : {}),
     note:
       "Frames stay on disk — read them by path. Encoded artifacts are also published " +
       "to public HTTPS URLs in `artifact_urls`, so a GIF or video can be displayed " +
@@ -484,6 +503,18 @@ export async function startCapture(
     ...(args.out_dir !== undefined ? { outDir: resolve(args.out_dir) } : {}),
     // Overlay is resolved at stop, against the still-live page, so the DOM it
     // reads is the page as recorded rather than a reconstruction.
+    // Register the account's custom personas before the overlay resolves one.
+    // They live in the CMS, not on disk, so without this a persona created
+    // through the account is silently replaced by a generic profile and every
+    // number is attributed to a persona that never ran.
+    ...(args.attention_overlay ? await (async () => {
+      try {
+        const { loadAccountPersonas } = await import("../account-personas.js");
+        const { getSessionApiKey } = await import("./cognitive-tools.js");
+        await loadAccountPersonas(getSessionApiKey());
+      } catch { /* falls back to disk and built-ins */ }
+      return {};
+    })() : {}),
     ...(args.attention_overlay
       ? {
           saliencyOverlay: {
@@ -508,7 +539,31 @@ export async function startCapture(
   const paths = getPaths();
   const session = new VideoCaptureSession(page, engine, join(paths.videosDir, paths.sessionId));
   const status = await session.start(options);
-  sessions.set(key, { session, ...(args.url ? { url: args.url } : {}) });
+  // Recorded so screenshots taken mid-capture can be forced to the same size.
+  // A screenshot at a different viewport reflows the page, so the frame it
+  // returns is not the frame the recording contains -- two artifacts of the
+  // same moment that disagree, which is worse than having only one.
+  const recViewport = page.viewportSize();
+  sessions.set(key, {
+    session,
+    ...(args.url ? { url: args.url } : {}),
+    ...(recViewport ? { viewport: recViewport } : {}),
+  });
+
+  // An opening frame, returned inline. Without it the caller is blind until
+  // capture_stop: it has just been told recording started but has no idea what
+  // is on screen, so it cannot tell "the page loaded" from "the page is a 404"
+  // until the whole capture is spent. Cheap, and it anchors everything after.
+  // Routed through browser.screenshot rather than page.screenshot so it obeys
+  // the same compression budget every other screenshot does. A raw grab here was
+  // returning a full-size frame while the screenshot tool returned a compressed
+  // one, so the two disagreed on size within a single session. noResize because
+  // a capture is now running and the viewport is not the budget's to spend.
+  let openingFrame: string | undefined;
+  try {
+    const shotPath = await browser.screenshot(undefined, { compress: true, noResize: true });
+    openingFrame = (await import("node:fs")).readFileSync(shotPath).toString("base64");
+  } catch { /* a capture that started is still a success without the preview */ }
 
   return {
     success: true,
@@ -517,6 +572,8 @@ export async function startCapture(
     out_dir: status.outDir,
     capture_method: status.captureMethod,
     engine,
+    ...(recViewport ? { viewport: `${recViewport.width}x${recViewport.height}` } : {}),
+    ...(openingFrame ? { opening_frame: openingFrame, opening_frame_mime: "image/jpeg" } : {}),
     ...(elementNote ? { element_note: elementNote } : {}),
     note:
       "Capture is event-driven: a page that never repaints emits no frames, and still " +
@@ -531,7 +588,7 @@ export async function startCapture(
  */
 export async function stopCapture(
   token?: string,
-): Promise<{ payload: CaptureStopPayload; contactSheet?: string }> {
+): Promise<{ payload: CaptureStopPayload; contactSheet?: string; captureUiUri?: string }> {
   const key = sessionKey(token);
   const entry = sessions.get(key);
   if (!entry) {
@@ -583,8 +640,15 @@ export async function stopCapture(
   // rather than a URL that 404s — handing back a dead link is worse than
   // handing back only the disk path.
   const artifactUrls: Record<string, string> = {};
-  for (const [format, diskPath] of Object.entries(manifest.artifacts ?? {})) {
-    if (typeof diskPath !== "string" || !existsSync(diskPath)) continue;
+  for (const [format, artifactPath] of Object.entries(manifest.artifacts ?? {})) {
+    if (typeof artifactPath !== "string" || artifactPath.length === 0) continue;
+    // The engine stores `relative(outDir, outPath)` — a bare filename. Calling
+    // existsSync on it resolved against the process CWD, always missed, and the
+    // loop skipped every artifact, so artifact_urls came back absent while the
+    // note in the same payload advertised it. contact_sheet_url worked only
+    // because that path was already absolute.
+    const diskPath = isAbsolute(artifactPath) ? artifactPath : join(status.outDir, artifactPath);
+    if (!existsSync(diskPath)) continue;
     try {
       const written = writeArtifact(readFileSync(diskPath), `${manifest.slug}.${format}`);
       if (written) artifactUrls[format] = written.url;
@@ -613,6 +677,7 @@ export async function stopCapture(
       frames: manifest.frames.length,
       actualFps: manifest.actual_fps,
       artifactUrls,
+      ...(manifest.interactions?.length ? { interactions: manifest.interactions } : {}),
       ...(contactSheetUrl ? { contactSheetUrl } : {}),
       ...(overlay
         ? {
@@ -621,12 +686,61 @@ export async function stopCapture(
               usedDom: overlay.used_dom,
               domElements: overlay.dom_elements,
             },
+            // The player was already built to render these; nothing was passing
+            // them, so every capture rendered an empty timeline.
+            ...(overlay.moments
+              ? {
+                  moments: overlay.moments.map((m) => ({
+                    frameIndex: m.frame_index,
+                    tMs: m.t_ms,
+                    ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+                    topElements: m.top_elements,
+                  })),
+                }
+              : {}),
+            ...(overlay.summary ? { summary: overlay.summary } : {}),
           }
         : {}),
     });
     const written = writeArtifact(Buffer.from(html, "utf8"), `${manifest.slug}-player.html`);
     if (written) playerUrl = written.url;
   } catch { /* the recording stands without its player */ }
+
+  // Inline player for MCP Apps. Separate build from the hosted page above,
+  // because that one links its artifacts by URL and this one cannot: the widget
+  // sandbox allowlists origins that do not include cbrowser.ai, so every frame
+  // it shows has to be embedded as a data: URI under a byte budget.
+  let captureUiUri: string | undefined;
+  try {
+    const { buildInlineCapturePlayer } = await import("../../recording/inline-player.js");
+    const { publishCaptureUi } = await import("../ui-resources.js");
+    const overlay = manifest.attention_overlay;
+    const framesDir = overlay?.applied ? "frames-attention" : "frames";
+    const inline = await buildInlineCapturePlayer({
+      slug: manifest.slug,
+      ...(entry?.url ? { targetUrl: entry.url } : {}),
+      durationMs: manifest.duration_ms,
+      actualFps: manifest.actual_fps,
+      framePaths: manifest.frames.map((_f, i) =>
+        join(status.outDir, framesDir, `${String(i).padStart(4, "0")}.jpg`)),
+      frameTimesMs: manifest.frames.map((f) => f.t_ms),
+      ...(manifest.interactions?.length ? { interactions: manifest.interactions } : {}),
+      ...(overlay?.moments
+        ? { moments: overlay.moments.map((m) => ({
+            frameIndex: m.frame_index, tMs: m.t_ms,
+            ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+            topElements: (m.top_elements ?? []) as Array<{ text: string; score: number; type: string }>,
+          })) }
+        : {}),
+      ...(overlay?.summary ? { summary: overlay.summary } : {}),
+      artifactUrls,
+      ...(playerUrl ? { playerUrl } : {}),
+      ...(overlay
+        ? { overlay: { quantity: overlay.quantity, domElements: overlay.dom_elements } }
+        : {}),
+    });
+    captureUiUri = publishCaptureUi(manifest.slug, inline);
+  } catch { /* inline panel is additive; the recording and hosted player stand */ }
 
   // Surface the recording in the account's Visual Reports gallery, the same way
   // heatmaps and empathy screenshots appear. Prefer the GIF: it plays inline in
@@ -687,7 +801,7 @@ export async function stopCapture(
     stoppedAt: new Date().toISOString(),
   });
   sessions.delete(key);
-  return { payload, ...(contactSheet ? { contactSheet } : {}) };
+  return { payload, ...(contactSheet ? { contactSheet } : {}), ...(captureUiUri ? { captureUiUri } : {}) };
 }
 
 /**
@@ -912,12 +1026,20 @@ export function registerCaptureTools(
     try {
       const { browser, token } = await resolveBrowser(_browserToken);
       const payload = await startCapture(browser, args, token);
+      // The opening frame is split out of the JSON and emitted as a real image
+      // block. Left in the payload it would be a multi-KB base64 string the
+      // caller can read but not SEE, which is the opposite of the point.
+      const { opening_frame: frame, opening_frame_mime: mime, ...rest } = payload as
+        Record<string, unknown> & { opening_frame?: string; opening_frame_mime?: string };
       return {
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ...payload, ...(token ? { _browserToken: token } : {}) }, null, 2),
+            text: JSON.stringify({ ...rest, ...(token ? { _browserToken: token } : {}) }, null, 2),
           },
+          ...(frame
+            ? [{ type: "image" as const, data: frame, mimeType: mime ?? "image/jpeg" }]
+            : []),
         ],
       };
     } catch (error) {
@@ -939,7 +1061,10 @@ export function registerCaptureTools(
   }, async ({ _browserToken }) => {
     try {
       const { token } = await resolveBrowser(_browserToken);
-      const { payload, contactSheet } = await stopCapture(token);
+      const { payload, contactSheet, captureUiUri } = await stopCapture(token);
+      // No embedded HTML here either: it would land in the model's context as
+      // a multi-hundred-KB string and still not render. The per-capture view is
+      // referenced by URI and fetched by the host; only the pointer travels.
       return {
         content: enforceResponseBudget(
           buildContentWithScreenshots(
@@ -947,6 +1072,7 @@ export function registerCaptureTools(
             contactSheet,
           ),
         ),
+        ...(captureUiUri ? { _meta: { ui: { resourceUri: captureUiUri } } } : {}),
       };
     } catch (error) {
       return errorContent(error);

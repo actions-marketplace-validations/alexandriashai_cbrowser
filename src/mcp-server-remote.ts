@@ -35,6 +35,7 @@
  *   RATE_LIMIT_WHITELIST - Comma-separated IPs to skip rate limiting
  */
 
+import { registerUiResources } from "./mcp-tools/ui-resources.js";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
@@ -67,7 +68,10 @@ let browser: CBrowser | null = null;
 const stealthConfig: Partial<StealthConfig> | null = null;
 
 // Cached tool manifest for unauthenticated tools/list requests (populated at startup)
-let cachedToolManifest: Array<{ name: string; description?: string; inputSchema?: unknown }> | null = null;
+let cachedToolManifest: Array<{
+  name: string; description?: string; inputSchema?: unknown;
+  outputSchema?: unknown; _meta?: unknown;
+}> | null = null;
 
 // ============================================================================
 // Tool-Level Session Tokens (v18.33.0)
@@ -1211,6 +1215,8 @@ SELF-HELP:
     })
   );
 
+  registerUiResources(server);
+
   // Register resources
   server.resource(
     "docs://tools-overview",
@@ -2104,7 +2110,16 @@ ${VERSION}
                 result: {
                   protocolVersion: "2025-03-26",
                   serverInfo: { name: "cbrowser", version: VERSION },
-                  capabilities: { tools: { listChanged: false } },
+                  // Must mirror the authenticated server's capabilities above.
+                  // This pre-auth shortcut advertised tools only, so anything
+                  // reading capabilities before authenticating concluded the
+                  // server had no resources or prompts -- which is how the MCP
+                  // Apps ui:// resource looked unreachable when it was not.
+                  capabilities: {
+                    tools: { listChanged: true },
+                    prompts: {},
+                    resources: {},
+                  },
                 },
               };
               const sseData = `data: ${JSON.stringify(response)}\n\n`;
@@ -2382,6 +2397,13 @@ ${VERSION}
           name: tool.name,
           description: tool.description || "",
           inputSchema: tool.inputSchema || { type: "object" as const },
+          // _meta and outputSchema carried through, not dropped. _meta.ui
+          // .resourceUri is how a host learns a tool has a view at all, and a
+          // manifest that omits it describes a server whose widgets do not
+          // exist. outputSchema is what permits structuredContent, which is
+          // what those views hydrate from.
+          ...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+          ...((tool as { _meta?: unknown })._meta ? { _meta: (tool as { _meta?: unknown })._meta } : {}),
         }));
         const malformed = cachedToolManifest.filter(
           (t) => !t.inputSchema || typeof t.inputSchema !== "object"

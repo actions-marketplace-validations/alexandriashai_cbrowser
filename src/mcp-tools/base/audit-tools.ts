@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { barrierWeightFor, weightedSeverity, weightKeyFor } from "../../visual/perceptual-transport.js";
 import { randomBytes } from "crypto";
 import { htmlUiResource, attachUiResource, uiResourcesEnabled, type ToolContentBlock } from "../../mcp-ui-resources.js";
 import { writeArtifact } from "../../artifact-store.js";
@@ -33,10 +34,10 @@ import { homedir } from "os";
 function writeAuditScreenshot(
   base64: string | undefined,
   persona: string,
-): { path?: string; url?: string } {
+): { path?: string; url?: string; file?: string } {
   if (!base64) return {};
   const safe = String(persona || "persona").toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-  const out: { path?: string; url?: string } = {};
+  const out: { path?: string; url?: string; file?: string } = {};
 
   // Local copy, as before — the CLI and anything on this box reads this.
   try {
@@ -55,7 +56,9 @@ function writeAuditScreenshot(
   try {
     const nonce = randomBytes(6).toString("hex");
     const written = writeArtifact(Buffer.from(base64, "base64"), `empathy-${safe}-${nonce}.png`);
-    if (written) out.url = written.url;
+    // The filename too, not just the URL: the widget sandbox cannot fetch that
+    // URL and asks artifact_fetch for the bytes by name instead.
+    if (written) { out.url = written.url; out.file = written.filename; }
   } catch { /* overlay is optional; the audit is not */ }
 
   return out;
@@ -140,314 +143,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
     }
   );
 
-  server.registerTool("empathy_audit", {
-    title: "Empathy Accessibility Audit",
-    description: "Simulate how real users experience a site. Accepts ANY persona — disability personas get specialized barrier detection, non-disability personas get general UX analysis with a flag. Tests ONE persona per call. Disability: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia. General: first-timer, power-user, mobile-user, elderly-user, impatient-user, or any custom persona.",
-    inputSchema: {
-      url: z.string().url().describe("URL to audit"),
-      goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
-      disabilities: z.array(z.string()).optional().describe("Persona to test. Accepts disability names OR any cognitive persona (first-timer, power-user, etc). Non-disability personas are flagged. Pass ONE for reliable results."),
-      wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
-      maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
-      maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
-      // Base64 page screenshots are large enough to blow an MCP client's context
-      // on a single call — every empathy_audit in the 18.73.3 test pass had to be
-      // read off disk instead. Off by default; images go to disk and their paths
-      // are returned. (2026-07-29)
-      includeScreenshots: z.boolean().optional().default(false).describe("Inline base64 page screenshots in the response. Off by default because they are large enough to overflow an MCP client's context; when off, screenshots are written to disk and screenshotPath is returned instead."),
-      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to score: 'viewport' (first impression, above-the-fold only — default) or 'full_page' (scroll through entire page, all barriers). Use 'viewport' for landing page optimization; 'full_page' for WCAG compliance audits."),
-      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15', 'Pixel 7'. Essential for mobile WCAG audits — touch targets, viewport sizing, and responsive barriers differ significantly on mobile."),
-      uiResource: z.boolean().optional().default(true).describe("Return an interactive HTML report as an MCP UI resource alongside the JSON. Hosts that support MCP Apps render it inline; others ignore it. Set false for scripted callers that diff whole responses."),
-    },
-    annotations: {
-      title: "Empathy Accessibility Audit",
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: false,
-      openWorldHint: true,
-    },
-  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope, device, includeScreenshots, uiResource }) => {
-      try {
-        // Auto-limit to 1 persona to avoid MCP client timeout on Claude.ai (~60s limit)
-        const allPersonas = listAccessibilityPersonas();
-        const requestedList = disabilities || allPersonas;
-        const wasLimited = requestedList.length > 1;
-        const singlePersona = [requestedList[0]];
-
-        const result = await runEmpathyAudit(url, {
-          goal,
-          disabilities: singlePersona,
-          wcagLevel,
-          maxSteps,
-          maxTime,
-          headless: true,
-          scope: scope || "viewport",
-          device: device || undefined,
-        });
-        // Build response with guidance for additional personas
-        const testedPersona = singlePersona[0];
-        const remainingPersonas = allPersonas.filter(p => p !== testedPersona);
-
-        const response: Record<string, unknown> = {
-          url: result.url,
-          goal: result.goal,
-          testedPersona,
-          overallScore: result.overallScore,
-          scope: scope || "viewport",
-          device: device || "desktop",
-          scopeNote: scope === "full_page"
-            ? "Full-page audit: scrolled through entire page before barrier detection. Scores reflect all content including below-the-fold."
-            : "Viewport-only audit: scored first impression (above-the-fold). Use scope='full_page' for complete barrier inventory, or cognitive_journey for path-dependent experience.",
-          resultsSummary: result.results.map((r) => {
-            const uniqueTypes = new Set(r.barriers.map(b => b.type));
-            return {
-              persona: r.persona,
-              disabilityType: r.disabilityType,
-              goalAchieved: r.goalAchieved,
-              empathyScore: r.empathyScore,
-              // v18.22.0: Added score context for transparency
-              // Whitelist projection: anything added to scoreContext upstream is
-              // invisible to the caller unless named here. The blend breakdown
-              // below is what lets the deductions reconcile to a score the
-              // caller can actually see. (2026-07-28)
-              scoreContext: r.scoreContext ? {
-                explanation: r.scoreContext.explanation,
-                deductionsByType: r.scoreContext.deductionsByType,
-                totalBarrierDeduction: (r.scoreContext as any).totalBarrierDeduction,
-                frictionDeduction: r.scoreContext.frictionDeduction,
-                goalDeduction: r.scoreContext.goalDeduction,
-                cognitiveOverloadPenalty: (r.scoreContext as any).cognitiveOverloadPenalty,
-                appliedBarrierWeights: (r.scoreContext as any).appliedBarrierWeights,
-                explainsScore: (r.scoreContext as any).explainsScore,
-                barrierOnlyScore: (r.scoreContext as any).barrierOnlyScore,
-                perceptualScore: (r.scoreContext as any).perceptualScore,
-                blendWeights: (r.scoreContext as any).blendWeights,
-                finalScore: (r.scoreContext as any).finalScore,
-                // A partial score must be distinguishable from a measured one.
-                // Set when the navigation simulation threw: the goal traversal
-                // did not run, so no goal deduction was charged and the score
-                // reflects barriers only. Without these two names the whitelist
-                // above would drop the flag and the score would read as clean.
-                degraded: (r.scoreContext as any).degraded,
-                degradedReason: (r.scoreContext as any).degradedReason,
-              } : undefined,
-              barrierTypeCount: uniqueTypes.size,
-              barrierTypes: Array.from(uniqueTypes),
-              affectedElements: r.barriers.length,
-              wcagViolationCount: r.wcagViolations.length,
-              // v18.26.0: Perceptual transport metrics (Wasserstein-based)
-              perceptualTransport: (r as any).perceptualTransport || undefined,
-              empathyScoreBarrierOnly: (r as any).empathyScoreBarrierOnly || undefined,
-              // v18.27.0: Cognitive load estimation (optimal transport)
-              cognitiveLoad: (r as any).cognitiveLoad || undefined,
-              // Names the three different "cognitive load" numbers in this
-              // payload and what each measures. Same whitelist caveat as
-              // scoreContext above: set upstream, invisible unless named here.
-              cognitiveLoadReadings: (r as any).cognitiveLoadReadings || undefined,
-              // v18.28.0: Attention transport analysis (W₂ saliency)
-              attentionAnalysis: (r as any).attentionAnalysis || undefined,
-              // v18.29.0: Journey validation — evidence, path, forensics
-              journeyValidation: (r as any).journeyValidation || undefined,
-              // v18.35.0: Non-disability persona flag
-              isDisabilityPersona: (r as any).isDisabilityPersona !== false,
-              personaNote: (r as any).personaNote || undefined,
-            };
-          }),
-          allWcagViolations: result.allWcagViolations,
-          topBarriers: result.topBarriers.slice(0, 5),
-          // A barrier's affectedPersonas names the personas it hits HARDEST. It
-          // is not an exclusion list, which is why a persona absent from it can
-          // still take a deduction — susceptibility is applied as a weight, not
-          // a gate (see scoreContext.appliedBarrierWeights). Stating it here
-          // because the pairing otherwise reads as a contradiction: a
-          // touch_target barrier listing motor and elderly personas, scored
-          // against cognitive-adhd. (2026-07-29)
-          barrierFieldNotes: {
-            affectedPersonas: "Exemplars — the personas this barrier affects most. NOT an exclusion list; every tested persona is scored against every barrier, weighted by susceptibility.",
-            severity: "On topBarriers entries this is the group maximum across all elements of that type (severityIsGroupMax), not one element's severity.",
-          },
-          topRemediation: result.combinedRemediation.slice(0, 5),
-          duration: result.duration,
-          // Errors caught during the run, promoted out of the HTML report. The
-          // SVG className crash changed goalAchieved and the goal deduction while
-          // being visible ONLY in the HTML, so the JSON reported a confident
-          // wrong number. Anything that moves a scored field is surfaced here.
-          errors: result.results.flatMap((r) =>
-            (r.frictionPoints ?? [])
-              .filter((fp: any) => fp.type === "error")
-              .map((fp: any) => ({ persona: r.persona, message: fp.description })),
-          ),
-          // v18.60.0: Include per-result screenshots and element rects for WCAG overlay
-          pageScreenshots: result.results?.map((r: any) => ({
-            persona: r.persona,
-            ...(includeScreenshots
-              ? { screenshot: r.pageScreenshot }
-              : (() => {
-                  const shot = writeAuditScreenshot(r.pageScreenshot, r.persona);
-                  return {
-                    screenshotPath: shot.path,
-                    screenshotUrl: shot.url,
-                    screenshotNote: "Pass includeScreenshots:true to inline the base64 instead.",
-                  };
-                })()),
-            viewportSize: r.viewportSize,
-            // Rects come from getBoundingClientRect with no scroll compensation,
-            // so they are VIEWPORT coordinates — which is correct here, because
-            // the screenshot above is captured with fullPage: false and these are
-            // meant to overlay it. Converting them to document coordinates would
-            // break that alignment.
-            //
-            // The real hazard is scope: "full_page", where the audit scrolls and
-            // rects captured at different offsets land in one list against a
-            // single viewport image; anything above the captured viewport then
-            // carries a negative y and would render off-canvas. Say which space
-            // these are in and flag the ones that fall outside the image rather
-            // than emitting silent negatives. (2026-07-28)
-            // Rects are now DOCUMENT coordinates (scroll offset added at capture),
-            // so they are stable across the scrolling that scope:"full_page" does.
-            // They were previously labelled "viewport" while holding values from
-            // several scroll positions at once — y:-274 and y:3951 in one list.
-            coordinateSpace: "document",
-            // Height of the captured image in document space. A viewport capture
-            // covers only the scroll position it was taken at; a full_page capture
-            // covers the document. Without this the bounds test compared document
-            // coordinates against a viewport height and flagged EVERY rect,
-            // including ones plainly inside the image. (2026-07-29)
-            captureHeight: (scope === "full_page" ? (r.documentHeight ?? undefined) : r.viewportSize?.height),
-            barrierRects: r.barriers?.filter((b: any) => b.rect).map((b: any) => {
-              const vp = r.viewportSize;
-              const bound = scope === "full_page" ? (r.documentHeight ?? Infinity) : (vp?.height ?? Infinity);
-              const outside = !!b.rect && (
-                b.rect.y + b.rect.height < 0 || b.rect.x + b.rect.width < 0 ||
-                b.rect.y > bound || (!!vp && b.rect.x > vp.width)
-              );
-              return {
-                type: b.type, severity: b.severity, element: b.element,
-                description: b.description, rect: b.rect,
-                wcag: b.wcagCriteria,
-                ...(outside ? { outsideScreenshot: true } : {}),
-              };
-            }),
-          // Keep entries that carry EITHER the inline image or a path to it.
-          // Filtering on `screenshot` alone silently dropped every entry once
-          // the default stopped inlining base64, taking the barrierRects with
-          // them. (2026-07-29)
-          })).filter((s: any) => s.screenshot || s.screenshotPath),
-        };
-
-        // Add guidance if we limited the request
-        if (wasLimited) {
-          response.note = `Limited to 1 persona to avoid timeout. For full coverage, call again with: ${remainingPersonas.slice(0, 3).join(", ")}${remainingPersonas.length > 3 ? `, and ${remainingPersonas.length - 3} more` : ""}`;
-          response.remainingPersonas = remainingPersonas;
-        }
-
-        // Auto-save handled by tier-gate wrapper.
-        //
-        // The UI resource is APPENDED to the text block, never substituted for
-        // it: content[0] stays the same JSON every CLI and CI caller already
-        // parses. `generateEmpathyAuditHtmlReport` is the report the --html flag
-        // has always produced — self-contained, no remote refs — so this is a
-        // transport seam rather than new UI. If it cannot be produced safely,
-        // htmlUiResource returns null and the response is exactly as before.
-        // (2026-07-29)
-        const content: ToolContentBlock[] = [
-          { type: "text", text: JSON.stringify(response, null, 2) },
-        ];
-        if (uiResourcesEnabled(uiResource)) {
-          // The overlay goes FIRST. It is the thing that makes a score
-          // falsifiable by eye — barriers drawn on the page at their real
-          // positions — and the text report is the detail behind it.
-          try {
-            const { buildBarrierOverlayHtml } = await import("../../visual/barrier-overlay-html.js");
-            const shots = (response.pageScreenshots ?? []) as Array<Record<string, any>>;
-            for (const shot of shots) {
-              const overlayHtml = buildBarrierOverlayHtml({
-                imageUrl: shot.screenshotUrl,
-                imageWidth: shot.viewportSize?.width,
-                captureHeight: shot.captureHeight ?? shot.viewportSize?.height,
-                barrierRects: shot.barrierRects ?? [],
-                persona: String(shot.persona ?? testedPersona),
-                pageUrl: String(result.url),
-                score: result.overallScore,
-              });
-              attachUiResource(
-                content,
-                htmlUiResource(
-                  `ui://cbrowser/barrier-overlay/${encodeURIComponent(String(shot.persona ?? testedPersona))}`,
-                  overlayHtml ?? undefined,
-                  { frameSize: ["100%", "820px"] },
-                ),
-              );
-            }
-          } catch { /* overlay is additive; never fail the audit for it */ }
-
-          let reportHtml: string | undefined;
-          try {
-            const { generateEmpathyAuditHtmlReport } = await import("../../analysis/accessibility-empathy.js");
-            reportHtml = generateEmpathyAuditHtmlReport(result);
-          } catch {
-            reportHtml = undefined;
-          }
-          attachUiResource(
-            content,
-            htmlUiResource(
-              `ui://cbrowser/empathy-audit/${encodeURIComponent(testedPersona)}`,
-              reportHtml,
-              { frameSize: ["100%", "760px"] },
-            ),
-          );
-        }
-        return { content };
-      } catch (error) {
-        // Categorize the error for better user feedback
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        const errorStack = error instanceof Error ? error.stack : undefined;
-
-        // Determine error type for actionable feedback
-        let errorType = "unknown";
-        let suggestion = "Please try again or contact support if the issue persists.";
-
-        if (errorMessage.includes("timeout") || errorMessage.includes("Timeout")) {
-          errorType = "timeout";
-          suggestion = "The page took too long to load. Try increasing maxTime or testing a faster page.";
-        } else if (errorMessage.includes("net::") || errorMessage.includes("DNS") || errorMessage.includes("ERR_")) {
-          errorType = "network";
-          suggestion = "Unable to reach the URL. Check the URL is valid and accessible.";
-        } else if (errorMessage.includes("blocked") || errorMessage.includes("403") || errorMessage.includes("captcha")) {
-          errorType = "bot-detection";
-          suggestion = "The site may be blocking automation. Try with a different URL.";
-        } else if (errorMessage.includes("chromium") || errorMessage.includes("browser")) {
-          errorType = "browser";
-          suggestion = "Browser automation error. The server may need to restart.";
-        }
-
-        // Log the full error for debugging
-        console.error(`[empathy_audit] Error: ${errorMessage}`);
-        if (errorStack) {
-          console.error(`[empathy_audit] Stack: ${errorStack}`);
-        }
-
-        // Return a structured error response
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: true,
-                errorType,
-                message: errorMessage,
-                suggestion,
-                url,
-                goal,
-                disabilities: disabilities || "all",
-              }, null, 2),
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-  );
+  registerEmpathyAuditTool(server);
 
   server.registerTool("webmcp_ready_audit", {
     title: "WebMCP Readiness Audit",
@@ -1362,4 +1058,487 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       };
     }
   });
+}
+
+/**
+ * The canonical empathy_audit. Exported on its own so the stdio server can
+ * register it too: mcp-server.ts carried a second, older implementation of
+ * the same tool name that returned a thin summary with no barrier rects, no
+ * persona weighting and no UI resource. Two implementations of one tool is a
+ * bug generator -- fixes landed on the remote one for weeks while the local
+ * one silently served stale shapes -- and registerAuditTools cannot simply be
+ * called from there because three of its other tools collide with the stdio
+ * server's own. (2026-07-31)
+ */
+export function registerEmpathyAuditTool(server: McpServer): void {
+  server.registerTool("empathy_audit", {
+    // Barriers ranked by severity is the artifact a product team acts on, and
+    // nested JSON buries the ordering that makes it actionable.
+    _meta: { ui: { resourceUri: "ui://cbrowser/empathy" } },
+    title: "Empathy Accessibility Audit",
+    description: "Simulate how real users experience a site. Accepts ANY persona — disability personas get specialized barrier detection, non-disability personas get general UX analysis with a flag. Tests ONE persona per call. Disability: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia. General: first-timer, power-user, mobile-user, elderly-user, impatient-user, or any custom persona.",
+    inputSchema: {
+      url: z.string().url().describe("URL to audit"),
+      goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
+      disabilities: z.array(z.string()).optional().describe("Persona to test. Accepts disability names OR any cognitive persona (first-timer, power-user, etc). Non-disability personas are flagged. Pass ONE for reliable results."),
+      wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
+      maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
+      maxTime: z.number().optional().default(20).describe("Max time per persona in seconds"),
+      // Base64 page screenshots are large enough to blow an MCP client's context
+      // on a single call — every empathy_audit in the 18.73.3 test pass had to be
+      // read off disk instead. Off by default; images go to disk and their paths
+      // are returned. (2026-07-29)
+      includeScreenshots: z.boolean().optional().default(false).describe("Inline base64 page screenshots in the response. Off by default because they are large enough to overflow an MCP client's context; when off, screenshots are written to disk and screenshotPath is returned instead."),
+      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to score: 'viewport' (first impression, above-the-fold only — default) or 'full_page' (scroll through entire page, all barriers). Use 'viewport' for landing page optimization; 'full_page' for WCAG compliance audits."),
+      device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device like 'iPhone 15', 'Pixel 7'. Essential for mobile WCAG audits — touch targets, viewport sizing, and responsive barriers differ significantly on mobile."),
+      uiResource: z.boolean().optional().default(true).describe("Return an interactive HTML report as an MCP UI resource alongside the JSON. Hosts that support MCP Apps render it inline; others ignore it. Set false for scripted callers that diff whole responses."),
+    },
+    annotations: {
+      title: "Empathy Accessibility Audit",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
+    },
+  }, async ({ url, goal, disabilities, wcagLevel, maxSteps, maxTime, scope, device, includeScreenshots, uiResource }) => {
+      try {
+        // Auto-limit to 1 persona to avoid MCP client timeout on Claude.ai (~60s limit)
+        const allPersonas = listAccessibilityPersonas();
+        const requestedList = disabilities || allPersonas;
+        const wasLimited = requestedList.length > 1;
+        const singlePersona = [requestedList[0]];
+
+        const result = await runEmpathyAudit(url, {
+          goal,
+          disabilities: singlePersona,
+          wcagLevel,
+          maxSteps,
+          maxTime,
+          headless: true,
+          scope: scope || "viewport",
+          device: device || undefined,
+        });
+        // Build response with guidance for additional personas
+        const testedPersona = singlePersona[0];
+        const remainingPersonas = allPersonas.filter(p => p !== testedPersona);
+
+        // The findings shown, selected once so the overlay and the list agree.
+        // Both the numbered boxes on the map and the numbered entries in the
+        // list index into this array, so box 3 is finding 3 by construction
+        // rather than by two pieces of code happening to sort the same way.
+        const chosenBarriers = (() => {
+          const top = result.topBarriers.slice(0, 5);
+          const covered = new Set(top.flatMap((b) => b.wcagCriteria ?? []));
+          const rescued: typeof top = [];
+          for (const b of result.topBarriers.slice(5)) {
+            const missing = (b.wcagCriteria ?? []).filter((c) => !covered.has(c));
+            if (missing.length === 0) continue;
+            missing.forEach((c) => covered.add(c));
+            rescued.push(b);
+          }
+          // Numbered in the order they are DISPLAYED (worst-first by the
+          // persona-weighted grade, which is how the widget sorts them), so
+          // the numbers on the map read 1,2,3 down the list instead of
+          // whatever order the analyzer happened to emit.
+          const rank = (b: any) => {
+            const { weight } = barrierWeightFor(
+              testedPersona, String(b.type ?? ""), b.wcagCriteria);
+            const { severity } = weightedSeverity(String(b.severity ?? "minor"), weight);
+            const order: Record<string, number> = {
+              critical: 0, blocker: 0, high: 1, major: 1, serious: 1,
+              medium: 2, moderate: 2, low: 3, minor: 3, info: 4, notice: 4 };
+            return order[String(severity).toLowerCase()] ?? 9;
+          };
+          return [...top, ...rescued].sort((a, b) => rank(a) - rank(b));
+        })();
+        // Group keys in list order; a rect's key looked up here gives its
+        // finding number.
+        const findingKeys = chosenBarriers.map(
+          (b) => `${b.type}|${weightKeyFor(String(b.type ?? ""), b.wcagCriteria) ?? ""}`);
+
+        const response: Record<string, unknown> = {
+          url: result.url,
+          goal: result.goal,
+          testedPersona,
+          overallScore: result.overallScore,
+          scope: scope || "viewport",
+          device: device || "desktop",
+          scopeNote: scope === "full_page"
+            ? "Full-page audit: scrolled through entire page before barrier detection. Scores reflect all content including below-the-fold."
+            : "Viewport-only audit: scored first impression (above-the-fold). Use scope='full_page' for complete barrier inventory, or cognitive_journey for path-dependent experience.",
+          resultsSummary: result.results.map((r) => {
+            const uniqueTypes = new Set(r.barriers.map(b => b.type));
+            return {
+              persona: r.persona,
+              disabilityType: r.disabilityType,
+              goalAchieved: r.goalAchieved,
+              empathyScore: r.empathyScore,
+              // v18.22.0: Added score context for transparency
+              // Whitelist projection: anything added to scoreContext upstream is
+              // invisible to the caller unless named here. The blend breakdown
+              // below is what lets the deductions reconcile to a score the
+              // caller can actually see. (2026-07-28)
+              scoreContext: r.scoreContext ? {
+                explanation: r.scoreContext.explanation,
+                deductionsByType: r.scoreContext.deductionsByType,
+                totalBarrierDeduction: (r.scoreContext as any).totalBarrierDeduction,
+                frictionDeduction: r.scoreContext.frictionDeduction,
+                goalDeduction: r.scoreContext.goalDeduction,
+                cognitiveOverloadPenalty: (r.scoreContext as any).cognitiveOverloadPenalty,
+                appliedBarrierWeights: (r.scoreContext as any).appliedBarrierWeights,
+                explainsScore: (r.scoreContext as any).explainsScore,
+                barrierOnlyScore: (r.scoreContext as any).barrierOnlyScore,
+                perceptualScore: (r.scoreContext as any).perceptualScore,
+                blendWeights: (r.scoreContext as any).blendWeights,
+                finalScore: (r.scoreContext as any).finalScore,
+                // A partial score must be distinguishable from a measured one.
+                // Set when the navigation simulation threw: the goal traversal
+                // did not run, so no goal deduction was charged and the score
+                // reflects barriers only. Without these two names the whitelist
+                // above would drop the flag and the score would read as clean.
+                degraded: (r.scoreContext as any).degraded,
+                degradedReason: (r.scoreContext as any).degradedReason,
+              } : undefined,
+              barrierTypeCount: uniqueTypes.size,
+              barrierTypes: Array.from(uniqueTypes),
+              affectedElements: r.barriers.length,
+              wcagViolationCount: r.wcagViolations.length,
+              // v18.26.0: Perceptual transport metrics (Wasserstein-based)
+              perceptualTransport: (r as any).perceptualTransport || undefined,
+              empathyScoreBarrierOnly: (r as any).empathyScoreBarrierOnly || undefined,
+              // v18.27.0: Cognitive load estimation (optimal transport)
+              cognitiveLoad: (r as any).cognitiveLoad || undefined,
+              // Names the three different "cognitive load" numbers in this
+              // payload and what each measures. Same whitelist caveat as
+              // scoreContext above: set upstream, invisible unless named here.
+              cognitiveLoadReadings: (r as any).cognitiveLoadReadings || undefined,
+              // v18.28.0: Attention transport analysis (W₂ saliency)
+              attentionAnalysis: (r as any).attentionAnalysis || undefined,
+              // Same metric names as the attention_analysis tool, different
+              // implementation, and the distributions do not overlap --
+              // measured on one page: alignment 0.884 here against 0.389-0.616
+              // there, concentration 0.292 against 0.65-0.90, transportCost
+              // 0.460 against 0.756-1.010. Comparing a number from one against
+              // a number from the other is meaningless, and nothing said so.
+              // Corrected: this is the SAME analyzeAttention implementation the
+              // attention_analysis tool calls, not a second one. The earlier
+              // note claimed otherwise, which was wrong -- the divergence comes
+              // from parameters, a 16px grid here against the tool's finer
+              // default and a viewport rather than full-page capture.
+              attentionAnalysisNote: (r as any).attentionAnalysis
+                ? "Same analyzeAttention implementation the attention_analysis tool uses, run here on a 16px grid over the viewport rather than the tool's finer default — so the values are not comparable across the two and only entropy, concentration and transportCost are published, because those are the three that feed this audit's perceptual score. Call attention_analysis directly for attention metrics."
+                : undefined,
+              // v18.29.0: Journey validation — evidence, path, forensics
+              journeyValidation: (r as any).journeyValidation || undefined,
+              // v18.35.0: Non-disability persona flag
+              isDisabilityPersona: (r as any).isDisabilityPersona !== false,
+              personaNote: (r as any).personaNote || undefined,
+              // Media this page cannot decide about. Not barriers and not
+              // scored: a third-party embed keeps its caption and description
+              // tracks inside a cross-origin iframe, so the only honest report
+              // is that the question is open and where to go to close it.
+              // Previously these were asserted as missing captions.
+              unverifiableMedia: (r as any).unverifiableMedia || undefined,
+            };
+          }),
+          allWcagViolations: result.allWcagViolations,
+          // Top five, PLUS one barrier for every WCAG criterion the top five
+          // would otherwise drop.
+          //
+          // A flat slice made the audit unusable for compliance: 1.1.1 and
+          // 1.2.2 appeared in allWcagViolations while no barrier, remediation
+          // or rect mentioned them, so fixing everything listed still left two
+          // violations with nothing saying what they were. The criteria are
+          // reported either way, so the slice was hiding the explanation while
+          // keeping the accusation.
+          topBarriers: (() => {
+            const chosen = chosenBarriers;
+            // Severity as this persona experiences it, alongside the base.
+            // The base is what maps to WCAG conformance -- a criterion is not
+            // more or less violated depending on who reads it -- so both ship
+            // and the weight that separates them ships with them.
+            return chosen.map((b, i) => {
+              const { weight, key, defaulted } = barrierWeightFor(
+                testedPersona, String(b.type ?? ""), b.wcagCriteria);
+              const { severity, shifted } = weightedSeverity(String(b.severity ?? "minor"), weight);
+              return {
+                ...b,
+                // Same number the overlay draws on the matching boxes.
+                finding: i + 1,
+                severityForPersona: severity,
+                personaWeight: Math.round(weight * 100) / 100,
+                personaWeightKey: key,
+                // An unmeasured 1.0 and a measured 1.0 mean different things.
+                // Saying which prevents a default from reading as a finding.
+                personaWeightIsDefault: defaulted,
+                ...(shifted !== 0
+                  ? { severityShiftedBy: shifted > 0 ? `+${shifted}` : String(shifted) }
+                  : {}),
+              };
+            });
+          })(),
+          topBarriersNote:
+            "Ordered worst-first by severityForPersona — the persona-weighted grade — so an entry can sit above a higher WCAG severity when this persona is more susceptible to it. Any entries after the fifth are included because they carry a WCAG criterion the top five do not.",
+          // Asserting full coverage was itself a defect: the claim held only
+          // when a barrier existed for every criterion, and said nothing when
+          // one did not. Now it reports the gap instead of asserting there
+          // isn't one.
+          wcagCriteriaWithoutBarrier: (() => {
+            const covered = new Set(result.topBarriers.flatMap((b: any) => b.wcagCriteria ?? []));
+            const missing = Array.from(result.allWcagViolations ?? []).filter((c: any) => !covered.has(c));
+            return missing.length ? missing : undefined;
+          })(),
+          // A barrier's affectedPersonas names the personas it hits HARDEST. It
+          // is not an exclusion list, which is why a persona absent from it can
+          // still take a deduction — susceptibility is applied as a weight, not
+          // a gate (see scoreContext.appliedBarrierWeights). Stating it here
+          // because the pairing otherwise reads as a contradiction: a
+          // touch_target barrier listing motor and elderly personas, scored
+          // against cognitive-adhd. (2026-07-29)
+          // Same treatment cognitiveLoadReadings got: state why two numbers
+          // that look contradictory are both right, rather than leaving a
+          // reader to conclude one is broken.
+          scoreFieldNotes: {
+            cognitiveOverloadPenalty:
+              "Persona susceptibility to visual noise, derived from the persona's own noiseTolerance and charged on every page — NOT a finding that this page overloaded anyone. It is non-zero for a sensitive persona even where cognitiveLoad.overloaded is false, because that flag is a separate page measurement against a threshold. The two disagreeing is expected.",
+          },
+          barrierFieldNotes: {
+            affectedPersonas: "Exemplars — the personas this barrier affects most. NOT an exclusion list; every tested persona is scored against every barrier, weighted by susceptibility.",
+            severity: "On topBarriers entries this is the group maximum across all elements of that type (severityIsGroupMax), not one element's severity.",
+            severityForPersona: "The same barrier re-graded by this persona's susceptibility weight, which is what should drive triage order. `severity` stays the WCAG-facing grade: a criterion is not more or less violated depending on who reads it. A 169-item navigation is genuinely minor to most personas and critical to cognitive-adhd, whose cognitive_load weight is 3.0 — and only the weighted grade says so.",
+          },
+          topRemediation: result.combinedRemediation.slice(0, 5),
+          duration: result.duration,
+          // Errors caught during the run, promoted out of the HTML report. The
+          // SVG className crash changed goalAchieved and the goal deduction while
+          // being visible ONLY in the HTML, so the JSON reported a confident
+          // wrong number. Anything that moves a scored field is surfaced here.
+          errors: result.results.flatMap((r) =>
+            (r.frictionPoints ?? [])
+              .filter((fp: any) => fp.type === "error")
+              .map((fp: any) => ({ persona: r.persona, message: fp.description })),
+          ),
+          // v18.60.0: Include per-result screenshots and element rects for WCAG overlay
+          pageScreenshots: result.results?.map((r: any) => ({
+            persona: r.persona,
+            ...(includeScreenshots
+              ? { screenshot: r.pageScreenshot }
+              : (() => {
+                  const shot = writeAuditScreenshot(r.pageScreenshot, r.persona);
+                  return {
+                    screenshotPath: shot.path,
+                    screenshotUrl: shot.url,
+                    screenshotFile: shot.file,
+                    screenshotNote: "Pass includeScreenshots:true to inline the base64 instead.",
+                  };
+                })()),
+            viewportSize: r.viewportSize,
+            // How much of the barrier set the overlay can actually draw.
+            //
+            // A rect needs an element that resolved to a bounding box at
+            // capture time, so anything below the fold, hidden, or behind an
+            // unresolvable selector produces a barrier with no box. The
+            // overlay then silently understates coverage -- 21 affected
+            // elements against 10 rects reads as "10 problems" unless the gap
+            // is stated. Reported rather than papered over, the same way
+            // cognitiveLoadReadings reports its disagreement.
+            barrierRectCoverage: (() => {
+              // Counted the same way barrierRects is built below, from
+              // barriers that resolved to a rect. Reading r.barrierRects gave
+              // 0 every time: that field is this payload's OUTPUT name, not an
+              // input, so the coverage line reported drawn:0 beside ten
+              // populated rects.
+              // Zero-area rects draw nothing. They were counted as drawn, so
+              // coverage read 19 while only 16 boxes were visible -- an
+              // element that resolved to {0,0,0,0} (display:none, a collapsed
+              // menu item) is undrawn in every sense that matters.
+              const rects = (r.barriers ?? []).filter(
+                (b: any) => b.rect && b.rect.width > 0 && b.rect.height > 0).length;
+              const affected = (r.barriers ?? []).reduce(
+                (n: number, b: any) => n + (b.affectedElementCount ?? 1), 0);
+              return {
+                drawn: rects,
+                affectedElements: affected,
+                ...(affected > rects
+                  ? { undrawn: affected - rects,
+                      undrawnReason: "Barriers whose element did not resolve to a bounding box at capture time — typically below the fold, hidden, or an unresolvable selector. They are counted in the score and listed in barriers, but the overlay cannot outline them." }
+                  : {}),
+              };
+            })(),
+            // Rects come from getBoundingClientRect with no scroll compensation,
+            // so they are VIEWPORT coordinates — which is correct here, because
+            // the screenshot above is captured with fullPage: false and these are
+            // meant to overlay it. Converting them to document coordinates would
+            // break that alignment.
+            //
+            // The real hazard is scope: "full_page", where the audit scrolls and
+            // rects captured at different offsets land in one list against a
+            // single viewport image; anything above the captured viewport then
+            // carries a negative y and would render off-canvas. Say which space
+            // these are in and flag the ones that fall outside the image rather
+            // than emitting silent negatives. (2026-07-28)
+            // Rects are now DOCUMENT coordinates (scroll offset added at capture),
+            // so they are stable across the scrolling that scope:"full_page" does.
+            // They were previously labelled "viewport" while holding values from
+            // several scroll positions at once — y:-274 and y:3951 in one list.
+            coordinateSpace: "document",
+            // The document-space region the screenshot actually covers, so a
+            // consumer can map a rect onto the image without guessing. A
+            // full_page capture starts at the document origin; a viewport
+            // capture starts wherever the page was scrolled to.
+            //
+            // These two fields exist because captureHeight alone was not
+            // enough: it reported documentHeight while the image was the
+            // viewport, and the overlay scaled 5363px of coordinates onto an
+            // 800px picture. Origin plus size is the whole answer, and it is
+            // read from the PNG header rather than measured separately, so it
+            // cannot disagree with the picture it describes. (2026-07-31)
+            captureOrigin: scope === "full_page"
+              ? { x: 0, y: 0 }
+              : (r.captureScroll ?? { x: 0, y: 0 }),
+            captureSize: r.screenshotSize,
+            // Height of the captured image in document space. A viewport capture
+            // covers only the scroll position it was taken at; a full_page capture
+            // covers the document. Without this the bounds test compared document
+            // coordinates against a viewport height and flagged EVERY rect,
+            // including ones plainly inside the image. (2026-07-29)
+            // The height of the image that exists, preferred over the
+            // separately-measured documentHeight. A page that lazy-loads
+            // during capture makes the two disagree, and the picture is the
+            // one the boxes are drawn on.
+            captureHeight: r.screenshotSize?.height
+              ?? (scope === "full_page" ? (r.documentHeight ?? undefined) : r.viewportSize?.height),
+            barrierRects: r.barriers?.filter(
+              (b: any) => b.rect && b.rect.width > 0 && b.rect.height > 0).map((b: any) => {
+              // Bounds tested in IMAGE space: document rect minus capture
+              // origin, against the real image size. Testing document
+              // coordinates against documentHeight passed every rect as
+              // "inside" even when the image showed only the top 800px, so
+              // nothing was ever listed as off-capture and the overlay
+              // claimed coverage it did not have.
+              const origin = scope === "full_page"
+                ? { x: 0, y: 0 }
+                : (r.captureScroll ?? { x: 0, y: 0 });
+              const size = r.screenshotSize
+                ?? { width: r.viewportSize?.width ?? Infinity,
+                     height: scope === "full_page" ? (r.documentHeight ?? Infinity) : (r.viewportSize?.height ?? Infinity) };
+              const ix = b.rect ? b.rect.x - origin.x : 0;
+              const iy = b.rect ? b.rect.y - origin.y : 0;
+              const outside = !!b.rect && (
+                iy + b.rect.height < 0 || ix + b.rect.width < 0 ||
+                iy > size.height || ix > size.width
+              );
+              // The map is coloured by the SAME grade the findings list is
+              // ranked by. It previously carried only the raw WCAG severity
+              // while the list below it used severityForPersona, so on a
+              // weighted audit one barrier was orange on the map and red in
+              // the list -- two scales, no label saying which was which.
+              // (2026-07-31)
+              const { weight } = barrierWeightFor(
+                r.persona, String(b.type ?? ""), b.wcagCriteria);
+              const { severity: weighted } = weightedSeverity(
+                String(b.severity ?? "minor"), weight);
+              // Which findings-list entry this box belongs to. Boxes are
+              // per-element and findings are grouped by type+criterion, so
+              // ten boxes can map to five findings; without the link there is
+              // no way to tell which box the list is talking about.
+              const gk = `${b.type}|${weightKeyFor(String(b.type ?? ""), b.wcagCriteria) ?? ""}`;
+              const findingIndex = findingKeys.indexOf(gk);
+              return {
+                type: b.type, severity: b.severity, element: b.element,
+                severityForPersona: weighted,
+                ...(findingIndex >= 0 ? { finding: findingIndex + 1 } : {}),
+                description: b.description, rect: b.rect,
+                wcag: b.wcagCriteria,
+                ...(outside ? { outsideScreenshot: true } : {}),
+              };
+            }),
+          // Keep entries that carry EITHER the inline image or a path to it.
+          // Filtering on `screenshot` alone silently dropped every entry once
+          // the default stopped inlining base64, taking the barrierRects with
+          // them. (2026-07-29)
+          })).filter((s: any) => s.screenshot || s.screenshotPath),
+        };
+
+        // Add guidance if we limited the request
+        if (wasLimited) {
+          response.note = `Limited to 1 persona to avoid timeout. For full coverage, call again with: ${remainingPersonas.slice(0, 3).join(", ")}${remainingPersonas.length > 3 ? `, and ${remainingPersonas.length - 3} more` : ""}`;
+          response.remainingPersonas = remainingPersonas;
+        }
+
+        // Auto-save handled by tier-gate wrapper.
+        //
+        // The UI resource is APPENDED to the text block, never substituted for
+        // it: content[0] stays the same JSON every CLI and CI caller already
+        // parses. `generateEmpathyAuditHtmlReport` is the report the --html flag
+        // has always produced — self-contained, no remote refs — so this is a
+        // transport seam rather than new UI. If it cannot be produced safely,
+        // htmlUiResource returns null and the response is exactly as before.
+        // (2026-07-29)
+        const content: ToolContentBlock[] = [
+          { type: "text", text: JSON.stringify(response, null, 2) },
+        ];
+        // No UI resource is attached here any more.
+        //
+        // Both mcp-ui attachments are retired: the whole-report rawHtml and the
+        // barrier overlay. Both embedded rendered HTML in the result, which
+        // costs payload against the host's ~150k cap, and the overlay's boxes
+        // were drawn over an img on cbrowser.ai that the widget sandbox will
+        // not load -- outlines over empty space. Both are now served by
+        // ui://cbrowser/empathy, declared on the tool, where the host fetches
+        // the view and the overlay pulls its screenshot through artifact_fetch.
+        //
+        // uiResource is still accepted as an argument so existing callers do
+        // not break; it simply no longer changes the response.
+        return { content };
+      } catch (error) {
+        // Categorize the error for better user feedback
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorStack = error instanceof Error ? error.stack : undefined;
+
+        // Determine error type for actionable feedback
+        let errorType = "unknown";
+        let suggestion = "Please try again or contact support if the issue persists.";
+
+        if (errorMessage.includes("timeout") || errorMessage.includes("Timeout")) {
+          errorType = "timeout";
+          suggestion = "The page took too long to load. Try increasing maxTime or testing a faster page.";
+        } else if (errorMessage.includes("net::") || errorMessage.includes("DNS") || errorMessage.includes("ERR_")) {
+          errorType = "network";
+          suggestion = "Unable to reach the URL. Check the URL is valid and accessible.";
+        } else if (errorMessage.includes("blocked") || errorMessage.includes("403") || errorMessage.includes("captcha")) {
+          errorType = "bot-detection";
+          suggestion = "The site may be blocking automation. Try with a different URL.";
+        } else if (errorMessage.includes("chromium") || errorMessage.includes("browser")) {
+          errorType = "browser";
+          suggestion = "Browser automation error. The server may need to restart.";
+        }
+
+        // Log the full error for debugging
+        console.error(`[empathy_audit] Error: ${errorMessage}`);
+        if (errorStack) {
+          console.error(`[empathy_audit] Stack: ${errorStack}`);
+        }
+
+        // Return a structured error response
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: true,
+                errorType,
+                message: errorMessage,
+                suggestion,
+                url,
+                goal,
+                disabilities: disabilities || "all",
+              }, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
 }
