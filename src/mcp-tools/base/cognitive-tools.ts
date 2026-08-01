@@ -17,6 +17,7 @@ import {
 } from "../../personas.js";
 import { listAccessibilityPersonas, getAccessibilityPersona } from "../../personas.js";
 import { getPersonaValues, rankInfluencePatternsForProfile, resolveValuesForPersona } from "../../values/index.js";
+import { resolvePersonaValues } from "./values-tools.js";
 import type {
   CognitiveState,
   AbandonmentThresholds,
@@ -921,20 +922,37 @@ Begin the simulation now. Narrate your thoughts as this persona.
             benevolence: p.values.benevolence ?? 0.5,
             universalism: p.values.universalism ?? 0.5,
           };
+          // Delegated to the shared resolver rather than recomputed here.
+          //
+          // This block had both defects the derivation was fixed for, in one
+          // object. `maslowLevel` was the LITERAL "esteem" — so every custom
+          // persona in the roster reported esteem regardless of its values,
+          // right for six of twelve by coincidence and wrong for the rest by
+          // as much as 0.3. And the rollups averaged in the 0.5 placeholders
+          // that the live tools now exclude, so the roster and
+          // persona_values_lookup disagreed on selfEnhancement for every
+          // custom persona (alexa-eden 0.599 here against 0.698 there).
+          //
+          // Two fixes propagated to the derivation and neither reached this
+          // copy, which is the argument against the copy existing. One
+          // resolver now answers both, so they cannot drift again.
+          // (2026-08-01)
+          const resolved = resolvePersonaValues(p.name);
           return {
             schwartz: sv,
-            higherOrder: {
-              openness: (sv.selfDirection + sv.stimulation) / 2,
-              selfEnhancement: (sv.achievement + sv.power) / 2,
-              conservation: (sv.security + sv.conformity + sv.tradition) / 3,
-              selfTranscendence: (sv.benevolence + sv.universalism) / 2,
-            },
+            higherOrder: resolved.higherOrder ?? {},
+            ...(resolved.higherOrderWithImputed
+              ? { higherOrderWithImputed: resolved.higherOrderWithImputed }
+              : {}),
             sdt: {
               autonomyNeed: p.values.autonomyNeed ?? 0.5,
               competenceNeed: p.values.competenceNeed ?? 0.5,
               relatednessNeed: p.values.relatednessNeed ?? 0.5,
             },
-            maslowLevel: "esteem" as const,
+            valuesSource: resolved.source,
+            maslowLevel: resolved.maslowLevel,
+            ...(resolved.maslowCaveat ? { maslowCaveat: resolved.maslowCaveat } : {}),
+            ...(resolved.imputationPolicy ? { imputationPolicy: resolved.imputationPolicy } : {}),
           };
         })() : undefined,
       }));

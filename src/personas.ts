@@ -18,13 +18,30 @@ import { homedir } from "os";
 import type { Persona, CognitiveTraits, CognitiveProfile, AttentionPatternType, DecisionStyleType, AgentPersona } from "./types.js";
 import { applyTraitCorrelations } from "./persona-questionnaire.js";
 import { AGENT_PERSONAS, isAgentPersona, getAgentPersona, listAgentPersonas, isAgentPersonaObject } from "./agent-personas.js";
+import { scopedDataDir } from "./persona-scope.js";
 
 // ============================================================================
 // Custom Personas Storage
 // ============================================================================
 
 const DATA_DIR = process.env.CBROWSER_DATA_DIR || join(homedir(), ".cbrowser");
-const PERSONAS_DIR = join(DATA_DIR, "personas");
+
+/**
+ * Resolved per call, not once at module load.
+ *
+ * A hosted server process serves many accounts, so the directory cannot be a
+ * constant fixed when the file is imported. `scopedDataDir()` returns the
+ * account bound to the CURRENT request's async context, or undefined when
+ * nothing entered a scope — which is every CLI run, every stdio session and
+ * every local install, all of which keep the previous behaviour exactly.
+ *
+ * Deliberately NOT a module-level `let` reassigned per request: that is the
+ * shape that lets two overlapping requests read each other's accounts, and it
+ * is the shape this codebase already removed from the billing path. (2026-08-01)
+ */
+function personasDirFor(): string {
+  return join(scopedDataDir() ?? DATA_DIR, "personas");
+}
 
 // ============================================================================
 // Runtime Persona Registry (for Enterprise extensions)
@@ -41,8 +58,8 @@ function ensurePersonasDir(): void {
   if (!existsSync(DATA_DIR)) {
     mkdirSync(DATA_DIR, { recursive: true });
   }
-  if (!existsSync(PERSONAS_DIR)) {
-    mkdirSync(PERSONAS_DIR, { recursive: true });
+  if (!existsSync(personasDirFor())) {
+    mkdirSync(personasDirFor(), { recursive: true });
   }
 }
 
@@ -54,10 +71,10 @@ export function loadCustomPersonas(): Record<string, Persona> {
   const personas: Record<string, Persona> = {};
 
   try {
-    const files = readdirSync(PERSONAS_DIR).filter(f => f.endsWith(".json") || f.endsWith(".yaml") || f.endsWith(".yml"));
+    const files = readdirSync(personasDirFor()).filter(f => f.endsWith(".json") || f.endsWith(".yaml") || f.endsWith(".yml"));
     for (const file of files) {
       try {
-        const content = readFileSync(join(PERSONAS_DIR, file), "utf-8");
+        const content = readFileSync(join(personasDirFor(), file), "utf-8");
         let persona: Persona;
         if (file.endsWith(".json")) {
           // Bare `as Persona` trusted arbitrary user-authored JSON to be complete.
@@ -97,7 +114,7 @@ export function loadCustomPersonas(): Record<string, Persona> {
 export function saveCustomPersona(persona: Persona): string {
   ensurePersonasDir();
   const filename = `${persona.name.toLowerCase().replace(/[^a-z0-9-]/g, "-")}.json`;
-  const filepath = join(PERSONAS_DIR, filename);
+  const filepath = join(personasDirFor(), filename);
   writeFileSync(filepath, JSON.stringify(persona, null, 2));
   return filepath;
 }
@@ -117,7 +134,7 @@ export function deleteCustomPersona(name: string): boolean {
   const extensions = [".json", ".yaml", ".yml"];
 
   for (const ext of extensions) {
-    const filepath = join(PERSONAS_DIR, `${baseName}${ext}`);
+    const filepath = join(personasDirFor(), `${baseName}${ext}`);
     try {
       if (existsSync(filepath)) {
         unlinkSync(filepath);
@@ -1597,7 +1614,7 @@ export function listCustomPersonas(): string[] {
  * Get the custom personas directory path.
  */
 export function getPersonasDir(): string {
-  return PERSONAS_DIR;
+  return personasDirFor();
 }
 
 // ============================================================================
