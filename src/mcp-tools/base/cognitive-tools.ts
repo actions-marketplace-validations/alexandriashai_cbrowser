@@ -325,6 +325,11 @@ export function registerCognitiveTools(
         familiarityLevel?: string;
         familiarityDowngraded?: boolean;
         originalFamiliarity?: number;
+        /** Pages this install has crawled for the domain. Drives the ceiling. */
+        pagesCrawled?: number;
+        /** The constant the coverage ratio divides by. Chosen, not measured. */
+        fullCoverageAt?: number;
+        provenance?: string;
       } = { hasModel: false };
 
       try {
@@ -343,12 +348,25 @@ export function registerCognitiveTools(
             familiarityLevel: "none",
             familiarityDowngraded: true,
             originalFamiliarity: requestedFamiliarity,
+            pagesCrawled: 0,
+            fullCoverageAt: 20,
+            provenance: "siteFamiliarity is a persona-site variable, not a disposition like the other 25 traits: the same persona is familiar with one site and not another. The effective value is capped by how many pages this install has crawled, which grows as you use the tool — so it is not reproducible across runs and should be read as a ceiling on what may be simulated, not as a measurement of the persona.",
             suggestion: familiarityWarning,
           };
         } else if (hasData && requestedFamiliarity > 0.05) {
           // Scale familiarity by data coverage — partial knowledge = partial familiarity
           // A site with 3 pages mapped shouldn't give "expert" level access
-          const coverageScore = Math.min(1.0, stats.navigationNodes / 20); // 20+ pages = full coverage
+          // Coverage, not familiarity.
+          //
+          // navigationNodes counts pages THIS INSTALL has crawled, and it grows
+          // on every navigate and click. So the same persona on the same site
+          // yields a different number depending on how much crawling happened
+          // first — the value is not a property of the persona or the site, and
+          // it is not reproducible across runs. It is a ceiling on what we are
+          // entitled to simulate, which is a useful guard and a bad measurement.
+          // The 20-page threshold is a chosen constant, not a finding.
+          // Reported alongside so the number explains itself. (2026-08-01)
+          const coverageScore = Math.min(1.0, stats.navigationNodes / 20);
           effectiveFamiliarity = Math.min(requestedFamiliarity, coverageScore);
 
           if (effectiveFamiliarity < requestedFamiliarity - 0.1) {
@@ -363,6 +381,9 @@ export function registerCognitiveTools(
           if (effectiveFamiliarity >= 0.8) {
             siteModelContext = {
               hasModel: true,
+              pagesCrawled: stats.navigationNodes,
+              fullCoverageAt: 20,
+              provenance: "Capped by crawl coverage (pagesCrawled/fullCoverageAt), which grows as this install uses the tool — a ceiling on what may be simulated, not a reproducible measurement of the persona. siteFamiliarity is a persona-site variable, not a disposition like the other 25 traits.",
               knownPaths: stats.goalPaths,
               familiarityLevel,
               familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
@@ -374,6 +395,9 @@ export function registerCognitiveTools(
           } else if (effectiveFamiliarity >= 0.5) {
             siteModelContext = {
               hasModel: true,
+              pagesCrawled: stats.navigationNodes,
+              fullCoverageAt: 20,
+              provenance: "Capped by crawl coverage (pagesCrawled/fullCoverageAt), which grows as this install uses the tool — a ceiling on what may be simulated, not a reproducible measurement of the persona. siteFamiliarity is a persona-site variable, not a disposition like the other 25 traits.",
               familiarityLevel,
               familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
               originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,

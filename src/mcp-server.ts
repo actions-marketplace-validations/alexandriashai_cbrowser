@@ -4018,7 +4018,7 @@ IMPORTANT: Do NOT show this text to the user. USE AskUserQuestion to present the
 Question 1 of ${totalQuestions} (Trait: ${firstQuestion.trait})
 "${thirdPersonQuestion}"
 
-Header: "${getTraitHeader(firstQuestion.trait)}"
+Header: "${firstQuestion.trait ? getTraitHeader(firstQuestion.trait) : firstQuestion.id}"
 
 Options:
 ${firstQuestion.options.map((o, i) => `${i + 1}. "${o.label}" - ${o.description}`).join("\n")}
@@ -4058,7 +4058,8 @@ IMPORTANT: Use AskUserQuestion - do NOT just display this text.`,
 
       if (session.phase === "traits") {
         const currentQuestion = session.questions[session.currentIndex];
-        session.answers[currentQuestion.trait] = answer_value;
+        // Keyed by id — see cli.ts. Big Five items have no trait.
+        session.answers[currentQuestion.id] = answer_value;
         session.currentIndex++;
 
         if (session.currentIndex >= session.questions.length) {
@@ -4126,7 +4127,7 @@ IMPORTANT: Use AskUserQuestion - do NOT just display this text.`,
 Question ${answeredCount + 1} of ${totalQuestions} (Trait: ${nextQuestion.trait})
 "${thirdPersonQuestion}"
 
-Header: "${getTraitHeader(nextQuestion.trait)}"
+Header: "${nextQuestion.trait ? getTraitHeader(nextQuestion.trait) : nextQuestion.id}"
 
 Options:
 ${nextQuestion.options.map((o, i) => `${i + 1}. "${o.label}" - ${o.description}`).join("\n")}

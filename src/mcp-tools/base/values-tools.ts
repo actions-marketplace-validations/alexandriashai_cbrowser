@@ -44,6 +44,8 @@ export function resolvePersonaValues(name: string): {
   unpopulatedNote?: string;
   netZeroAxes?: string[];
   netZeroNote?: string;
+  netNudge?: Record<string, number>;
+  netNudgeNote?: string;
   higherOrderContamination?: Record<string, string>;
   higherOrder?: Record<string, number>;
   maslowLevel?: string;
@@ -159,6 +161,26 @@ export function resolvePersonaValues(name: string): {
   const netZero = personaSource === "derived"
     ? Object.keys({ ...values, ...sdt }).filter((k) => atBaseline(k) && !!counts[k])
     : [];
+  // The signed evidence behind each axis, recovered from the squash.
+  //
+  // Three decimals separate a derived 0.495 from an untouched 0.5, but only
+  // for axes that happen to land off the midpoint. The nudge separates them
+  // always: an axis nothing targets has exactly 0, an axis whose inputs
+  // cancelled has a small non-zero. Beside every value rather than in a
+  // separate list someone has to think to read.
+  const netNudge = personaSource === "derived"
+    ? Object.fromEntries(Object.entries({ ...values, ...sdt }).map(([k, v]) => {
+        // invert 0.5 + 0.5*tanh(raw) -> raw
+        // Clamp MAGNITUDE, keep sign. Flooring at a positive epsilon turned
+        // every below-midpoint axis into 0 — security and conformity, both
+        // genuinely derived, reported the same "nothing targets it" as power.
+        // The bug this field exists to prevent, reintroduced inside the field.
+        const t = (v - 0.5) * 2;
+        const clamped = Math.sign(t) * Math.min(0.999999, Math.abs(t));
+        const raw = 0.5 * Math.log((1 + clamped) / (1 - clamped));
+        return [k, Math.round(raw * 1000) / 1000];
+      }))
+    : undefined;
 
   return {
     values,
@@ -169,6 +191,7 @@ export function resolvePersonaValues(name: string): {
           unpopulatedNote: `These axes have no trait correlation defined, so the derivation leaves them at the 0.5 baseline regardless of the persona's traits. They carry no signal; a values-weighted run differentiates on the others only.`,
         }
       : {}),
+    ...(netNudge ? { netNudge, netNudgeNote: "Signed evidence behind each axis before the squash. Exactly 0 means no trait targets it at all; a small non-zero means the contributions cancelled. Both can round to 0.5." } : {}),
     ...(netZero.length
       ? {
           netZeroAxes: netZero,

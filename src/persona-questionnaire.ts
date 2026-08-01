@@ -1523,7 +1523,15 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
 
 export interface QuestionnaireQuestion {
   id: string;
-  trait: keyof CognitiveTraits;
+  /**
+   * Absent on Big Five items. They previously carried a placeholder trait to
+   * satisfy this field, which implied a trait-to-factor link that does not
+   * exist and invited exactly the wrong reading of the derivation chain:
+   * that Big Five is computed FROM the 26 traits and values are two hops
+   * downstream. It is not. Big Five is supplied by whoever answers, and values
+   * derive from it in one hop. (2026-08-01)
+   */
+  trait?: keyof CognitiveTraits;
   /**
    * Set instead of a trait when the question asks about a value axis directly.
    *
@@ -1569,7 +1577,7 @@ export interface QuestionnaireQuestion {
  */
 export const BIG_FIVE_QUESTIONS: QuestionnaireQuestion[] = [
   {
-    id: "bigfive-openness", trait: "curiosity" as keyof CognitiveTraits, valueAxis: "bigfive:openness",
+    id: "bigfive-openness", valueAxis: "bigfive:openness",
     question: "How drawn is this person to new ideas, unfamiliar things and abstract thinking?",
     options: [
       { value: 0, label: "Prefers the familiar", description: "Sticks to what is known and proven; novelty is a cost" },
@@ -1579,7 +1587,7 @@ export const BIG_FIVE_QUESTIONS: QuestionnaireQuestion[] = [
     ],
   },
   {
-    id: "bigfive-conscientiousness", trait: "persistence" as keyof CognitiveTraits, valueAxis: "bigfive:conscientiousness",
+    id: "bigfive-conscientiousness", valueAxis: "bigfive:conscientiousness",
     question: "How organised and follow-through-oriented is this person?",
     options: [
       { value: 0, label: "Spontaneous", description: "Improvises; plans and deadlines slide" },
@@ -1589,7 +1597,7 @@ export const BIG_FIVE_QUESTIONS: QuestionnaireQuestion[] = [
     ],
   },
   {
-    id: "bigfive-extraversion", trait: "emotionalContagion" as keyof CognitiveTraits, valueAxis: "bigfive:extraversion",
+    id: "bigfive-extraversion", valueAxis: "bigfive:extraversion",
     question: "How outgoing and energised by people and activity is this person?",
     options: [
       { value: 0, label: "Reserved", description: "Quiet, drained by social activity, prefers solitude" },
@@ -1599,7 +1607,7 @@ export const BIG_FIVE_QUESTIONS: QuestionnaireQuestion[] = [
     ],
   },
   {
-    id: "bigfive-agreeableness", trait: "trustCalibration" as keyof CognitiveTraits, valueAxis: "bigfive:agreeableness",
+    id: "bigfive-agreeableness", valueAxis: "bigfive:agreeableness",
     question: "How warm, trusting and accommodating is this person toward others?",
     options: [
       { value: 0, label: "Sceptical", description: "Guarded, competitive, quick to doubt motives" },
@@ -1609,7 +1617,7 @@ export const BIG_FIVE_QUESTIONS: QuestionnaireQuestion[] = [
     ],
   },
   {
-    id: "bigfive-neuroticism", trait: "resilience" as keyof CognitiveTraits, valueAxis: "bigfive:neuroticism",
+    id: "bigfive-neuroticism", valueAxis: "bigfive:neuroticism",
     question: "How readily does this person feel anxious, stressed or thrown by setbacks?",
     options: [
       { value: 0, label: "Very steady", description: "Calm under pressure; setbacks barely register" },
@@ -1992,7 +2000,11 @@ export function formatForAskUserQuestion(questions: QuestionnaireQuestion[]): Ar
 }> {
   return questions.map(q => ({
     question: q.question,
-    header: getTraitShortHeader(q.trait),  // v16.7.2: Use meaningful abbreviations
+    // Big Five items have no trait; their short header comes from the factor
+    // name in the id rather than the trait abbreviation table.
+    header: q.trait
+      ? getTraitShortHeader(q.trait)
+      : (q.valueAxis?.split(":")[1] ?? q.id).slice(0, 8),
     options: q.options.map(o => ({
       label: o.label,
       description: o.description,
@@ -2616,7 +2628,15 @@ export function deriveValuesFromTraits(
   for (const key of Object.keys(derivedValues)) {
     const raw = rawTotals[key] ?? 0;
     const squashed = 0.5 + 0.5 * Math.tanh(raw / SQUASH_K);
-    derivedValues[key] = Math.round(squashed * 100) / 100;
+    // Three decimals, not two.
+    //
+    // tradition derives to 0.495 for one persona and rounded to 0.50 — the
+    // same literal power returns from never being touched at all. The list of
+    // unpopulated axes disambiguated them, which works only if someone reads
+    // the list. A number formatted identically to a measurement is the failure
+    // this whole exercise is about, so the distinction belongs in the value.
+    // (2026-08-01)
+    derivedValues[key] = Math.round(squashed * 1000) / 1000;
   }
 
   return {

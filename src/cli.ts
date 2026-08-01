@@ -7575,7 +7575,9 @@ Examples:
               if (answer && answer.trim()) {
                 const idx = parseInt(answer.trim()) - 1;
                 if (idx >= 0 && idx < q.options.length) {
-                  answers[q.trait] = q.options[idx].value;
+                  // Keyed by id, not trait: a Big Five item has no trait, and for a trait
+                  // question id and trait are the same string anyway.
+                  answers[q.id] = q.options[idx].value;
                   console.log(`  ✓ ${q.options[idx].label}`);
                 }
               } else {
