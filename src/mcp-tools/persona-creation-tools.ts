@@ -24,6 +24,8 @@ import {
   TRAIT_REFERENCE_MATRIX,
 } from "../persona-questionnaire.js";
 import type { CognitiveTraits } from "../types.js";
+import { bigFiveInferenceReference, validateInferredBigFive } from "../values/big-five-inference.js";
+import { deriveValuesFromBigFive } from "../values/big-five-values.js";
 
 // ============================================================================
 // Schwartz Values Questions for Persona Questionnaire
@@ -580,8 +582,9 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             mode: "manual_inference",
             persona_name,
             user_description: description,
-            instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. Use the trait reference matrix below to guide your inference. If the description mentions ANY physical or sensory disability (vision loss, motor impairment, color blindness, hearing loss, tremor, etc.), you MUST also include accessibilityTraits. Without accessibilityTraits, the persona gets cognitive-only modeling and the perceptual transport layer will report near-perfect perception — which is wrong for someone with a disability. Return the traits via persona_create_submit_traits.`,
+            instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. ALSO estimate the persona's Big Five profile from the same description and return it as bigFive with bigFiveEvidence — see big_five_inference below. This is not optional decoration: without it the persona's values are derived from cognitive traits, and that route cannot reach hedonism, power, universalism or the relatedness need, so those four stay at the 0.5 baseline. Use the trait reference matrix below to guide your inference. If the description mentions ANY physical or sensory disability (vision loss, motor impairment, color blindness, hearing loss, tremor, etc.), you MUST also include accessibilityTraits. Without accessibilityTraits, the persona gets cognitive-only modeling and the perceptual transport layer will report near-perfect perception — which is wrong for someone with a disability. Return the traits via persona_create_submit_traits.`,
             trait_reference: traitInfo,
+            big_five_inference: bigFiveInferenceReference(),
             ...(includeTraitReference ? {} : { trait_reference_note: "Compact form: trait names and meanings. For per-level behaviours call persona_traits_list, or pass includeTraitReference:true." }),
             accessibility_traits_reference: {
               visionLevel: "0=blind, 0.3=legally blind, 0.5=low vision (needs magnification), 0.7=mild vision loss, 1.0=sighted",
@@ -636,6 +639,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         hearingLevel: z.number().min(0).max(1).optional().describe("Hearing level: 0=deaf, 1=full hearing"),
       }).optional().describe("Sensory/motor/physical traits for disability modeling. Without these, the persona gets cognitive-only modeling (no vision/motor simulation in empathy_audit)."),
       ageRange: z.string().optional().describe("Age range: '18-24', '25-45', '45-65', '65+'"),
+      bigFive: z.object({
+        openness: z.number().min(0).max(1),
+        conscientiousness: z.number().min(0).max(1),
+        extraversion: z.number().min(0).max(1),
+        agreeableness: z.number().min(0).max(1),
+        neuroticism: z.number().min(0).max(1),
+      }).optional().describe("Big Five profile INFERRED from the description. Unlocks all 13 motivational values through published correlations instead of the 9 the cognitive-trait route reaches. Requires bigFiveEvidence."),
+      bigFiveEvidence: z.array(z.object({
+        factor: z.string(),
+        score: z.number().min(0).max(1),
+        quote: z.string().describe("The words in the description justifying this score"),
+      })).optional().describe("One entry per factor, quoting the description. Required whenever bigFive is supplied — an estimate nobody can check against the source is not evidence."),
     },
     annotations: {
       title: "Submit Persona Traits",
@@ -644,9 +659,30 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       idempotentHint: false,
       openWorldHint: false,
     },
-  }, async ({ persona_name, traits, description, accessibilityTraits, ageRange }) => {
+  }, async ({ persona_name, traits, description, accessibilityTraits, ageRange, bigFive, bigFiveEvidence }) => {
       const builtTraits = buildTraitsFromAnswers(traits);
-      const derivedResult = deriveValuesFromTraits(builtTraits);
+
+      // Big Five, when the caller inferred one from the description.
+      //
+      // Preferred over the cognitive-trait derivation because it reaches all
+      // thirteen axes through published correlations instead of nine through
+      // our own bridge — but recorded as its OWN route, not merged into stated
+      // Big Five. A model reading prose and five numbers a human supplied are
+      // different evidence, and collapsing them would erase the distinction the
+      // route ordering exists to express. Rejected rather than degraded when it
+      // fails validation: a bad profile silently replacing a working
+      // trait-derivation is worse than no profile. (2026-08-01)
+      let bigFiveAccepted: Record<string, number> | undefined;
+      let bigFiveRejected: string | undefined;
+      if (bigFive) {
+        const verdict = validateInferredBigFive(bigFive as Record<string, number>, bigFiveEvidence);
+        if (verdict.ok) bigFiveAccepted = bigFive as Record<string, number>;
+        else bigFiveRejected = verdict.reason;
+      }
+
+      const derivedResult = bigFiveAccepted
+        ? deriveValuesFromBigFive(bigFiveAccepted)
+        : deriveValuesFromTraits(builtTraits);
 
       // buildTraitsFromAnswers fills every unsupplied trait from research
       // baselines, so a caller who names 3 traits gets back a complete 26-trait
@@ -704,6 +740,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         };
       }
 
+      // The route that produced the values, recorded ON the persona so every
+      // reader gets the same answer. bigFive is stored too, so the derivation
+      // can be re-run and checked rather than taken on trust.
+      (personaObj as unknown as Record<string, unknown>).valuesDerivation = bigFiveAccepted
+        ? { method: "bigfive_inferred", squash: "tanh", precision: 3,
+            inferredFrom: "description", evidence: bigFiveEvidence ?? [] }
+        : { method: "traits", squash: "tanh", precision: 3 };
+      if (bigFiveAccepted) {
+        (personaObj as unknown as Record<string, unknown>).bigFive = bigFiveAccepted;
+      }
+      (personaObj as unknown as Record<string, unknown>).schwartzValues = derivedResult.values;
+
       registerPersonas([personaObj]);
 
       // Also save to CMS if an API key is configured (makes it persistent across sessions)
@@ -726,6 +774,13 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
               accessibility_traits: resolvedAccessibilityTraits || null,
               age_range: ageRange || personaObj.demographics?.age_range || null,
               source: "mcp",
+              // Sent so the row is not re-labelled by guesswork later. A stored
+              // block with no provenance reads as `stated`, which would claim a
+              // human wrote numbers this route inferred.
+              values_derivation: bigFiveAccepted
+                ? { method: "bigfive_inferred", squash: "tanh", precision: 3,
+                    inferredFrom: "description", evidence: bigFiveEvidence ?? [] }
+                : { method: "traits", squash: "tanh", precision: 3 },
             }),
           });
           if (res.ok) {
@@ -761,7 +816,26 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
               warning: `Ignored ${unknownTraits.length} unrecognized trait name(s): ${unknownTraits.join(", ")}. These had no effect.`,
             } : {}),
             values: derivedResult.values,
-            derivations: derivedResult.derivations,
+            // The two routes report their working differently -- the trait
+            // derivation lists `derivations`, the Big Five one `contributions`.
+            // Both are surfaced under their own name so a caller can tell which
+            // route ran from the response alone, without inferring it from
+            // which key happens to be present.
+            ...("derivations" in derivedResult
+              ? { derivations: (derivedResult as { derivations: unknown }).derivations }
+              : {}),
+            ...("contributions" in derivedResult
+              ? { bigFiveContributions: (derivedResult as { contributions: unknown }).contributions,
+                  hypothesisAxes: (derivedResult as { hypothesisAxes: string[] }).hypothesisAxes }
+              : {}),
+            valuesRoute: bigFiveAccepted ? "bigfive_inferred" : "cognitive_traits",
+            ...(bigFiveAccepted ? { bigFive: bigFiveAccepted, bigFiveEvidence: bigFiveEvidence ?? [] } : {}),
+            // A rejected profile is REPORTED, never swallowed. Silently falling
+            // back would leave the caller believing the Big Five route ran.
+            ...(bigFiveRejected ? {
+              bigFiveRejected,
+              bigFiveRejectedNote: "The inferred profile was not stored and values were derived from cognitive traits instead, which cannot reach hedonism, power, universalism or the relatedness need. Fix the profile and resubmit to reach all thirteen.",
+            } : {}),
             accessibilityTraits: resolvedAccessibilityTraits || null,
             hasDisabilityModeling: !!(resolvedAccessibilityTraits && Object.keys(resolvedAccessibilityTraits).length > 0),
             disabilityTraitsSource: accessibilityTraits ? 'explicit' : resolvedAccessibilityTraits ? 'inferred_from_description' : 'none',

@@ -77,6 +77,8 @@ export function resolvePersonaValues(name: string): {
   /** Per-level: how many of its inputs are unpopulated. Mirrors higherOrderContamination. */
   maslowContamination?: Record<string, string>;
   maslowCaveat?: string;
+  /** Present on inferred routes: what the estimate rests on. */
+  routeCaveat?: string;
 } {
   const KEYS = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
     "security", "conformity", "tradition", "benevolence", "universalism"] as const;
@@ -104,7 +106,11 @@ export function resolvePersonaValues(name: string): {
     KEYS10.forEach((k) => { ten[k] = d.values[k]; });
     return {
       values: ten,
-      source: "big_five",
+      // Which Big Five route this is, when the persona says. A bigFive block
+      // with no derivation label is treated as stated, because that is what an
+      // unlabelled one is: numbers someone put there.
+      source: ((persona?.valuesDerivation as { method?: string } | undefined)?.method === "bigfive_inferred"
+        ? "bigfive_inferred" : "big_five") as ValuesRoute,
       sdt,
       sdtSource: "derived",
       hypothesisAxes: d.hypothesisAxes,
@@ -114,6 +120,9 @@ export function resolvePersonaValues(name: string): {
         conservation: round3((ten.security + ten.conformity + ten.tradition) / 3),
         selfTranscendence: round3((ten.benevolence + ten.universalism) / 2),
       },
+      ...((persona?.valuesDerivation as { method?: string } | undefined)?.method === "bigfive_inferred"
+        ? { routeCaveat: "These values come from a Big Five profile a model estimated by reading this persona's description, then the published trait-value correlations. The bridge is well supported; the five inputs are not measured and have no published calibration. Every axis is reachable on this route, which is why it is preferred over the cognitive-trait derivation — but a persona whose Big Five was answered rather than inferred is stronger evidence, and one whose values were stated directly is stronger still." }
+        : {}),
       maslowLevel: bfMaslow[0].level,
       maslowSource: "derived",
       maslowBasis: bfMaslow[0].basis,
@@ -188,6 +197,7 @@ export function resolvePersonaValues(name: string): {
   const derivation = persona?.valuesDerivation as { method?: string } | undefined;
   const personaSource: ValuesRoute =
     derivation?.method === "traits" ? "cognitive_traits"
+    : derivation?.method === "bigfive_inferred" ? "bigfive_inferred"
     : derivation?.method === "bigfive" ? "big_five"
     : "stated";
   // Only the trait route is bounded by the trait correlation table. The Big
@@ -427,7 +437,27 @@ export function resolvePersonaValues(name: string): {
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
-export type ValuesRoute = "stated" | "big_five" | "cognitive_traits" | "none";
+/**
+ * The routes, ordered by how far the numbers should be trusted.
+ *
+ *   stated            someone answered; the measurement itself
+ *   big_five          five scores a human supplied, then published correlations
+ *   bigfive_inferred  five scores a model read out of a description, then the
+ *                     same published correlations
+ *   cognitive_traits  our own bridge from behaviour to motivation
+ *
+ * `bigfive_inferred` is deliberately NOT folded into `big_five`. Both use the
+ * same well-supported bridge, but one starts from numbers a person gave and the
+ * other from an estimate with no published calibration behind it. Collapsing
+ * them would hide precisely the distinction this ordering exists to express --
+ * the same mistake as the old `derived`, which meant two different things.
+ *
+ * It sits above cognitive_traits on COVERAGE, not on accuracy: it reaches all
+ * thirteen axes where the trait route reaches nine. The two have their weakness
+ * in different places -- weak inputs with a strong bridge, against stronger
+ * inputs with a weak bridge -- and the payload says which you are holding.
+ */
+export type ValuesRoute = "stated" | "big_five" | "bigfive_inferred" | "cognitive_traits" | "none";
 
 /**
  * Score the four Maslow levels from the value axes, worst-first sorted.
@@ -693,6 +723,7 @@ export async function buildValuesPayload(
               // persona_lookup labelled the same values. Provenance should not
               // depend on which tool you asked.
               valuesSource: resolved.source,
+              ...(resolved.routeCaveat ? { routeCaveat: resolved.routeCaveat } : {}),
               ...(resolved.higherOrderWithImputed ? { higherOrderWithImputed: resolved.higherOrderWithImputed } : {}),
               ...(resolved.imputationPolicy ? { imputationPolicy: resolved.imputationPolicy } : {}),
               ...(resolved.storedIn ? { valuesStoredIn: resolved.storedIn } : {}),
