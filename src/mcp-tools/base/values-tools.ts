@@ -380,12 +380,21 @@ export function registerValuesTools(server: McpServer): void {
       );
 
       let influencePatterns: Array<{pattern: string; susceptibility: number; description: string}> | undefined;
+      let influencePatternsTotal: number | undefined;
+      let influencePatternsOmitted: string[] | undefined;
       if (includeInfluencePatterns) {
         // Traits passed through, so patterns sharing a value target set can
         // differ and a trait named for its pattern actually reaches it.
         const rankTraits = getCognitiveProfile(getAnyPersona(persona) as never)?.traits as
           unknown as Record<string, number> | undefined;
         const ranked = rankInfluencePatternsForProfile(values, rankTraits);
+        // A silent top-7 cut made a mapped pattern look unmapped: social_proof
+        // ranks 10th for some personas and simply vanished, with nothing in the
+        // response distinguishing "scored low and truncated" from "this trait
+        // never reaches the pattern list". The count and the omitted names are
+        // reported now. (2026-07-31)
+        influencePatternsTotal = ranked.length;
+        influencePatternsOmitted = ranked.slice(7).map(r => r.pattern.name);
         influencePatterns = ranked.slice(0, 7).map(r => ({
           pattern: r.pattern.name,
           susceptibility: r.susceptibility,
@@ -446,6 +455,21 @@ export function registerValuesTools(server: McpServer): void {
                   : "Self-fulfillment and growth",
               },
               influencePatterns,
+              ...(influencePatternsTotal !== undefined && influencePatternsOmitted?.length
+                ? {
+                    influencePatternsShown: influencePatterns?.length,
+                    influencePatternsTotal,
+                    influencePatternsOmitted,
+                    influencePatternsNote: "Ranked by susceptibility and cut to the top seven. The omitted names ARE mapped and scored -- they ranked below the cut, which is different from a pattern the persona's traits never reach.",
+                  }
+                : {}),
+              // The Schwartz block arrived unattributed here while
+              // persona_lookup labelled the same values. Provenance should not
+              // depend on which tool you asked.
+              valuesSource: resolved.source,
+              ...(resolved.unpopulatedAxes
+                ? { unpopulatedAxes: resolved.unpopulatedAxes, unpopulatedNote: resolved.unpopulatedNote }
+                : {}),
               researchBasis: {
                 schwartz: "Schwartz, S. H. (1992, 2012). Theory of Basic Human Values. DOI: 10.1016/S0065-2601(08)60281-6",
                 sdt: "Deci, E. L., & Ryan, R. M. (1985, 2000). Self-Determination Theory. DOI: 10.1037/0003-066X.55.1.68",

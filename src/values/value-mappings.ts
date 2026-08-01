@@ -353,6 +353,14 @@ export interface InfluencePattern {
    * 0.35 still scored 0.545 on anchoring: the trait named for the pattern had
    * no path into it. (2026-07-31)
    */
+  /**
+   * Direction is susceptibility-facing, not virtue-facing: "positive" means a
+   * higher trait value makes the persona MORE susceptible. trustCalibration
+   * reads high for someone who trusts readily -- impatient-user carries 0.7,
+   * commented "clicks through without reading" -- so it is positive on the
+   * persuasion patterns. Coding it negative inverted three of them and scored
+   * a skeptic as more persuadable than a credulous user. (2026-07-31)
+   */
   relatedTraits?: Array<{ trait: string; direction: "positive" | "negative" }>;
   mechanism: string;
   examples: string[];
@@ -373,7 +381,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Limited availability or time creates urgency",
     researchBasis: "Cialdini (2001): Scarcity increases perceived value",
     targetValues: ["stimulation", "achievement", "power"],
-    relatedTraits: [{ trait: "fearOfMissingOut", direction: "positive" }, { trait: "patience", direction: "negative" }],
+    relatedTraits: [{ trait: "fearOfMissingOut", direction: "positive" }, { trait: "patience", direction: "negative" }, { trait: "trustCalibration", direction: "positive" }],
     mechanism: "FOMO activation, loss aversion trigger",
     examples: ["Only 3 left in stock", "Offer ends in 2 hours", "Limited edition"],
     effectivenessData: {
@@ -401,7 +409,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Expert endorsement increases credibility",
     researchBasis: "Milgram (1963): Authority figures drive compliance",
     targetValues: ["security", "conformity", "tradition"],
-    relatedTraits: [{ trait: "authoritySensitivity", direction: "positive" }, { trait: "trustCalibration", direction: "negative" }],
+    relatedTraits: [{ trait: "authoritySensitivity", direction: "positive" }, { trait: "trustCalibration", direction: "positive" }],
     mechanism: "Trust transfer from authority to product",
     examples: ["Recommended by doctors", "Used by Fortune 500", "Expert endorsed"],
   },
@@ -428,7 +436,7 @@ export const INFLUENCE_PATTERNS: InfluencePattern[] = [
     description: "Attractiveness and similarity increase persuasion",
     researchBasis: "Cialdini (2001): We comply with those we like",
     targetValues: ["hedonism", "benevolence"],
-    relatedTraits: [{ trait: "emotionalContagion", direction: "positive" }, { trait: "trustCalibration", direction: "negative" }],
+    relatedTraits: [{ trait: "emotionalContagion", direction: "positive" }, { trait: "trustCalibration", direction: "positive" }],
     mechanism: "Positive affect transfer to product",
     examples: ["Friendly tone", "Similar user stories", "Attractive design"],
   },
