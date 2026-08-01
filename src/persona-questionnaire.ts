@@ -1524,6 +1524,16 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
 export interface QuestionnaireQuestion {
   id: string;
   trait: keyof CognitiveTraits;
+  /**
+   * Set instead of a trait when the question asks about a value axis directly.
+   *
+   * Four Schwartz axes -- hedonism, power, universalism, relatednessNeed -- have
+   * no trait correlation, so no combination of trait answers can move them off
+   * the 0.5 baseline. Asking about them straight is the only route to a real
+   * number that involves no inference at all, which makes it the most defensible
+   * one available. (2026-08-01)
+   */
+  valueAxis?: string;
   question: string;
   options: Array<{
     value: number;
@@ -1536,6 +1546,157 @@ export interface QuestionnaireQuestion {
  * Generate a questionnaire for building a custom persona.
  * Returns a subset of questions covering the most impactful traits.
  */
+/**
+ * Direct questions for the value axes no trait can reach.
+ *
+ * Worded as everyday preferences rather than as the Schwartz construct name:
+ * "power" asks about wanting influence over outcomes, not about the word power.
+ * Four options, matching the trait questions' 0 / 0.33 / 0.67 / 1 scale.
+ */
+/**
+ * Five Big Five items, one per factor.
+ *
+ * This is the better route to values than the four direct questions below,
+ * because the published value correlations are with the Big Five — deriving
+ * from these crosses no gap the research does not cover, whereas deriving from
+ * cognitive traits always does. Five items also reach all thirteen axes rather
+ * than the four the direct questions patch.
+ *
+ * Written plainly rather than reproducing a published instrument's items. That
+ * costs validation: these are not the TIPI or the BFI-10 and carry none of
+ * their psychometric properties. They are a usable estimate for simulation, not
+ * a measurement of a person. (2026-08-01)
+ */
+export const BIG_FIVE_QUESTIONS: QuestionnaireQuestion[] = [
+  {
+    id: "bigfive-openness", trait: "curiosity" as keyof CognitiveTraits, valueAxis: "bigfive:openness",
+    question: "How drawn is this person to new ideas, unfamiliar things and abstract thinking?",
+    options: [
+      { value: 0, label: "Prefers the familiar", description: "Sticks to what is known and proven; novelty is a cost" },
+      { value: 0.33, label: "Mildly curious", description: "Open to new things when there is a clear reason" },
+      { value: 0.67, label: "Actively curious", description: "Seeks out unfamiliar ideas and enjoys the unusual" },
+      { value: 1, label: "Strongly exploratory", description: "Novelty and abstraction are their default interest" },
+    ],
+  },
+  {
+    id: "bigfive-conscientiousness", trait: "persistence" as keyof CognitiveTraits, valueAxis: "bigfive:conscientiousness",
+    question: "How organised and follow-through-oriented is this person?",
+    options: [
+      { value: 0, label: "Spontaneous", description: "Improvises; plans and deadlines slide" },
+      { value: 0.33, label: "Loosely organised", description: "Gets there, not always methodically" },
+      { value: 0.67, label: "Organised", description: "Plans ahead and generally finishes what they start" },
+      { value: 1, label: "Highly diligent", description: "Systematic, thorough, finishes reliably" },
+    ],
+  },
+  {
+    id: "bigfive-extraversion", trait: "emotionalContagion" as keyof CognitiveTraits, valueAxis: "bigfive:extraversion",
+    question: "How outgoing and energised by people and activity is this person?",
+    options: [
+      { value: 0, label: "Reserved", description: "Quiet, drained by social activity, prefers solitude" },
+      { value: 0.33, label: "Somewhat reserved", description: "Sociable in small doses" },
+      { value: 0.67, label: "Outgoing", description: "Comfortable and energised in company" },
+      { value: 1, label: "Highly gregarious", description: "Seeks stimulation, attention and company" },
+    ],
+  },
+  {
+    id: "bigfive-agreeableness", trait: "trustCalibration" as keyof CognitiveTraits, valueAxis: "bigfive:agreeableness",
+    question: "How warm, trusting and accommodating is this person toward others?",
+    options: [
+      { value: 0, label: "Sceptical", description: "Guarded, competitive, quick to doubt motives" },
+      { value: 0.33, label: "Cautious", description: "Civil but slow to trust" },
+      { value: 0.67, label: "Warm", description: "Trusting, cooperative, gives people the benefit of the doubt" },
+      { value: 1, label: "Highly agreeable", description: "Trusting and accommodating almost by default" },
+    ],
+  },
+  {
+    id: "bigfive-neuroticism", trait: "resilience" as keyof CognitiveTraits, valueAxis: "bigfive:neuroticism",
+    question: "How readily does this person feel anxious, stressed or thrown by setbacks?",
+    options: [
+      { value: 0, label: "Very steady", description: "Calm under pressure; setbacks barely register" },
+      { value: 0.33, label: "Mostly steady", description: "Occasional worry, recovers quickly" },
+      { value: 0.67, label: "Reactive", description: "Stress lands hard and lingers" },
+      { value: 1, label: "Highly reactive", description: "Anxious by default; setbacks are destabilising" },
+    ],
+  },
+];
+
+/** Big Five scores from questionnaire answers; absent factors are omitted. */
+export function buildBigFiveFromAnswers(answers: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const q of BIG_FIVE_QUESTIONS) {
+    const a = answers[q.id];
+    const factor = q.valueAxis?.split(":")[1];
+    if (typeof a === "number" && factor) out[factor] = a;
+  }
+  return out;
+}
+
+export const VALUE_AXIS_QUESTIONS: QuestionnaireQuestion[] = [
+  {
+    id: "value-hedonism",
+    trait: "patience" as keyof CognitiveTraits, // unused; valueAxis takes precedence
+    valueAxis: "hedonism",
+    question: "How much does this person choose things because they are enjoyable in the moment?",
+    options: [
+      { value: 0, label: "Almost never", description: "Picks the useful option over the pleasant one, consistently" },
+      { value: 0.33, label: "Sometimes", description: "Enjoyment matters, but rarely decides anything" },
+      { value: 0.67, label: "Often", description: "Actively prefers experiences that feel good along the way" },
+      { value: 1, label: "Nearly always", description: "Pleasure in the moment is a primary reason for choosing" },
+    ],
+  },
+  {
+    id: "value-power",
+    trait: "patience" as keyof CognitiveTraits,
+    valueAxis: "power",
+    question: "How much does this person want control over outcomes and standing relative to others?",
+    options: [
+      { value: 0, label: "Not at all", description: "Uninterested in status or being the one who decides" },
+      { value: 0.33, label: "A little", description: "Prefers some control but does not seek authority" },
+      { value: 0.67, label: "Quite a lot", description: "Wants a say in decisions and notices where they rank" },
+      { value: 1, label: "Strongly", description: "Status and control over outcomes drive a lot of behaviour" },
+    ],
+  },
+  {
+    id: "value-universalism",
+    trait: "patience" as keyof CognitiveTraits,
+    valueAxis: "universalism",
+    question: "How much does this person weigh fairness and the wider good beyond people they know?",
+    options: [
+      { value: 0, label: "Rarely", description: "Concern extends to their own circle, not much further" },
+      { value: 0.33, label: "Somewhat", description: "Cares in principle, seldom acts on it" },
+      { value: 0.67, label: "Considerably", description: "Fairness to strangers genuinely affects their choices" },
+      { value: 1, label: "Centrally", description: "Justice, tolerance and the common good are core commitments" },
+    ],
+  },
+  {
+    id: "value-relatednessNeed",
+    trait: "patience" as keyof CognitiveTraits,
+    valueAxis: "relatednessNeed",
+    question: "How much does this person need to feel connected to and cared for by others?",
+    options: [
+      { value: 0, label: "Very little", description: "Comfortable operating alone; connection is optional" },
+      { value: 0.33, label: "Some", description: "Values close ties but does not need them present" },
+      { value: 0.67, label: "A good deal", description: "Seeks belonging and is affected by its absence" },
+      { value: 1, label: "Strongly", description: "Feeling close to others is a central need" },
+    ],
+  },
+];
+
+/**
+ * Values taken straight from questionnaire answers, for the axes that have no
+ * other route. Returns only the axes actually answered — an unanswered axis is
+ * left absent rather than defaulted, so the caller can still tell the
+ * difference between "said 0.5" and "never asked".
+ */
+export function buildValuesFromAnswers(answers: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const q of VALUE_AXIS_QUESTIONS) {
+    const a = answers[q.id];
+    if (typeof a === "number" && q.valueAxis) out[q.valueAxis] = a;
+  }
+  return out;
+}
+
 export function generatePersonaQuestionnaire(options?: {
   comprehensive?: boolean;  // All traits vs. core subset
   traits?: (keyof CognitiveTraits)[];  // Specific traits to include
@@ -1558,7 +1719,7 @@ export function generatePersonaQuestionnaire(options?: {
     ? TRAIT_REFERENCE_MATRIX.map(t => t.name)
     : coreTraits);
 
-  return traitsToInclude.map(traitName => {
+  const traitQuestions = traitsToInclude.map(traitName => {
     const traitRef = TRAIT_REFERENCE_MATRIX.find(t => t.name === traitName);
     if (!traitRef) return null;
 
@@ -1581,6 +1742,15 @@ export function generatePersonaQuestionnaire(options?: {
       })),
     };
   }).filter(Boolean) as QuestionnaireQuestion[];
+
+  // The four value questions always ride along: they are the only way those
+  // axes ever get a real number, and they are cheap — four items on a
+  // questionnaire that already runs to eight or more.
+  // Big Five first: it reaches all thirteen axes through published
+  // correlations. The four direct value questions stay as an override for
+  // anyone who would rather state an axis than have it inferred, and as the
+  // fallback when the Big Five items go unanswered.
+  return [...traitQuestions, ...BIG_FIVE_QUESTIONS, ...VALUE_AXIS_QUESTIONS];
 }
 
 function generateQuestionText(trait: TraitReference): string {

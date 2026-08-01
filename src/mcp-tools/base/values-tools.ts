@@ -10,6 +10,7 @@ import { z } from "zod";
 import { PERSONA_CATEGORIES } from "../../persona-questionnaire.js";
 import { getAnyPersona, getCognitiveProfile } from "../../personas.js";
 import { valueAxisCorrelationCounts } from "../../persona-questionnaire.js";
+import { deriveValuesFromBigFive, bigFiveReachableAxes } from "../../values/big-five-values.js";
 import { widgetUri } from "../widget-kit.js";
 import type { McpServer } from "../types.js";
 import {
@@ -34,7 +35,9 @@ import {
  */
 export function resolvePersonaValues(name: string): {
   values: Record<string, number> | null;
-  source: "registry" | "persona" | "derived" | "none";
+  source: "registry" | "persona" | "derived" | "bigfive" | "none";
+  /** Axes whose Big Five link direction is a hypothesis rather than a finding. */
+  hypothesisAxes?: string[];
   sdt?: Record<string, number>;
   sdtSource?: "derived" | "default";
   unpopulatedAxes?: string[];
@@ -51,6 +54,41 @@ export function resolvePersonaValues(name: string): {
   const registry = getPersonaValues(name) as Record<string, number> | undefined;
   const persona = getAnyPersona(name) as unknown as Record<string, unknown> | undefined;
   const own = persona?.schwartzValues as Record<string, number> | undefined;
+
+  // Big Five, when the persona carries it and has no explicit values.
+  //
+  // Preferred over the cognitive-trait derivation because the published value
+  // correlations are with the Big Five: this path crosses no gap the research
+  // does not cover, and it reaches all thirteen axes rather than nine. Explicit
+  // values still win — someone who wrote the numbers down meant them.
+  const bigFive = persona?.bigFive as Record<string, number> | undefined;
+  if (!registry && !own && bigFive && Object.keys(bigFive).length) {
+    const d = deriveValuesFromBigFive(bigFive);
+    const sdt: Record<string, number> = {};
+    ["autonomyNeed", "competenceNeed", "relatednessNeed"].forEach((k) => {
+      if (typeof d.values[k] === "number") sdt[k] = d.values[k];
+    });
+    const KEYS10 = ["selfDirection", "stimulation", "hedonism", "achievement", "power",
+      "security", "conformity", "tradition", "benevolence", "universalism"];
+    const ten: Record<string, number> = {};
+    KEYS10.forEach((k) => { ten[k] = d.values[k]; });
+    return {
+      values: ten,
+      source: "bigfive",
+      sdt,
+      sdtSource: "derived",
+      hypothesisAxes: d.hypothesisAxes,
+      higherOrder: {
+        openness: round2((ten.selfDirection + ten.stimulation) / 2),
+        selfEnhancement: round2((ten.achievement + ten.power) / 2),
+        conservation: round2((ten.security + ten.conformity + ten.tradition) / 3),
+        selfTranscendence: round2((ten.benevolence + ten.universalism) / 2),
+      },
+      maslowLevel: "esteem",
+      maslowSource: "derived",
+    };
+  }
+
   const src = registry ?? own;
   if (!src) return { values: null, source: "none" };
 
