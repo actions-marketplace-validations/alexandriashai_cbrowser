@@ -225,10 +225,24 @@ export function resolvePersonaValues(name: string, override?: PersonaValuesOverr
   }
 
   const derivation = persona?.valuesDerivation as { method?: string } | undefined;
-  const personaSource: ValuesRoute =
-    derivation?.method === "traits" ? "cognitive_traits"
-    : derivation?.method === "bigfive_inferred" ? "bigfive_inferred"
-    : derivation?.method === "bigfive" ? "big_five"
+  //
+  // ONE vocabulary. What is STORED and what is REPORTED were different
+  // spellings of the same concept -- "bigfive"/"traits" on disk against
+  // "big_five"/"cognitive_traits" in the payload -- so the same persona
+  // answered differently depending on which surface you asked, and telling a
+  // genuine route difference from a spelling difference required reading this
+  // function. New writes use the ValuesRoute names; the old spellings still
+  // read, because rewriting stored personas to fix a label is the overreach
+  // this codebase keeps having to undo. (2026-08-01)
+  const LEGACY_METHOD: Record<string, ValuesRoute> = {
+    traits: "cognitive_traits",
+    bigfive: "big_five",
+  };
+  const rawMethod = derivation?.method;
+  const personaSource: ValuesRoute = rawMethod
+    ? (LEGACY_METHOD[rawMethod] ?? (["stated", "big_five", "bigfive_inferred", "cognitive_traits"].includes(rawMethod)
+        ? rawMethod as ValuesRoute
+        : "stated"))
     : "stated";
   // Only the trait route is bounded by the trait correlation table. The Big
   // Five table reaches all thirteen axes, so applying the trait-derived

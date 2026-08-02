@@ -711,7 +711,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       let bigFiveAccepted: Record<string, number> | undefined;
       let bigFiveRejected: string | undefined;
       if (bigFive) {
-        const verdict = validateInferredBigFive(bigFive as Record<string, number>, bigFiveEvidence);
+        const verdict = validateInferredBigFive(bigFive as Record<string, number>, bigFiveEvidence, description);
         if (verdict.ok) bigFiveAccepted = bigFive as Record<string, number>;
         else bigFiveRejected = verdict.reason;
       }
@@ -782,7 +782,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       (personaObj as unknown as Record<string, unknown>).valuesDerivation = bigFiveAccepted
         ? { method: "bigfive_inferred", squash: "tanh", precision: 3,
             inferredFrom: "description", evidence: bigFiveEvidence ?? [] }
-        : { method: "traits", squash: "tanh", precision: 3 };
+        : { method: "cognitive_traits", squash: "tanh", precision: 3 };
       if (bigFiveAccepted) {
         (personaObj as unknown as Record<string, unknown>).bigFive = bigFiveAccepted;
       }
@@ -795,6 +795,19 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       }
 
       registerPersonas([personaObj]);
+
+      // Persist to disk. registerPersonas writes to an in-memory map that dies
+      // with the process, so a creation whose CMS write also failed left the
+      // persona existing NOWHERE -- while the response said registered: true.
+      // "Registered" described RAM and read as "saved". (2026-08-01)
+      let savedToFile: string | undefined;
+      let fileSaveError: string | undefined;
+      try {
+        const { saveCustomPersona } = await import("../personas.js");
+        savedToFile = saveCustomPersona(personaObj as never);
+      } catch (e) {
+        fileSaveError = (e as Error)?.message ?? String(e);
+      }
 
       // Also save to CMS if an API key is configured (makes it persistent across sessions)
       let savedToCms = false;
@@ -822,7 +835,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
               values_derivation: bigFiveAccepted
                 ? { method: "bigfive_inferred", squash: "tanh", precision: 3,
                     inferredFrom: "description", evidence: bigFiveEvidence ?? [] }
-                : { method: "traits", squash: "tanh", precision: 3 },
+                : { method: "cognitive_traits", squash: "tanh", precision: 3 },
             }),
           });
           if (res.ok) {
@@ -891,13 +904,66 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
               bigFiveRejectedNote: "The inferred profile was not stored and values were derived from cognitive traits instead, which cannot reach hedonism, power, universalism or the relatedness need. Fix the profile and resubmit to reach all thirteen.",
             } : {}),
             accessibilityTraits: resolvedAccessibilityTraits || null,
-            hasDisabilityModeling: !!(resolvedAccessibilityTraits && Object.keys(resolvedAccessibilityTraits).length > 0),
+            // Presence of the block is not impairment. A persona with vision,
+            // motor and hearing all at 1.0 has accessibility traits and no
+            // disability, and flagging it flipped an instruction claiming the
+            // perceptual layer "will simulate sensory impairment" -- a false
+            // statement about what the run does. ADHD is cognitive; supplying
+            // ceiling sensory values must not read as a sensory disability.
+            hasDisabilityModeling: (() => {
+              const a = resolvedAccessibilityTraits as Record<string, unknown> | undefined;
+              if (!a) return false;
+              const below = (k: string, t = 0.95) =>
+                typeof a[k] === "number" && (a[k] as number) < t;
+              return below("visionLevel") || below("motorControl") || below("hearingLevel")
+                || below("contrastSensitivity") || below("processingSpeed", 0.6)
+                || below("attentionSpan", 0.6) || a.tremor === true || !!a.colorBlindness;
+            })(),
             disabilityTraitsSource: accessibilityTraits ? 'explicit' : resolvedAccessibilityTraits ? 'inferred_from_description' : 'none',
             ageRange: ageRange || personaObj.demographics?.age_range || null,
             registered: true,
+            // Both stores named, and whether the persona SURVIVES stated
+            // outright. savedToCms alone read as a minor caveat when combined
+            // with registered:true it meant the persona was in RAM and nowhere
+            // else.
             savedToCms,
+            savedToFile: savedToFile ? true : false,
+            ...(savedToFile ? { filePath: savedToFile } : {}),
+            ...(fileSaveError ? { fileSaveError } : {}),
+            persisted: !!savedToFile || savedToCms,
+            persistenceNote: savedToFile && savedToCms
+              ? "Written to the file store and the CMS."
+              : savedToFile
+                ? "Written to the file store. The CMS copy was NOT written, so the two stores disagree — the persona survives restarts but will not appear for other clients of the CMS."
+                : savedToCms
+                  ? "Written to the CMS only. The file store did NOT take it, so tools reading the file store will not find this persona."
+                  : "NOT PERSISTED. The persona exists only in this server process's memory and will be gone when it restarts. `registered: true` above means RAM, not storage.",
             instruction: resolvedAccessibilityTraits
-              ? `Persona "${persona_name}" created with disability modeling (vision=${(resolvedAccessibilityTraits as any).visionLevel ?? 'default'}, motor=${(resolvedAccessibilityTraits as any).motorControl ?? 'default'}). The perceptual transport layer will simulate sensory impairment. Use with empathy_audit for accurate disability scoring.`
+              // Names the modalities actually impaired instead of claiming
+              // "sensory impairment" wholesale. An ADHD persona with vision,
+              // motor and hearing at 1.0 and a short attention span has
+              // something real to model -- but nothing SENSORY, and the old
+              // text promised a simulation that would not happen. A claim about
+              // what a run will do has to match what the numbers support.
+              ? (() => {
+                  const a = resolvedAccessibilityTraits as Record<string, unknown>;
+                  const impaired: string[] = [];
+                  const lo = (k: string, label: string, t = 0.95) => {
+                    if (typeof a[k] === "number" && (a[k] as number) < t) impaired.push(`${label} ${a[k]}`);
+                  };
+                  lo("visionLevel", "vision"); lo("contrastSensitivity", "contrast");
+                  lo("motorControl", "motor"); lo("hearingLevel", "hearing");
+                  lo("processingSpeed", "processing speed", 0.6);
+                  lo("attentionSpan", "attention span", 0.6);
+                  if (a.tremor === true) impaired.push("tremor");
+                  if (a.colorBlindness) impaired.push(`colour vision (${String(a.colorBlindness)})`);
+                  const sensory = impaired.some((x) => /^(vision|contrast|hearing|colour)/.test(x));
+                  return `Persona "${persona_name}" created with accessibility modeling on: ${impaired.join(", ")}. `
+                    + (sensory
+                        ? "The perceptual transport layer will simulate the sensory limits above. "
+                        : "No SENSORY channel is impaired, so perception is simulated as intact; the limits above are cognitive and motor. ")
+                    + "Use with empathy_audit for disability scoring.`".slice(0, -1);
+                })()
               : `Persona "${persona_name}" created with cognitive-only modeling. For disability-specific scoring (vision impairment, motor difficulty, etc.), recreate with accessibilityTraits parameter.`,
             usage_example: {
               tool: "empathy_audit",

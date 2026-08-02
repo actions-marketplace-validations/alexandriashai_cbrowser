@@ -234,7 +234,7 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
       const d = deriveValuesFromBigFive(bigFive);
       updated.bigFive = bigFive;
       updated.schwartzValues = d.values;
-      updated.valuesDerivation = { method: "bigfive", squash: "tanh", precision: 3, recordedAt: new Date().toISOString().slice(0, 10) };
+      updated.valuesDerivation = { method: "big_five", squash: "tanh", precision: 3, recordedAt: new Date().toISOString().slice(0, 10) };
       valuesRoute = "big_five";
       changed.push("bigFive+values");
     }

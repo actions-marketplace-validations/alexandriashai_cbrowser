@@ -105,6 +105,15 @@ export const BIG_FIVE_INFERENCE_ANCHORS: Record<string, { low: string; high: str
 export function validateInferredBigFive(
   scores: Record<string, number>,
   evidence: BigFiveInferenceEvidence[] | undefined,
+  /**
+   * The description the scores were inferred from.
+   *
+   * Without it the quote requirement is cosmetic: any string satisfies "a quote
+   * is present", including the string "NO SUPPORTING TEXT". Checked against the
+   * source, a quote is evidence; unchecked, it is a field someone filled in.
+   * (2026-08-01)
+   */
+  description?: string,
 ): { ok: true } | { ok: false; reason: string } {
   const FACTORS = Object.keys(BIG_FIVE_INFERENCE_ANCHORS);
   const missing = FACTORS.filter((f) => typeof scores[f] !== "number");
@@ -120,6 +129,23 @@ export function validateInferredBigFive(
   if (unquoted.length) {
     return { ok: false, reason: `no supporting quote for ${unquoted.join(", ")} — every factor must cite the words in the description that justify its score, so a reader can check the estimate against the text rather than trusting it` };
   }
+
+  // The quote must actually BE in the description.
+  //
+  // Comparison is on letters and digits only, so punctuation, case and
+  // whitespace differences do not reject an honest quote -- but a phrase that
+  // is not in the text at all cannot pass, which is the whole point. A quote
+  // reading "NO SUPPORTING TEXT" was accepted verbatim before this.
+  if (description) {
+    const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const haystack = norm(description);
+    const fabricated = (evidence ?? [])
+      .filter((e) => e.quote?.trim() && !haystack.includes(norm(e.quote)))
+      .map((e) => `${e.factor} ("${e.quote.slice(0, 40)}")`);
+    if (fabricated.length) {
+      return { ok: false, reason: `these quotes do not appear in the description: ${fabricated.join("; ")}. A quote nobody can find in the source is not evidence. If the description does not speak to a factor, omit the whole profile rather than filling the field — see the note below.` };
+    }
+  }
   if (FACTORS.every((f) => scores[f] === 0.5)) {
     return { ok: false, reason: "all five factors are exactly 0.5, which is what 'no signal' looks like wearing the shape of 'measured average'. If the description genuinely does not support an estimate, omit the profile and let the persona use the cognitive-trait route, which reports its own gaps" };
   }
@@ -131,9 +157,14 @@ export function bigFiveInferenceReference(): Record<string, unknown> {
   return {
     instruction:
       "Estimate this persona's Big Five personality profile from the description, 0-1 per factor. "
-      + "For EACH factor you must quote the words in the description that justify your score. "
-      + "If the description does not support an estimate for a factor, say so rather than defaulting to 0.5 — "
-      + "an omitted profile is handled correctly downstream, an invented one is not.",
+      + "For EACH factor, quote the words in the description that justify the score — the quote is checked against the description and a phrase that is not in it is rejected. "
+      // The previous wording told callers to decline individual factors while
+      // the schema required all five, which are not both satisfiable. The
+      // profile is all-or-nothing on purpose: a partial one silently leaves
+      // axes at baseline, which is the ambiguity this whole layer exists to
+      // remove. So the honest out is omitting the profile, not part of it.
+      + "It is ALL FIVE OR NONE: if the description does not support estimating every factor, omit bigFive entirely rather than filling the weak ones. "
+      + "A persona with no Big Five profile derives its values from cognitive traits and reports its own gaps; a persona with an invented one does not.",
     why:
       "Big Five scores unlock all thirteen motivational values through published correlations. "
       + "Without them the persona falls back to deriving values from cognitive traits, which cannot reach "
