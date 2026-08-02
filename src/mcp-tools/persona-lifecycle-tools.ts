@@ -36,6 +36,8 @@ import { z } from "zod";
 import type { McpServer } from "./types.js";
 import { widgetUri } from "./widget-kit.js";
 import { diffPersona, describeDrift, summariseTraits } from "../values/persona-diff.js";
+import { TRAIT_INFERENCE_CRITERIA, ALL_TRAITS } from "../values/persona-completeness.js";
+import { BIG_FIVE_INFERENCE_ANCHORS } from "../values/big-five-inference.js";
 
 const CMS_URL = () => process.env.CMS_URL || "http://localhost:3200";
 
@@ -117,7 +119,34 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
       // Creation is not in this view on purpose: it needs the description read
       // and the completeness contract, which is a conversation rather than a
       // form. Named here so the path is obvious rather than missing.
-      createHint: "To create a persona: persona_create_from_description returns the trait criteria, then persona_create_submit_traits writes it. Built-in personas are shown read-only — they ship with the package and are shared by every install.",
+      // Everything the create/update forms need, shipped with the roster so no
+      // mode change costs a round trip.
+      traitCriteria: TRAIT_INFERENCE_CRITERIA,
+      allTraits: ALL_TRAITS,
+      bigFiveFactors: Object.entries(BIG_FIVE_INFERENCE_ANCHORS).map(([factor, a]) => ({
+        factor, low: a.low, high: a.high, doNotConfuse: a.doNotConfuse,
+      })),
+      modes: {
+        description: {
+          label: "From a description",
+          completesInWidget: false,
+          // Stated rather than hidden behind a spinner that never resolves:
+          // inferring traits from prose needs a model, and there is none in
+          // the sandbox. The form composes the request instead.
+          note: "Needs a model to read the text and infer traits, which the widget cannot do. Submitting hands the description to the conversation, and the assistant completes it through persona_create_from_description.",
+        },
+        survey: {
+          label: "From a survey",
+          completesInWidget: true,
+          note: "Set the traits you know; the rest take research-backed defaults. Writes immediately.",
+        },
+        bigfive: {
+          label: "From Big Five",
+          completesInWidget: true,
+          note: "Five personality factors. Reaches all thirteen motivational values through published correlations, where the trait route reaches nine.",
+        },
+      },
+      createHint: "Three ways in: a description (the assistant infers traits), a survey (set traits directly), or a Big Five profile (five factors, all thirteen values). Built-in personas are read-only — they ship with the package and are shared by every install.",
     }, null, 2) }] };
   });
 

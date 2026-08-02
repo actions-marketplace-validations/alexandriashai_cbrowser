@@ -485,6 +485,16 @@ const CSS = `
     box-shadow:inset 3px 0 0 var(--accent)}
   .mgrrow:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
   .mgrname{font-size:.85rem;font-weight:600}
+  .modetabs{display:flex;gap:.3rem;flex-wrap:wrap;margin:.4rem 0 .5rem}
+  .modetab{font:inherit;font-size:.78rem;padding:.3rem .6rem;border-radius:999px;
+    border:1px solid var(--line);background:none;color:var(--sub);cursor:pointer}
+  .modetab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .modetab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .tin{width:100%;box-sizing:border-box;font:inherit;font-size:.85rem;
+    padding:.4rem .5rem;border-radius:.375rem;border:1px solid var(--line);
+    background:transparent;color:var(--ink);margin-bottom:.5rem}
+  .tin:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .fields{max-height:20rem;overflow-y:auto}
   .mgrh{font-size:1rem;margin:0 0 .15rem}
   /* Single column on narrow viewports: a 13rem list beside an 18rem pane
      cannot both fit on a phone, and side-by-side would force a horizontal
@@ -1019,6 +1029,14 @@ const RUNTIME = String.raw`
       // delete one, so the UI does not offer to.
       if (p.builtin) { save.disabled = true; del.disabled = true; }
       bar.appendChild(save); bar.appendChild(del);
+      // The same three routes on update: revise from a new description,
+      // re-answer the survey, or supply a Big Five profile. Which fields are
+      // meaningful depends entirely on which route you are taking.
+      var via = el("button", "btn ghost", "Update via…");
+      via.type = "button";
+      via.disabled = !!p.builtin;
+      via.addEventListener("click", function () { renderForm("description", p); });
+      bar.appendChild(via);
       pane.appendChild(bar);
 
       save.addEventListener("click", async function () {
@@ -1057,6 +1075,163 @@ const RUNTIME = String.raw`
         } catch (e) { status.textContent = "Delete failed: " + (e && e.message ? e.message : e); del.disabled = false; }
       });
     }
+
+    /**
+     * Create / update in three modes, because a persona's values come from one
+     * of three routes and the route decides which fields are even meaningful.
+     * A single form with every field would ask for a Big Five profile and a
+     * survey and a description at once, when supplying any ONE of them is the
+     * whole job.
+     */
+    function renderForm(mode, existing) {
+      pane.innerHTML = "";
+      var modes = data.modes || {};
+      var spec = modes[mode] || {};
+      var isUpdate = !!existing;
+
+      var tabs = el("div", "modetabs");
+      ["description", "survey", "bigfive"].forEach(function (m) {
+        var t = el("button", "modetab" + (m === mode ? " on" : ""), (modes[m] && modes[m].label) || m);
+        t.type = "button";
+        t.setAttribute("aria-pressed", m === mode ? "true" : "false");
+        t.addEventListener("click", function () { renderForm(m, existing); });
+        tabs.appendChild(t);
+      });
+      pane.appendChild(el("h3", "mgrh", isUpdate ? "Update " + existing.name : "New persona"));
+      pane.appendChild(tabs);
+      if (spec.note) pane.appendChild(el("p", "cap", spec.note));
+
+      var nameIn;
+      if (!isUpdate) {
+        nameIn = document.createElement("input");
+        nameIn.type = "text"; nameIn.className = "tin"; nameIn.placeholder = "persona name";
+        nameIn.setAttribute("aria-label", "Persona name");
+        pane.appendChild(nameIn);
+      }
+
+      var fields = el("div", "fields");
+      pane.appendChild(fields);
+      var collect = function () { return {}; };
+
+      if (mode === "description") {
+        var ta = document.createElement("textarea");
+        ta.className = "tin"; ta.rows = 5;
+        ta.placeholder = "A cautious retiree who double-checks everything before buying…";
+        ta.value = isUpdate ? String(existing.description || "") : "";
+        ta.setAttribute("aria-label", "Description");
+        fields.appendChild(ta);
+        collect = function () { return { description: ta.value.trim() }; };
+      } else if (mode === "survey") {
+        var criteria = data.traitCriteria || {};
+        var names = data.allTraits || Object.keys(criteria);
+        var vals = {};
+        names.forEach(function (k) {
+          var base = isUpdate && existing.traits && typeof existing.traits[k] === "number"
+            ? Number(existing.traits[k]) : 0.5;
+          vals[k] = base;
+          var line = el("div", "trait");
+          var lab = el("span", "tname", titleize(k));
+          if (criteria[k]) lab.title = criteria[k];
+          var input = document.createElement("input");
+          input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.05";
+          input.value = String(base); input.className = "tedit";
+          input.setAttribute("aria-label", titleize(k));
+          var out = el("span", "tval", base.toFixed(2));
+          input.addEventListener("input", function () {
+            vals[k] = Number(input.value); out.textContent = vals[k].toFixed(2);
+          });
+          line.appendChild(lab); line.appendChild(input); line.appendChild(out);
+          fields.appendChild(line);
+        });
+        collect = function () { return { answers: vals }; };
+      } else {
+        var bf = {};
+        (data.bigFiveFactors || []).forEach(function (f) {
+          var base = isUpdate && existing.bigFive && typeof existing.bigFive[f.factor] === "number"
+            ? Number(existing.bigFive[f.factor]) : 0.5;
+          bf[f.factor] = base;
+          var line = el("div", "trait");
+          var lab = el("span", "tname", titleize(f.factor));
+          lab.title = "low: " + f.low + "\nhigh: " + f.high + "\n" + (f.doNotConfuse || "");
+          var input = document.createElement("input");
+          input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.01";
+          input.value = String(base); input.className = "tedit";
+          input.setAttribute("aria-label", titleize(f.factor));
+          var out = el("span", "tval", base.toFixed(2));
+          input.addEventListener("input", function () {
+            bf[f.factor] = Number(input.value); out.textContent = bf[f.factor].toFixed(2);
+          });
+          line.appendChild(lab); line.appendChild(input); line.appendChild(out);
+          fields.appendChild(line);
+        });
+        collect = function () { return { bigFive: bf }; };
+      }
+
+      var bar = el("div", "editbar");
+      var go = el("button", "btn", isUpdate ? "Apply" : "Create");
+      go.type = "button";
+      var back = el("button", "btn ghost", "Cancel");
+      back.type = "button";
+      back.addEventListener("click", function () { renderPane(); });
+      bar.appendChild(go); bar.appendChild(back);
+      pane.appendChild(bar);
+
+      go.addEventListener("click", async function () {
+        var name = isUpdate ? existing.name : (nameIn.value || "").trim();
+        if (!name) { status.textContent = "A name is required."; return; }
+        var payload = collect();
+        go.disabled = true; status.textContent = "Working…";
+        try {
+          if (mode === "description") {
+            // Handed to the conversation rather than faked. The widget has no
+            // model, and a form that silently did nothing would be worse than
+            // one that says where the work happens.
+            app.sendMessage({ role: "user", content: [{ type: "text",
+              text: (isUpdate ? "Update the persona " + name + " from this description" : "Create a persona named " + name + " from this description")
+                + ", using persona_create_from_description and the completeness contract: " + payload.description }] });
+            status.textContent = "Handed to the assistant — it will infer the traits and write the persona.";
+            go.disabled = false;
+            return;
+          }
+          var res, out, t;
+          if (isUpdate) {
+            res = await app.callServerTool({ name: "persona_update",
+              arguments: mode === "survey"
+                ? { persona_name: name, traits: payload.answers }
+                : { persona_name: name, bigFive: payload.bigFive } });
+          } else if (mode === "survey") {
+            res = await app.callServerTool({ name: "persona_questionnaire_build",
+              arguments: { name: name, description: "Created from a survey in persona_manager", answers: payload.answers, save: true } });
+          } else {
+            // Two calls, both real: build establishes the persona, update
+            // attaches the Big Five and moves it to that values route.
+            await app.callServerTool({ name: "persona_questionnaire_build",
+              arguments: { name: name, description: "Created from a Big Five profile in persona_manager", answers: {}, save: true } });
+            res = await app.callServerTool({ name: "persona_update",
+              arguments: { persona_name: name, bigFive: payload.bigFive } });
+          }
+          t = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+          out = t ? JSON.parse(t.text) : {};
+          if (out.error) { status.textContent = "Failed: " + (out.message || out.error); go.disabled = false; return; }
+          status.textContent = (isUpdate ? "Updated " : "Created ") + name
+            + (out.valuesRoute ? " (" + out.valuesRoute + ")" : "")
+            + ((out.descriptionDrift || []).length ? " — " + out.descriptionDrift.length + " description claim(s) now contradicted" : "");
+          app.sendMessage({ role: "user", content: [{ type: "text",
+            text: (isUpdate ? "Updated" : "Created") + " persona " + name + " via " + mode }] });
+          renderPane();
+        } catch (e) {
+          status.textContent = "Failed: " + (e && e.message ? e.message : e);
+          go.disabled = false;
+        }
+      });
+    }
+
+    var newBar = el("div", "editbar");
+    var newBtn = el("button", "btn", "New persona");
+    newBtn.type = "button";
+    newBtn.addEventListener("click", function () { renderForm("description", null); });
+    newBar.appendChild(newBtn);
+    wrap.insertBefore(newBar, status);
 
     renderList(); renderPane();
     return wrap;
