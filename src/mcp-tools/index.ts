@@ -74,6 +74,7 @@ export {
 
 // Re-export persona creation tools
 export { registerPersonaCreationTools } from "./persona-creation-tools.js";
+export { registerPersonaLifecycleTools } from "./persona-lifecycle-tools.js";
 
 // Re-export ask user tool
 export { registerAskUserTool } from "./ask-user-tools.js";

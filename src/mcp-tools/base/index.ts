@@ -165,6 +165,7 @@ export { registerVisualTestingTools } from "./visual-testing-tools.js";
 export { registerTestingTools } from "./testing-tools.js";
 export { registerBugAnalysisTools } from "./bug-analysis-tools.js";
 export { registerPersonaComparisonTools } from "./persona-comparison-tools.js";
+export { registerPersonaLifecycleTools } from "../persona-lifecycle-tools.js";
 export { registerCognitiveTools } from "./cognitive-tools.js";
 export { registerValuesTools } from "./values-tools.js";
 export { registerPerformanceTools } from "./performance-tools.js";

@@ -2459,7 +2459,15 @@ ${VERSION}
         }
       }
     } catch (err) {
-      console.log(`[tools/list] Direct cache failed, will cache on first authenticated request`);
+      // The REASON, not just the fact. This swallowed its error and logged a
+      // shrug, so an enterprise server whose manifest build throws advertises
+      // ZERO tools to any unauthenticated lister -- which is what a connector
+      // does when it refreshes -- and the log said only that something failed.
+      // A silent catch on a discovery path is indistinguishable from a server
+      // with no tools. (2026-08-01)
+      console.error(`[tools/list] Direct manifest cache FAILED: ${(err as Error)?.message ?? err}`);
+      console.error(`[tools/list] Unauthenticated tools/list will return an EMPTY list until the first authenticated request populates it. Connectors refreshing now will see no tools.`);
+      const st = (err as Error)?.stack; if (st) console.error(st.split("\n").slice(0, 4).join("\n"));
     }
   })(); });
 
