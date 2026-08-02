@@ -27,6 +27,8 @@ import type { CognitiveTraits } from "../types.js";
 import { bigFiveInferenceReference, validateInferredBigFive } from "../values/big-five-inference.js";
 import { deriveValuesFromBigFive } from "../values/big-five-values.js";
 import { TRAIT_INFERENCE_CRITERIA, ALL_TRAITS, assessTraitCompleteness } from "../values/persona-completeness.js";
+import { summariseTraits } from "../values/persona-diff.js";
+import { widgetUri } from "./widget-kit.js";
 
 // ============================================================================
 // Schwartz Values Questions for Persona Questionnaire
@@ -664,6 +666,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         quote: z.string().describe("The words in the description justifying this score"),
       })).optional().describe("One entry per factor, quoting the description. Required whenever bigFive is supplied — an estimate nobody can check against the source is not evidence."),
     },
+    _meta: { ui: { resourceUri: widgetUri("persona-created") } },
     annotations: {
       title: "Submit Persona Traits",
       readOnlyHint: false,
@@ -868,6 +871,18 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
                   hypothesisAxes: (derivedResult as { hypothesisAxes: string[] }).hypothesisAxes }
               : {}),
             valuesRoute: bigFiveAccepted ? "bigfive_inferred" : "cognitive_traits",
+            traitSummary: summariseTraits(builtTraits as unknown as Record<string, number>),
+            // Named at creation, which is the only moment the distinction is
+            // free: a declared-unsupported trait sits at a population baseline
+            // and is indistinguishable from a considered value in every later
+            // view of this persona.
+            ...(unsupportedTraits?.length ? {
+              unsupportedTraits,
+              unsupportedDetail: unsupportedTraits.map((t) => ({
+                trait: t, value: (builtTraits as unknown as Record<string, number>)[t],
+                source: "population baseline — the description did not speak to this",
+              })),
+            } : {}),
             ...(bigFiveAccepted ? { bigFive: bigFiveAccepted, bigFiveEvidence: bigFiveEvidence ?? [] } : {}),
             // A rejected profile is REPORTED, never swallowed. Silently falling
             // back would leave the caller believing the Big Five route ran.

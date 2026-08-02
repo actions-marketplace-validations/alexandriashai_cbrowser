@@ -205,6 +205,96 @@ export const PERSONA_SPEC: WidgetSpec = {
 };
 
 /**
+ * A persona that was just created.
+ *
+ * The creation tools returned JSON and nothing else, so "what did I just make?"
+ * meant reading a trait map by eye. This shows the finished persona the way the
+ * lookup widget does, plus the two things only creation knows: which route
+ * produced the values, and which traits the caller declared the description
+ * could not support.
+ *
+ * Those declared-unsupported traits are the point. They sit at a population
+ * baseline and are indistinguishable from considered values in every later
+ * view; naming them at the moment of creation is the only place the
+ * distinction is free. (2026-08-01)
+ */
+export const PERSONA_CREATED_SPEC: WidgetSpec = {
+  id: "persona-created",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-create-from-description/",
+  title: "Persona created",
+  titleField: "persona_name",
+  titlePrefix: "Created: ",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "description" },
+    facts: [
+      { field: "traits", label: "traits" },
+      { field: "valuesRoute", label: "values route" },
+      { field: "unsupportedTraits", label: "unsupported" },
+    ],
+    actions: [{ label: "Manage personas", url: "https://cbrowser.ai/account/personas" }],
+  },
+  blocks: [
+    { type: "note", title: "What the trait vector says", field: "traitSummary" },
+    { type: "traits", title: "Cognitive traits", field: "traits", ramp: "trait", describe: true },
+    { type: "traits", title: "Values", field: "values", ramp: "value" },
+    { type: "table", title: "Declared unsupported", field: "unsupportedDetail" },
+    {
+      type: "drawer",
+      title: "Details",
+      blocks: [
+        { type: "kv", title: "Values route", field: "valuesDerivation" },
+        { type: "kv", title: "Demographics", field: "demographics" },
+        { type: "rest", title: "Other fields" },
+      ],
+    },
+  ],
+};
+
+/**
+ * What an update changed.
+ *
+ * A diff rather than a snapshot, because the question after an edit is not
+ * "what is this persona" but "what did I just do to it" — and the second is not
+ * answerable from the first without having memorised the before.
+ *
+ * Carries the description-drift check: traits are updated and prose is not, so
+ * a persona ends up with a vector saying "impatient" under a description that
+ * still says "patient". The prose is never rewritten here; the contradiction is
+ * reported and the decision left alone. (2026-08-01)
+ */
+export const PERSONA_UPDATED_SPEC: WidgetSpec = {
+  id: "persona-updated",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-update/",
+  title: "Persona updated",
+  titleField: "persona",
+  titlePrefix: "Updated: ",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "note" },
+    facts: [
+      { field: "changed", label: "fields changed" },
+      { field: "descriptionDrift", label: "description conflicts" },
+    ],
+    actions: [{ label: "Manage personas", url: "https://cbrowser.ai/account/personas" }],
+  },
+  blocks: [
+    { type: "table", title: "What changed", field: "changes" },
+    { type: "table", title: "Description now contradicts the traits", field: "descriptionDrift" },
+    { type: "note", title: "What the trait vector says now", field: "traitSummary" },
+    { type: "kv", title: "Where the write landed", field: "stores" },
+    {
+      type: "drawer",
+      title: "Details",
+      blocks: [
+        { type: "traits", title: "Traits after update", field: "traits", ramp: "trait", describe: true },
+        { type: "rest", title: "Other fields" },
+      ],
+    },
+  ],
+};
+
+/**
  * Attention heatmap view.
  *
  * The image is the finding here -- a JSON list of scores is a lossy
@@ -444,6 +534,14 @@ export function buildPersonaTemplate(): string {
   return buildWidget(PERSONA_SPEC);
 }
 
+export function buildPersonaCreatedTemplate(): string {
+  return buildWidget(PERSONA_CREATED_SPEC);
+}
+
+export function buildPersonaUpdatedTemplate(): string {
+  return buildWidget(PERSONA_UPDATED_SPEC);
+}
+
 export function buildStatusTemplate(): string {
   return buildWidget(STATUS_SPEC);
 }
@@ -532,6 +630,24 @@ export function registerUiResources(server: McpServer): void {
     { description: "Persona traits, values and accessibility profile", mimeType: MCP_APP_MIME },
     async () => ({
       contents: [{ uri: widgetUri("persona"), mimeType: MCP_APP_MIME, text: buildPersonaTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-persona-created-ui",
+    widgetUri("persona-created"),
+    { description: "A persona that was just created, with its values route and any traits declared unsupported", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("persona-created"), mimeType: MCP_APP_MIME, text: buildPersonaCreatedTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-persona-updated-ui",
+    widgetUri("persona-updated"),
+    { description: "What a persona update changed, and whether the description still matches the traits", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("persona-updated"), mimeType: MCP_APP_MIME, text: buildPersonaUpdatedTemplate() }],
     }),
   );
 

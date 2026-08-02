@@ -34,6 +34,8 @@
  */
 import { z } from "zod";
 import type { McpServer } from "./types.js";
+import { widgetUri } from "./widget-kit.js";
+import { diffPersona, describeDrift, summariseTraits } from "../values/persona-diff.js";
 
 const CMS_URL = () => process.env.CMS_URL || "http://localhost:3200";
 
@@ -86,6 +88,7 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
       techLevel: z.enum(["beginner", "intermediate", "expert"]).optional(),
     },
     annotations: { title: "Update Persona", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { resourceUri: widgetUri("persona-updated") } },
   }, async ({ persona_name, traits, description, attentionPattern, accessibilityTraits, bigFive, ageRange, techLevel }) => {
     // Destructured in the parameter list, not the body: a repo test statically
     // reads the handler signature to prove every declared argument is actually
@@ -109,6 +112,10 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
         written: false,
       }, null, 2) }] };
     }
+
+    // Snapshot BEFORE the merge. A diff needs both sides, and the object is
+    // mutated in place from here on.
+    const before = JSON.parse(JSON.stringify(existing)) as Record<string, unknown>;
 
     // Merge. The fields not named here are carried through untouched, which is
     // the whole contract of an update as opposed to a re-create.
@@ -166,9 +173,34 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
                       values_derivation: updated.valuesDerivation } : {}),
     });
 
+    // What actually moved, and whether the prose still describes it.
+    const changes = diffPersona(before, updated);
+    const afterTraits = updated.cognitiveTraits as Record<string, number> | undefined;
+    const drift = describeDrift(updated.description as string | undefined, afterTraits);
+
     return { content: [{ type: "text" as const, text: JSON.stringify({
       persona: persona_name,
       changed,
+      // Rendered by the persona-updated widget as a before/after table.
+      changes: changes.map((c) => ({
+        field: c.field,
+        before: typeof c.before === "object" ? JSON.stringify(c.before)?.slice(0, 60) : c.before,
+        after: typeof c.after === "object" ? JSON.stringify(c.after)?.slice(0, 60) : c.after,
+        ...(c.delta !== undefined ? { delta: c.delta } : {}),
+      })),
+      traits: afterTraits,
+      traitSummary: summariseTraits(afterTraits),
+      // The description is NOT rewritten. Someone wrote it and it carries
+      // intent the numbers cannot; regenerating prose from a vector is the
+      // same overreach as overwriting stated values with a derivation. The
+      // contradictions are named and the decision left where it belongs.
+      ...(drift.length ? {
+        descriptionDrift: drift.map((d) => ({ trait: d.trait, phrase: d.phrase, nowIs: d.nowIs })),
+        descriptionDriftNote: `The description still makes ${drift.length} claim(s) the updated traits contradict: `
+          + drift.map((d) => d.note).join("; ")
+          + `. The description was not rewritten — pass \`description\` to update it, or leave it if the prose is right and the traits are wrong.`,
+      } : {}),
+      stores: { fileStore: "written", cms: cms.ok ? "written" : "NOT written" },
       ...(valuesRoute ? { valuesRoute } : {}),
       fileStore: { written: true, path: filePath },
       cms,
