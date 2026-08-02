@@ -766,6 +766,10 @@ export interface CognitiveProfile {
    * not a conclusion about that persona. (2026-07-31)
    */
   attentionPatternSource?: "declared" | "derived" | "default";
+  /** Gap to the runner-up pattern. Small means the derivation is a near-tie. */
+  attentionPatternMargin?: number;
+  /** Set when a declared pattern disagrees with what the traits score highest. */
+  attentionPatternConflict?: string;
   decisionStyleSource?: "declared" | "derived" | "default";
   /**
    * Gap between the winning decision style's score and the runner-up. A small

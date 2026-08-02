@@ -840,6 +840,8 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   // Derive attention pattern from humanBehavior.attention.pattern or behaviors
   let attentionPattern: AttentionPatternType = "f-pattern";
   let attentionPatternSource: "declared" | "derived" | "default" = "default";
+  let attentionPatternMargin: number | undefined;
+  let attentionPatternConflict: string | undefined;
   if (persona.humanBehavior?.attention?.pattern) {
     attentionPatternSource = "declared";
     const pattern = persona.humanBehavior.attention.pattern;
@@ -859,6 +861,7 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     attentionPattern = persona.behaviors.attentionPattern as AttentionPatternType;
     attentionPatternSource = "declared";
   }
+  const declaredAttentionPattern = attentionPatternSource === "declared" ? attentionPattern : undefined;
 
   // Derive decision style from traits
   let decisionStyle: DecisionStyleType = "cautious";
@@ -941,6 +944,64 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     // A near-tie is a weak reading, and saying so beats presenting the winner
     // as though it were clear.
     decisionStyleMargin = Math.round((scores[0][1] - scores[1][1]) * 100) / 100;
+
+    // Attention pattern, derived the same way decisionStyle is.
+    //
+    // It was declared-or-default with no derivation at all, so a persona whose
+    // traits describe hard skimming could carry attentionPattern "thorough"
+    // and nothing anywhere would say the two disagreed -- and the declaration
+    // is what drives behaviour at runtime, so the contradiction changed how the
+    // persona read a page rather than merely how it was reported.
+    //
+    // Scored rather than branched, for the reason decisionStyle is: a branch
+    // chain answers only for combinations someone wrote a condition for, and
+    // everything else silently inherits the initial literal. Only the patterns
+    // the trait vector can actually speak to are scored. `sequential` is a
+    // navigation MODE (screen reader, tab order) and `z-pattern` is a property
+    // of sparse layouts rather than of a person, so neither is inferred from
+    // disposition -- they stay declarable and are never guessed. (2026-08-01)
+    const attnScores: Array<[AttentionPatternType, number]> = [
+      // Reads everything, slowly: high reading, patient, refuses to settle.
+      ["thorough", mean(readingV, patienceV, 1 - satisficeV, t("comprehension"))],
+      // Big elements only: low reading, impatient, settles fast.
+      ["skim", mean(1 - readingV, 1 - patienceV, satisficeV)],
+      // Straight to the expected place: knows the conventions, forages by
+      // scent, does not need to read to locate.
+      ["targeted", mean(t("proceduralFluency"), t("informationForaging"), satisficeV, 1 - readingV)],
+      // Notices everything, follows what is interesting rather than a plan.
+      ["exploratory", mean(t("curiosity"), 1 - t("metacognitivePlanning"), t("informationForaging"))],
+      // The web-reading default: middling on the axes that separate the others.
+      // Scored rather than used as a fallback literal so it has to WIN to be
+      // chosen, which is what stops it becoming the silent catch-all the old
+      // default was.
+      ["f-pattern", mean(0.5 + (0.5 - Math.abs(readingV - 0.5)), 0.5 + (0.5 - Math.abs(patienceV - 0.5))) * 0.9],
+    ];
+    attnScores.sort((a, b) => b[1] - a[1]);
+    const derivedAttentionPattern = attnScores[0][0];
+    attentionPatternMargin = Math.round((attnScores[0][1] - attnScores[1][1]) * 100) / 100;
+    if (declaredAttentionPattern === undefined) {
+      attentionPattern = derivedAttentionPattern;
+      attentionPatternSource = "derived";
+    } else if (declaredAttentionPattern !== derivedAttentionPattern) {
+      // The declaration still WINS -- someone wrote it deliberately and it may
+      // encode something the traits cannot, like a screen reader's sequential
+      // pass. But a disagreement this size is reported rather than swallowed,
+      // because the runtime behaviour follows the declaration and the numbers
+      // say something else.
+      // A conflict is only as strong as the derivation behind it. When the
+      // top two derived patterns are themselves a near-tie, "the traits say X"
+      // overstates what the numbers support -- the honest claim is that the
+      // traits do not endorse the declaration, not that they pick a different
+      // winner. Same rule the Maslow tie reporting follows.
+      const decisive = (attentionPatternMargin ?? 0) > 0.05;
+      attentionPatternConflict = decisive
+        ? `declared "${declaredAttentionPattern}", but this persona's traits score "${derivedAttentionPattern}" highest by ${attentionPatternMargin} `
+          + `(reading ${readingV}, patience ${patienceV}, satisficing ${satisficeV}). `
+          + `The declaration is in force at runtime; the trait vector disagrees with it.`
+        : `declared "${declaredAttentionPattern}", which is not what the traits favour — though they do not clearly favour anything either `
+          + `("${derivedAttentionPattern}" leads by only ${attentionPatternMargin}). `
+          + `Read this as the declaration being unsupported rather than contradicted.`;
+    }
   }
   if (persona.behaviors?.decisionStyle) {
     decisionStyle = persona.behaviors.decisionStyle as DecisionStyleType;
@@ -986,6 +1047,8 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     attentionPattern,
     decisionStyle,
     attentionPatternSource,
+    attentionPatternMargin,
+    attentionPatternConflict,
     decisionStyleSource,
     ...(decisionStyleMargin !== undefined ? { decisionStyleMargin } : {}),
     innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,

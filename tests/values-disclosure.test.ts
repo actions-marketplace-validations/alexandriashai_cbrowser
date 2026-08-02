@@ -17,14 +17,45 @@ import { resolvePersonaValues } from "../src/mcp-tools/base/values-tools.js";
  * current output. (2026-08-01)
  */
 
-const TRAIT_ROUTE = "alexa-eden";
+/**
+ * A fixture passed straight to the resolver — no filesystem, no store.
+ *
+ * These tests pinned `alexa-eden`, a real persona, and every assertion about
+ * the cognitive-trait route broke the moment she was given a Big Five profile.
+ * The persona was not wrong and the code was not wrong; the test was reading
+ * production data that people are supposed to be able to change.
+ *
+ * Writing a fixture FILE was the obvious next move and also wrong: personas.ts
+ * captures its data directory at module load, so an env var set in beforeAll
+ * arrives too late to matter. The resolver takes caller-supplied data, so the
+ * honest version of this test supplies it and touches no disk at all.
+ * (2026-08-01)
+ */
+const TRAIT_ROUTE = "isa-fixture-trait-route";
+
+/** The values a trait-route persona with these traits actually derives. */
+const FIXTURE = {
+  valuesDerivation: { method: "traits" as const },
+  values: {
+    selfDirection: 0.703, stimulation: 0.756, hedonism: 0.5, achievement: 0.698,
+    power: 0.5, security: 0.341, conformity: 0.478, tradition: 0.495,
+    benevolence: 0.493, universalism: 0.5,
+    // The SDT needs belong in the fixture too: the transform assertion covers
+    // all thirteen axes, and a ten-axis fixture would quietly check ten and
+    // still pass its own count check if that were written loosely.
+    autonomyNeed: 0.72, competenceNeed: 0.765, relatednessNeed: 0.5,
+  },
+};
+
+/** Every test resolves through this, so none of them depend on the store. */
+const resolve = () => resolvePersonaValues(TRAIT_ROUTE, FIXTURE);
 
 describe("netNudge disclosure", () => {
   test("the stated transform actually reproduces every stated value", () => {
     // The disclosure claims value = 0.5 + tanh(nudge)/2. If the squash ever
     // changes and the note does not, this goes red -- which is the whole
     // point: a transform stated in prose is a claim, and claims get probed.
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     expect(r.netNudge).toBeDefined();
     expect(r.valueTransform).toContain("tanh");
     const all = { ...(r.values ?? {}), ...(r.sdt ?? {}) };
@@ -41,7 +72,7 @@ describe("netNudge disclosure", () => {
   test("sign is preserved, so a below-midpoint axis is not reported as untouched", () => {
     // The original bug, pinned. `Math.max(epsilon, x)` made every negative
     // nudge read 0 -- identical to an axis no trait reaches.
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     const below = Object.entries(r.values ?? {}).filter(([, v]) => v < 0.5).map(([k]) => k);
     expect(below.length).toBeGreaterThan(0);
     for (const axis of below) {
@@ -50,7 +81,7 @@ describe("netNudge disclosure", () => {
   });
 
   test("an axis no trait reaches is exactly 0, not merely small", () => {
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     for (const axis of r.unpopulatedAxes ?? []) {
       expect({ axis, nudge: r.netNudge![axis] }).toEqual({ axis, nudge: 0 });
     }
@@ -61,7 +92,7 @@ describe("contamination disclosure", () => {
   test("clean rollups are stated, never encoded as an absent key", () => {
     // Reporting only the contaminated entries makes a reader infer meaning
     // from absence, which is the same defect the field exists to remove.
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     const c = r.higherOrderContamination!;
     expect(Object.keys(c).sort()).toEqual(
       ["conservation", "openness", "selfEnhancement", "selfTranscendence"]);
@@ -70,7 +101,7 @@ describe("contamination disclosure", () => {
   });
 
   test("every Maslow level reports its input count, clean ones included", () => {
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     const c = r.maslowContamination!;
     expect(Object.keys(c).sort()).toEqual(
       ["belonging", "esteem", "safety", "self-actualization"]);
@@ -85,14 +116,14 @@ describe("Maslow scoring is not shrunk toward the midpoint", () => {
     // reorders the ranking rather than only compressing it. If anyone
     // reinstates the imputed average as the score, the basis string picks up a
     // second term and this goes red.
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     expect(r.maslowBasis).toBe("(selfDirection 0.703) / 1");
     expect(r.maslowRunnerUp).toBe("esteem 0.698 = (achievement 0.698) / 1");
     expect(r.maslowMargin).toBe(0.005);
   });
 
   test("the caveat names composition, not only the margin", () => {
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     expect(r.maslowCaveat).toContain("excluded rather than imputed");
     expect(r.maslowCaveat).toContain("reorders the ranking");
   });
@@ -102,7 +133,7 @@ describe("route disclosure", () => {
   test("the trait route is named as itself, not as a generic 'derived'", () => {
     // 'derived' spanned the Big Five route and the cognitive-trait route --
     // the two that differ most in how far they should be trusted.
-    const r = resolvePersonaValues(TRAIT_ROUTE);
+    const r = resolve();
     expect(r.source).toBe("cognitive_traits");
     expect(r.storedIn).toBe("persona");
   });
@@ -125,9 +156,13 @@ describe("no disclosure field is computed and then dropped", () => {
    * without surfacing it now fails here rather than being noticed by a reader.
    */
   test("every resolver field reaches the persona_values_lookup payload", async () => {
+    // This one claim is route-independent -- "whatever the resolver computes
+    // must reach the payload" -- so it uses a persona the BUILDER can resolve
+    // by name rather than the injected fixture, which the builder cannot see.
     const { buildValuesPayloadForTest } = await import("../src/mcp-tools/base/values-tools.js");
-    const resolved = resolvePersonaValues(TRAIT_ROUTE);
-    const json = JSON.stringify(await buildValuesPayloadForTest(TRAIT_ROUTE));
+    const REAL = "first-timer";
+    const resolved = resolvePersonaValues(REAL);
+    const json = JSON.stringify(await buildValuesPayloadForTest(REAL));
 
     // Structural fields consumed to BUILD the payload rather than printed in
     // it. Each is deliberate; anything else missing is the bug above.
