@@ -24,9 +24,22 @@ import { parseManifest } from "../src/recording/types.js";
 import { runNLTestSuite } from "../src/testing/nl-test-suite.js";
 
 const workDir = mkdtempSync(join(tmpdir(), "cbrowser-autocapture-"));
+// This file calls getPaths() and runNLTestSuite(), both of which resolve
+// CBROWSER_DATA_DIR -- and it never set one, so every run read and wrote the
+// REAL ~/.cbrowser: the live browser profile, the live session state, the same
+// tree a real user's own personas and sessions live in. A test suite that
+// writes production is a defect independent of whatever it was hunting.
+// (2026-08-02)
+// Deliberately NOT under os.tmpdir(): one test below asserts that capture
+// output never lands in the system temp dir, and a data dir rooted there would
+// make that assertion fail for a reason that has nothing to do with the
+// behaviour it checks.
+const dataDir = mkdtempSync(join(import.meta.dir, "..", ".test-scratch-autocapture-"));
+process.env.CBROWSER_DATA_DIR = dataDir;
 
 afterAll(() => {
   rmSync(workDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
 /** A page that repaints on a timer, so an event-driven recorder gets frames. */

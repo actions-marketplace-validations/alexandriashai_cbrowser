@@ -89,6 +89,52 @@ export const BIG_FIVE_INFERENCE_ANCHORS: Record<string, { low: string; high: str
 };
 
 /**
+ * Words that bear on each factor, used to ask whether a quote is about the
+ * thing it is cited for.
+ *
+ * The existence check ("is this phrase in the description?") closed the
+ * fabrication hole and left a second one open: a REAL phrase cited for the
+ * WRONG factor passes it completely. "power user" is in the description, so
+ * quoting it under extraversion satisfies every check — and it is a claim about
+ * expertise, not about whether people energise or drain this person.
+ *
+ * The lexicons are deliberately generous, because the cost of the two errors is
+ * not symmetric. Missing a real cue produces a warning on an honest quote;
+ * accepting an unrelated one produces a personality score with a citation that
+ * looks checked. So a miss is cheap and an over-tight list is not.
+ *
+ * What this CANNOT do is judge whether a related quote supports the DIRECTION
+ * of the score — "loves a crowded room" cited for extraversion 0.1 matches the
+ * lexicon and is still backwards. That needs a reader. This narrows the gap; it
+ * does not close it, and the response says so. (2026-08-01)
+ */
+export const BIG_FIVE_CUES: Record<string, string[]> = {
+  openness: ["curious", "curiosity", "explore", "explorat", "novel", "new ", "variety", "imagin", "creativ",
+    "idea", "experiment", "tries", "try ", "unfamiliar", "routine", "tradition", "familiar", "same way",
+    "always done", "set in", "adventur", "interest"],
+  conscientiousness: ["careful", "carefully", "thorough", "methodical", "organis", "organiz", "plan", "checks",
+    "double-check", "double check", "detail", "reliable", "diligent", "disciplin", "list", "systematic",
+    "sloppy", "disorgan", "spontaneous", "improvis", "half-finish", "rushes", "skips", "hasty", "meticulous"],
+  extraversion: ["outgoing", "talkative", "social", "sociable", "people", "group", "team", "assertive",
+    "energis", "energiz", "chatty", "gregarious", "reserved", "quiet", "private", "solitary", "alone",
+    "introvert", "extrovert", "shy", "withdraw", "keeps to"],
+  agreeableness: ["cooperat", "trusting", "trusts", "warm", "helpful", "considerate", "kind", "accommodat",
+    "polite", "agreeab", "conflict", "blunt", "argu", "sceptic", "skeptic", "competitive", "demanding",
+    "hard to please", "critical", "suspicious", "confront", "patient with", "generous"],
+  neuroticism: ["anxious", "anxiety", "worry", "worries", "stress", "nervous", "frustrat", "rattled",
+    "overwhelm", "panic", "tense", "upset", "fear", "afraid", "calm", "steady", "even-temper", "unflappable",
+    "relaxed", "composed", "resilient", "recovers", "self-doubt", "doubts"],
+};
+
+/** Does this quote contain any word that bears on this factor? */
+export function quoteRelatesToFactor(factor: string, quote: string): boolean {
+  const cues = BIG_FIVE_CUES[factor];
+  if (!cues) return true;
+  const q = quote.toLowerCase();
+  return cues.some((c) => q.includes(c));
+}
+
+/**
  * Validate an inferred profile before it is stored.
  *
  * Two things are rejected, both because they are the shapes a guess takes when
@@ -114,7 +160,7 @@ export function validateInferredBigFive(
    * (2026-08-01)
    */
   description?: string,
-): { ok: true } | { ok: false; reason: string } {
+): { ok: true; unrelatedQuotes?: string[] } | { ok: false; reason: string } {
   const FACTORS = Object.keys(BIG_FIVE_INFERENCE_ANCHORS);
   const missing = FACTORS.filter((f) => typeof scores[f] !== "number");
   if (missing.length) {
@@ -146,10 +192,43 @@ export function validateInferredBigFive(
       return { ok: false, reason: `these quotes do not appear in the description: ${fabricated.join("; ")}. A quote nobody can find in the source is not evidence. If the description does not speak to a factor, omit the whole profile rather than filling the field — see the note below.` };
     }
   }
+  // One quote cited for several factors is the shape of a caller who found a
+  // single quotable sentence and used it everywhere. Two can be legitimate --
+  // "anxious about getting it wrong, so she checks twice" genuinely speaks to
+  // neuroticism AND conscientiousness. Three or more is one sentence doing the
+  // work of a personality profile.
+  const byQuote = new Map<string, string[]>();
+  for (const e of evidence ?? []) {
+    if (!e.quote?.trim()) continue;
+    const k = e.quote.trim().toLowerCase();
+    byQuote.set(k, [...(byQuote.get(k) ?? []), e.factor]);
+  }
+  const overused = [...byQuote.entries()].filter(([, fs]) => fs.length >= 3);
+  if (overused.length) {
+    const [q, fs] = overused[0];
+    return { ok: false, reason: `the same quote ("${q.slice(0, 50)}") is cited for ${fs.length} factors (${fs.join(", ")}). One sentence is not evidence for most of a personality profile — quote the specific words behind each score, or omit the profile` };
+  }
+
+  // Does each quote have anything to do with the factor it is cited for?
+  //
+  // The existence check accepts a real phrase cited for the wrong factor:
+  // "power user" appears in the description, so quoting it under extraversion
+  // passed every gate while making a claim about expertise, not sociability.
+  const unrelated = (evidence ?? [])
+    .filter((e) => e.quote?.trim() && BIG_FIVE_CUES[e.factor] && !quoteRelatesToFactor(e.factor, e.quote))
+    .map((e) => `${e.factor} ("${e.quote.slice(0, 40)}")`);
+  // Every quote unrelated means the citations are decoration. Some unrelated is
+  // reported rather than rejected: the lexicons are heuristics, and rejecting an
+  // honest quote for missing a keyword would teach callers to pad quotes with
+  // cue words, which is worse than the problem.
+  if (unrelated.length >= FACTORS.length) {
+    return { ok: false, reason: `none of the quotes contain any word bearing on the factor they are cited for (${unrelated.join("; ")}). Quote the words that make the case for THAT factor` };
+  }
+
   if (FACTORS.every((f) => scores[f] === 0.5)) {
     return { ok: false, reason: "all five factors are exactly 0.5, which is what 'no signal' looks like wearing the shape of 'measured average'. If the description genuinely does not support an estimate, omit the profile and let the persona use the cognitive-trait route, which reports its own gaps" };
   }
-  return { ok: true };
+  return unrelated.length ? { ok: true, unrelatedQuotes: unrelated } : { ok: true };
 }
 
 /** The block handed to the inferring model. Behavioural anchors, not adjectives. */

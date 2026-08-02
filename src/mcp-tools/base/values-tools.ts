@@ -1291,7 +1291,7 @@ _meta: { ui: { resourceUri: "ui://cbrowser/trait-v2" } },
                   "trustCalibration", "interruptRecovery", "informationForaging", "changeBlindness",
                   "anchoringBias", "timeHorizon", "attributionStyle", "metacognitivePlanning",
                   "proceduralFluency", "transferLearning", "authoritySensitivity", "emotionalContagion",
-                  "fearOfMissingOut", "socialProofSensitivity", "mentalModelRigidity", "siteFamiliarity"
+                  "fearOfMissingOut", "socialProofSensitivity", "mentalModelRigidity"
                 ],
               }, null, 2),
             },

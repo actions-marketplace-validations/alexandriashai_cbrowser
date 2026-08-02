@@ -5171,7 +5171,23 @@ export interface AccessibilityEmpathyResult {
   persona: string;
   /** Type of disability simulated */
   disabilityType: string;
-  /** Whether the goal was achieved */
+  /**
+   * Whether the audit found any barrier that would BLOCK this persona.
+   *
+   * Renamed from `goalAchieved`, which claimed something the code never
+   * computed. The value is `blockingBarriers.length === 0` — a statement about
+   * the page, not about anyone completing a task. No traversal is required to
+   * produce it, and when a cognitive journey does run its SUCCESS never sets
+   * this true; only an explicit journey failure can force it false.
+   *
+   * "The goal was achieved" and "we found nothing that would stop you" are
+   * different claims, and the old name asserted the stronger one. (2026-08-02)
+   */
+  noBlockingBarriers: boolean;
+  /**
+   * @deprecated Use `noBlockingBarriers`. Same value, honest name. Emitted for
+   * one release so existing consumers do not break, then removed.
+   */
   goalAchieved: boolean;
   /** Barriers encountered */
   barriers: AccessibilityBarrier[];
@@ -5197,8 +5213,8 @@ export interface AccessibilityEmpathyResult {
 export interface EmpathyAuditResult {
   /** URL tested */
   url: string;
-  /** Goal attempted */
-  goal: string;
+  /** The goal, when one was supplied and a journey used it. */
+  goal?: string;
   /** When audit was run */
   timestamp: string;
   /** Results per disability type */
@@ -5219,8 +5235,17 @@ export interface EmpathyAuditResult {
 
 /** Options for accessibility empathy audit */
 export interface EmpathyAuditOptions {
-  /** Goal to accomplish */
-  goal: string;
+  /**
+   * Optional. Only consumed when an API key is configured AND a cognitive
+   * journey therefore runs: it drives that traversal and is recorded as a goal
+   * path on the site model. Barrier detection — which is what the audit's
+   * score and its `noBlockingBarriers` verdict are actually built from — does
+   * not read it at all.
+   *
+   * It was required, which implied every audit traversed toward it. Most do
+   * not. (2026-08-02)
+   */
+  goal?: string;
   /** Disability types to simulate */
   disabilities: string[];
   /** WCAG level to check against */

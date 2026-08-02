@@ -63,15 +63,50 @@ export const TRAIT_INFERENCE_CRITERIA: Record<string, string> = {
   fearOfMissingOut: "Reaction to scarcity and urgency. Look for: FOMO, unmoved by urgency.",
   socialProofSensitivity: "Weight given to what others do. Look for: reads reviews, ignores ratings.",
   mentalModelRigidity: "Adapting when conventions break. SCALE RUNS TOWARD FLEXIBILITY: 0 rigid, 1 instantly adapts.",
-  siteFamiliarity: "Prior experience with THIS site. Look for: first time, regular user, returning.",
 };
 
+/**
+ * siteFamiliarity is deliberately NOT in the list above.
+ *
+ * It is a persona-SITE variable, not a disposition. The same person is familiar
+ * with one site and new to another, so no description can answer it: "prior
+ * experience with THIS site" has no value until a site is named. Requiring it
+ * per persona forced a number that was wrong for every site except whichever
+ * one the author happened to be thinking of, and the completeness contract made
+ * that mandatory rather than optional.
+ *
+ * It is supplied per run instead, on the tools that audit a specific site.
+ * A stored persona value, where one exists, is a fallback for callers that do
+ * not pass it. (2026-08-01)
+ */
+export const SITE_SCOPED_TRAITS = ["siteFamiliarity"] as const;
+
 export const ALL_TRAITS = Object.keys(TRAIT_INFERENCE_CRITERIA);
+
+/**
+ * How a supplied trait value was arrived at.
+ *
+ * The contract enforced ACCOUNTING and reported it as if it were honesty. A
+ * caller who invented six values and supplied all 26 got back "26 of 26
+ * supplied; 0 filled from research baselines" -- which reads as a quality
+ * signal while six of those numbers were unfalsifiable inventions. The contract
+ * had no way to tell, and the output format erased the question.
+ *
+ * `supported` means the description says it. `asserted` means the caller
+ * decided it anyway -- a legitimate thing to do, and a different epistemic
+ * object. Naming which is which costs a word and restores the distinction the
+ * count destroyed. (2026-08-01)
+ */
+export type TraitProvenanceKind = "supported" | "asserted";
 
 export interface CompletenessVerdict {
   ok: boolean;
   unaccounted: string[];
   message?: string;
+  /** Traits the caller decided rather than read out of the description. */
+  asserted?: string[];
+  /** Traits supplied with no provenance stated — unknown, not supported. */
+  unlabelled?: string[];
 }
 
 /**
@@ -85,11 +120,21 @@ export interface CompletenessVerdict {
 export function assessTraitCompleteness(
   supplied: Record<string, number> | undefined,
   unsupported: string[] | undefined,
+  /** Per-trait: did the description support this, or did the caller assert it? */
+  provenance?: Record<string, TraitProvenanceKind>,
 ): CompletenessVerdict {
   const given = new Set(Object.keys(supplied ?? {}).filter((k) => typeof supplied![k] === "number"));
   const declared = new Set(unsupported ?? []);
   const unaccounted = ALL_TRAITS.filter((t) => !given.has(t) && !declared.has(t));
-  if (!unaccounted.length) return { ok: true, unaccounted: [] };
+  if (!unaccounted.length) {
+    // Provenance is optional, and its ABSENCE is reported rather than treated
+    // as "all supported" -- silence about how a number was reached is exactly
+    // what the old count turned into a clean bill of health.
+    const asserted = Object.entries(provenance ?? {})
+      .filter(([, k]) => k === "asserted").map(([t]) => t);
+    const unlabelled = [...given].filter((t) => !(provenance ?? {})[t]);
+    return { ok: true, unaccounted: [], asserted, unlabelled };
+  }
   return {
     ok: false,
     unaccounted,

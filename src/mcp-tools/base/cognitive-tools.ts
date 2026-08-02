@@ -31,7 +31,7 @@ import type {
  * Fetch custom personas from CMS for the current account.
  * Uses the API key from the session to authenticate.
  */
-async function fetchCustomPersonasFromCMS(apiKey?: string): Promise<Array<{
+export async function fetchCustomPersonasFromCMS(apiKey?: string): Promise<Array<{
   name: string; slug: string; description: string; traits: Record<string, number>; values?: Record<string, number>; source: string;
 }>> {
   if (!apiKey?.startsWith("cbk_")) return [];

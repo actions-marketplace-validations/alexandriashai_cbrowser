@@ -88,7 +88,25 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
     try { (listPersonas() as Array<{ name?: string } | string>).forEach((p) => {
       const n = typeof p === "string" ? p : p?.name; if (n) names.add(n);
     }); } catch { /* builtin roster unavailable; customs below still load */ }
-    try { Object.keys(loadCustomPersonas()).forEach((n) => names.add(n)); } catch { /* no custom store */ }
+    const fileNames = new Set<string>();
+    try { Object.keys(loadCustomPersonas()).forEach((n) => { names.add(n); fileNames.add(n); }); } catch { /* no custom store */ }
+
+    // BOTH stores, not just the file one.
+    //
+    // This read only loadCustomPersonas, so every persona that exists in the
+    // CMS and not on disk was silently absent from a tool whose whole job is
+    // showing you what exists -- on this install that was 5 of 11, and the
+    // roster looked like a reconciled 7 rather than a divergence. A manager
+    // that under-reports is worse than no manager: it answers the question
+    // "what personas do I have" wrongly and confidently.
+    const cmsNames = new Set<string>();
+    try {
+      const { fetchCustomPersonasFromCMS, getSessionApiKey } = await import("./base/cognitive-tools.js");
+      const rows = await fetchCustomPersonasFromCMS(getSessionApiKey());
+      (rows ?? []).forEach((r: { name?: string }) => {
+        if (r?.name) { names.add(r.name); cmsNames.add(r.name); }
+      });
+    } catch { /* CMS unreachable or unauthenticated; the divergence note says so */ }
 
     const want = filter ?? "custom";
     const personas = [...names]
@@ -112,9 +130,23 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
       .sort((a, b) => String(a!.name).localeCompare(String(b!.name)));
 
     const editable = personas.filter((p) => !p!.builtin).length;
+    const fileOnly = [...fileNames].filter((n) => !cmsNames.has(n));
+    const cmsOnly = [...cmsNames].filter((n) => !fileNames.has(n));
     return { content: [{ type: "text" as const, text: JSON.stringify({
       personas,
-      summary: `${personas.length} persona(s), ${editable} editable`,
+      summary: `${personas.length} persona(s), ${editable} editable`
+        + (fileOnly.length || cmsOnly.length ? ` — ${fileOnly.length + cmsOnly.length} in only one store` : ""),
+      // Divergence is a first-class field, not something a reader infers from a
+      // count that looks plausible.
+      ...(fileOnly.length || cmsOnly.length ? {
+        storeDivergence: {
+          fileStoreOnly: fileOnly, cmsOnly,
+          note: "These personas exist in one store and not the other. A tool reading the store that lacks one will report it missing; a tool reading the other will resolve it. Writes that touch only one store are how this happens — persona_create_submit_traits reports a partial write as a failure for exactly this reason.",
+        },
+      } : {}),
+      ...(cmsNames.size === 0 ? {
+        cmsUnavailable: "No personas were read from the CMS — it is unreachable, or this session's credential is not one the CMS accepts (an OAuth connector token is not a cbk_ account key). The roster below is the file store only.",
+      } : {}),
       editable,
       // Creation is not in this view on purpose: it needs the description read
       // and the completeness contract, which is a conversation rather than a
@@ -167,13 +199,17 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
         openness: z.number().min(0).max(1), conscientiousness: z.number().min(0).max(1),
         extraversion: z.number().min(0).max(1), agreeableness: z.number().min(0).max(1),
         neuroticism: z.number().min(0).max(1),
-      }).optional().describe("Supplying this moves the persona to the big_five values route, reaching all 13 motivational axes instead of 9"),
+      }).optional().describe("Supplying this moves the persona to the big_five values route, reaching all 13 motivational axes instead of 9. If you are INFERRING these from the persona's description rather than supplying measured scores, pass bigFiveEvidence too — it is checked against the description."),
+      bigFiveEvidence: z.array(z.object({
+        factor: z.string(), score: z.number().min(0).max(1),
+        quote: z.string().describe("The words in the persona's description justifying this score"),
+      })).optional().describe("Quotes justifying an INFERRED profile, verified against the stored description. Omit only when the scores were measured or supplied by a person rather than read out of the text."),
       ageRange: z.string().optional(),
       techLevel: z.enum(["beginner", "intermediate", "expert"]).optional(),
     },
     annotations: { title: "Update Persona", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     _meta: { ui: { resourceUri: widgetUri("persona-updated") } },
-  }, async ({ persona_name, traits, description, attentionPattern, accessibilityTraits, bigFive, ageRange, techLevel }) => {
+  }, async ({ persona_name, traits, description, attentionPattern, accessibilityTraits, bigFive, bigFiveEvidence, ageRange, techLevel }) => {
     // Destructured in the parameter list, not the body: a repo test statically
     // reads the handler signature to prove every declared argument is actually
     // bound, and a body-level destructure is invisible to it. The convention is
@@ -230,12 +266,44 @@ export function registerPersonaLifecycleTools(server: McpServer): void {
     }
     let valuesRoute: string | undefined;
     if (bigFive) {
+      // The same gate as the creation path.
+      //
+      // persona_update took a Big Five profile with no evidence field at all,
+      // so the quote check on persona_create_submit_traits could be walked
+      // around entirely: infer a profile nobody can check, launder it through
+      // update, and it stores as `big_five` -- the route that outranks the one
+      // the evidence gate protects. An unchecked path defeats a checked one.
+      //
+      // Evidence is required only when the caller SAYS it is inferred, by
+      // passing bigFiveEvidence. Scores a person measured are legitimately
+      // unquotable, and demanding a quote for them would push honest callers
+      // into inventing one. (2026-08-01)
+      if (bigFiveEvidence?.length) {
+        const { validateInferredBigFive } = await import("../values/big-five-inference.js");
+        const verdict = validateInferredBigFive(
+          bigFive as Record<string, number>,
+          bigFiveEvidence,
+          (existing.description as string | undefined),
+        );
+        if (!verdict.ok) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({
+            error: "unverified_big_five", message: verdict.reason, written: false,
+          }, null, 2) }] };
+        }
+      }
       const { deriveValuesFromBigFive } = await import("../values/big-five-values.js");
       const d = deriveValuesFromBigFive(bigFive);
       updated.bigFive = bigFive;
       updated.schwartzValues = d.values;
-      updated.valuesDerivation = { method: "big_five", squash: "tanh", precision: 3, recordedAt: new Date().toISOString().slice(0, 10) };
-      valuesRoute = "big_five";
+      // The route records HOW, so an inferred profile does not store as a
+      // supplied one just because it came through update.
+      updated.valuesDerivation = {
+        method: bigFiveEvidence?.length ? "bigfive_inferred" : "big_five",
+        squash: "tanh", precision: 3,
+        ...(bigFiveEvidence?.length ? { inferredFrom: "description", evidence: bigFiveEvidence } : {}),
+        recordedAt: new Date().toISOString().slice(0, 10),
+      };
+      valuesRoute = bigFiveEvidence?.length ? "bigfive_inferred" : "big_five";
       changed.push("bigFive+values");
     }
 

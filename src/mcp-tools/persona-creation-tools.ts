@@ -226,7 +226,6 @@ function getTraitHeader(trait: string): string {
     fearOfMissingOut: "FOMO",
     socialProofSensitivity: "Social Proof",
     mentalModelRigidity: "Flexibility",
-    siteFamiliarity: "Site Memory",
   };
   return headers[trait] || trait;
 }
@@ -585,7 +584,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             mode: "manual_inference",
             persona_name,
             user_description: description,
-            instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. ALSO estimate the persona's Big Five profile from the same description and return it as bigFive with bigFiveEvidence — see big_five_inference below. This is not optional decoration: without it the persona's values are derived from cognitive traits, and that route cannot reach hedonism, power, universalism or the relatedness need, so those four stay at the 0.5 baseline. Use the trait reference matrix below to guide your inference. If the description mentions ANY physical or sensory disability (vision loss, motor impairment, color blindness, hearing loss, tremor, etc.), you MUST also include accessibilityTraits. Without accessibilityTraits, the persona gets cognitive-only modeling and the perceptual transport layer will report near-perfect perception — which is wrong for someone with a disability. Return the traits via persona_create_submit_traits.`,
+            instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. ALSO estimate the persona's Big Five profile from the same description and return it as bigFive with bigFiveEvidence — see big_five_inference below. This is not optional decoration: without it the persona's values are derived from cognitive traits, and that route cannot reach hedonism, power, universalism or the relatedness need, so those four stay at the 0.5 baseline. Use the trait reference matrix below to guide your inference. If the description mentions ANY disability or impairment — sensory (vision loss, colour blindness, hearing loss), physical (motor impairment, tremor), OR cognitive and attentional (ADHD, dyslexia, autism, brain fog, fatigue, low processing speed) — you MUST also include accessibilityTraits. Cognitive conditions map onto attentionSpan and processingSpeed in that same block; listing only physical and sensory examples led to ADHD personas getting no accessibility modeling at all. Without accessibilityTraits, the persona gets cognitive-only modeling and the perceptual transport layer will report near-perfect perception — which is wrong for someone with a disability. Return the traits via persona_create_submit_traits.`,
             trait_reference: traitInfo,
             big_five_inference: bigFiveInferenceReference(),
             // What to look for, per trait, so the caller is not guessing at
@@ -652,6 +651,8 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         hearingLevel: z.number().min(0).max(1).optional().describe("Hearing level: 0=deaf, 1=full hearing"),
       }).optional().describe("Sensory/motor/physical traits for disability modeling. Without these, the persona gets cognitive-only modeling (no vision/motor simulation in empathy_audit)."),
       ageRange: z.string().optional().describe("Age range: '18-24', '25-45', '45-65', '65+'"),
+      discardBigFive: z.boolean().optional().describe("Deliberately drop an existing Big Five profile on this persona and derive values from cognitive traits instead. Without this, an existing profile is carried forward rather than silently downgraded — omitting bigFive on a rewrite used to demote the persona from thirteen value axes to nine and say nothing."),
+      traitProvenance: z.record(z.string(), z.enum(["supported", "asserted"])).optional().describe("Per trait: 'supported' if the description says it, 'asserted' if you decided it anyway. Both are legitimate. Supplying this is what makes the trait count mean something — '26 of 26 supplied' reads as quality whether the values were read out of the description or invented, and without this field nothing can tell those apart."),
       unsupportedTraits: z.array(z.string()).optional().describe("Traits the description genuinely does not speak to. Required for any trait you are not supplying a value for — see completeness_contract. Naming them is a valid answer; omitting them is not."),
       bigFive: z.object({
         openness: z.number().min(0).max(1),
@@ -674,7 +675,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       idempotentHint: false,
       openWorldHint: false,
     },
-  }, async ({ persona_name, traits, description, accessibilityTraits, ageRange, bigFive, bigFiveEvidence, unsupportedTraits }) => {
+  }, async ({ persona_name, traits, description, accessibilityTraits, ageRange, bigFive, bigFiveEvidence, unsupportedTraits, traitProvenance, discardBigFive }) => {
       // Refused, not warned.
       //
       // A warning is read once by a model already moving to its next call, and
@@ -682,7 +683,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       // someone audits. Five personas on this install are missing the same four
       // traits because one session skipped them and nothing objected. Declining
       // the write is the only version of this that changes what gets stored.
-      const completeness = assessTraitCompleteness(traits, unsupportedTraits);
+      const completeness = assessTraitCompleteness(traits, unsupportedTraits, traitProvenance);
       if (!completeness.ok) {
         return {
           content: [{ type: "text" as const, text: JSON.stringify({
@@ -710,10 +711,44 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       // trait-derivation is worse than no profile. (2026-08-01)
       let bigFiveAccepted: Record<string, number> | undefined;
       let bigFiveRejected: string | undefined;
+      let bigFiveUnrelated: string[] | undefined;
       if (bigFive) {
         const verdict = validateInferredBigFive(bigFive as Record<string, number>, bigFiveEvidence, description);
-        if (verdict.ok) bigFiveAccepted = bigFive as Record<string, number>;
+        if (verdict.ok) { bigFiveAccepted = bigFive as Record<string, number>; bigFiveUnrelated = verdict.unrelatedQuotes; }
         else bigFiveRejected = verdict.reason;
+      }
+
+      // A rewrite must not silently demote a persona's values route.
+      //
+      // Submitting without bigFive is the honest answer when the description
+      // does not support one -- and on an EXISTING persona that already had a
+      // Big Five profile, it quietly rewrote the record from `big_five` (or
+      // `bigfive_inferred`, thirteen axes) down to `cognitive_traits` (nine
+      // axes, four frozen at baseline). Following the instruction correctly
+      // made the persona worse, and nothing said so. Nobody would notice until
+      // they wondered why four values had gone flat.
+      //
+      // The existing profile is CARRIED FORWARD rather than dropped, because a
+      // downgrade nobody asked for is the worse error -- and it is reported
+      // loudly, with the traits it was inferred from now changed underneath it.
+      // `discardBigFive: true` is the way to actually mean the downgrade.
+      // (2026-08-01)
+      let carriedBigFive: { from: string; note: string } | undefined;
+      if (!bigFiveAccepted && !discardBigFive) {
+        try {
+          const { loadCustomPersonas } = await import("../personas.js");
+          const prior = loadCustomPersonas()[persona_name] as unknown as Record<string, unknown> | undefined;
+          const priorDeriv = prior?.valuesDerivation as Record<string, unknown> | undefined;
+          const priorMethod = priorDeriv?.method as string | undefined;
+          const priorBigFive = prior?.bigFive as Record<string, number> | undefined;
+          if (priorBigFive && (priorMethod === "big_five" || priorMethod === "bigfive_inferred")) {
+            bigFiveAccepted = priorBigFive;
+            carriedBigFive = {
+              from: priorMethod,
+              note: `This persona already had a ${priorMethod} profile and this submission supplied none, which would have downgraded it to cognitive_traits — nine of thirteen value axes, with hedonism, power, universalism and the relatedness need frozen at 0.5. The existing profile was kept. It was inferred against the PREVIOUS description and traits, so if the persona has genuinely changed, re-supply bigFive with evidence from the new description. To downgrade on purpose, re-submit with discardBigFive:true.`,
+            };
+          }
+        } catch { /* no prior persona; nothing to carry */ }
       }
 
       const derivedResult = bigFiveAccepted
@@ -740,25 +775,59 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
 
       // Attach accessibility traits — either from explicit parameter or inferred from name/description
       let resolvedAccessibilityTraits = accessibilityTraits;
+      // Which keywords fired, so an inferred number can be argued with rather
+      // than just noticed.
+      let inferredFrom: string[] = [];
       if (!resolvedAccessibilityTraits || Object.keys(resolvedAccessibilityTraits).length === 0) {
         // Infer disability traits from persona name and description
         const text = `${persona_name} ${description || ''}`.toLowerCase();
         const hasVision = /vision|blind|magnif|low.?vis|sight|visual.?impair/.test(text);
         const hasMotor = /motor|tremor|parkinson|arthrit|dexterity|mobility/.test(text);
-        const hasCognitive = /adhd|dyslexic|dyslexia|cognitive|autism|intellectual/.test(text);
         const hasHearing = /deaf|hearing|hard.?of.?hearing/.test(text);
         const hasElderly = /elderly|senior|65|70|75|80|retired|aging|aged/.test(text);
 
+        // Cognitive conditions are NOT one bucket, and treating them as one
+        // produced a wrong number with a confident label. ADHD, dyslexia,
+        // autism and intellectual disability all matched a single regex and all
+        // came out as processingSpeed 0.4 / attentionSpan 0.3 -- so an ADHD
+        // persona whose previous record said processingSpeed 0.9 was rewritten
+        // to 0.4 by a keyword. ADHD is an attention-regulation condition; it is
+        // not a claim about how fast someone processes information, and plenty
+        // of people with ADHD process quickly. Autism is not a speed claim
+        // either. Dyslexia slows READING specifically. Only the conditions that
+        // genuinely bear on speed set speed. (2026-08-01)
+        const hasAdhd = /adhd|add\b|attention deficit|executive function/.test(text);
+        const hasDyslexia = /dyslexi/.test(text);
+        const hasAutism = /autis|asperger|neurodiver/.test(text);
+        const hasSlowProcessing = /intellectual disab|brain fog|processing (speed )?(disorder|difficult|impair)|slow (to )?process|cognitive impair|dementia|traumatic brain/.test(text);
+        const hasCognitive = hasAdhd || hasDyslexia || hasAutism || hasSlowProcessing;
+
         if (hasVision || hasMotor || hasCognitive || hasHearing || hasElderly) {
+          // Left undefined where the description supports no claim, so the
+          // block below falls back to the persona's own traits rather than to a
+          // number this inference invented.
+          const speed = hasSlowProcessing ? 0.35
+            : hasDyslexia ? 0.6
+            : hasElderly ? 0.5
+            : undefined;
+          const attention = hasAdhd ? 0.3
+            : hasAutism ? undefined
+            : undefined;
           resolvedAccessibilityTraits = {
             visionLevel: hasVision ? 0.4 : hasElderly ? 0.6 : 1.0,
             contrastSensitivity: hasVision ? 0.3 : hasElderly ? 0.5 : 1.0,
             motorControl: hasMotor ? 0.3 : hasElderly ? 0.6 : 1.0,
             tremor: hasMotor,
-            processingSpeed: hasCognitive ? 0.4 : hasElderly ? 0.5 : builtTraits.comprehension ?? 0.8,
-            attentionSpan: hasCognitive ? 0.3 : builtTraits.patience ?? 0.7,
+            ...(speed !== undefined ? { processingSpeed: speed } : {}),
+            ...(attention !== undefined ? { attentionSpan: attention } : {}),
             hearingLevel: hasHearing ? 0.2 : 1.0,
           };
+          inferredFrom = [
+            hasVision && "vision", hasMotor && "motor", hasHearing && "hearing", hasElderly && "age",
+            hasAdhd && "ADHD (attention only — not a processing-speed claim)",
+            hasDyslexia && "dyslexia (reading speed)", hasAutism && "autism (no speed or attention claim inferred)",
+            hasSlowProcessing && "processing-speed condition",
+          ].filter(Boolean) as string[];
         }
       }
 
@@ -794,6 +863,20 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         (personaObj as unknown as Record<string, unknown>).unsupportedTraits = unsupportedTraits;
       }
 
+      // The attention pattern createCognitivePersona stamps from its template is
+      // NOT a declaration.
+      //
+      // A recreate flipped a stored persona from "thorough" to "skim" while still
+      // reporting attentionPatternSource: "declared" -- nobody declared either
+      // value. The template's default arrived through humanBehavior, which is
+      // exactly where a real declaration lives, so the profile could not tell
+      // them apart. Dropping it lets the derivation run and report itself as
+      // derived; a caller who wants a declaration sets it through
+      // persona_update, which is the surface that takes one. (2026-08-01)
+      const hb = (personaObj as unknown as Record<string, unknown>).humanBehavior as
+        Record<string, Record<string, unknown>> | undefined;
+      if (hb?.attention && "pattern" in hb.attention) delete hb.attention.pattern;
+
       registerPersonas([personaObj]);
 
       // Persist to disk. registerPersonas writes to an in-memory map that dies
@@ -811,6 +894,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
 
       // Also save to CMS if an API key is configured (makes it persistent across sessions)
       let savedToCms = false;
+      let cmsError: string | undefined;
       try {
         const { getSessionApiKey } = await import("./base/cognitive-tools.js");
         const apiKey = getSessionApiKey();
@@ -843,9 +927,19 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             console.log(`[persona] Saved "${persona_name}" to CMS`);
           } else {
             const errBody = await res.text().catch(() => "");
+            // The REASON travels to the caller. "savedToCms: false" alone does
+            // not distinguish an unreachable CMS from a credential the CMS
+            // will never accept -- and the second is the actual situation on
+            // an OAuth connector, where the bearer forwarded here is an OAuth
+            // token and /api/personas only accepts cbk_ account keys. Those
+            // need different responses from whoever reads this.
+            cmsError = res.status === 401 || res.status === 403
+              ? `CMS rejected the credential (${res.status}). The session bearer is forwarded as-is, so an OAuth connector token reaches an endpoint that only accepts cbk_ account keys. Set an account key with set_api_key to make CMS writes succeed.`
+              : `CMS returned ${res.status}: ${errBody.slice(0, 120)}`;
             console.warn(`[persona] CMS save failed (${res.status}): ${errBody.slice(0, 100)}`);
           }
         } else {
+          cmsError = "no API key in this session — nothing was sent to the CMS";
           console.warn(`[persona] No API key in session — cannot save to CMS`);
         }
       } catch (e) {
@@ -856,13 +950,42 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         content: [{
           type: "text",
           text: JSON.stringify({
-            success: true,
+            // success is computed below from what actually persisted.
             persona_name,
             description,
             traits: builtTraits,
             providedTraits,
             defaultedTraits,
-            traitCompleteness: `${providedTraits.length} of ${allTraitNames.length} supplied; ${defaultedTraits.length} filled from research baselines`,
+            // The old line was `${n} of ${n} supplied; 0 filled from research
+            // baselines`, and it read as a quality signal no matter how the
+            // numbers were arrived at -- a caller who invented six of them got
+            // the same clean sentence as one who read all 26 out of the text.
+            // The count measures ACCOUNTING. Whether the description supports a
+            // value is a different question, and the sentence has to stop
+            // answering it by implication.
+            traitCompleteness: (() => {
+              const base = `${providedTraits.length} of ${allTraitNames.length} supplied; ${defaultedTraits.length} filled from research baselines`;
+              const a = completeness.asserted?.length ?? 0;
+              const u = completeness.unlabelled?.length ?? 0;
+              if (a || u) {
+                const parts = [
+                  a ? `${a} asserted by the caller rather than read from the description` : "",
+                  u ? `${u} with no provenance stated` : "",
+                ].filter(Boolean);
+                return `${base}. ${parts.join("; ")}. This counts accounting, not support — a supplied value can still be an invention.`;
+              }
+              return `${base}; all supplied values marked as supported by the description`;
+            })(),
+            ...(completeness.asserted?.length ? { assertedTraits: completeness.asserted } : {}),
+            ...(completeness.unlabelled?.length ? {
+              unlabelledTraits: completeness.unlabelled,
+              provenanceNote: "These were supplied with no traitProvenance entry, so whether the description supports them is unknown — not assumed. Pass traitProvenance to say which values you read out of the text and which you decided.",
+            } : {}),
+            ...(carriedBigFive ? { bigFiveCarriedForward: carriedBigFive } : {}),
+            ...(bigFiveUnrelated?.length ? {
+              bigFiveQuotesUnrelated: bigFiveUnrelated,
+              bigFiveQuoteNote: "These quotes are in the description but contain no word bearing on the factor they were cited for. The profile was accepted — the check is a heuristic — but a quote that is not about the factor is not evidence for it.",
+            } : {}),
             // A misspelled trait name was previously accepted in silence and had
             // no effect, since buildTraitsFromAnswers only applies keys already
             // present in the trait table.
@@ -920,6 +1043,10 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
                 || below("attentionSpan", 0.6) || a.tremor === true || !!a.colorBlindness;
             })(),
             disabilityTraitsSource: accessibilityTraits ? 'explicit' : resolvedAccessibilityTraits ? 'inferred_from_description' : 'none',
+            ...(inferredFrom.length ? {
+              disabilityInferredFrom: inferredFrom,
+              disabilityInferenceNote: "Keyword inference, not a diagnosis. It sets a trait only where the condition bears on it — a condition named in the description does not license a number for every accessibility trait. Pass accessibilityTraits explicitly to override any of it.",
+            } : {}),
             ageRange: ageRange || personaObj.demographics?.age_range || null,
             registered: true,
             // Both stores named, and whether the persona SURVIVES stated
@@ -930,6 +1057,15 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             savedToFile: savedToFile ? true : false,
             ...(savedToFile ? { filePath: savedToFile } : {}),
             ...(fileSaveError ? { fileSaveError } : {}),
+            // Agentic callers branch on success. A partial write that reports
+            // success is a write nobody retries, which is how the two stores
+            // drift apart in the first place -- so a half-completed write is
+            // reported as a failure with the half that landed named, rather
+            // than as a success with a caveat.
+            success: !!savedToFile && savedToCms,
+            ...(savedToFile && !savedToCms ? { partialWrite: true } : {}),
+            writeStatus: { fileStore: savedToFile ? "ok" : "failed", cms: savedToCms ? "ok" : "failed" },
+            ...(cmsError ? { cmsError } : {}),
             persisted: !!savedToFile || savedToCms,
             persistenceNote: savedToFile && savedToCms
               ? "Written to the file store and the CMS."

@@ -698,6 +698,11 @@ Begin with the first persona: ${personas[0]}
     description: "Compute total cognitive effort for a persona to use a page. Uses the 6-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability. IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
       url: z.string().url().describe("URL to analyze"),
+      // Per RUN, not per persona. A persona is familiar with one site and new
+      // to another, so this only has an answer once a URL is named. The
+      // persona's stored value, where one exists, is the fallback. (2026-08-01)
+      siteFamiliarity: z.number().min(0).max(1).optional()
+        .describe("How familiar this persona is with THIS url: 0 first visit, 1 daily user. Set it per run — familiarity is a persona-site pair, not a disposition. Supplying it also skips the site-knowledge downgrade, which exists only to stop a stored value asserting experience of a site nobody has crawled."),
       persona: z.string().describe("Persona name. WORKFLOW: For power-user, confident-user, or any persona the user describes as 'experienced' — check site_model_status first. If site knowledge exists, ask the user: 'Site knowledge exists for this domain. Should I use it to simulate an experienced user, or test as a first-time visitor?' If no site knowledge exists, warn: 'No site knowledge for this domain. power-user will be tested as a first-time visitor. Run page_understand first to build site knowledge.'"),
       _browserToken: z.string().optional().describe("Browser session token"),
       userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US')"),
@@ -715,7 +720,7 @@ Begin with the first persona: ${personas[0]}
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona: personaName, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues, waitAfterLoad, waitForSelector }) => {
+  }, async ({ url, persona: personaName, siteFamiliarity, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues, waitAfterLoad, waitForSelector }) => {
     try {
       // Get browser
       let b: Awaited<ReturnType<typeof getBrowser>>;
@@ -822,14 +827,21 @@ Begin with the first persona: ${personas[0]}
         hasSiteKnowledge = !!(stats && stats.navigationNodes > 0);
       } catch {}
 
-      if (hasSiteKnowledge) {
+      // A caller who states familiarity for THIS run has answered the question
+      // the downgrade exists to answer. The gate guards against a value STORED
+      // on a persona claiming experience of a site nobody has crawled -- it was
+      // never meant to overrule someone naming the pair directly.
+      const familiarityFromCaller = typeof siteFamiliarity === "number";
+      if (familiarityFromCaller) {
+        traits.siteFamiliarity = siteFamiliarity;
+      } else if (hasSiteKnowledge) {
         // Site knowledge exists — high-familiarity personas get max familiarity
         if (requestedFamiliarity > 0.5) traits.siteFamiliarity = 1.0;
       } else {
         // No site knowledge — everyone is a first-time visitor
         traits.siteFamiliarity = 0.0;
         if (requestedFamiliarity > 0.5) {
-          familiarityWarning = `"${personaName}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} but no site knowledge exists. Downgraded to 0.0 (first visit). To build site knowledge: navigate the site (navigate + click builds it automatically), or run page_understand for deeper analysis. Then re-run this tool.`;
+          familiarityWarning = `"${personaName}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} stored on the persona but no site knowledge exists for this domain. Downgraded to 0.0 (first visit). Familiarity is a persona-site pair: pass siteFamiliarity on this call to state it for this run, or build knowledge by navigating the site (page_understand goes deeper).`;
         }
       }
 
@@ -1016,6 +1028,7 @@ Begin with the first persona: ${personas[0]}
           ? `${personaName} will struggle significantly. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
           : `${personaName} is likely to abandon this page. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`,
         ...(familiarityWarning ? { familiarityWarning, siteFamiliarityAdjusted: true, originalFamiliarity: requestedFamiliarity, effectiveFamiliarity: traits.siteFamiliarity } : {}),
+        ...(familiarityFromCaller ? { siteFamiliarity: traits.siteFamiliarity, siteFamiliaritySource: "supplied for this run" } : {}),
         ...(languageWarning ? { languageWarning } : {}),
         ...(userLocation ? { userContext: { location: userLocation, timezone: userTimezone, language: userLanguage } } : {}),
         ...(token ? { _browserToken: token } : {}),
