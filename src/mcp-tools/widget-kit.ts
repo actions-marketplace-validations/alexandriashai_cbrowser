@@ -153,6 +153,37 @@ export type BlockSpec =
   | { type: "overlay"; title: string; field: FieldPath;
       fetchTool?: string; fileKey?: string; rectsKey?: string;
       widthKey?: string; heightKey?: string; labelKey?: string }
+  /**
+   * A sequential cost chain with its bottleneck named.
+   *
+   * Built for cognitive_effort, whose whole thesis is that the six layers are
+   * SEQUENTIAL, not additive: each layer hands its residual capacity to the
+   * next, so a cost late in the chain lands on an already-depleted budget. The
+   * payload states that outright as `sequentialAmplification = total / additive`
+   * and the JSON buries it in a nested object.
+   *
+   * So the block shows two bars against one scale -- what the layers cost added
+   * up, and what they actually cost in sequence -- and the gap between them IS
+   * the product's central claim, made visible instead of asserted.
+   *
+   * The bottleneck carries a text label, never colour alone (WCAG 1.4.1).
+   */
+  | { type: "chain"; title: string; field: FieldPath;
+      nameKey?: string; costKey?: string; capacityKey?: string;
+      /** Where the named bottleneck layer lives. */
+      bottleneckField?: FieldPath;
+      /** Sum-of-parts and in-sequence totals, for the amplification bars. */
+      additiveField?: FieldPath; totalField?: FieldPath;
+      /**
+       * Per-layer overlays, so a bar opens into the thing it measured.
+       *
+       * Entries carry {layer, file, legend, available, reason}. A layer with an
+       * overlay becomes a real <button>; a layer without one stays an inert row
+       * that states why. An affordance that does nothing is worse than no
+       * affordance, and "there is no overlay for frustration because it is a
+       * running state, not a place on the page" is information.
+       */
+      overlaysField?: FieldPath; fetchTool?: string }
   /** Free prose. */
   | { type: "note"; title?: string; field: FieldPath }
   /** Everything not consumed by another block, so no field is silently dropped. */
@@ -549,6 +580,25 @@ const CSS = `
   /* Top margin is the marker's room. Without it the value label collides with
      the block heading above, and the tick ran the full height of the band and
      struck through the label it was pointing at. */
+  .chain{margin:1rem 0}
+  .chain .seg{display:flex;align-items:center;gap:.5rem;margin:.35rem 0}
+  .chain .lbl{flex:0 0 9.5rem;font-size:.8rem;opacity:.85;text-align:right}
+  .chain .track{flex:1;height:1.35rem;background:rgba(127,127,127,.16);border-radius:3px;position:relative;overflow:hidden}
+  .chain .fill{height:100%;border-radius:3px}
+  .chain .num{flex:0 0 3.6rem;font-size:.78rem;font-variant-numeric:tabular-nums;opacity:.8}
+  .chain .seg.peak .lbl{font-weight:700;opacity:1}
+  .chain .peaktag{font-size:.68rem;letter-spacing:.04em;text-transform:uppercase;padding:.05rem .3rem;border:1px solid currentColor;border-radius:3px;margin-left:.35rem}
+  .chain button.seg{width:100%;background:none;border:0;padding:.1rem 0;font:inherit;color:inherit;cursor:pointer;border-radius:4px}
+  .chain button.seg:hover .track,.chain button.seg:focus-visible .track{outline:2px solid var(--brand);outline-offset:2px}
+  .chain button.seg:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  .chain button.seg[aria-expanded="true"] .lbl{text-decoration:underline}
+  .chain .noov{flex:0 0 auto;font-size:.7rem;opacity:.55;margin-left:.35rem}
+  .ovpane{margin:.6rem 0 1rem;padding:.6rem;border:1px solid rgba(127,127,127,.28);border-radius:6px}
+  .ovpane img{max-width:100%;height:auto;display:block;border-radius:4px}
+  .ovpane .cap{font-size:.8rem;opacity:.8;margin:.45rem 0 0}
+  .amp{margin:1.1rem 0 .3rem;padding-top:.8rem;border-top:1px solid rgba(127,127,127,.22)}
+  .amp .seg .lbl{flex:0 0 9.5rem}
+  .ampnote{font-size:.8rem;opacity:.75;margin:.45rem 0 0}
   .scale{margin:1.5rem 0 .8rem}
   .bands{display:flex;gap:3px;position:relative}
   .band{flex:1;height:30px;border-radius:5px;display:grid;place-items:center;
@@ -1294,6 +1344,134 @@ const RUNTIME = String.raw`
     return [];
   }
 
+  async function chainBlock(data, b) {
+    var layers = at(data, b.field);
+    if (!isObjArray(layers) || !layers.length) return null;
+    var nameKey = b.nameKey || "name";
+    var costKey = b.costKey || "cost";
+    var bottleneck = b.bottleneckField ? at(data, b.bottleneckField) : undefined;
+    var additive = b.additiveField ? Number(at(data, b.additiveField)) : NaN;
+    var total = b.totalField ? Number(at(data, b.totalField)) : NaN;
+
+    // One scale across every bar, including the two summary bars, or the
+    // comparison the block exists to make would be drawn to different rulers.
+    var costs = layers.map(function (l) { return Number(l[costKey]) || 0; });
+    var scaleMax = Math.max.apply(null, costs.concat(
+      [isFinite(additive) ? additive : 0, isFinite(total) ? total : 0]));
+    if (!(scaleMax > 0)) scaleMax = 1;
+
+    var wrap = el("div", "chain");
+
+    // Overlays keyed by layer name, so a bar can find its own evidence.
+    var ovs = {};
+    var ovList = b.overlaysField ? at(data, b.overlaysField) : null;
+    if (isObjArray(ovList)) {
+      ovList.forEach(function (o) { if (o && o.layer) ovs[String(o.layer)] = o; });
+    }
+    var pane = el("div");
+
+    function bar(label, value, hue, isPeak, ov) {
+      var interactive = !!(ov && ov.available && ov.file);
+      // A real <button> when there is something behind it, so it is keyboard
+      // operable and announced as a control. A plain div when there is not --
+      // styling a dead row to look clickable is the lie this avoids.
+      var seg = interactive
+        ? document.createElement("button")
+        : el("div");
+      seg.className = "seg" + (isPeak ? " peak" : "");
+      if (interactive) { seg.type = "button"; seg.setAttribute("aria-expanded", "false"); }
+      var lbl = el("div", "lbl", label);
+      if (isPeak) lbl.appendChild(el("span", "peaktag", "bottleneck"));
+      var track = el("div", "track");
+      var fill = el("div", "fill");
+      fill.style.width = Math.max(1, (value / scaleMax) * 100) + "%";
+      fill.style.backgroundColor = "hsl(" + hue + ", 62%, 48%)";
+      track.appendChild(fill);
+      var num = el("div", "num", value.toFixed(3));
+      seg.appendChild(lbl); seg.appendChild(track); seg.appendChild(num);
+      if (ov && !ov.available) {
+        var why = el("span", "noov", "no overlay");
+        why.title = String(ov.reason || "no overlay for this layer");
+        seg.appendChild(why);
+      }
+      if (interactive) {
+        seg.addEventListener("click", function () {
+          var open = seg.getAttribute("aria-expanded") === "true";
+          // One pane, so opening a layer replaces the last rather than stacking
+          // six screenshots down the panel.
+          wrap.querySelectorAll("button.seg").forEach(function (n) { n.setAttribute("aria-expanded", "false"); });
+          pane.innerHTML = "";
+          if (open) return;
+          seg.setAttribute("aria-expanded", "true");
+          showOverlay(ov, label);
+        });
+      }
+      return seg;
+    }
+
+    async function showOverlay(ov, label) {
+      pane.className = "ovpane";
+      pane.appendChild(el("p", "cap", "Loading " + label + " overlay…"));
+      try {
+        var res = await app.callServerTool({
+          name: b.fetchTool || "artifact_fetch",
+          arguments: { file: ov.file },
+        });
+        var img = ((res && res.content) || []).filter(function (c) { return c.type === "image"; })[0];
+        pane.innerHTML = "";
+        if (!img) {
+          pane.appendChild(el("p", "cap", "The " + label + " overlay could not be loaded."));
+          return;
+        }
+        var node = document.createElement("img");
+        node.src = "data:" + (img.mimeType || "image/png") + ";base64," + img.data;
+        // Named for what it shows, not "overlay image" -- a screen reader user
+        // gets the same sentence a sighted one reads under it.
+        node.alt = label + " overlay for this page: " + (ov.legend || "");
+        pane.appendChild(node);
+        if (ov.legend) pane.appendChild(el("p", "cap", String(ov.legend)));
+      } catch (e) {
+        pane.innerHTML = "";
+        pane.appendChild(el("p", "cap", "Could not load the " + label + " overlay: " + (e && e.message ? e.message : e)));
+      }
+    }
+
+    // Width and colour deliberately use DIFFERENT denominators.
+    //
+    // Width is on the shared scale, so a layer bar and the sequential-total bar
+    // below it can be compared honestly. Colour is relative to the largest
+    // LAYER, because the shared scale made every layer green: the biggest layer
+    // was 0.171 against a 0.742 total, which is 23% of the ramp, so a page at
+    // 63% abandonment risk rendered as six healthy green bars. Ramping colour
+    // within the layers is what makes the bottleneck the hottest thing on
+    // screen -- which is the one thing this block exists to show.
+    var layerMax = Math.max.apply(null, costs);
+    if (!(layerMax > 0)) layerMax = 1;
+    layers.forEach(function (l) {
+      var name = String(l[nameKey] == null ? "" : l[nameKey]);
+      var cost = Number(l[costKey]) || 0;
+      var isPeak = bottleneck != null && String(bottleneck) === name;
+      // Cost, not capability: high is bad, so the ramp runs green to red.
+      wrap.appendChild(bar(name, cost, 120 - Math.min(1, cost / layerMax) * 120, isPeak, ovs[name]));
+    });
+    wrap.appendChild(pane);
+
+    if (isFinite(additive) && isFinite(total) && additive > 0) {
+      var amp = el("div", "amp");
+      amp.appendChild(bar("sum of layers", additive, 205, false, null));
+      amp.appendChild(bar("actual, in sequence", total, 205, false, null));
+      var ratio = total / additive;
+      amp.appendChild(el("p", "ampnote",
+        ratio > 1.005
+          ? "The layers run in sequence, so each one spends what the last left over. That is why the real cost is "
+            + ratio.toFixed(2) + "x the sum of the parts"
+            + (bottleneck ? ", and why " + bottleneck + " hurts more than its own number suggests." : ".")
+          : "Costs here are close to additive: no layer is arriving on a materially depleted budget."));
+      wrap.appendChild(amp);
+    }
+    return wrap;
+  }
+
   function levelsBlock(data, b) {
     var levels = at(data, b.field);
     if (!isObjArray(levels)) return null;
@@ -1734,6 +1912,13 @@ const RUNTIME = String.raw`
       if (b.personaField) used[b.personaField.split(".")[0]] = true;
       var erows = normaliseTraits(at(data, b.field), b);
       return erows.length ? { node: editorBlock(erows, b, data), count: erows.length } : null;
+    }
+    if (b.type === "chain") {
+      [b.field, b.bottleneckField, b.additiveField, b.totalField, b.overlaysField].forEach(function (f) {
+        if (f) used[f.split(".")[0]] = true;
+      });
+      var node = await chainBlock(data, b);
+      return node ? { node: node, count: null } : null;
     }
     if (b.type === "levels") {
       [b.field, b.valueField, b.labelField, b.behaviorsField].forEach(function (f) {

@@ -549,6 +549,66 @@ export const EMPATHY_SPEC: WidgetSpec = {
   ],
 };
 
+/**
+ * Cognitive effort: the six-layer transport chain, and what running it in
+ * sequence costs over running it in parallel.
+ *
+ * The JSON answers "how expensive is this page for this persona" with a number,
+ * and buries the reason inside `cognitiveTransportCost.sequentialAmplification`.
+ * The chain block puts the reason on screen: six bars for the six layers with
+ * the bottleneck named, then the sum-of-parts against the actual sequential
+ * total. The gap between those last two is the claim the whole model rests on.
+ */
+export const EFFORT_SPEC: WidgetSpec = {
+  id: "effort",
+  toolPage: "https://cbrowser.ai/docs/tool-cognitive-effort/",
+  title: "Cognitive effort",
+  // Who was measured belongs in the title; the cost is meaningless without them.
+  titleField: "persona",
+  titlePrefix: "Cognitive Effort: ",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "interpretation" },
+    facts: [
+      { field: "cognitiveTransportCost.total", label: "transport cost" },
+      { field: "abandonmentRisk", label: "abandonment risk" },
+      { field: "bottleneck", label: "bottleneck" },
+      { field: "url", label: "page" },
+    ],
+  },
+  blocks: [
+    // Leads, because it is the finding. Everything below is detail behind it.
+    { type: "chain", title: "The six-layer transport chain", field: "layers",
+      nameKey: "name", costKey: "cost", capacityKey: "capacityConsumed",
+      bottleneckField: "bottleneck",
+      additiveField: "cognitiveTransportCost.additive",
+      totalField: "cognitiveTransportCost.total",
+      // Each bar opens into that layer's overlay on the real page. Layers with
+      // no overlay stay inert and say why.
+      overlaysField: "layerOverlays", fetchTool: "artifact_fetch" },
+    // Surfaced when the run was told, or forced, to treat the persona as new to
+    // the site. It changes every number above and is easy to miss in JSON.
+    { type: "note", field: "familiarityWarning" },
+    { type: "note", field: "languageWarning" },
+    { type: "kv", title: "Deficit vs surplus", field: "deficitVsSurplus" },
+    { type: "kv", title: "Layer interactions", field: "interactions" },
+    { type: "drawer", title: "Motor accessibility", blocks: [
+      { type: "kv", title: "Summary", fields: ["motorAccessibility.score", "motorAccessibility.barriers"] },
+      { type: "table", title: "Hardest targets", field: "motorAccessibility.elements",
+        columns: ["element", "hitProbability", "movementTimeMs"] },
+    ] },
+    { type: "drawer", title: "Readability", blocks: [
+      { type: "kv", title: "Summary", fields: ["readability.score", "readability.averageWPM"] },
+      { type: "findings", title: "Hardest block", field: "readability.hardestBlock", textKey: "0" },
+    ] },
+    { type: "rest", title: "Everything else" },
+  ],
+};
+
+export function buildEffortTemplate(): string {
+  return buildWidget(EFFORT_SPEC);
+}
+
 export function buildEmpathyTemplate(): string {
   return buildWidget(EMPATHY_SPEC);
 }
@@ -633,6 +693,15 @@ export function registerUiResources(server: McpServer): void {
     { description: "Accessibility barriers ranked by severity", mimeType: MCP_APP_MIME },
     async () => ({
       contents: [{ uri: widgetUri("empathy"), mimeType: MCP_APP_MIME, text: buildEmpathyTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-effort-ui",
+    widgetUri("effort"),
+    { description: "Six-layer cognitive transport chain with its bottleneck", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("effort"), mimeType: MCP_APP_MIME, text: buildEffortTemplate() }],
     }),
   );
 

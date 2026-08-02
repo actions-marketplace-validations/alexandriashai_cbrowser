@@ -694,6 +694,7 @@ Begin with the first persona: ${personas[0]}
   // ── Cognitive Effort (Full COT) ──
 
   server.registerTool("cognitive_effort", {
+    _meta: { ui: { resourceUri: "ui://cbrowser/effort" } },
     title: "Cognitive Effort Analysis",
     description: "Compute total cognitive effort for a persona to use a page. Uses the 6-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability. IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
@@ -917,6 +918,10 @@ Begin with the first persona: ${personas[0]}
       // Also compute motor and readability from formal models
       let motorResult = null;
       let readabilityResult = null;
+      // Hoisted out of the try below: the readability OVERLAY is drawn later,
+      // outside that block, and needs the on-page rectangles the analysis
+      // itself does not carry.
+      let textBlockGeom: Array<{ x: number; y: number; width: number; height: number; text: string }> = [];
       try {
         const { motorAccessibility, readability, getPointingProfile, getReadingProfile } = await import("../../visual/cognitive-models.js");
 
@@ -949,7 +954,7 @@ Begin with the first persona: ${personas[0]}
         const textBlocks = await page.evaluate(() => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          const blocks: Array<{ text: string; fontSize: number; lineHeight: number; fontFamily: string; isSerif: boolean; contrastRatio: number }> = [];
+          const blocks: Array<{ text: string; fontSize: number; lineHeight: number; fontFamily: string; isSerif: boolean; contrastRatio: number; x: number; y: number; width: number; height: number }> = [];
           const textEls = Array.from(document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td, th, span, div'));
           for (const el of textEls) {
             const rect = (el as HTMLElement).getBoundingClientRect();
@@ -962,12 +967,17 @@ Begin with the first persona: ${personas[0]}
             const lineHeight = parseFloat(style.lineHeight) / fontSize || 1.5;
             const fontFamily = style.fontFamily || 'sans-serif';
             const isSerif = /serif/i.test(fontFamily) && !/sans-serif/i.test(fontFamily);
-            blocks.push({ text: text.slice(0, 500), fontSize, lineHeight, fontFamily, isSerif, contrastRatio: 7 });
+            // Geometry travels with the block. Without it the readability
+            // overlay cannot be drawn at all -- the analysis knew which text was
+            // hard and not where any of it was.
+            blocks.push({ text: text.slice(0, 500), fontSize, lineHeight, fontFamily, isSerif, contrastRatio: 7,
+              x: rect.x, y: rect.y, width: rect.width, height: rect.height });
             if (blocks.length >= 20) break;
           }
           return blocks;
         });
 
+        textBlockGeom = textBlocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, text: b.text }));
         if (textBlocks.length > 0) {
           readabilityResult = readability(textBlocks, otProfile);
         }
@@ -1072,10 +1082,92 @@ Begin with the first persona: ${personas[0]}
           response.motorOverlayNote = "Green = easy to click. Yellow = moderate difficulty. Red = motor barrier for this persona.";
 
           content.push({ type: "image" as const, data: motorBase64, mimeType: "image/png" });
-          try { ul(ssPath); } catch {}
+          // ssPath is deliberately NOT deleted here any more -- the other
+          // layer overlays are drawn from the same screenshot below.
         }
       } catch (e) {
         console.debug(`[cognitive_effort] Motor overlay failed: ${(e as Error).message}`);
+      }
+
+      // Per-layer visual evidence, so a bar in the chain can be opened into the
+      // thing it measured.
+      //
+      // Only layers with a real generator get one. The other two are listed with
+      // the reason rather than omitted: a chain of six where four are clickable
+      // and two silently are not reads as a broken widget, while "no overlay for
+      // this layer, and here is why" is information. Nothing is fabricated to
+      // fill the gap. (2026-08-02)
+      const layerOverlays: Array<{ layer: string; file?: string; legend?: string; available: boolean; reason?: string }> = [];
+      try {
+        const { join: joinPath } = await import("path");
+        const { tmpdir: getTmpDir } = await import("os");
+        const { unlinkSync: ul, existsSync: ex } = await import("fs");
+        const ssPath = joinPath(getTmpDir(), `cog-effort-layers-${Date.now()}.png`);
+        await page.screenshot({ path: ssPath, fullPage: false });
+
+        // saliency -- keyless. Lab-space centre-surround over the screenshot,
+        // so this needs no API key and no model call.
+        try {
+          const { computeLabSaliency } = await import("../../visual/attention-transport.js");
+          const { generateHeatmapOverlay } = await import("../../visual/heatmap-overlay.js");
+          const sal = await computeLabSaliency(ssPath);
+          const b64 = await generateHeatmapOverlay(ssPath, sal.cells, sal.rows, sal.cols, `${personaName} — saliency`);
+          const w = writeArtifact(Buffer.from(b64, "base64"), `saliency-${personaName}-${Date.now()}.png`);
+          if (w) layerOverlays.push({ layer: "saliency", file: w.url.split("/").pop(), available: true,
+            legend: "Hotter = more visually salient before any reading happens." });
+        } catch (e) {
+          layerOverlays.push({ layer: "saliency", available: false, reason: `saliency map failed: ${(e as Error).message}` });
+        }
+
+        // motor -- already drawn above; surfaced here so the chain has one list.
+        if (response.motorOverlayUrl) {
+          layerOverlays.push({ layer: "motor", file: String(response.motorOverlayUrl).split("/").pop(), available: true,
+            legend: String(response.motorOverlayNote || "") });
+        } else {
+          layerOverlays.push({ layer: "motor", available: false, reason: "no interactive elements were found to score" });
+        }
+
+        // readability
+        if (readabilityResult && readabilityResult.blocks.length > 0) {
+          try {
+            const { generateReadabilityOverlay } = await import("../../visual/visual-overlays.js");
+            const rb = readabilityResult.blocks.map((b: { difficulty: number; wordsPerMinute: number }, i: number) => ({
+              x: textBlockGeom[i]?.x ?? 0, y: textBlockGeom[i]?.y ?? 0,
+              width: textBlockGeom[i]?.width ?? 0, height: textBlockGeom[i]?.height ?? 0,
+              difficulty: b.difficulty ?? 0, wpm: b.wordsPerMinute ?? 0,
+              text: textBlockGeom[i]?.text ?? "",
+            })).filter((b: { width: number; height: number }) => b.width > 0 && b.height > 0);
+            if (rb.length) {
+              const b64 = await generateReadabilityOverlay(ssPath, rb, personaName);
+              const w = writeArtifact(Buffer.from(b64, "base64"), `readability-${personaName}-${Date.now()}.png`);
+              if (w) layerOverlays.push({ layer: "readability", file: w.url.split("/").pop(), available: true,
+                legend: "Hotter = slower for this persona to read." });
+            } else {
+              layerOverlays.push({ layer: "readability", available: false, reason: "text blocks carried no on-page geometry" });
+            }
+          } catch (e) {
+            layerOverlays.push({ layer: "readability", available: false, reason: `readability overlay failed: ${(e as Error).message}` });
+          }
+        } else {
+          layerOverlays.push({ layer: "readability", available: false, reason: "no readable text blocks in the viewport" });
+        }
+
+        // The remaining two have no generator, and no data here to build one
+        // from. Said plainly rather than left as a dead bar.
+        layerOverlays.push({ layer: "cognitive-load", available: false,
+          reason: "no per-region load data is produced by this tool, so there is nothing to draw" });
+        layerOverlays.push({ layer: "decision", available: false,
+          reason: "decision cost is computed over the page as a whole, not per region" });
+        layerOverlays.push({ layer: "frustration", available: false,
+          reason: "frustration is a running state across the chain, not a place on the page" });
+
+        if (ex(ssPath)) { try { ul(ssPath); } catch {} }
+      } catch (e) {
+        console.debug(`[cognitive_effort] Layer overlays failed: ${(e as Error).message}`);
+      }
+      if (layerOverlays.length) {
+        response.layerOverlays = layerOverlays;
+        response.layerOverlayNote = "Each entry maps to a bar in the transport chain. Layers without an overlay say why.";
       }
 
       content.unshift({
