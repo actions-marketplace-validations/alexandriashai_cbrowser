@@ -842,6 +842,9 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   let attentionPatternSource: "declared" | "derived" | "default" = "default";
   let attentionPatternMargin: number | undefined;
   let attentionPatternConflict: string | undefined;
+  let techLevel: "beginner" | "intermediate" | "expert" | undefined;
+  let techLevelSource: "declared" | "derived" = "derived";
+  let techLevelConflict: string | undefined;
   if (persona.humanBehavior?.attention?.pattern) {
     attentionPatternSource = "declared";
     const pattern = persona.humanBehavior.attention.pattern;
@@ -944,6 +947,30 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     // A near-tie is a weak reading, and saying so beats presenting the winner
     // as though it were clear.
     decisionStyleMargin = Math.round((scores[0][1] - scores[1][1]) * 100) / 100;
+
+    // Tech level, derived rather than trusted.
+    //
+    // demographics.tech_level is a creation-time literal that nothing ever
+    // revisits, and the default is "intermediate". Ten of twenty-one personas
+    // carried exactly that string while their fluency traits ranged from 0.28
+    // to 0.85 -- which is not ten independent judgements, it is one unset
+    // default. It is read by persona-comparison, so it affects output rather
+    // than only display.
+    //
+    // The stored value is left alone; someone may have meant it. The derived
+    // one is reported alongside, and a disagreement is named. (2026-08-01)
+    const fluency = mean(t("proceduralFluency"), t("transferLearning"), t("comprehension"));
+    const derivedTech: "beginner" | "intermediate" | "expert" =
+      fluency >= 0.75 ? "expert" : fluency >= 0.5 ? "intermediate" : "beginner";
+    const declaredTech = persona.demographics?.tech_level;
+    techLevel = declaredTech ?? derivedTech;
+    techLevelSource = declaredTech ? "declared" : "derived";
+    if (declaredTech && declaredTech !== derivedTech) {
+      techLevelConflict =
+        `demographics.tech_level is "${declaredTech}", but this persona's fluency traits average ${Math.round(fluency * 100) / 100}, `
+        + `which reads as "${derivedTech}" (proceduralFluency ${t("proceduralFluency")}, transferLearning ${t("transferLearning")}, comprehension ${t("comprehension")}). `
+        + `The stored value is what persona-comparison uses.`;
+    }
 
     // Attention pattern, derived the same way decisionStyle is.
     //
@@ -1049,6 +1076,9 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     attentionPatternSource,
     attentionPatternMargin,
     attentionPatternConflict,
+    techLevel,
+    techLevelSource,
+    techLevelConflict,
     decisionStyleSource,
     ...(decisionStyleMargin !== undefined ? { decisionStyleMargin } : {}),
     innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,

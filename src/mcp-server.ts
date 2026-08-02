@@ -1894,7 +1894,15 @@ async function registerCBrowserTools(): Promise<McpServer> {
         emotionalContagion: z.number().min(0).max(1).optional().describe("Affected by page emotional tone (0=immune, 1=absorbs mood)"),
         fearOfMissingOut: z.number().min(0).max(1).optional().describe("Responds to scarcity/urgency (0=immune, 1=strongly affected)"),
         socialProofSensitivity: z.number().min(0).max(1).optional().describe("Influenced by reviews/testimonials (0=ignores, 1=strongly influenced)"),
-        mentalModelRigidity: z.number().min(0).max(1).optional().describe("Adapts mental models (0=flexible, 1=rigid expectations)"),
+        // POLARITY CORRECTED 2026-08-01. This read "0=flexible, 1=rigid",
+        // which is backwards from every other authority on the field: the
+        // questionnaire runs 0 "Rigid Mental Models" to 1 "Extremely Flexible",
+        // the glossary's high end is "Highly adaptive", and its typicalScores
+        // put power-user high and elderly-user low. A caller trusting this
+        // description would send 1.0 meaning rigid and get the most flexible
+        // persona the scale can express, with nothing in the output looking
+        // wrong -- exactly the failure the field's rename note warns about.
+        mentalModelRigidity: z.number().min(0).max(1).optional().describe("Mental-model adaptability. 0 = rigid, cannot adapt when conventions change; 1 = instantly adapts. Named 'Rigidity' for backwards compatibility; the SCALE runs toward flexibility."),
       }).optional().describe("Override specific cognitive traits (25 available)"),
     },
     async ({ persona: personaName, goal, startUrl, customTraits }) => {

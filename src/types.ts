@@ -770,6 +770,11 @@ export interface CognitiveProfile {
   attentionPatternMargin?: number;
   /** Set when a declared pattern disagrees with what the traits score highest. */
   attentionPatternConflict?: string;
+  /** Tech level as the traits imply it, or the declared one when present. */
+  techLevel?: "beginner" | "intermediate" | "expert";
+  techLevelSource?: "declared" | "derived";
+  /** Set when the stored tech_level disagrees with the fluency traits. */
+  techLevelConflict?: string;
   decisionStyleSource?: "declared" | "derived" | "default";
   /**
    * Gap between the winning decision style's score and the runner-up. A small
