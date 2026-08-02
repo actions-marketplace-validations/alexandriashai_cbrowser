@@ -21,6 +21,7 @@ import { registerVisualTestingTools } from "./visual-testing-tools.js";
 import { registerTestingTools } from "./testing-tools.js";
 import { registerBugAnalysisTools } from "./bug-analysis-tools.js";
 import { registerPersonaComparisonTools } from "./persona-comparison-tools.js";
+import { registerPersonaLifecycleTools } from "../persona-lifecycle-tools.js";
 import { registerCognitiveTools } from "./cognitive-tools.js";
 import { registerValuesTools } from "./values-tools.js";
 import { registerPerformanceTools } from "./performance-tools.js";
@@ -102,6 +103,11 @@ export function registerBaseTools(
 
   // Persona Comparison (3)
   registerPersonaComparisonTools(server, context);
+
+  // Update + delete. Registered on the shared path so the stdio and remote
+  // servers get them together rather than diverging, which is how this
+  // subsystem accumulated eight duplicate tool families.
+  registerPersonaLifecycleTools(server);
 
   // Cognitive (3)
   registerCognitiveTools(server, context);

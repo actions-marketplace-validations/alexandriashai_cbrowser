@@ -33,6 +33,7 @@ import { registerEmpathyAuditTool } from "./mcp-tools/base/audit-tools.js";
 import { registerValuesTools } from "./mcp-tools/base/values-tools.js";
 import { registerPersonaComparisonTools } from "./mcp-tools/base/persona-comparison-tools.js";
 import { registerPersonaCreationTools } from "./mcp-tools/persona-creation-tools.js";
+import { registerPersonaLifecycleTools } from "./mcp-tools/persona-lifecycle-tools.js";
 import { registerUiResources } from "./mcp-tools/ui-resources.js";
 import { applySecurityLayer } from "./mcp-tools/security-layer.js";
 
@@ -3132,6 +3133,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
   // this way; the pattern is that anything registered only on the public path
   // silently diverges from anything hand-written here. (2026-08-01)
   registerPersonaCreationTools(server);
+  registerPersonaLifecycleTools(server);
 
   // =========================================================================
   // Diagnostics Tools

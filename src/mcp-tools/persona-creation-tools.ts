@@ -26,6 +26,7 @@ import {
 import type { CognitiveTraits } from "../types.js";
 import { bigFiveInferenceReference, validateInferredBigFive } from "../values/big-five-inference.js";
 import { deriveValuesFromBigFive } from "../values/big-five-values.js";
+import { TRAIT_INFERENCE_CRITERIA, ALL_TRAITS, assessTraitCompleteness } from "../values/persona-completeness.js";
 
 // ============================================================================
 // Schwartz Values Questions for Persona Questionnaire
@@ -585,6 +586,16 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
             instruction: `Based on the user's description, infer appropriate trait values (0.0 to 1.0) for each cognitive trait. ALSO estimate the persona's Big Five profile from the same description and return it as bigFive with bigFiveEvidence — see big_five_inference below. This is not optional decoration: without it the persona's values are derived from cognitive traits, and that route cannot reach hedonism, power, universalism or the relatedness need, so those four stay at the 0.5 baseline. Use the trait reference matrix below to guide your inference. If the description mentions ANY physical or sensory disability (vision loss, motor impairment, color blindness, hearing loss, tremor, etc.), you MUST also include accessibilityTraits. Without accessibilityTraits, the persona gets cognitive-only modeling and the perceptual transport layer will report near-perfect perception — which is wrong for someone with a disability. Return the traits via persona_create_submit_traits.`,
             trait_reference: traitInfo,
             big_five_inference: bigFiveInferenceReference(),
+            // What to look for, per trait, so the caller is not guessing at
+            // what counts as evidence. The submit tool REJECTS a persona with
+            // unaccounted traits, so this is the contract rather than advice.
+            trait_criteria: TRAIT_INFERENCE_CRITERIA,
+            completeness_contract: {
+              rule: `All ${ALL_TRAITS.length} traits must be accounted for. Give each one a value inferred from the description, OR list it in unsupportedTraits.`,
+              why: "An unsupplied trait is filled from a population baseline and the result is indistinguishable from a considered value — the persona looks complete either way. Naming what the description cannot support keeps that visible.",
+              unsupportedTraits: "string[] — traits this description genuinely does not speak to. A legitimate answer, not a failure.",
+              enforcement: "persona_create_submit_traits returns an error listing the unaccounted traits and writes nothing.",
+            },
             ...(includeTraitReference ? {} : { trait_reference_note: "Compact form: trait names and meanings. For per-level behaviours call persona_traits_list, or pass includeTraitReference:true." }),
             accessibility_traits_reference: {
               visionLevel: "0=blind, 0.3=legally blind, 0.5=low vision (needs magnification), 0.7=mild vision loss, 1.0=sighted",
@@ -639,6 +650,7 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         hearingLevel: z.number().min(0).max(1).optional().describe("Hearing level: 0=deaf, 1=full hearing"),
       }).optional().describe("Sensory/motor/physical traits for disability modeling. Without these, the persona gets cognitive-only modeling (no vision/motor simulation in empathy_audit)."),
       ageRange: z.string().optional().describe("Age range: '18-24', '25-45', '45-65', '65+'"),
+      unsupportedTraits: z.array(z.string()).optional().describe("Traits the description genuinely does not speak to. Required for any trait you are not supplying a value for — see completeness_contract. Naming them is a valid answer; omitting them is not."),
       bigFive: z.object({
         openness: z.number().min(0).max(1),
         conscientiousness: z.number().min(0).max(1),
@@ -659,7 +671,28 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
       idempotentHint: false,
       openWorldHint: false,
     },
-  }, async ({ persona_name, traits, description, accessibilityTraits, ageRange, bigFive, bigFiveEvidence }) => {
+  }, async ({ persona_name, traits, description, accessibilityTraits, ageRange, bigFive, bigFiveEvidence, unsupportedTraits }) => {
+      // Refused, not warned.
+      //
+      // A warning is read once by a model already moving to its next call, and
+      // the persona is written regardless -- the gap surfaces months later when
+      // someone audits. Five personas on this install are missing the same four
+      // traits because one session skipped them and nothing objected. Declining
+      // the write is the only version of this that changes what gets stored.
+      const completeness = assessTraitCompleteness(traits, unsupportedTraits);
+      if (!completeness.ok) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            error: "incomplete_persona",
+            message: completeness.message,
+            unaccountedTraits: completeness.unaccounted,
+            traitCriteria: Object.fromEntries(
+              completeness.unaccounted.map((t) => [t, TRAIT_INFERENCE_CRITERIA[t]])),
+            howToProceed: "Re-submit with a value for each trait the description supports, and the rest listed in unsupportedTraits. Nothing was written.",
+            written: false,
+          }, null, 2) }],
+        };
+      }
       const builtTraits = buildTraitsFromAnswers(traits);
 
       // Big Five, when the caller inferred one from the description.
@@ -751,6 +784,12 @@ Phase: VALUES (${session.currentIndex + 1} of ${session.valueQuestions.length})`
         (personaObj as unknown as Record<string, unknown>).bigFive = bigFiveAccepted;
       }
       (personaObj as unknown as Record<string, unknown>).schwartzValues = derivedResult.values;
+      // Kept ON the persona: which traits are baseline-by-declaration rather
+      // than by omission. Without it the distinction is lost the moment the
+      // response is discarded.
+      if (unsupportedTraits?.length) {
+        (personaObj as unknown as Record<string, unknown>).unsupportedTraits = unsupportedTraits;
+      }
 
       registerPersonas([personaObj]);
 

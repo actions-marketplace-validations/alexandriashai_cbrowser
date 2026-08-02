@@ -1,0 +1,231 @@
+/**
+ * Updating and deleting personas.
+ *
+ * WHY THESE EXIST
+ *
+ * There were fourteen persona tools and every one of them either read a persona
+ * or created a new one. Nothing could correct a persona and nothing could remove
+ * one. A declaration found to be wrong — `sofia-mobile-navigator` carried
+ * attentionPattern "thorough" while its own description said "short attention,
+ * skims" — could only be fixed by hand-editing JSON in two stores, which is not
+ * a thing a user of the MCP server can do at all.
+ *
+ * A create-only API does not mean personas never change. It means they change
+ * outside the system, unrecorded, in whichever store the person editing happened
+ * to know about.
+ *
+ * TWO STORES, ONE WRITE
+ *
+ * Personas live in the file store the package reads AND in the CMS
+ * `custom_personas` table. Writing one and not the other is the single most
+ * repeated defect in this subsystem: it produced a roster serving pre-tanh
+ * values against a lookup serving post-tanh ones, and personas that appeared in
+ * the roster and 404'd on lookup. Both tools here write both, and say which
+ * writes landed rather than reporting success on a partial one.
+ *
+ * MERGE, NEVER REBUILD
+ *
+ * An update patches the fields it was given and leaves everything else. The
+ * mirror learned this the hard way: rebuilding a persona file from known fields
+ * dropped `humanBehavior`, and with it the attention pattern that decides how
+ * the persona reads a page — a behaviour change disguised as a data refresh.
+ *
+ * @since 2026-08-01
+ */
+import { z } from "zod";
+import type { McpServer } from "./types.js";
+
+const CMS_URL = () => process.env.CMS_URL || "http://localhost:3200";
+
+function slugFor(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+/** Push a change to the CMS. Reports the outcome rather than swallowing it. */
+async function writeCms(
+  method: "PUT" | "DELETE",
+  slug: string,
+  body?: Record<string, unknown>,
+): Promise<{ ok: boolean; detail: string }> {
+  const { getSessionApiKey } = await import("./base/cognitive-tools.js");
+  const apiKey = getSessionApiKey();
+  if (!apiKey) return { ok: false, detail: "no API key in session — the CMS copy was NOT updated" };
+  try {
+    const res = await fetch(`${CMS_URL()}/api/personas/${slug}`, {
+      method,
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (res.ok) return { ok: true, detail: `CMS ${method.toLowerCase()} ok` };
+    return { ok: false, detail: `CMS returned ${res.status}: ${(await res.text().catch(() => "")).slice(0, 120)}` };
+  } catch (e) {
+    return { ok: false, detail: `CMS unreachable: ${(e as Error).message}` };
+  }
+}
+
+export function registerPersonaLifecycleTools(server: McpServer): void {
+  server.registerTool("persona_update", {
+    title: "Update Persona",
+    description:
+      "Patch an existing custom persona: traits, description, accessibility traits, Big Five, attention pattern, demographics. "
+      + "Only the fields you pass are changed; everything else is preserved. Writes BOTH the file store and the CMS. "
+      + "Built-in personas cannot be modified.",
+    inputSchema: {
+      persona_name: z.string().describe("Name of the persona to update"),
+      traits: z.record(z.string(), z.number()).optional().describe("Partial trait map — merged over existing traits, not replacing them"),
+      description: z.string().optional(),
+      attentionPattern: z.enum(["targeted", "f-pattern", "z-pattern", "exploratory", "sequential", "thorough", "skim"]).optional()
+        .describe("Declared attention pattern. This DRIVES runtime behaviour and overrides what the traits imply, so set it deliberately — persona_lookup reports when it disagrees with the trait vector."),
+      accessibilityTraits: z.record(z.string(), z.unknown()).optional(),
+      bigFive: z.object({
+        openness: z.number().min(0).max(1), conscientiousness: z.number().min(0).max(1),
+        extraversion: z.number().min(0).max(1), agreeableness: z.number().min(0).max(1),
+        neuroticism: z.number().min(0).max(1),
+      }).optional().describe("Supplying this moves the persona to the big_five values route, reaching all 13 motivational axes instead of 9"),
+      ageRange: z.string().optional(),
+      techLevel: z.enum(["beginner", "intermediate", "expert"]).optional(),
+    },
+    annotations: { title: "Update Persona", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ persona_name, traits, description, attentionPattern, accessibilityTraits, bigFive, ageRange, techLevel }) => {
+    // Destructured in the parameter list, not the body: a repo test statically
+    // reads the handler signature to prove every declared argument is actually
+    // bound, and a body-level destructure is invisible to it. The convention is
+    // load-bearing rather than stylistic.
+    const { getAnyPersona, isBuiltinPersona, saveCustomPersona, registerPersonas } = await import("../personas.js");
+
+    if (isBuiltinPersona(persona_name)) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        error: "builtin_persona",
+        message: `"${persona_name}" is built into the package. Built-ins are shared by every install and are not editable; create a custom persona instead.`,
+        written: false,
+      }, null, 2) }] };
+    }
+
+    const existing = getAnyPersona(persona_name) as unknown as Record<string, unknown> | undefined;
+    if (!existing) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        error: "not_found",
+        message: `No persona named "${persona_name}". list_cognitive_personas returns the roster.`,
+        written: false,
+      }, null, 2) }] };
+    }
+
+    // Merge. The fields not named here are carried through untouched, which is
+    // the whole contract of an update as opposed to a re-create.
+    const updated: Record<string, unknown> = { ...existing };
+    const changed: string[] = [];
+    if (traits) {
+      updated.cognitiveTraits = { ...(existing.cognitiveTraits as object ?? {}), ...traits };
+      changed.push(`traits(${Object.keys(traits).join(",")})`);
+    }
+    if (description !== undefined) { updated.description = description; changed.push("description"); }
+    if (accessibilityTraits) {
+      updated.accessibilityTraits = { ...(existing.accessibilityTraits as object ?? {}), ...accessibilityTraits };
+      changed.push("accessibilityTraits");
+    }
+    if (attentionPattern) {
+      const hb = { ...(existing.humanBehavior as Record<string, unknown> ?? {}) };
+      hb.attention = { ...((hb.attention as object) ?? {}), pattern: attentionPattern };
+      updated.humanBehavior = hb;
+      changed.push("attentionPattern");
+    }
+    if (ageRange || techLevel) {
+      updated.demographics = {
+        ...(existing.demographics as object ?? {}),
+        ...(ageRange ? { age_range: ageRange } : {}),
+        ...(techLevel ? { tech_level: techLevel } : {}),
+      };
+      changed.push(ageRange && techLevel ? "demographics" : ageRange ? "ageRange" : "techLevel");
+    }
+    let valuesRoute: string | undefined;
+    if (bigFive) {
+      const { deriveValuesFromBigFive } = await import("../values/big-five-values.js");
+      const d = deriveValuesFromBigFive(bigFive);
+      updated.bigFive = bigFive;
+      updated.schwartzValues = d.values;
+      updated.valuesDerivation = { method: "bigfive", squash: "tanh", precision: 3, recordedAt: new Date().toISOString().slice(0, 10) };
+      valuesRoute = "big_five";
+      changed.push("bigFive+values");
+    }
+
+    if (!changed.length) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        error: "nothing_to_update",
+        message: "No updatable field was supplied. Pass at least one of: traits, description, attentionPattern, accessibilityTraits, bigFive, ageRange, techLevel.",
+        written: false,
+      }, null, 2) }] };
+    }
+
+    const filePath = saveCustomPersona(updated as never);
+    registerPersonas([updated as never]);
+    const cms = await writeCms("PUT", slugFor(persona_name), {
+      ...(traits ? { traits: updated.cognitiveTraits } : {}),
+      ...(description !== undefined ? { description } : {}),
+      ...(accessibilityTraits ? { accessibility_traits: updated.accessibilityTraits } : {}),
+      ...(bigFive ? { schwartz_values: updated.schwartzValues, big_five: bigFive,
+                      values_derivation: updated.valuesDerivation } : {}),
+    });
+
+    return { content: [{ type: "text" as const, text: JSON.stringify({
+      persona: persona_name,
+      changed,
+      ...(valuesRoute ? { valuesRoute } : {}),
+      fileStore: { written: true, path: filePath },
+      cms,
+      // Both stores are named explicitly. A persona updated in one and not the
+      // other is the recurring failure in this subsystem, and it is invisible
+      // unless the response says which writes actually landed.
+      note: cms.ok
+        ? "Both stores updated."
+        : "File store updated; the CMS copy was NOT. They now disagree — re-run with a session API key.",
+    }, null, 2) }] };
+  });
+
+  server.registerTool("persona_delete", {
+    title: "Delete Persona",
+    description:
+      "Delete a custom persona from both the file store and the CMS. Requires confirm:true. Built-in personas cannot be deleted.",
+    inputSchema: {
+      persona_name: z.string().describe("Name of the persona to delete"),
+      confirm: z.boolean().describe("Must be true. Deletion removes the persona from both stores and cannot be undone from here."),
+    },
+    annotations: { title: "Delete Persona", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  }, async ({ persona_name, confirm }) => {
+    const { getAnyPersona, isBuiltinPersona, deleteCustomPersona } = await import("../personas.js");
+
+    if (isBuiltinPersona(persona_name)) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        error: "builtin_persona",
+        message: `"${persona_name}" is built into the package and is shared by every install. Built-ins are not deletable.`,
+        deleted: false,
+      }, null, 2) }] };
+    }
+    // An explicit confirm, because this is the only tool in the persona surface
+    // that destroys something and the caller is usually a model.
+    if (!confirm) {
+      const p = getAnyPersona(persona_name) as unknown as Record<string, unknown> | undefined;
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        error: "confirmation_required",
+        message: `Deleting "${persona_name}" removes it from the file store and the CMS. Re-send with confirm:true.`,
+        wouldDelete: p ? { name: persona_name, description: p.description } : "(no such persona)",
+        deleted: false,
+      }, null, 2) }] };
+    }
+    if (!getAnyPersona(persona_name)) {
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        error: "not_found", message: `No persona named "${persona_name}".`, deleted: false,
+      }, null, 2) }] };
+    }
+
+    const fileDeleted = deleteCustomPersona(persona_name);
+    const cms = await writeCms("DELETE", slugFor(persona_name));
+    return { content: [{ type: "text" as const, text: JSON.stringify({
+      persona: persona_name,
+      fileStore: { deleted: fileDeleted },
+      cms,
+      note: fileDeleted && cms.ok
+        ? "Removed from both stores."
+        : "Partially removed — the stores now disagree. A persona left in one store still resolves through the tools that read it.",
+    }, null, 2) }] };
+  });
+}
