@@ -66,6 +66,61 @@ async function writeCms(
 }
 
 export function registerPersonaLifecycleTools(server: McpServer): void {
+  server.registerTool("persona_manager", {
+    title: "Manage Personas",
+    description:
+      "ONE interactive surface for persona CRUD: browse every persona, edit its cognitive traits with sliders, save, and delete — all in the returned view. "
+      + "Call this instead of chaining list_cognitive_personas, persona_lookup, persona_update and persona_delete by hand. "
+      + "Reads ship with the result; edits are written back through persona_update and persona_delete.",
+    inputSchema: {
+      filter: z.enum(["all", "custom", "builtin"]).optional().default("custom")
+        .describe("Which personas to load. Defaults to custom, the ones that can be edited."),
+    },
+    annotations: { title: "Manage Personas", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    _meta: { ui: { resourceUri: widgetUri("persona-manager") } },
+  }, async ({ filter }) => {
+    const { listPersonas, getAnyPersona, isBuiltinPersona, loadCustomPersonas } = await import("../personas.js");
+    const { resolvePersonaValues } = await import("./base/values-tools.js");
+
+    const names = new Set<string>();
+    try { (listPersonas() as Array<{ name?: string } | string>).forEach((p) => {
+      const n = typeof p === "string" ? p : p?.name; if (n) names.add(n);
+    }); } catch { /* builtin roster unavailable; customs below still load */ }
+    try { Object.keys(loadCustomPersonas()).forEach((n) => names.add(n)); } catch { /* no custom store */ }
+
+    const want = filter ?? "custom";
+    const personas = [...names]
+      .filter((n) => want === "all" || (want === "builtin" ? isBuiltinPersona(n) : !isBuiltinPersona(n)))
+      .map((name) => {
+        const p = getAnyPersona(name) as unknown as Record<string, unknown> | undefined;
+        if (!p) return null;
+        let valuesRoute: string | undefined;
+        try { valuesRoute = resolvePersonaValues(name).source; } catch { /* leave unlabelled */ }
+        return {
+          name,
+          description: (p.description as string) ?? "",
+          // The whole trait map travels with the result so switching personas
+          // in the view is instant. Only writes go back to the server.
+          traits: (p.cognitiveTraits ?? {}) as Record<string, number>,
+          builtin: isBuiltinPersona(name),
+          ...(valuesRoute ? { valuesRoute } : {}),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => String(a!.name).localeCompare(String(b!.name)));
+
+    const editable = personas.filter((p) => !p!.builtin).length;
+    return { content: [{ type: "text" as const, text: JSON.stringify({
+      personas,
+      summary: `${personas.length} persona(s), ${editable} editable`,
+      editable,
+      // Creation is not in this view on purpose: it needs the description read
+      // and the completeness contract, which is a conversation rather than a
+      // form. Named here so the path is obvious rather than missing.
+      createHint: "To create a persona: persona_create_from_description returns the trait criteria, then persona_create_submit_traits writes it. Built-in personas are shown read-only — they ship with the package and are shared by every install.",
+    }, null, 2) }] };
+  });
+
   server.registerTool("persona_update", {
     title: "Update Persona",
     description:

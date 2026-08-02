@@ -210,6 +210,36 @@ export const PERSONA_SPEC: WidgetSpec = {
 };
 
 /**
+ * One interactive surface for persona CRUD.
+ *
+ * The roster, the selected persona's editable traits, save and delete, in a
+ * single view. Reads ship with the tool result so switching personas costs no
+ * round trip; writes go back through persona_update and persona_delete, which
+ * already handle both stores, the built-in guard and the description-drift
+ * check. This is a surface over those tools, not a second copy of them --
+ * nine duplicate tool families in this subsystem are what a second copy costs.
+ * (2026-08-01)
+ */
+export const PERSONA_MANAGER_SPEC: WidgetSpec = {
+  id: "persona-manager",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-manager/",
+  title: "Personas",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "summary" },
+    facts: [
+      { field: "personas", label: "personas" },
+      { field: "editable", label: "editable" },
+    ],
+    actions: [{ label: "Manage on cbrowser.ai", url: "https://cbrowser.ai/account/personas" }],
+  },
+  blocks: [
+    { type: "manager", title: "Personas", field: "personas" },
+    { type: "note", title: "Creating a persona", field: "createHint" },
+  ],
+};
+
+/**
  * A persona that was just created.
  *
  * The creation tools returned JSON and nothing else, so "what did I just make?"
@@ -539,6 +569,10 @@ export function buildPersonaTemplate(): string {
   return buildWidget(PERSONA_SPEC);
 }
 
+export function buildPersonaManagerTemplate(): string {
+  return buildWidget(PERSONA_MANAGER_SPEC);
+}
+
 export function buildPersonaCreatedTemplate(): string {
   return buildWidget(PERSONA_CREATED_SPEC);
 }
@@ -635,6 +669,15 @@ export function registerUiResources(server: McpServer): void {
     { description: "Persona traits, values and accessibility profile", mimeType: MCP_APP_MIME },
     async () => ({
       contents: [{ uri: widgetUri("persona"), mimeType: MCP_APP_MIME, text: buildPersonaTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-persona-manager-ui",
+    widgetUri("persona-manager"),
+    { description: "Interactive persona CRUD: roster, inline trait editor, save and delete", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("persona-manager"), mimeType: MCP_APP_MIME, text: buildPersonaManagerTemplate() }],
     }),
   );
 

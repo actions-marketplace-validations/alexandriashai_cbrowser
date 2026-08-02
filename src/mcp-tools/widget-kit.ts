@@ -116,6 +116,12 @@ export type BlockSpec =
    * tool to call on save. Read-only blocks stay read-only: this is opt-in per
    * block rather than a mode on the widget.
    */
+  /**
+   * The full persona CRUD surface: roster, inline editor, save and delete.
+   * Writes go out through callServerTool to the existing tools rather than
+   * being reimplemented here.
+   */
+  | { type: "manager"; title: string; field: FieldPath }
   | { type: "editor"; title: string; field: FieldPath;
       /** Where the persona's name lives in the payload; defaults to `persona`. */
       personaField?: FieldPath;
@@ -467,6 +473,23 @@ const CSS = `
      value, so it survives both themes and does not rely on hue alone --
      WCAG 1.4.1: colour is not the only channel carrying the information. */
   .trait.dirty{border-left:3px solid var(--accent);padding-left:.5rem;margin-left:-.75rem}
+  .mgrcols{display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap}
+  .mgrlist{flex:0 0 13rem;display:flex;flex-direction:column;gap:.15rem;
+    max-height:22rem;overflow-y:auto}
+  .mgrpane{flex:1 1 18rem;min-width:0}
+  .mgrrow{display:flex;flex-direction:column;align-items:flex-start;gap:.1rem;
+    font:inherit;text-align:left;background:none;border:0;border-radius:.375rem;
+    padding:.4rem .55rem;cursor:pointer;color:var(--ink)}
+  .mgrrow:hover{background:color-mix(in oklch,var(--accent) 12%,transparent)}
+  .mgrrow.on{background:color-mix(in oklch,var(--accent) 22%,transparent);
+    box-shadow:inset 3px 0 0 var(--accent)}
+  .mgrrow:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .mgrname{font-size:.85rem;font-weight:600}
+  .mgrh{font-size:1rem;margin:0 0 .15rem}
+  /* Single column on narrow viewports: a 13rem list beside an 18rem pane
+     cannot both fit on a phone, and side-by-side would force a horizontal
+     scroll on the whole widget. */
+  @media (max-width:34rem){ .mgrlist{flex-basis:100%;max-height:11rem} }
   .tedit{flex:1;min-width:6rem;accent-color:var(--accent);height:1.25rem}
   .tedit:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .tval{font-variant-numeric:tabular-nums;font-size:.78rem;width:2.6rem;text-align:right}
@@ -902,6 +925,140 @@ const RUNTIME = String.raw`
         save.disabled = false;
       }
     });
+    return wrap;
+  }
+
+  /**
+   * The whole persona CRUD surface in one block.
+   *
+   * A roster on the left, the selected persona's editable traits on the right,
+   * and save / delete / new. Every write goes out through app.callServerTool to
+   * the tools that already do the work -- persona_update, persona_delete,
+   * persona_create_submit_traits -- so this is a surface over them rather than
+   * a second implementation of them. That matters: a duplicate write path is
+   * the exact defect that has produced nine divergent tool families here.
+   *
+   * The roster ships with the result, so switching personas is instant and
+   * costs no round trip. Only writes go back to the server.
+   */
+  function managerBlock(data, b) {
+    var wrap = el("div", "mgr");
+    var roster = at(data, b.field) || [];
+    if (!roster.length) return wrap;
+    var selected = roster[0];
+    var edited = {};
+
+    var cols = el("div", "mgrcols");
+    var list = el("div", "mgrlist");
+    var pane = el("div", "mgrpane");
+    cols.appendChild(list); cols.appendChild(pane);
+    wrap.appendChild(cols);
+
+    var status = el("p", "cap", "");
+    wrap.appendChild(status);
+
+    function renderList() {
+      list.innerHTML = "";
+      roster.forEach(function (p, i) {
+        var row = el("button", "mgrrow" + (p === selected ? " on" : ""), "");
+        row.type = "button";
+        row.setAttribute("aria-pressed", p === selected ? "true" : "false");
+        row.appendChild(el("span", "mgrname", String(p.name || "(unnamed)")));
+        var meta = [];
+        if (p.builtin) meta.push("built-in");
+        if (p.valuesRoute) meta.push(String(p.valuesRoute));
+        if (meta.length) row.appendChild(el("span", "cap", meta.join(" · ")));
+        row.addEventListener("click", function () {
+          if (Object.keys(edited).length &&
+              !confirm("Discard " + Object.keys(edited).length + " unsaved change(s)?")) return;
+          selected = p; edited = {}; renderList(); renderPane();
+        });
+        list.appendChild(row);
+      });
+    }
+
+    function renderPane() {
+      pane.innerHTML = "";
+      var p = selected;
+      pane.appendChild(el("h3", "mgrh", String(p.name)));
+      if (p.description) pane.appendChild(el("p", "cap", String(p.description)));
+
+      var traits = p.traits || {};
+      var names = Object.keys(traits);
+      var box = el("div", "traits");
+      names.forEach(function (k) {
+        var v = Number(traits[k]);
+        if (!isFinite(v)) return;
+        var line = el("div", "trait");
+        line.appendChild(el("span", "tname", titleize(k)));
+        var input = document.createElement("input");
+        input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.05";
+        input.value = String(v); input.className = "tedit";
+        input.setAttribute("aria-label", titleize(k));
+        var out = el("span", "tval", v.toFixed(2));
+        input.addEventListener("input", function () {
+          var nv = Number(input.value);
+          out.textContent = nv.toFixed(2);
+          if (Math.abs(nv - v) < 1e-9) { delete edited[k]; line.classList.remove("dirty"); }
+          else { edited[k] = nv; line.classList.add("dirty"); }
+          save.disabled = !Object.keys(edited).length;
+          status.textContent = Object.keys(edited).length
+            ? Object.keys(edited).length + " unsaved change(s) on " + p.name : "";
+        });
+        line.appendChild(input); line.appendChild(out);
+        box.appendChild(line);
+      });
+      pane.appendChild(box);
+
+      var bar = el("div", "editbar");
+      var save = el("button", "btn", "Save");
+      save.type = "button"; save.disabled = true;
+      var del = el("button", "btn ghost", "Delete");
+      del.type = "button";
+      // A built-in is shared by every install; the server refuses to edit or
+      // delete one, so the UI does not offer to.
+      if (p.builtin) { save.disabled = true; del.disabled = true; }
+      bar.appendChild(save); bar.appendChild(del);
+      pane.appendChild(bar);
+
+      save.addEventListener("click", async function () {
+        save.disabled = true; status.textContent = "Saving…";
+        try {
+          var res = await app.callServerTool({ name: "persona_update",
+            arguments: { persona_name: p.name, traits: edited } });
+          var t = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+          var out = t ? JSON.parse(t.text) : {};
+          if (out.error) { status.textContent = "Not saved: " + (out.message || out.error); save.disabled = false; return; }
+          Object.keys(edited).forEach(function (k) { p.traits[k] = edited[k]; });
+          var drift = (out.descriptionDrift || []).length;
+          status.textContent = "Saved " + p.name + ". " + (out.changed || []).length + " field(s)"
+            + (drift ? " — " + drift + " description claim(s) now contradicted" : "")
+            + (out.stores && out.stores.cms !== "written" ? " — CMS NOT written" : "");
+          edited = {}; renderPane();
+          app.sendMessage({ role: "user", content: [{ type: "text",
+            text: "Updated persona " + p.name + ": " + (out.changed || []).join(", ") }] });
+        } catch (e) { status.textContent = "Save failed: " + (e && e.message ? e.message : e); save.disabled = false; }
+      });
+
+      del.addEventListener("click", async function () {
+        if (!confirm("Delete " + p.name + " from both stores? This cannot be undone here.")) return;
+        del.disabled = true; status.textContent = "Deleting…";
+        try {
+          var res = await app.callServerTool({ name: "persona_delete",
+            arguments: { persona_name: p.name, confirm: true } });
+          var t = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+          var out = t ? JSON.parse(t.text) : {};
+          if (out.error) { status.textContent = "Not deleted: " + (out.message || out.error); del.disabled = false; return; }
+          roster = roster.filter(function (x) { return x !== p; });
+          status.textContent = "Deleted " + p.name + ". " + (out.note || "");
+          app.sendMessage({ role: "user", content: [{ type: "text", text: "Deleted persona " + p.name }] });
+          if (!roster.length) { pane.innerHTML = ""; list.innerHTML = ""; return; }
+          selected = roster[0]; edited = {}; renderList(); renderPane();
+        } catch (e) { status.textContent = "Delete failed: " + (e && e.message ? e.message : e); del.disabled = false; }
+      });
+    }
+
+    renderList(); renderPane();
     return wrap;
   }
 
@@ -1391,6 +1548,11 @@ const RUNTIME = String.raw`
       used[b.field.split(".")[0]] = true;
       var rows = normaliseTraits(at(data, b.field), b);
       return rows.length ? { node: traitsBlock(rows, b), count: rows.length } : null;
+    }
+    if (b.type === "manager") {
+      used[b.field.split(".")[0]] = true;
+      var mnode = managerBlock(data, b);
+      return mnode.childNodes.length ? { node: mnode, count: null } : null;
     }
     if (b.type === "editor") {
       used[b.field.split(".")[0]] = true;
