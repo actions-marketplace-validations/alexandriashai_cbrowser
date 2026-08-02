@@ -1396,7 +1396,16 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
     },
     cognitiveTraits: {
       patience: 0.8,          // High - used to slow navigation
-      riskTolerance: 0.5,     // Medium - careful but experienced
+      // 0.5 -> 0.2 (2026-08-02). Screen-reader navigation carries a real
+      // disorientation cost: no visual context to recover from, high cognitive
+      // load from remembering shortcuts and prior steps, and interface changes
+      // that go unannounced. The documented behaviour is cautious exploration
+      // to avoid that cost, which is the low end of this scale ('only clicks
+      // obvious, labeled buttons') rather than the middle.
+      // Sources: Information Wayfinding of Screen Reader Users, ASSETS 2024
+      // (dl.acm.org/doi/fullHtml/10.1145/3663548.3688539); Context-Aware
+      // Guidance for Screen Reader Users, CHI 2026 (10.1145/3772318.3790661).
+      riskTolerance: 0.2,     // Medium - careful but experienced
       comprehension: 0.8,     // High - expert at a11y patterns
       persistence: 0.9,       // High - determination required
       curiosity: 0.2,         // Low - structured navigation
