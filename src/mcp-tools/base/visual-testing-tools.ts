@@ -6,6 +6,7 @@
  */
 
 import { z } from "zod";
+import { getDefaultConfig } from "../../config.js";
 import { resolveValuesForPersona } from "../../values/persona-values.js";
 import { writeArtifact } from "../../artifact-store.js";
 
@@ -459,7 +460,19 @@ export function registerVisualTestingTools(server: McpServer): void {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({
         headless: true,
-        ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
+        // The CONFIGURED viewport, not a hardcoded 1920x1080.
+        //
+        // Every other tool renders at the configured default (1280x800) and
+        // this one alone rendered at 1920x1080, so an attention run and a
+        // cognitive_effort run were measuring DIFFERENT rendered pages while
+        // reporting coordinates as if they shared a space. The tell was
+        // attention regions coming back at x=1312 against a config that says
+        // the viewport is 1280 wide -- impossible unless the page was wider.
+        // (2026-08-02)
+        ...(device ? { device: device.toLowerCase() } : {
+          viewportWidth: getDefaultConfig().viewportWidth,
+          viewportHeight: getDefaultConfig().viewportHeight,
+        }),
       });
       const { join } = await import("path");
       const { tmpdir } = await import("os");
@@ -594,6 +607,13 @@ export function registerVisualTestingTools(server: McpServer): void {
           type: "text" as const,
           text: JSON.stringify({
             persona: result.persona,
+            // Stated, because two tools silently rendering at different sizes is
+            // exactly what made these coordinates incomparable with a CTC run.
+            // A reader can now check instead of assuming they match.
+            renderedViewport: device
+              ? `device: ${device.toLowerCase()}`
+              : `${getDefaultConfig().viewportWidth}x${getDefaultConfig().viewportHeight}`,
+            coordinateSpace: "CSS pixels in the rendered viewport above — compare only against runs reporting the same renderedViewport",
             alignmentScore: result.alignmentScore,
             entropy: result.entropy,
             concentration: result.concentration,
@@ -759,7 +779,15 @@ export function registerVisualTestingTools(server: McpServer): void {
     },
   }, async ({ url, personaA, personaB }) => {
       const { CBrowser } = await import("../../browser.js");
-      const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
+      // Same configured viewport as attention_analysis. This tool COMPARES two
+      // attention runs, so rendering at a size no other tool uses meant its
+      // comparison was internally consistent and incomparable with everything
+      // else that reports attention coordinates. (2026-08-02)
+      const browser = new CBrowser({
+        headless: true,
+        viewportWidth: getDefaultConfig().viewportWidth,
+        viewportHeight: getDefaultConfig().viewportHeight,
+      });
       const { join } = await import("path");
       const { tmpdir } = await import("os");
       const { unlinkSync } = await import("fs");

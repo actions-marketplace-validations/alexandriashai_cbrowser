@@ -297,3 +297,33 @@ describe("the chain coefficient compares matched units", () => {
     expect(impatient.abandonmentRisk).toBeGreaterThan(calm.abandonmentRisk);
   });
 });
+
+describe("attention tools render at the configured viewport", () => {
+  test("no attention tool hardcodes its own viewport", async () => {
+    // attention_analysis rendered at 1920x1080 while every other tool used the
+    // configured 1280x800, so an attention run and a cognitive_effort run were
+    // measuring different rendered pages while reporting coordinates as if they
+    // shared a space. The tell was regions at x=1312 under a 1280 config.
+    //
+    // Checked across the files that register attention tools, because the first
+    // fix for this landed in the wrong tool: visual_cognitive_story had an
+    // identical line and got patched instead of attention_analysis.
+    const { readFileSync } = await import("node:fs");
+    const files = [
+      "src/mcp-tools/base/visual-testing-tools.ts",
+      "src/mcp-tools/base/audit-tools.ts",
+    ];
+    for (const f of files) {
+      const src = readFileSync(join(import.meta.dir, "..", f), "utf8");
+      const hardcoded = src.split("\n").filter((l) => /viewportWidth:\s*\d/.test(l));
+      expect(hardcoded).toEqual([]);
+    }
+  });
+
+  test("attention_analysis states the viewport it rendered at", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src/mcp-tools/base/visual-testing-tools.ts"), "utf8");
+    // So a reader can check comparability instead of assuming it.
+    expect(src).toContain("renderedViewport:");
+    expect(src).toContain("coordinateSpace:");
+  });
+});
