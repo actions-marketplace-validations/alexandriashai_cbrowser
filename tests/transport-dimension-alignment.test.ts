@@ -87,6 +87,43 @@ describe("siteFamiliarity actually reaches the chain", () => {
     expect(run(0).cognitiveLoad).toBeGreaterThan(run(1).cognitiveLoad);
   });
 
+  test("direction holds at EVERY navigation depth, not just a deep page", () => {
+    // This test exists because the version above passed while the live tool was
+    // inverted. It ran one deep page; on a shallow real site (cbrowser.ai) the
+    // demand for site knowledge is near zero, a familiarity of 1.0 is then
+    // almost entirely surplus, and surplus was billed at 0.3 — so the daily
+    // user was charged MORE than the first-timer (0.268 vs 0.19). Knowing a
+    // site cannot make it harder, so familiarity surplus is now free, and the
+    // claim is checked across the range rather than at one convenient point.
+    for (const navigationDepth of [0, 1, 2, 4, 8]) {
+      const demand = computeDemandDistribution({
+        informationDensity: 0.6, visualComplexity: 0.5, interactiveElementCount: 40,
+        textDensity: 0.5, animationLevel: 0.1, choiceCount: 12, navigationDepth,
+      } as never);
+      const at = (fam: number) => computeSequentialCTC(
+        buildOTCognitiveProfile("probe", { ...baseTraits, siteFamiliarity: fam }),
+        demand, { asymmetric: true, interactions: true }).totalCTC;
+      // Never worse for knowing the site. Equal is fine — a one-click page
+      // legitimately asks nothing of your site knowledge.
+      expect(at(0)).toBeGreaterThanOrEqual(at(1));
+    }
+  });
+
+  test("more site knowledge is never a penalty, at any value", () => {
+    const demand = computeDemandDistribution({
+      informationDensity: 0.6, visualComplexity: 0.5, interactiveElementCount: 40,
+      textDensity: 0.5, animationLevel: 0.1, choiceCount: 12, navigationDepth: 3,
+    } as never);
+    const at = (fam: number) => computeSequentialCTC(
+      buildOTCognitiveProfile("probe", { ...baseTraits, siteFamiliarity: fam }),
+      demand, { asymmetric: true, interactions: true }).totalCTC;
+    // Monotonic, not merely correct at the endpoints.
+    const costs = [0, 0.25, 0.5, 0.75, 1].map(at);
+    for (let i = 1; i < costs.length; i++) {
+      expect(costs[i]).toBeLessThanOrEqual(costs[i - 1] + 1e-9);
+    }
+  });
+
   test("the page must demand site knowledge for familiarity to matter", () => {
     // A one-click page asks nothing of your site knowledge, so familiarity
     // legitimately does not move the number there. If this ever stops holding,

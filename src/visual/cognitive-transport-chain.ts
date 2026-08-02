@@ -172,6 +172,24 @@ const INTERACTION_PAIRS: Array<{ a: string; b: string; weight: number }> = [
 const WEIGHT_DEFICIT = 1.0;   // demand > capacity: high cost
 const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
 
+/**
+ * Dimensions where having MORE than the page asks for costs nothing at all.
+ *
+ * Surplus is cheap rather than free for most traits, which is defensible: a
+ * maximiser on a trivial page really does spend effort the page did not need.
+ * It is not defensible for site knowledge. Knowing a site better cannot make it
+ * harder to use, and because familiarity is a parameter the caller sets
+ * explicitly, the wrongness is directly visible rather than buried.
+ *
+ * Measured on cbrowser.ai, a shallow site, right after wiring the demand term:
+ * familiarity 0 gave total 0.19 and familiarity 1 gave 0.268 — the daily user
+ * charged more than the first-time visitor, because low navigation depth means
+ * low demand and a familiarity of 1.0 is then almost entirely surplus. An
+ * inverted knob is worse than an inert one: it produces a confident number
+ * pointing the wrong way. (2026-08-02)
+ */
+const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity']);
+
 /** Capacity depletion rate per layer (alpha_i, Section 3.4) */
 const DEPLETION_RATE = 0.15;
 
@@ -558,7 +576,8 @@ export function computeSequentialCTC(
         layerDeficit += cost;
       } else {
         // Surplus: capacity exceeds demand — cheap
-        cost = (useAsymmetric ? WEIGHT_SURPLUS : 1.0) * gap * gap;
+        const surplusWeight = SURPLUS_FREE_DIMENSIONS.has(trait) ? 0 : WEIGHT_SURPLUS;
+        cost = (useAsymmetric ? surplusWeight : 1.0) * gap * gap;
         layerSurplus += cost;
       }
 
