@@ -441,7 +441,7 @@ export interface CognitiveTraits {
    * @see Norman (1988) - "The Design of Everyday Things"
    * @see Gentner & Stevens (1983) - "Mental Models"
    */
-  mentalModelRigidity?: number;
+  mentalModelFlexibility?: number;
 
   /**
    * How well this persona knows THIS site, resolved per tool run.

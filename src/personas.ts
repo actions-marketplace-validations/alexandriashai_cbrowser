@@ -19,7 +19,7 @@ import type { Persona, CognitiveTraits, CognitiveProfile, AttentionPatternType, 
 import { applyTraitCorrelations } from "./persona-questionnaire.js";
 import { AGENT_PERSONAS, isAgentPersona, getAgentPersona, listAgentPersonas, isAgentPersonaObject } from "./agent-personas.js";
 import { scopedDataDir } from "./persona-scope.js";
-import { TRAIT_DEFINITIONS } from "./trait-reference.js";
+import { TRAIT_DEFINITIONS, canonicalizeTraits } from "./trait-reference.js";
 
 // ============================================================================
 // Custom Personas Storage
@@ -67,6 +67,19 @@ function ensurePersonasDir(): void {
 /**
  * Load all custom personas from disk.
  */
+/**
+ * Normalise a persona read off disk: deprecated trait keys to canonical ones.
+ *
+ * Without this a persona saved before the mentalModelRigidity rename loads with
+ * a key nothing recognises, so that trait silently stops contributing.
+ */
+function normalizePersonaOnRead<T extends { cognitiveTraits?: unknown }>(p: T): T {
+  const t = p?.cognitiveTraits as Record<string, unknown> | undefined;
+  if (!t) return p;
+  const canon = canonicalizeTraits(t);
+  return canon === t ? p : ({ ...p, cognitiveTraits: canon } as T);
+}
+
 export function loadCustomPersonas(): Record<string, Persona> {
   ensurePersonasDir();
   const personas: Record<string, Persona> = {};
@@ -83,7 +96,10 @@ export function loadCustomPersonas(): Record<string, Persona> {
           // branch the same floor rather than letting a partial file reach
           // getCognitiveProfile half-formed. (2026-07-28)
           const parsed = JSON.parse(content) as Persona;
-          persona = { ...parsed, behaviors: parsed.behaviors ?? {} } as Persona;
+          // Deprecated trait keys resolved here, at the read boundary, so a
+          // persona saved before a rename keeps contributing instead of
+          // silently dropping the renamed trait.
+          persona = normalizePersonaOnRead({ ...parsed, behaviors: parsed.behaviors ?? {} }) as Persona;
         } else {
           // Simple YAML parsing for persona files
           const nameMatch = content.match(/^name:\s*(.+)$/m);
@@ -656,7 +672,7 @@ function generateCognitiveTraitsFromDescription(
   let emotionalContagion = 0.5;
   let fearOfMissingOut = 0.5;
   let socialProofSensitivity = 0.5;
-  let mentalModelRigidity = 0.5;
+  let mentalModelFlexibility = 0.5;
 
   // Adjust new traits by tech level
   if (techLevel === "expert") {
@@ -672,7 +688,7 @@ function generateCognitiveTraitsFromDescription(
     emotionalContagion = 0.2;    // Mood-stable
     fearOfMissingOut = 0.2;      // Not swayed by urgency
     socialProofSensitivity = 0.3; // Evaluate on merits
-    mentalModelRigidity = 0.8;   // Adapt to new patterns
+    mentalModelFlexibility = 0.8;   // Adapt to new patterns
   } else if (techLevel === "beginner") {
     informationForaging = 0.3;   // Exhaustive search
     changeBlindness = 0.6;       // Miss peripheral changes
@@ -686,7 +702,7 @@ function generateCognitiveTraitsFromDescription(
     emotionalContagion = 0.7;    // Mood influenced by UI
     fearOfMissingOut = 0.7;      // Susceptible to urgency
     socialProofSensitivity = 0.8; // Rely on reviews
-    mentalModelRigidity = 0.3;   // Struggle with new patterns
+    mentalModelFlexibility = 0.3;   // Struggle with new patterns
   }
 
   // Adjust for impatience
@@ -714,7 +730,7 @@ function generateCognitiveTraitsFromDescription(
     proceduralFluency = Math.min(proceduralFluency, 0.35);    // Struggle with sequences
     transferLearning = Math.min(transferLearning, 0.25);      // Each UI novel
     authoritySensitivity = Math.max(authoritySensitivity, 0.7); // Trust authority
-    mentalModelRigidity = Math.min(mentalModelRigidity, 0.2); // Rigid mental models
+    mentalModelFlexibility = Math.min(mentalModelFlexibility, 0.2); // Rigid mental models
   }
 
   // Adjust for vision issues (screen reader users)
@@ -748,7 +764,7 @@ function generateCognitiveTraitsFromDescription(
     emotionalContagion,
     fearOfMissingOut,
     socialProofSensitivity,
-    mentalModelRigidity,
+    mentalModelFlexibility,
   };
 }
 
@@ -806,7 +822,7 @@ export function createCognitivePersona(
     emotionalContagion: traits.emotionalContagion ?? basePersona.cognitiveTraits?.emotionalContagion ?? 0.5,
     fearOfMissingOut: traits.fearOfMissingOut ?? basePersona.cognitiveTraits?.fearOfMissingOut ?? 0.5,
     socialProofSensitivity: traits.socialProofSensitivity ?? basePersona.cognitiveTraits?.socialProofSensitivity ?? 0.5,
-    mentalModelRigidity: traits.mentalModelRigidity ?? basePersona.cognitiveTraits?.mentalModelRigidity ?? 0.5,
+    mentalModelFlexibility: traits.mentalModelFlexibility ?? basePersona.cognitiveTraits?.mentalModelFlexibility ?? 0.5,
   };
 
   // Backstop for the failure mode above. The enumeration is kept because it
@@ -1085,7 +1101,7 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     emotionalContagion: 0.5,
     fearOfMissingOut: 0.5,
     socialProofSensitivity: 0.5,
-    mentalModelRigidity: 0.5,
+    mentalModelFlexibility: 0.5,
   };
 
   return {
@@ -1176,7 +1192,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.2,    // Low - mood-stable
       fearOfMissingOut: 0.2,      // Low - not swayed by urgency
       socialProofSensitivity: 0.3, // Low - evaluates on merits
-      mentalModelRigidity: 0.8,   // High - adapts to new patterns
+      mentalModelFlexibility: 0.8,   // High - adapts to new patterns
     },
     context: {
       viewport: [1920, 1080],
@@ -1256,7 +1272,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.7,    // High - influenced by UI tone
       fearOfMissingOut: 0.6,      // Medium-high - susceptible to urgency
       socialProofSensitivity: 0.8, // High - relies heavily on reviews
-      mentalModelRigidity: 0.3,   // Low - struggles when patterns break
+      mentalModelFlexibility: 0.3,   // Low - struggles when patterns break
     },
     context: {
       viewport: [1280, 800],
@@ -1330,7 +1346,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.5,    // Medium
       fearOfMissingOut: 0.7,      // High - push notifications, urgency
       socialProofSensitivity: 0.6, // Medium-high - app store ratings
-      mentalModelRigidity: 0.6,   // Medium - adapts to mobile patterns
+      mentalModelFlexibility: 0.6,   // Medium - adapts to mobile patterns
     },
     context: {
       viewport: [375, 812], // iPhone X dimensions
@@ -1404,7 +1420,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.3,    // Low - focused on structure, not tone
       fearOfMissingOut: 0.2,      // Low - methodical, not impulsive
       socialProofSensitivity: 0.5, // Medium - reviews are accessible info
-      mentalModelRigidity: 0.6,   // Medium - adapts but needs time
+      mentalModelFlexibility: 0.6,   // Medium - adapts but needs time
     },
     context: {
       viewport: [1280, 800],
@@ -1478,7 +1494,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.6,    // Medium-high - affected by stern warnings
       fearOfMissingOut: 0.3,      // Low - not driven by urgency, confused by it
       socialProofSensitivity: 0.7, // High - relies on grandchildren's recommendations
-      mentalModelRigidity: 0.2,   // Very low - rigid, struggles with novel UIs
+      mentalModelFlexibility: 0.2,   // Very low - rigid, struggles with novel UIs
     },
     context: {
       viewport: [1280, 800],
@@ -1558,7 +1574,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.4,    // Medium - focused on goal, not tone
       fearOfMissingOut: 0.9,      // Very high - urgency works on them
       socialProofSensitivity: 0.5, // Medium - if it's quick to evaluate
-      mentalModelRigidity: 0.7,   // High - adapts quickly, expects conventions
+      mentalModelFlexibility: 0.7,   // High - adapts quickly, expects conventions
     },
     context: {
       viewport: [1280, 800],
@@ -1599,7 +1615,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       timeHorizon: 0.7, attributionStyle: 0.4, metacognitivePlanning: 0.2,
       proceduralFluency: 0.5, transferLearning: 0.5, authoritySensitivity: 0.5,
       emotionalContagion: 0.5, fearOfMissingOut: 0.7, socialProofSensitivity: 0.5,
-      mentalModelRigidity: 0.5,
+      mentalModelFlexibility: 0.5,
     },
     context: { viewport: [1280, 800] },
   },
@@ -1627,7 +1643,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       anchoringBias: 0.3, timeHorizon: 0.3, attributionStyle: 0.6,
       metacognitivePlanning: 0.8, proceduralFluency: 0.6, transferLearning: 0.6,
       authoritySensitivity: 0.6, emotionalContagion: 0.3, fearOfMissingOut: 0.15,
-      socialProofSensitivity: 0.4, mentalModelRigidity: 0.4,
+      socialProofSensitivity: 0.4, mentalModelFlexibility: 0.4,
     },
     context: { viewport: [1280, 800] },
   },
@@ -1655,7 +1671,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       anchoringBias: 0.25, timeHorizon: 0.35, attributionStyle: 0.7,
       metacognitivePlanning: 0.5, proceduralFluency: 0.7, transferLearning: 0.85,
       authoritySensitivity: 0.2, emotionalContagion: 0.4, fearOfMissingOut: 0.4,
-      socialProofSensitivity: 0.25, mentalModelRigidity: 0.75,
+      socialProofSensitivity: 0.25, mentalModelFlexibility: 0.75,
     },
     context: { viewport: [1440, 900] },
   },
@@ -1683,7 +1699,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       anchoringBias: 0.45, timeHorizon: 0.6, attributionStyle: 0.6,
       metacognitivePlanning: 0.75, proceduralFluency: 0.8, transferLearning: 0.7,
       authoritySensitivity: 0.4, emotionalContagion: 0.25, fearOfMissingOut: 0.3,
-      socialProofSensitivity: 0.2, mentalModelRigidity: 0.6,
+      socialProofSensitivity: 0.2, mentalModelFlexibility: 0.6,
     },
     context: { viewport: [1280, 800] },
   },
@@ -1828,7 +1844,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.4,
       fearOfMissingOut: 0.3,      // Not swayed, focused on completing
       socialProofSensitivity: 0.5,
-      mentalModelRigidity: 0.5,
+      mentalModelFlexibility: 0.5,
     },
   },
 
@@ -1918,7 +1934,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.4,
       fearOfMissingOut: 0.3,      // Not swayed - focused
       socialProofSensitivity: 0.5,
-      mentalModelRigidity: 0.4,   // Adapts but needs time
+      mentalModelFlexibility: 0.4,   // Adapts but needs time
     },
   },
 
@@ -1999,7 +2015,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.6,    // Medium-high - emotional variability
       fearOfMissingOut: 0.85,     // Very high - ADHD correlates with FOMO
       socialProofSensitivity: 0.5, // Medium - if interesting
-      mentalModelRigidity: 0.7,   // High - adapts easily, novelty-seeking
+      mentalModelFlexibility: 0.7,   // High - adapts easily, novelty-seeking
     },
   },
 
@@ -2080,7 +2096,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.5,
       fearOfMissingOut: 0.5,
       socialProofSensitivity: 0.6, // Relies on visual reviews
-      mentalModelRigidity: 0.6,   // Good adaptation
+      mentalModelFlexibility: 0.6,   // Good adaptation
     },
   },
 
@@ -2159,7 +2175,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.4,  // Less affected by audio tone
       fearOfMissingOut: 0.4,
       socialProofSensitivity: 0.6, // Visual reviews/ratings
-      mentalModelRigidity: 0.65,  // Good visual adaptation
+      mentalModelFlexibility: 0.65,  // Good visual adaptation
     },
   },
 
@@ -2246,7 +2262,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.6,    // Medium-high
       fearOfMissingOut: 0.25,     // Low - not driven by urgency
       socialProofSensitivity: 0.7, // High - relies on family advice
-      mentalModelRigidity: 0.15,  // Very low - rigid, struggles
+      mentalModelFlexibility: 0.15,  // Very low - rigid, struggles
     },
   },
 
@@ -2328,7 +2344,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.5,
       fearOfMissingOut: 0.4,
       socialProofSensitivity: 0.5,
-      mentalModelRigidity: 0.65,  // Adapts with workarounds
+      mentalModelFlexibility: 0.65,  // Adapts with workarounds
     },
   },
 
@@ -2419,7 +2435,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.3,  // Low - less influenced by emotional UI tone
       fearOfMissingOut: 0.2,    // Low - not driven by social urgency
       socialProofSensitivity: 0.25, // Low - evaluates independently
-      mentalModelRigidity: 0.2, // Very low (rigid) - needs consistent patterns
+      mentalModelFlexibility: 0.2, // Very low (rigid) - needs consistent patterns
     },
   },
 
@@ -2506,7 +2522,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.7,  // High - influenced by UI emotional tone
       fearOfMissingOut: 0.3,    // Low - not driven by urgency
       socialProofSensitivity: 0.6, // Medium - influenced by social cues
-      mentalModelRigidity: 0.1, // Extremely rigid - needs consistency
+      mentalModelFlexibility: 0.1, // Extremely rigid - needs consistency
     },
   },
 
@@ -2592,7 +2608,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.5,
       fearOfMissingOut: 0.3,
       socialProofSensitivity: 0.4,
-      mentalModelRigidity: 0.4, // Medium - adapts visually, not linguistically
+      mentalModelFlexibility: 0.4, // Medium - adapts visually, not linguistically
     },
   },
 
@@ -2679,7 +2695,7 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       emotionalContagion: 0.5,
       fearOfMissingOut: 0.5,
       socialProofSensitivity: 0.5,
-      mentalModelRigidity: 0.6, // Medium - adapts well to non-numerical patterns
+      mentalModelFlexibility: 0.6, // Medium - adapts well to non-numerical patterns
     },
   },
 };
@@ -2784,7 +2800,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.8,    // Very high - absorbs UI emotional tone
       fearOfMissingOut: 0.6,      // Medium-high - anxiety about missing out
       socialProofSensitivity: 0.7, // High - seeks validation from others
-      mentalModelRigidity: 0.4,   // Low-medium - struggles with unexpected
+      mentalModelFlexibility: 0.4,   // Low-medium - struggles with unexpected
     },
     context: {
       viewport: [1280, 800],
@@ -2862,7 +2878,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.2,    // Low - emotionally stable
       fearOfMissingOut: 0.3,      // Low - not swayed by urgency
       socialProofSensitivity: 0.4, // Low-medium - evaluates on merits
-      mentalModelRigidity: 0.8,   // High - adapts easily
+      mentalModelFlexibility: 0.8,   // High - adapts easily
     },
     context: {
       viewport: [1920, 1080],
@@ -2940,7 +2956,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.9,    // Maximum - highly influenced by UI tone
       fearOfMissingOut: 0.75,     // High - emotional FOMO
       socialProofSensitivity: 0.7, // High - seeks emotional validation
-      mentalModelRigidity: 0.5,   // Medium
+      mentalModelFlexibility: 0.5,   // Medium
     },
     context: {
       viewport: [1280, 800],
@@ -3018,7 +3034,7 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       emotionalContagion: 0.1,    // Minimum - emotionally unaffected
       fearOfMissingOut: 0.1,      // Minimum - not driven by urgency
       socialProofSensitivity: 0.3, // Low - evaluates independently
-      mentalModelRigidity: 0.7,   // High - adapts methodically
+      mentalModelFlexibility: 0.7,   // High - adapts methodically
     },
     context: {
       viewport: [1280, 800],

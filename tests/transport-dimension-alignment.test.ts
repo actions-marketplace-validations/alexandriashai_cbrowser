@@ -48,7 +48,7 @@ function traitsUsedByLayers(): Set<string> {
  */
 const KNOWN_UNLAYERED = [
   "attributionStyle", "authoritySensitivity", "curiosity", "interruptRecovery",
-  "mentalModelRigidity", "metacognitivePlanning", "persistence", "timeHorizon",
+  "mentalModelFlexibility", "metacognitivePlanning", "persistence", "timeHorizon",
   "trustCalibration",
 ].sort();
 
@@ -325,5 +325,39 @@ describe("attention tools render at the configured viewport", () => {
     // So a reader can check comparability instead of assuming it.
     expect(src).toContain("renderedViewport:");
     expect(src).toContain("coordinateSpace:");
+  });
+});
+
+describe("the mentalModelFlexibility rename is complete and back-compatible", () => {
+  test("a persona stored under the old key still contributes", async () => {
+    // The alias map and canonicalTraitName sat in trait-reference.ts for months
+    // with NOTHING outside that file calling either, so a persona saved as
+    // mentalModelRigidity loaded with a key matching no COGNITIVE_TRAITS member
+    // and contributed nothing to any score. Same shape as a trait present in
+    // the persona vector and absent from the demand vector.
+    const { canonicalizeTraits } = await import("../src/trait-reference.js");
+    const out = canonicalizeTraits({ mentalModelRigidity: 0.2, patience: 0.5 }) as Record<string, number>;
+    expect(out.mentalModelFlexibility).toBe(0.2);
+    expect("mentalModelRigidity" in out).toBe(false);
+    expect(out.patience).toBe(0.5);
+  });
+
+  test("an explicit canonical value is not clobbered by a stale alias", () => {
+    // Both keys present means the record was half-migrated. The new name wins.
+    const { canonicalizeTraits } = require("../src/trait-reference.js");
+    const out = canonicalizeTraits({ mentalModelFlexibility: 0.9, mentalModelRigidity: 0.1 });
+    expect(out.mentalModelFlexibility).toBe(0.9);
+  });
+
+  test("the canonical name is the one in the model's trait vector", () => {
+    expect(COGNITIVE_TRAITS as readonly string[]).toContain("mentalModelFlexibility");
+    expect(COGNITIVE_TRAITS as readonly string[]).not.toContain("mentalModelRigidity");
+  });
+
+  test("the old name survives only as an alias, nowhere else in src", () => {
+    // Guards the contract-half of expand-contract: the alias must stay until
+    // nothing on disk uses the old key, but no live code path may read it.
+    const ref = readFileSync(join(import.meta.dir, "..", "src/trait-reference.ts"), "utf8");
+    expect(ref).toContain('mentalModelRigidity: "mentalModelFlexibility"');
   });
 });

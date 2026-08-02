@@ -114,7 +114,7 @@ export const COGNITIVE_TRAITS = [
   // Planning (4)
   'interruptRecovery', 'metacognitivePlanning', 'proceduralFluency', 'transferLearning',
   // Perception (3)
-  'informationForaging', 'changeBlindness', 'mentalModelRigidity',
+  'informationForaging', 'changeBlindness', 'mentalModelFlexibility',
   // Social (3)
   'trustCalibration', 'socialProofSensitivity', 'authoritySensitivity',
   // Cognitive (3)
@@ -149,7 +149,7 @@ function traitGroundDistance(a: string, b: string): number {
     emotional: ['resilience', 'selfEfficacy', 'emotionalContagion', 'attributionStyle'],
     decision: ['satisficing', 'anchoringBias', 'timeHorizon', 'fearOfMissingOut'],
     planning: ['interruptRecovery', 'metacognitivePlanning', 'proceduralFluency', 'transferLearning'],
-    perception: ['informationForaging', 'changeBlindness', 'mentalModelRigidity'],
+    perception: ['informationForaging', 'changeBlindness', 'mentalModelFlexibility'],
     social: ['trustCalibration', 'socialProofSensitivity', 'authoritySensitivity'],
     cognitive: ['workingMemory', 'readingTendency', 'curiosity'],
     // Deliberately a singleton: prior familiarity with a site is not a facet of

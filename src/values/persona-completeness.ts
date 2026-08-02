@@ -62,7 +62,7 @@ export const TRAIT_INFERENCE_CRITERIA: Record<string, string> = {
   emotionalContagion: "Picks up tone from the page. Look for: emotionally activated, even-tempered.",
   fearOfMissingOut: "Reaction to scarcity and urgency. Look for: FOMO, unmoved by urgency.",
   socialProofSensitivity: "Weight given to what others do. Look for: reads reviews, ignores ratings.",
-  mentalModelRigidity: "Adapting when conventions break. SCALE RUNS TOWARD FLEXIBILITY: 0 rigid, 1 instantly adapts.",
+  mentalModelFlexibility: "Adapting when conventions break. SCALE RUNS TOWARD FLEXIBILITY: 0 rigid, 1 instantly adapts.",
 };
 
 /**

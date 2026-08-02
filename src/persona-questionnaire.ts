@@ -1402,7 +1402,7 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
     ],
   },
   {
-    name: "mentalModelRigidity",
+    name: "mentalModelFlexibility",
     description: "Ability to update mental models when interfaces change",
     researchBasis: "Johnson-Laird (1983) - Mental Models; Norman (2013) - Design of Everyday Things",
     levels: [
@@ -1683,7 +1683,7 @@ function generateQuestionText(trait: TraitReference): string {
     emotionalContagion: "How much does the visual design and aesthetics of a website affect your experience?",
     fearOfMissingOut: "How do 'limited time' offers and countdown timers affect your decisions?",
     socialProofSensitivity: "How much do reviews, ratings, and testimonials influence your decisions?",
-    mentalModelRigidity: "When a website you use regularly changes its layout, how do you respond?",
+    mentalModelFlexibility: "When a website you use regularly changes its layout, how do you respond?",
   };
 
   return questionMap[trait.name] || `How would you describe your ${trait.name}?`;
@@ -1737,7 +1737,7 @@ export function buildTraitsFromAnswers(
     emotionalContagion: 0.55,   // Research: emotional mirroring is default
     fearOfMissingOut: 0.50,     // Neutral - highly age-dependent
     socialProofSensitivity: 0.60, // Research: social proof is powerful (Cialdini)
-    mentalModelRigidity: 0.55,  // Research: confirmation bias is common
+    mentalModelFlexibility: 0.55,  // Research: confirmation bias is common
   };
 
   // Apply answers
@@ -1788,7 +1788,7 @@ const BASELINE_TRAITS: Record<string, number> = {
   emotionalContagion: 0.55,
   fearOfMissingOut: 0.50,
   socialProofSensitivity: 0.60,
-  mentalModelRigidity: 0.55,
+  mentalModelFlexibility: 0.55,
 };
 
 /** Check if a trait is at its baseline (wasn't explicitly set) */
@@ -1918,7 +1918,7 @@ const TRAIT_SHORT_HEADERS: Record<string, string> = {
   emotionalContagion: "Emotional",
   fearOfMissingOut: "FOMO",
   socialProofSensitivity: "SocialProof",
-  mentalModelRigidity: "Rigidity",
+  mentalModelFlexibility: "Rigidity",
 };
 
 /**

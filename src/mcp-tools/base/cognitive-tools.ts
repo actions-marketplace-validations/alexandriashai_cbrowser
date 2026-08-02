@@ -101,7 +101,7 @@ export function registerCognitiveTools(
         emotionalContagion: z.number().min(0).max(1).optional(),
         fearOfMissingOut: z.number().min(0).max(1).optional(),
         socialProofSensitivity: z.number().min(0).max(1).optional(),
-        mentalModelRigidity: z.number().min(0).max(1).optional(),
+        mentalModelFlexibility: z.number().min(0).max(1).optional(),
         siteFamiliarity: z.number().min(0).max(1).optional(),
       }).optional().describe("Override specific cognitive traits (26 available, including siteFamiliarity: 0=brand new visitor, 1=daily user)"),
       location: z.object({
@@ -214,7 +214,7 @@ export function registerCognitiveTools(
           emotionalContagion: 0.5,
           fearOfMissingOut: 0.5,
           socialProofSensitivity: 0.5,
-          mentalModelRigidity: 0.5,
+          mentalModelFlexibility: 0.5,
           siteFamiliarity: 0.5,
         };
         personaObj = {

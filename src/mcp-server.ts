@@ -420,7 +420,7 @@ function getTraitHeader(trait: string): string {
     timeHorizon: "Time Focus", attributionStyle: "Attribution", metacognitivePlanning: "Planning",
     proceduralFluency: "Procedures", transferLearning: "Transfer", authoritySensitivity: "Authority",
     emotionalContagion: "Emotional", fearOfMissingOut: "FOMO", socialProofSensitivity: "Social Proof",
-    mentalModelRigidity: "Flexibility",
+    mentalModelFlexibility: "Flexibility",
   };
   return headers[trait] || trait;
 }
@@ -1903,7 +1903,7 @@ async function registerCBrowserTools(): Promise<McpServer> {
         // description would send 1.0 meaning rigid and get the most flexible
         // persona the scale can express, with nothing in the output looking
         // wrong -- exactly the failure the field's rename note warns about.
-        mentalModelRigidity: z.number().min(0).max(1).optional().describe("Mental-model adaptability. 0 = rigid, cannot adapt when conventions change; 1 = instantly adapts. Named 'Rigidity' for backwards compatibility; the SCALE runs toward flexibility."),
+        mentalModelFlexibility: z.number().min(0).max(1).optional().describe("Mental-model adaptability. 0 = rigid, cannot adapt when conventions change; 1 = instantly adapts. Named 'Rigidity' for backwards compatibility; the SCALE runs toward flexibility."),
       }).optional().describe("Override specific cognitive traits (25 available)"),
     },
     async ({ persona: personaName, goal, startUrl, customTraits }) => {
@@ -1960,7 +1960,7 @@ async function registerCBrowserTools(): Promise<McpServer> {
           emotionalContagion: 0.5,
           fearOfMissingOut: 0.5,
           socialProofSensitivity: 0.5,
-          mentalModelRigidity: 0.5,
+          mentalModelFlexibility: 0.5,
         };
         personaObj = {
           ...existingPersona,

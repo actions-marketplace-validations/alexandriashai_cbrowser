@@ -103,7 +103,7 @@ export const DEMAND_DIMENSIONS = [
   // Trust
   'trustCalibration',
   // Additional extended traits
-  'mentalModelRigidity', 'curiosity',
+  'mentalModelFlexibility', 'curiosity',
   // Processing
   'processingSpeed', 'textProcessing',
   // Experience
@@ -262,13 +262,13 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.readingTendency += infoDensity * 0.07;
   variance.informationForaging += infoDensity * 0.06;
 
-  // ── visualComplexity → changeBlindness, mentalModelRigidity, attentionPattern (inferred)
+  // ── visualComplexity → changeBlindness, mentalModelFlexibility, attentionPattern (inferred)
   const visDemand = visCplx; // already 0-1 from logScale
   demands.changeBlindness = Math.max(demands.changeBlindness, visDemand);
-  demands.mentalModelRigidity = Math.max(demands.mentalModelRigidity, visDemand * 0.7);
+  demands.mentalModelFlexibility = Math.max(demands.mentalModelFlexibility, visDemand * 0.7);
   demands.attentionPattern = Math.max(demands.attentionPattern, visDemand * 0.85);
   variance.changeBlindness += visCplx * 0.12;
-  variance.mentalModelRigidity += visCplx * 0.08;
+  variance.mentalModelFlexibility += visCplx * 0.08;
   variance.attentionPattern += visCplx * 0.1;
 
   // ── interactiveElementCount → riskTolerance, satisficing, proceduralFluency, motorPrecision (inferred)
@@ -329,14 +329,14 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
     demands.comprehension = Math.max(demands.comprehension, longWordR * 0.8);
     variance.readingTendency += longWordR * 0.11;
 
-    // technicalDensity → comprehension, transferLearning, mentalModelRigidity
+    // technicalDensity → comprehension, transferLearning, mentalModelFlexibility
     // 10+ character words signal compound terms, jargon, domain-specific vocabulary
     demands.comprehension = Math.max(demands.comprehension, techDens * 0.95);
     demands.transferLearning = Math.max(demands.transferLearning, techDens * 0.8);
-    demands.mentalModelRigidity = Math.max(demands.mentalModelRigidity, techDens * 0.7);
+    demands.mentalModelFlexibility = Math.max(demands.mentalModelFlexibility, techDens * 0.7);
     variance.comprehension += techDens * 0.13;
     variance.transferLearning += techDens * 0.09;
-    variance.mentalModelRigidity += techDens * 0.07;
+    variance.mentalModelFlexibility += techDens * 0.07;
   }
 
   // ── animationLevel → changeBlindness, interruptRecovery, emotionalContagion
@@ -478,8 +478,8 @@ const VALUE_DEMAND_MODULATION: Array<{
   // Self-Direction → amplifies metacognitive planning (plan their own path)
   { value: 'selfDirection', trait: 'metacognitivePlanning', coefficient: -0.15, layer: 'cognitiveLoad' },
 
-  // Tradition → amplifies mentalModelRigidity (resist new UI patterns)
-  { value: 'tradition', trait: 'mentalModelRigidity', coefficient: 0.25, layer: 'cognitiveLoad' },
+  // Tradition → amplifies mentalModelFlexibility (resist new UI patterns)
+  { value: 'tradition', trait: 'mentalModelFlexibility', coefficient: 0.25, layer: 'cognitiveLoad' },
 
   // Benevolence → reduces emotionalContagion cost (emotionally regulated)
   { value: 'benevolence', trait: 'emotionalContagion', coefficient: -0.15, layer: 'frustration' },

@@ -946,7 +946,7 @@ export async function runCognitiveJourney(
       emotionalContagion: 0.5,
       fearOfMissingOut: 0.5,
       socialProofSensitivity: 0.5,
-      mentalModelRigidity: 0.5,
+      mentalModelFlexibility: 0.5,
       siteFamiliarity: 0.5,
     };
     personaObj = {

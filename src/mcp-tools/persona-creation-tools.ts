@@ -225,7 +225,7 @@ function getTraitHeader(trait: string): string {
     emotionalContagion: "Emotional",
     fearOfMissingOut: "FOMO",
     socialProofSensitivity: "Social Proof",
-    mentalModelRigidity: "Flexibility",
+    mentalModelFlexibility: "Flexibility",
   };
   return headers[trait] || trait;
 }
