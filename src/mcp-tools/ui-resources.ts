@@ -190,7 +190,12 @@ export const PERSONA_SPEC: WidgetSpec = {
     ],
   },
   blocks: [
-    { type: "traits", title: "Cognitive traits", field: "traits", ramp: "trait", describe: true },
+    // Editable. The sandbox has no network of its own, but callServerTool
+    // reaches the server that rendered this -- the same channel the image
+    // blocks already use -- so the sliders write straight back through
+    // persona_update rather than asking the reader to copy numbers into a
+    // separate tool call. (2026-08-01)
+    { type: "editor", title: "Cognitive traits", field: "traits", personaField: "name", ramp: "trait", describe: true },
     { type: "traits", title: "Values", field: "values", ramp: "value" },
     { type: "traits", title: "Accessibility traits", field: "accessibility_traits", ramp: "accessibility", describe: true },
     {

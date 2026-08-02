@@ -110,6 +110,21 @@ export type BlockSpec =
       /** Show a definition tooltip on each label, from the baked-in glossary. */
       describe?: boolean }
   /**
+   * Editable trait sliders that write back through app.callServerTool.
+   *
+   * Same shape as `traits`, plus where to find the persona's name and which
+   * tool to call on save. Read-only blocks stay read-only: this is opt-in per
+   * block rather than a mode on the widget.
+   */
+  | { type: "editor"; title: string; field: FieldPath;
+      /** Where the persona's name lives in the payload; defaults to `persona`. */
+      personaField?: FieldPath;
+      /** Tool called on save; defaults to persona_update. */
+      saveTool?: string;
+      ramp?: "trait" | "value" | "accessibility";
+      nameKey?: string; valueKey?: string;
+      describe?: boolean }
+  /**
    * A banded scale with the queried point marked.
    *
    * For data shaped as "here are the five levels this trait can take, here is
@@ -448,6 +463,20 @@ const CSS = `
      below-average read instantly, and a two-decimal monospace readout. */
   .traits{display:flex;flex-direction:column;gap:.28rem}
   .trait{display:flex;align-items:center;gap:.5rem}
+  /* Editor. The dirty state is a left border rather than a colour change on the
+     value, so it survives both themes and does not rely on hue alone --
+     WCAG 1.4.1: colour is not the only channel carrying the information. */
+  .trait.dirty{border-left:3px solid var(--accent);padding-left:.5rem;margin-left:-.75rem}
+  .tedit{flex:1;min-width:6rem;accent-color:var(--accent);height:1.25rem}
+  .tedit:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .tval{font-variant-numeric:tabular-nums;font-size:.78rem;width:2.6rem;text-align:right}
+  .editbar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-top:.75rem;
+    padding-top:.75rem;border-top:1px solid var(--line)}
+  .btn{font:inherit;font-size:.8rem;padding:.35rem .7rem;border-radius:.375rem;
+    border:1px solid var(--line);background:var(--accent);color:#fff;cursor:pointer}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.ghost{background:none;color:var(--sub)}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Labels wrap instead of truncating, in a column wide enough to hold a real
      trait name. At .68rem in 5.6rem with nowrap+ellipsis these read
      "Metacognitive...", "Interrupt Reco...", "Fear Of Missin..." -- 10.88px
@@ -774,6 +803,106 @@ const RUNTIME = String.raw`
       ul.appendChild(li);
     });
     return ul;
+  }
+
+  /**
+   * Editable trait sliders that write back through the server.
+   *
+   * The widget sandbox has no network of its own -- it cannot POST anywhere --
+   * but app.callServerTool reaches the MCP server that rendered it, which is
+   * the same channel the image blocks already use to fetch artifacts. So an
+   * editor is possible here without any new transport.
+   *
+   * Save is explicit rather than live-on-drag. Every drag would otherwise be a
+   * write to two stores, and a slider dragged across its range would produce a
+   * dozen persona versions of which only the last was meant.
+   */
+  function editorBlock(rows, b, data) {
+    var wrap = el("div", "traits");
+    var personaName = at(data, b.personaField || "persona") || at(data, "persona_name");
+    var edited = {};
+    var controls = [];
+
+    rows.forEach(function (r) {
+      var name = String(r.name), v = Number(r.value);
+      if (!isFinite(v)) return;
+      var line = el("div", "trait");
+      var label = el("span", "tname", titleize(name));
+      var input = document.createElement("input");
+      input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.05";
+      input.value = String(v); input.className = "tedit";
+      input.setAttribute("aria-label", titleize(name));
+      var out = el("span", "tval", v.toFixed(2));
+      // The original stays visible next to the new value: an editor that hides
+      // what you started from makes "did I mean to move that?" unanswerable.
+      var orig = el("span", "cap", " was " + v.toFixed(2));
+      orig.style.display = "none";
+      input.addEventListener("input", function () {
+        var nv = Number(input.value);
+        out.textContent = nv.toFixed(2);
+        if (Math.abs(nv - v) < 1e-9) { delete edited[name]; orig.style.display = "none"; line.classList.remove("dirty"); }
+        else { edited[name] = nv; orig.style.display = ""; line.classList.add("dirty"); }
+        status.textContent = Object.keys(edited).length
+          ? Object.keys(edited).length + " unsaved change(s)" : "";
+        save.disabled = !Object.keys(edited).length;
+      });
+      line.appendChild(label); line.appendChild(input); line.appendChild(out); line.appendChild(orig);
+      wrap.appendChild(line);
+      controls.push({ name: name, input: input, out: out, base: v });
+    });
+
+    var bar = el("div", "editbar");
+    var save = el("button", "btn", "Save changes");
+    save.type = "button"; save.disabled = true;
+    var reset = el("button", "btn ghost", "Reset");
+    reset.type = "button";
+    var status = el("span", "cap", "");
+    bar.appendChild(save); bar.appendChild(reset); bar.appendChild(status);
+    wrap.appendChild(bar);
+
+    reset.addEventListener("click", function () {
+      controls.forEach(function (c) {
+        c.input.value = String(c.base); c.out.textContent = c.base.toFixed(2);
+        c.input.parentNode.classList.remove("dirty");
+        c.input.parentNode.querySelectorAll(".cap").forEach(function (n) { n.style.display = "none"; });
+      });
+      edited = {}; status.textContent = ""; save.disabled = true;
+    });
+
+    save.addEventListener("click", async function () {
+      if (!personaName) { status.textContent = "No persona name in this result — cannot save."; return; }
+      save.disabled = true; status.textContent = "Saving…";
+      try {
+        var res = await app.callServerTool({
+          name: b.saveTool || "persona_update",
+          arguments: { persona_name: personaName, traits: edited },
+        });
+        var txt = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+        var out = txt ? JSON.parse(txt.text) : {};
+        if (out.error) { status.textContent = "Not saved: " + (out.message || out.error); save.disabled = false; return; }
+        // The drift check comes back with the save, so the moment a trait edit
+        // contradicts the description is the moment it is said -- not the next
+        // time somebody happens to look.
+        var drift = (out.descriptionDrift || []).length;
+        status.textContent = "Saved. " + (out.changed || []).length + " field(s) changed"
+          + (drift ? " — " + drift + " description claim(s) now contradicted" : "")
+          + (out.stores && out.stores.cms !== "written" ? " — CMS NOT written" : "");
+        controls.forEach(function (c) {
+          if (edited[c.name] !== undefined) { c.base = edited[c.name]; }
+          c.input.parentNode.classList.remove("dirty");
+        });
+        edited = {};
+        // Tell the conversation, so the model knows the persona moved under it
+        // rather than answering later from the values it was handed.
+        app.sendMessage({ role: "user", content: [{ type: "text",
+          text: "Updated persona " + personaName + " — " + (out.changed || []).join(", ")
+            + (drift ? ". Description now contradicts: " + out.descriptionDrift.map(function (d) { return d.trait; }).join(", ") : "") }] });
+      } catch (e) {
+        status.textContent = "Save failed: " + (e && e.message ? e.message : e);
+        save.disabled = false;
+      }
+    });
+    return wrap;
   }
 
   function traitsBlock(rows, b) {
@@ -1262,6 +1391,12 @@ const RUNTIME = String.raw`
       used[b.field.split(".")[0]] = true;
       var rows = normaliseTraits(at(data, b.field), b);
       return rows.length ? { node: traitsBlock(rows, b), count: rows.length } : null;
+    }
+    if (b.type === "editor") {
+      used[b.field.split(".")[0]] = true;
+      if (b.personaField) used[b.personaField.split(".")[0]] = true;
+      var erows = normaliseTraits(at(data, b.field), b);
+      return erows.length ? { node: editorBlock(erows, b, data), count: erows.length } : null;
     }
     if (b.type === "levels") {
       [b.field, b.valueField, b.labelField, b.behaviorsField].forEach(function (f) {
