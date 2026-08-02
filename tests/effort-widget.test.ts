@@ -128,7 +128,9 @@ describe("bars open into their layer's overlay", () => {
 
 describe("the server states why a layer has no overlay", () => {
   test("every layer without one carries a reason, not just a false flag", () => {
-    for (const layer of ["cognitive-load", "decision", "frustration"]) {
+    // camelCase, matching LAYER_DEFINITIONS. Emitted hyphenated at first, which
+    // matched no layer name, so that bar got neither a button nor a no-overlay tag.
+    for (const layer of ["cognitiveLoad", "decision", "frustration"]) {
       const idx = tool.indexOf(`layer: "${layer}", available: false`);
       expect(idx).toBeGreaterThan(-1);
       expect(tool.slice(idx, idx + 260)).toContain("reason:");
@@ -146,5 +148,30 @@ describe("the server states why a layer has no overlay", () => {
     // It used to be deleted right after the motor overlay. Drawing the other
     // layers from it means the delete moves to the end.
     expect(tool).toContain("ssPath is deliberately NOT deleted here any more");
+  });
+});
+
+describe("the widget script is inside a template literal", () => {
+  test("no backtick appears in the widget JS block", () => {
+    // A backtick anywhere in that block — including inside a comment — ends the
+    // template literal and the whole file stops compiling. I hit this twice in
+    // one afternoon: once writing `sequentialAmplification` in a comment, then
+    // again writing `total` and `raw` in the comment warning about the first.
+    //
+    // A comment saying "do not use backticks" evidently does not stop it. This
+    // does, and it names the fix in the failure message.
+    // Bounded at the literal's own closing backtick, which is legitimate — the
+    // first version of this test ran past it to buildWidget and flagged the
+    // terminator as an offender.
+    const anchor = kit.indexOf("function chainBlock");
+    expect(anchor).toBeGreaterThan(-1);
+    const closeIdx = kit.indexOf("\n`;", anchor);
+    expect(closeIdx).toBeGreaterThan(anchor);
+    const block = kit.slice(anchor, closeIdx);
+    const offenders = block.split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i }))
+      .filter((x) => x.line.includes("`"));
+    // Empty, or the build is already broken. Message names the offending text.
+    expect(offenders.map((o) => o.line.slice(0, 70))).toEqual([]);
   });
 });

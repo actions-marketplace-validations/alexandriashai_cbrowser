@@ -18,6 +18,7 @@ import {
   runWebMCPReadyAudit,
 } from "../../analysis/index.js";
 import { listAccessibilityPersonas } from "../../personas.js";
+import { getDefaultConfig } from "../../config.js";
 import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -716,7 +717,20 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       } else {
         browser = new BrowserClass({
           headless: true,
-          ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
+          // The CONFIGURED viewport, not a hardcoded 1920x1080.
+          //
+          // cognitive_effort and every other tool render at the configured
+          // default (1280x800), and this one alone rendered at 1920x1080. The
+          // two tools were therefore measuring different rendered pages while
+          // reporting coordinates as if they shared a space -- attention regions
+          // came back at x=1312 against a config that says the viewport is 1280
+          // wide, which is impossible and was the tell. Any comparison between
+          // an attention run and a CTC run was comparing two different layouts.
+          // (2026-08-02)
+          ...(device ? { device: device.toLowerCase() } : {
+            viewportWidth: getDefaultConfig().viewportWidth,
+            viewportHeight: getDefaultConfig().viewportHeight,
+          }),
         });
         await browser.launch();
       }

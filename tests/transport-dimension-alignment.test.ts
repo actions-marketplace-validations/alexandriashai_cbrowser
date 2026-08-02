@@ -239,3 +239,61 @@ describe("an unknown persona is refused, not fabricated", () => {
     }
   });
 });
+
+describe("the chain coefficient compares matched units", () => {
+  const base: Record<string, number> = Object.fromEntries(
+    (COGNITIVE_TRAITS as readonly string[]).map((t) => [t, 0.5]));
+  const at = (informationDensity: number) => {
+    const demand = computeDemandDistribution({
+      informationDensity, visualComplexity: informationDensity, interactiveElementCount: 40,
+      textDensity: informationDensity, animationLevel: 0.1, choiceCount: 12, navigationDepth: 3,
+    } as never);
+    return computeSequentialCTC(buildOTCognitiveProfile("p", base), demand,
+      { asymmetric: true, interactions: true });
+  };
+
+  test("totalCTC is a sigmoid of rawCTC, so they are not interchangeable", () => {
+    // The bug this whole block exists for: the published coefficient divided
+    // totalCTC (squashed to 0-1) by additiveCTC (a raw unbounded sum) and
+    // reported ~0.3-0.5, which read as the chain dampening cost by 60%. It was
+    // reporting the sigmoid, not the chain.
+    const r = at(0.9);
+    const expected = 1 / (1 + Math.exp(-2.5 * (r.rawCTC - 1.2)));
+    expect(r.totalCTC).toBeCloseTo(expected, 6);
+    expect(r.totalCTC).not.toBeCloseTo(r.rawCTC, 2);
+  });
+
+  test("the coefficient is >= 1: the chain adds cost, it does not remove it", () => {
+    // Interactions and depletion can only ADD to the layer sum. A value below 1
+    // means the ratio is measuring something other than the chain.
+    for (const d of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+      const r = at(d);
+      expect(r.rawCTC / r.additiveCTC).toBeGreaterThanOrEqual(0.999);
+    }
+  });
+
+  test("the effect is real but small — 2% or less, not compounding", () => {
+    // Stated so a claim of "costs compound sequentially" cannot quietly grow
+    // past what the model does. Measured 1.002-1.019 across densities.
+    for (const d of [0.1, 0.5, 0.9]) {
+      const r = at(d);
+      expect(r.rawCTC / r.additiveCTC).toBeLessThan(1.05);
+    }
+  });
+
+  test("abandonment risk does not read totalCTC", () => {
+    // They are different constructs and are allowed to disagree: a page can be
+    // cheap in absolute terms and still exhaust a persona with little patience.
+    // Two personas with identical trait vectors except patience must produce
+    // the same CTC and different abandonment.
+    const demand = computeDemandDistribution({
+      informationDensity: 0.8, visualComplexity: 0.6, interactiveElementCount: 40,
+      textDensity: 0.7, animationLevel: 0.1, choiceCount: 12, navigationDepth: 3,
+    } as never);
+    const run = (patience: number) => computeSequentialCTC(
+      buildOTCognitiveProfile("p", { ...base, patience }), demand,
+      { asymmetric: true, interactions: true });
+    const calm = run(0.9), impatient = run(0.1);
+    expect(impatient.abandonmentRisk).toBeGreaterThan(calm.abandonmentRisk);
+  });
+});

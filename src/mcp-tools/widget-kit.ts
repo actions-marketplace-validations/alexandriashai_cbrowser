@@ -159,7 +159,7 @@ export type BlockSpec =
    * Built for cognitive_effort, whose whole thesis is that the six layers are
    * SEQUENTIAL, not additive: each layer hands its residual capacity to the
    * next, so a cost late in the chain lands on an already-depleted budget. The
-   * payload states that outright as `sequentialAmplification = total / additive`
+   * payload states that outright as `chainCoefficient = total / additive`
    * and the JSON buries it in a nested object.
    *
    * So the block shows two bars against one scale -- what the layers cost added
@@ -596,6 +596,16 @@ const CSS = `
   .ovpane{margin:.6rem 0 1rem;padding:.6rem;border:1px solid rgba(127,127,127,.28);border-radius:6px}
   .ovpane img{max-width:100%;height:auto;display:block;border-radius:4px}
   .ovpane .cap{font-size:.8rem;opacity:.8;margin:.45rem 0 0}
+  @media (max-width:520px){
+    /* The fixed 9.5rem label column took a third of a 393px viewport and left
+       the bars as stubs — the one thing the block exists to show. Labels move
+       above their track so the bar gets the full width. */
+    .chain .seg{flex-wrap:wrap;row-gap:.15rem}
+    .chain .lbl{flex:1 1 100%;text-align:left;font-size:.78rem}
+    .chain .track{flex:1 1 auto;min-width:0}
+    .chain .num{flex:0 0 3.2rem;text-align:right}
+    .chain button.seg{text-align:left}
+  }
   .amp{margin:1.1rem 0 .3rem;padding-top:.8rem;border-top:1px solid rgba(127,127,127,.22)}
   .amp .seg .lbl{flex:0 0 9.5rem}
   .ampnote{font-size:.8rem;opacity:.75;margin:.45rem 0 0}
@@ -1458,15 +1468,49 @@ const RUNTIME = String.raw`
 
     if (isFinite(additive) && isFinite(total) && additive > 0) {
       var amp = el("div", "amp");
-      amp.appendChild(bar("sum of layers", additive, 205, false, null));
-      amp.appendChild(bar("actual, in sequence", total, 205, false, null));
-      var ratio = total / additive;
+      // Computed BEFORE the bars that read it. var hoists, so declaring this
+      // below its first use left the guard comparing undefined !== null, which
+      // is true -- the guard passed and the bar was drawn with no value.
+      //
+      // raw, not total: total is a sigmoid of raw, so plotting additive against
+      // it drew a 1.034 bar beside a 0.410 bar and told the 60%-less story in
+      // pixels while the caption underneath said +2%. Both bars are in
+      // layer-cost units or the comparison is omitted.
+      var rawTotal = at(data, "cognitiveTransportCost.raw");
+      var ratio = typeof rawTotal === "number" ? rawTotal / additive : null;
+      var pct = ratio === null ? 0 : Math.round(Math.abs(1 - ratio) * 100);
+      if (ratio !== null) {
+        amp.appendChild(bar("sum of layers", additive, 205, false, null));
+        amp.appendChild(bar("actual, in sequence", rawTotal, 205, false, null));
+      }
+      // Describes the coefficient it actually measured.
+      //
+      // The first version assumed the chain AMPLIFIES, matching the old
+      // sequentialAmplification name, and fell back to "close to additive"
+      // otherwise. NOTE: no backticks anywhere in this block -- it is inside a
+      // template literal, so one silently ends the string and the whole widget
+      // stops compiling. Against real data the coefficient is 0.30-0.39, so
+      // the widget confidently called a 61-70% compression "close to additive".
+      // The mock payload used to build it had additive < total, which is the
+      // one shape the tool has never actually produced. (2026-08-02)
       amp.appendChild(el("p", "ampnote",
-        ratio > 1.005
-          ? "The layers run in sequence, so each one spends what the last left over. That is why the real cost is "
-            + ratio.toFixed(2) + "x the sum of the parts"
-            + (bottleneck ? ", and why " + bottleneck + " hurts more than its own number suggests." : ".")
-          : "Costs here are close to additive: no layer is arriving on a materially depleted budget."));
+        // No raw total, no claim. Falling back to the sigmoid-squashed total
+        // here is what produced "about 60% less" on a chain that actually adds
+        // ~1%: total is a sigmoid and additive is not, so their ratio measures
+        // the squash, not the chain. A payload from before raw existed cannot
+        // answer this, and saying so beats answering it wrongly.
+        ratio === null
+          ? "This result predates the raw cost being reported, so the chain's effect cannot be computed from it. The bars above are still exact; only the comparison below them is unavailable."
+          : ratio > 1.0005
+          ? "The layers run in sequence, so each one spends what the last left over. That adds "
+            + pct + "% over their sum (" + ratio.toFixed(3) + "x)"
+            + (bottleneck ? ", concentrated in " + bottleneck + "." : ".")
+          : ratio < 0.995
+          ? "Running the layers in sequence costs " + ratio.toFixed(3) + "x their sum, about "
+            + pct + "% less"
+            + (bottleneck ? ", and " + bottleneck + " is where the cost concentrates." : ".")
+          : "Sequential and additive cost agree to within a rounding error: no layer is arriving on a materially depleted budget"
+            + (bottleneck ? ", and " + bottleneck + " carries the chain on its own." : ".")));
       wrap.appendChild(amp);
     }
     return wrap;

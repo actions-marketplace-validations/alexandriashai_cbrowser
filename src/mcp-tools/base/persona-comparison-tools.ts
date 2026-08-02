@@ -995,7 +995,24 @@ Begin with the first persona: ${personas[0]}
         cognitiveTransportCost: {
           total: Math.round(result.totalCTC * 1000) / 1000,
           additive: Math.round(result.additiveCTC * 1000) / 1000,
-          sequentialAmplification: Math.round((result.totalCTC / Math.max(0.001, result.additiveCTC)) * 100) / 100,
+          // The un-normalized cost. `total` is a sigmoid of this, so the two
+          // are not interchangeable and any ratio must use `raw`.
+          raw: Math.round(result.rawCTC * 1000) / 1000,
+          // raw / additive — both in layer-cost units, so this is the genuine
+          // contribution of interactions and sequential depletion.
+          chainCoefficient: Math.round((result.rawCTC / Math.max(0.001, result.additiveCTC)) * 1000) / 1000,
+          /**
+           * @deprecated Use chainCoefficient. NOTE ITS VALUE CHANGED: this used
+           * to divide `total` (a sigmoid, 0-1) by `additive` (a raw sum) and
+           * reported ~0.3-0.5, which read as the chain dampening by 60%. That
+           * was a unit error, not a measurement — it was reporting the sigmoid.
+           * Preserving the old number bit-for-bit would preserve a meaningless
+           * one, so this now carries the corrected value.
+           */
+          sequentialAmplification: Math.round((result.rawCTC / Math.max(0.001, result.additiveCTC)) * 1000) / 1000,
+          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Measured 1.002-1.019 across page densities: real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
+          interpretationBasis: "total",
+          interpretationBands: "total < 0.3 comfortable, < 0.6 moderate, < 0.8 struggling, else likely abandon",
         },
         layers: result.layers.map(l => ({
           name: l.name,
@@ -1008,6 +1025,16 @@ Begin with the first persona: ${personas[0]}
           surplus: Math.round(result.surplusCost * 1000) / 1000,
         },
         abandonmentRisk: Math.round(result.abandonmentRisk * 100) + "%",
+        // Says out loud that these two are different constructs.
+        //
+        // A run can read "easy" on CTC and 53% on abandonment and both be
+        // correct, which looks like a contradiction and is not one:
+        // abandonmentRisk is a sigmoid of (deficit - 0.3*surplus) against this
+        // persona's blended patience and resilience, and never touches
+        // totalCTC. CTC asks how expensive the page is; abandonment asks
+        // whether THIS persona's tolerance runs out first. A page can be cheap
+        // in absolute terms and still exceed someone with little patience.
+        abandonmentBasis: "deficit vs this persona's patience and resilience — independent of totalCTC, so the two can disagree without either being wrong",
         interactions: Object.fromEntries(
           Object.entries(result.interactions)
             .filter(([, v]) => v > 0.001)
@@ -1026,7 +1053,16 @@ Begin with the first persona: ${personas[0]}
         } : {}),
         ...(readabilityResult ? {
           readability: {
+            // Renamed from `score`. This is a QUALITY percentage where high is
+            // good; the chain's `readability` layer is a COST where high is bad.
+            // Both were called readability, so a run could report readability
+            // 91% and readability as the bottleneck in the same payload and
+            // look self-contradictory when it was reporting two different
+            // measurements under one word. (2026-08-02)
+            legibilityQuality: Math.round(readabilityResult.score * 100) + "%",
+            /** @deprecated ambiguous against the layer cost — use legibilityQuality */
             score: Math.round(readabilityResult.score * 100) + "%",
+            note: "legibilityQuality is a quality score (higher is better) for the text itself. The `readability` entry in `layers` is a transport COST for this persona (higher is worse). A page can be legible in general and still be the costliest layer for someone with a narrow visual span.",
             averageWPM: Math.round(
               readabilityResult.blocks.reduce((s: number, b: { wordsPerMinute: number }) => s + b.wordsPerMinute, 0) / readabilityResult.blocks.length
             ),
@@ -1192,7 +1228,10 @@ Begin with the first persona: ${personas[0]}
 
         // The remaining two have no generator, and no data here to build one
         // from. Said plainly rather than left as a dead bar.
-        layerOverlays.push({ layer: "cognitive-load", available: false,
+        // camelCase, matching LAYER_DEFINITIONS. Emitted as "cognitive-load" at
+        // first, which matched nothing: the bar got neither a button nor a
+        // no-overlay tag and silently looked different from its five siblings.
+        layerOverlays.push({ layer: "cognitiveLoad", available: false,
           reason: "no per-region load data is produced by this tool, so there is nothing to draw" });
         layerOverlays.push({ layer: "decision", available: false,
           reason: "decision cost is computed over the page as a whole, not per region" });

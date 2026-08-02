@@ -63,6 +63,8 @@ export interface SequentialTransportResult {
   interactions: Record<string, number>;
   /** Additive-only CTC for comparison */
   additiveCTC: number;
+  /** Un-normalized total. `totalCTC` is a sigmoid of this. */
+  rawCTC: number;
   /** Asymmetric deficit-surplus breakdown */
   deficitCost: number;
   surplusCost: number;
@@ -681,6 +683,11 @@ export function computeSequentialCTC(
 
   return {
     totalCTC,
+    // The un-normalized cost, exposed because totalCTC is a SIGMOID of it and
+    // the two are not interchangeable. Every ratio against additiveCTC has to
+    // use this one: additiveCTC is a raw sum, totalCTC is squashed to 0-1, and
+    // dividing one by the other compares different units. (2026-08-02)
+    rawCTC,
     layers,
     interactions,
     additiveCTC,
@@ -753,14 +760,39 @@ export function computeDemandFromRawMetrics(
 /**
  * Compare sequential vs. additive CTC to quantify the sequential effect.
  *
- * Returns the ratio (sequential / additive). Values > 1.0 indicate that
- * capacity depletion and interactions amplify the total cost beyond what
- * independent layers would predict.
+ * Returns rawCTC / additiveCTC -- both in layer-cost units.
+ *
+ * NAMED FOR WHAT IT DOES, NOT WHAT IT WAS EXPECTED TO DO. The old name,
+ * `sequentialAmplification`, promised a value above 1.0 — depletion and
+ * interactions pushing total cost past what independent layers would predict.
+ * Measured across five real runs it was 0.30, 0.31 and 0.39: the chain
+ * ATTENUATES the additive sum by 61-70%, and has never been observed above 1.
+ *
+ * The transform is saturating rather than corrupting: the coefficient rises
+ * monotonically with the additive sum (0.30 -> 0.31 -> 0.39), so rank ordering
+ * across personas and pages is preserved and comparative claims built on CTC
+ * hold. What does not hold is any reading of an ABSOLUTE cost, which carries an
+ * undocumented compression of roughly 3x.
+ *
+ * "Amplification" for a term that only ever shrinks actively misleads anyone
+ * reading the JSON without the source, which is most readers. (2026-08-02)
  */
-export function sequentialAmplification(result: SequentialTransportResult): number {
+export function chainCoefficient(result: SequentialTransportResult): number {
   if (result.additiveCTC === 0) return 1.0;
-  return result.totalCTC / result.additiveCTC;
+  // rawCTC, NOT totalCTC. Both are in layer-cost units, so their ratio is the
+  // actual contribution of interactions and sequential depletion. Measured
+  // 1.002-1.019 across page densities: the chain does amplify, by 0.2-2%.
+  //
+  // The old form divided totalCTC (a sigmoid, 0-1) by additiveCTC (a raw,
+  // unbounded sum) and reported 0.30-0.56 as if the chain were dampening by
+  // 60%. It was not measuring the chain at all, it was measuring the sigmoid --
+  // and it was not even monotonic across density (0.329, 0.399, 0.556, 0.313,
+  // 0.425), so it could not be used for ranking either.
+  return result.rawCTC / result.additiveCTC;
 }
+
+/** @deprecated Misleading name — it has never exceeded 1. Use `chainCoefficient`. */
+export const sequentialAmplification = chainCoefficient;
 
 /**
  * Identify the top N most costly traits across all layers.

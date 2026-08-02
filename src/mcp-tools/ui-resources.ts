@@ -554,7 +554,7 @@ export const EMPATHY_SPEC: WidgetSpec = {
  * sequence costs over running it in parallel.
  *
  * The JSON answers "how expensive is this page for this persona" with a number,
- * and buries the reason inside `cognitiveTransportCost.sequentialAmplification`.
+ * and buries the reason inside `cognitiveTransportCost.chainCoefficient`.
  * The chain block puts the reason on screen: six bars for the six layers with
  * the bottleneck named, then the sum-of-parts against the actual sequential
  * total. The gap between those last two is the claim the whole model rests on.
@@ -590,18 +590,40 @@ export const EFFORT_SPEC: WidgetSpec = {
     // the site. It changes every number above and is easy to miss in JSON.
     { type: "note", field: "familiarityWarning" },
     { type: "note", field: "languageWarning" },
-    { type: "kv", title: "Deficit vs surplus", field: "deficitVsSurplus" },
-    { type: "kv", title: "Layer interactions", field: "interactions" },
+    // Everything below the chain is behind an accordion.
+    //
+    // The chain IS the finding; the rest is the evidence behind it, and eight
+    // stacked cards made the panel a scroll rather than an answer. Native
+    // <details>, so each one is keyboard operable and announced as an expander
+    // without any ARIA of our own.
+    //
+    // The two warnings above stay OUT of the accordions on purpose: a familiarity
+    // downgrade or a language mismatch changes how every number below should be
+    // read, and a warning behind a click is a warning nobody reads.
+    { type: "drawer", title: "Where the cost sits", blocks: [
+      { type: "kv", title: "Deficit vs surplus", field: "deficitVsSurplus" },
+      { type: "kv", title: "Layer interactions", field: "interactions" },
+    ] },
     { type: "drawer", title: "Motor accessibility", blocks: [
       { type: "kv", title: "Summary", fields: ["motorAccessibility.score", "motorAccessibility.barriers"] },
       { type: "table", title: "Hardest targets", field: "motorAccessibility.elements",
         columns: ["element", "hitProbability", "movementTimeMs"] },
     ] },
     { type: "drawer", title: "Readability", blocks: [
-      { type: "kv", title: "Summary", fields: ["readability.score", "readability.averageWPM"] },
+      // legibilityQuality, not score: high is GOOD here, while the readability
+      // LAYER above is a cost where high is bad. Same word, opposite direction.
+      { type: "kv", title: "Summary", fields: ["readability.legibilityQuality", "readability.averageWPM"] },
       { type: "findings", title: "Hardest block", field: "readability.hardestBlock", textKey: "0" },
     ] },
-    { type: "rest", title: "Everything else" },
+    { type: "drawer", title: "How these numbers are built", blocks: [
+      { type: "kv", title: "Chain", fields: ["cognitiveTransportCost.raw", "cognitiveTransportCost.chainCoefficient"] },
+      { type: "note", field: "cognitiveTransportCost.chainNote" },
+      { type: "note", field: "abandonmentBasis" },
+      { type: "note", field: "siteFamiliarityEffect" },
+    ] },
+    { type: "drawer", title: "Everything else", blocks: [
+      { type: "rest", title: "Remaining fields" },
+    ] },
   ],
 };
 

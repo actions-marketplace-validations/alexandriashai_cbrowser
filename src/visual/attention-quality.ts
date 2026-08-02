@@ -82,6 +82,13 @@ export function computeValueRelevance(
 export interface AttentionQualityResult {
   /** CTA capture rate: fraction of top saliency in CTA zones (0-1) */
   ctaCaptureRate: number;
+  /** Heading share alone — valuePropSalience includes CTA and hides this. */
+  headingShare?: number;
+  /** The classifier's default bucket, previously published nowhere. */
+  contentRatio?: number;
+  /** Residual after every bucket, so a gap is visible rather than silent. */
+  unaccountedRatio?: number;
+  ratioNote?: string;
   /** Value prop salience: is the primary heading in top attention? (0-1) */
   valuePropSalience: number;
   /** Distractor ratio: fraction of top attention on non-actionable elements (0-1) */
@@ -280,6 +287,21 @@ export function computeAttentionQuality(
   const ctaCaptureRate = ctaSaliency / totalTopSaliency;
   const valuePropSalience = (headingSaliency + ctaSaliency) / totalTopSaliency;
   const distractorRatio = (decorativeSaliency + unknownSaliency + navSaliency) / totalTopSaliency;
+  // contentSaliency was accumulated and consumed by NOTHING.
+  //
+  // It is the DEFAULT bucket -- anything the classifier does not recognise as
+  // cta / heading / nav / decorative lands here -- so unrecognised elements
+  // vanished from every published ratio and the ratios did not sum to 1. On a
+  // real university homepage that produced `distractorRatio: 0` while the
+  // persona was demonstrably fixating on nav-like dropdown triggers: they were
+  // not flagged isNav, fell through to content, and were counted nowhere.
+  //
+  // Published now, along with the residual, so a reader can see what share of
+  // attention the classifier could not account for. (2026-08-02)
+  const contentRatio = contentSaliency / totalTopSaliency;
+  const unaccountedRatio = Math.max(0, 1 - (ctaCaptureRate + (headingSaliency / totalTopSaliency)
+    + distractorRatio + contentRatio));
+  const headingShare = headingSaliency / totalTopSaliency;
 
   // Value relevance score (only when persona values provided)
   let valueRelevanceScore: number | undefined;
@@ -309,8 +331,18 @@ export function computeAttentionQuality(
 
   // Interpretation
   let interpretation: string;
-  if (ctaCaptureRate > 0.3 && valuePropSalience > 0.5) {
+  // headingShare, not valuePropSalience, decides whether the value prop was
+  // seen. valuePropSalience INCLUDES ctaSaliency, so it can never be low when
+  // CTA capture is high -- the metric is structurally unable to detect "sees
+  // the CTA, misses the value prop". Measured on a real run: ctaCaptureRate and
+  // valuePropSalience both 0.598 to three decimals, which happens exactly when
+  // headingSaliency is zero, and the tool nonetheless reported "the persona
+  // sees the value prop". It saw no heading at all.
+  if (ctaCaptureRate > 0.3 && headingShare > 0.15) {
     interpretation = "Strong attention quality — the persona sees the value prop and CTAs. Design intent is working.";
+  } else if (ctaCaptureRate > 0.3 && headingShare <= 0.02) {
+    interpretation = "CTAs capture attention but the value prop does not — headings drew "
+      + Math.round(headingShare * 100) + "% of top attention. The persona is seeing where to click without reading what it is for.";
   } else if (ctaCaptureRate > 0.1 && valuePropSalience > 0.3) {
     interpretation = "Moderate attention quality — the persona partially sees key elements but attention is split with other content.";
   } else if (distractorRatio > 0.5) {
@@ -324,7 +356,14 @@ export function computeAttentionQuality(
   return {
     ctaCaptureRate: Math.round(ctaCaptureRate * 1000) / 1000,
     valuePropSalience: Math.round(valuePropSalience * 1000) / 1000,
+    // Separated out because valuePropSalience is heading+CTA and therefore
+    // equals ctaCaptureRate exactly whenever this is 0 -- two metrics agreeing
+    // to three decimals is that, not a coincidence.
+    headingShare: Math.round(headingShare * 1000) / 1000,
     distractorRatio: Math.round(distractorRatio * 1000) / 1000,
+    contentRatio: Math.round(contentRatio * 1000) / 1000,
+    unaccountedRatio: Math.round(unaccountedRatio * 1000) / 1000,
+    ratioNote: "ctaCaptureRate + headingShare + distractorRatio + contentRatio sum to 1. contentRatio is the classifier's default bucket: attention on elements it did not recognise as CTA, heading, nav or decorative. A high contentRatio next to distractorRatio 0 means the distractor classifier is not recognising the distractors, not that there are none.",
     qualityScore,
     valueRelevanceScore,
     // Deduplicated by element. The loop above walks HOTSPOTS — grid cells — and
