@@ -104,6 +104,19 @@ export const DEMAND_DIMENSIONS = [
   'mentalModelRigidity', 'curiosity',
   // Processing
   'processingSpeed', 'textProcessing',
+  // Experience
+  //
+  // Absent until 2026-08-02, which is why the siteFamiliarity parameter was
+  // inert. It is a member of COGNITIVE_TRAITS, so a persona carried a capacity
+  // on this dimension, but the demand vector had no slot for it -- so the
+  // capacity was transported against a demand that did not exist and
+  // contributed nothing. Runs at familiarity 0 and 1 came back byte-identical
+  // while the tool attested the parameter had been applied.
+  //
+  // The two vectors are supposed to be the same space. A dimension present in
+  // one and missing from the other is silently dropped, and there is now a test
+  // asserting COGNITIVE_TRAITS and DEMAND_DIMENSIONS do not diverge.
+  'siteFamiliarity',
 ] as const;
 
 /**
@@ -117,7 +130,13 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'cognitiveLoad',
-    traits: ['comprehension', 'workingMemory', 'informationForaging'],
+    // siteFamiliarity added 2026-08-02. It was in COGNITIVE_TRAITS and in no
+    // layer, so it reached the profile, got a capacity, and then contributed to
+    // nothing -- the third and final reason the parameter was inert. Knowing a
+    // site is a substitute for holding its layout in working memory, which is
+    // exactly this layer, and the demand term for it comes from the same
+    // navigationDepth signal that already feeds workingMemory here.
+    traits: ['comprehension', 'workingMemory', 'informationForaging', 'siteFamiliarity'],
   },
   {
     name: 'decision',
@@ -328,6 +347,23 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   demands.metacognitivePlanning = Math.max(demands.metacognitivePlanning, navDemand * 0.8);
   demands.persistence = Math.max(demands.persistence, navDemand * 0.7);
   demands.transferLearning = Math.max(demands.transferLearning, navDemand * 0.65);
+  // ── navigationDepth → siteFamiliarity
+  //
+  // This dimension had NO demand term at all. It was initialised to 0 and never
+  // raised, so the persona's familiarity was transported against zero demand and
+  // contributed exactly nothing to the chain — three runs at familiarity unset,
+  // 1 and 0 returned byte-identical results while the tool reported the
+  // parameter as applied. The value was never overridden; nothing ever asked
+  // for it.
+  //
+  // Navigation depth is the honest driver: the further content sits from the
+  // entry point, the more the page asks you to already know where things are.
+  // A one-click page demands no site knowledge no matter who you are, which is
+  // why this is proportional to navDemand rather than a constant. Weighted just
+  // under workingMemory (0.95), since knowing the layout substitutes for
+  // holding it in mind. (2026-08-02)
+  demands.siteFamiliarity = Math.max(demands.siteFamiliarity, navDemand * 0.85);
+  variance.siteFamiliarity += Math.min(1, navDepth / 5) * 0.08;
   variance.workingMemory += Math.min(1, navDepth / 5) * 0.09;
   variance.metacognitivePlanning += Math.min(1, navDepth / 5) * 0.07;
   variance.persistence += Math.min(1, navDepth / 5) * 0.06;

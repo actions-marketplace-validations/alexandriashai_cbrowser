@@ -13,6 +13,7 @@ import { comparePersonas } from "../../analysis/index.js";
 import { isApiKeyConfigured } from "../../cognitive/index.js";
 import {
   getAnyPersona,
+  resolvePersonaOrThrow,
   getCognitiveProfile,
   createCognitivePersona,
   isAgentPersonaObject,
@@ -222,6 +223,9 @@ Example:
         let personaObj: Persona | AccessibilityPersona;
 
         if (!existingPersona) {
+          // Unknown name: refuse. A fabricated persona here produces a complete
+          // per-persona assessment nobody can distinguish from a real one.
+          resolvePersonaOrThrow(personaName);
           personaObj = createCognitivePersona(personaName, personaName, {});
         } else {
           // Safe cast - we filtered out agent personas above
@@ -803,13 +807,14 @@ Begin with the first persona: ${personas[0]}
       }
 
       // Get persona
+      // Refuses an unknown name rather than inventing one. An agent persona is
+      // still synthesised -- it exists, it just has no cognitive profile of its
+      // own -- but a name that resolves to nothing stops the run.
       const existingPersona = getAnyPersona(personaName);
-      let personaObj: Persona;
-      if (!existingPersona || isAgentPersonaObject(existingPersona)) {
-        personaObj = createCognitivePersona(personaName, personaName, {});
-      } else {
-        personaObj = existingPersona as Persona;
-      }
+      if (!existingPersona) resolvePersonaOrThrow(personaName);
+      const personaObj: Persona = isAgentPersonaObject(existingPersona)
+        ? createCognitivePersona(personaName, personaName, {})
+        : existingPersona as Persona;
 
       // v18.61.0: siteFamiliarity is a binary gate based on site knowledge
       // Has site knowledge → persona keeps its familiarity (maxed to 1.0 for experts)
@@ -1038,7 +1043,22 @@ Begin with the first persona: ${personas[0]}
           ? `${personaName} will struggle significantly. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
           : `${personaName} is likely to abandon this page. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`,
         ...(familiarityWarning ? { familiarityWarning, siteFamiliarityAdjusted: true, originalFamiliarity: requestedFamiliarity, effectiveFamiliarity: traits.siteFamiliarity } : {}),
-        ...(familiarityFromCaller ? { siteFamiliarity: traits.siteFamiliarity, siteFamiliaritySource: "supplied for this run" } : {}),
+        // Reports what was USED, not what was passed.
+        //
+        // This previously said "supplied for this run" whenever the caller sent
+        // a number, without any check that the number reached the model. It
+        // did not: siteFamiliarity had no demand term and no home layer, so
+        // three runs at unset / 1 / 0 came back byte-identical under a response
+        // asserting the parameter had been applied. An attestation nobody
+        // verifies is worse than no attestation, because it makes an
+        // output-level audit report the knob as working. (2026-08-02)
+        siteFamiliarity: traits.siteFamiliarity,
+        siteFamiliaritySource: familiarityFromCaller
+          ? "supplied for this run"
+          : hasSiteKnowledge
+          ? "derived from this install's crawl of the site"
+          : "defaulted to first visit — no site knowledge and none supplied",
+        siteFamiliarityEffect: `Consumed by the cognitiveLoad layer against a demand set by navigation depth. A page reachable in one click demands no site knowledge, so this changes nothing there.`,
         ...(languageWarning ? { languageWarning } : {}),
         ...(userLocation ? { userContext: { location: userLocation, timezone: userTimezone, language: userLanguage } } : {}),
         ...(token ? { _browserToken: token } : {}),
@@ -1081,7 +1101,25 @@ Begin with the first persona: ${personas[0]}
           if (written) response.motorOverlayUrl = written.url;
           response.motorOverlayNote = "Green = easy to click. Yellow = moderate difficulty. Red = motor barrier for this persona.";
 
-          content.push({ type: "image" as const, data: motorBase64, mimeType: "image/png" });
+          // Inlined ONLY when small. A tool result is not an image transport.
+          //
+          // This pushed the full base64 overlay unconditionally, and on a real
+          // page that was 309,296 of a 312,580-byte result -- 99% image around
+          // 2,828 bytes of data. Hosts cap tool-result size, and past that cap
+          // the widget does not degrade, it fails to load. The MCP Apps guidance
+          // says heavy assets travel via callServerTool, which is exactly what
+          // the chain widget now does: every overlay, motor included, is written
+          // as an artifact and fetched on demand by the bar that shows it.
+          //
+          // A small overlay still rides along so the model can see it without a
+          // round trip. A large one is named, not carried. (2026-08-02)
+          const INLINE_IMAGE_MAX_B64 = 40_000;
+          if (motorBase64.length <= INLINE_IMAGE_MAX_B64) {
+            content.push({ type: "image" as const, data: motorBase64, mimeType: "image/png" });
+          } else {
+            response.motorOverlayInline = false;
+            response.motorOverlayNote = `${response.motorOverlayNote ?? ""} Overlay is ${Math.round(motorBase64.length / 1024)}KB, too large to inline in a tool result; fetch it with artifact_fetch using the filename in layerOverlays, or open it from the chain view.`.trim();
+          }
           // ssPath is deliberately NOT deleted here any more -- the other
           // layer overlays are drawn from the same screenshot below.
         }

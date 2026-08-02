@@ -444,21 +444,26 @@ export interface CognitiveTraits {
   mentalModelRigidity?: number;
 
   /**
-   * How much the persona "knows" about a site from prior visits (0 = brand new, 1 = daily user)
+   * How well this persona knows THIS site, resolved per tool run.
    *
-   * Controls how much site model data is exposed during cognitive journeys:
-   * - 0.0: No site model — truly blind first visit
-   * - 0.1–0.4: Failure patterns only — knows what to avoid, not where to go
-   * - 0.5–0.7: Failure patterns + page structure — vague familiarity
-   * - 0.8–1.0: Full site model — navigation paths, goal sequences, element reliability
+   * RUN-SCOPED, NEVER STORED. It is the one entry here that is not a
+   * disposition: the same person is a daily user of one site and a first-time
+   * visitor to another, so "familiarity" has no value until a URL is named.
+   * Stored on a persona it answered "familiar with which site?" by accident,
+   * and whichever site its author had in mind silently outranked the caller.
    *
-   * Research basis: Cockburn et al. (2007) - "Familiar Interfaces"
-   * Revisitation accounts for 58% of web pages viewed. Familiar users navigate
-   * 2-4x faster via spatial memory and landmark recognition.
+   * That is not hypothetical. Every builtin carried one (power-user 0.9,
+   * first-timer 0.0) and the persona builder merged the stored value over the
+   * per-run parameter, so three runs at familiarity unset / 1 / 0 returned
+   * byte-identical results while the response attested the parameter had been
+   * applied. `stripStoredFamiliarity` now removes it on the way to disk.
+   *
+   * Populated at runtime by the tools that audit a specific site
+   * (cognitive_effort, site_cognitive_assessment), from the caller's parameter
+   * or from how much of the site this install has actually crawled.
    *
    * @see Tauscher & Greenberg (1997) - "How people revisit web pages"
-   * @see Weinreich et al. (2008) - "Off the beaten tracks: exploring three aspects of web navigation"
-   * @since v18.35.0
+   * @since v18.35.0, run-scoped since 2026-08-02
    */
   siteFamiliarity?: number;
 }

@@ -112,11 +112,32 @@ export function loadCustomPersonas(): Record<string, Persona> {
 /**
  * Save a custom persona to disk.
  */
+/**
+ * Remove run-scoped values a persona record must not carry.
+ *
+ * `siteFamiliarity` is a persona-SITE pair, not a disposition, so a stored one
+ * is always answering "familiar with which site?" about a site nobody named.
+ * Worse, the persona builder merged it over the caller's per-run parameter, so
+ * the tool discarded the input while reporting that it had applied it.
+ *
+ * Stripping on the way to disk rather than trusting every caller: this is the
+ * single chokepoint every custom persona passes through, and a rule enforced at
+ * one write is worth more than the same rule written in six call sites.
+ * (2026-08-02)
+ */
+export function stripStoredFamiliarity<T extends { cognitiveTraits?: CognitiveTraits }>(persona: T): T {
+  if (persona?.cognitiveTraits && "siteFamiliarity" in persona.cognitiveTraits) {
+    const { siteFamiliarity: _dropped, ...rest } = persona.cognitiveTraits;
+    return { ...persona, cognitiveTraits: rest as CognitiveTraits };
+  }
+  return persona;
+}
+
 export function saveCustomPersona(persona: Persona): string {
   ensurePersonasDir();
   const filename = `${persona.name.toLowerCase().replace(/[^a-z0-9-]/g, "-")}.json`;
   const filepath = join(personasDirFor(), filename);
-  writeFileSync(filepath, JSON.stringify(persona, null, 2));
+  writeFileSync(filepath, JSON.stringify(stripStoredFamiliarity(persona), null, 2));
   return filepath;
 }
 
@@ -786,7 +807,6 @@ export function createCognitivePersona(
     fearOfMissingOut: traits.fearOfMissingOut ?? basePersona.cognitiveTraits?.fearOfMissingOut ?? 0.5,
     socialProofSensitivity: traits.socialProofSensitivity ?? basePersona.cognitiveTraits?.socialProofSensitivity ?? 0.5,
     mentalModelRigidity: traits.mentalModelRigidity ?? basePersona.cognitiveTraits?.mentalModelRigidity ?? 0.5,
-    siteFamiliarity: traits.siteFamiliarity ?? basePersona.cognitiveTraits?.siteFamiliarity ?? 0.5,
   };
 
   // Backstop for the failure mode above. The enumeration is kept because it
@@ -1066,7 +1086,6 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     fearOfMissingOut: 0.5,
     socialProofSensitivity: 0.5,
     mentalModelRigidity: 0.5,
-    siteFamiliarity: 0.5,
   };
 
   return {
@@ -1158,7 +1177,6 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.2,      // Low - not swayed by urgency
       socialProofSensitivity: 0.3, // Low - evaluates on merits
       mentalModelRigidity: 0.8,   // High - adapts to new patterns
-      siteFamiliarity: 0.9,   // Very high - daily user, knows everything
     },
     context: {
       viewport: [1920, 1080],
@@ -1239,7 +1257,6 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.6,      // Medium-high - susceptible to urgency
       socialProofSensitivity: 0.8, // High - relies heavily on reviews
       mentalModelRigidity: 0.3,   // Low - struggles when patterns break
-      siteFamiliarity: 0.0,  // Zero - brand new, never visited before
     },
     context: {
       viewport: [1280, 800],
@@ -1314,7 +1331,6 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.7,      // High - push notifications, urgency
       socialProofSensitivity: 0.6, // Medium-high - app store ratings
       mentalModelRigidity: 0.6,   // Medium - adapts to mobile patterns
-      siteFamiliarity: 0.4,  // Low-medium - used desktop version before
     },
     context: {
       viewport: [375, 812], // iPhone X dimensions
@@ -1389,7 +1405,6 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.2,      // Low - methodical, not impulsive
       socialProofSensitivity: 0.5, // Medium - reviews are accessible info
       mentalModelRigidity: 0.6,   // Medium - adapts but needs time
-      siteFamiliarity: 0.3,  // Low - has visited but forgets layout
     },
     context: {
       viewport: [1280, 800],
@@ -1464,7 +1479,6 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.3,      // Low - not driven by urgency, confused by it
       socialProofSensitivity: 0.7, // High - relies on grandchildren's recommendations
       mentalModelRigidity: 0.2,   // Very low - rigid, struggles with novel UIs
-      siteFamiliarity: 0.5, // Medium - knows the basics
     },
     context: {
       viewport: [1280, 800],
@@ -1545,7 +1559,6 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.9,      // Very high - urgency works on them
       socialProofSensitivity: 0.5, // Medium - if it's quick to evaluate
       mentalModelRigidity: 0.7,   // High - adapts quickly, expects conventions
-      siteFamiliarity: 0.2, // Low - site structure feels different each visit
     },
     context: {
       viewport: [1280, 800],
@@ -1586,7 +1599,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       timeHorizon: 0.7, attributionStyle: 0.4, metacognitivePlanning: 0.2,
       proceduralFluency: 0.5, transferLearning: 0.5, authoritySensitivity: 0.5,
       emotionalContagion: 0.5, fearOfMissingOut: 0.7, socialProofSensitivity: 0.5,
-      mentalModelRigidity: 0.5, siteFamiliarity: 0.3,
+      mentalModelRigidity: 0.5,
     },
     context: { viewport: [1280, 800] },
   },
@@ -1614,7 +1627,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       anchoringBias: 0.3, timeHorizon: 0.3, attributionStyle: 0.6,
       metacognitivePlanning: 0.8, proceduralFluency: 0.6, transferLearning: 0.6,
       authoritySensitivity: 0.6, emotionalContagion: 0.3, fearOfMissingOut: 0.15,
-      socialProofSensitivity: 0.4, mentalModelRigidity: 0.4, siteFamiliarity: 0.4,
+      socialProofSensitivity: 0.4, mentalModelRigidity: 0.4,
     },
     context: { viewport: [1280, 800] },
   },
@@ -1642,7 +1655,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       anchoringBias: 0.25, timeHorizon: 0.35, attributionStyle: 0.7,
       metacognitivePlanning: 0.5, proceduralFluency: 0.7, transferLearning: 0.85,
       authoritySensitivity: 0.2, emotionalContagion: 0.4, fearOfMissingOut: 0.4,
-      socialProofSensitivity: 0.25, mentalModelRigidity: 0.75, siteFamiliarity: 0.5,
+      socialProofSensitivity: 0.25, mentalModelRigidity: 0.75,
     },
     context: { viewport: [1440, 900] },
   },
@@ -1670,7 +1683,7 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       anchoringBias: 0.45, timeHorizon: 0.6, attributionStyle: 0.6,
       metacognitivePlanning: 0.75, proceduralFluency: 0.8, transferLearning: 0.7,
       authoritySensitivity: 0.4, emotionalContagion: 0.25, fearOfMissingOut: 0.3,
-      socialProofSensitivity: 0.2, mentalModelRigidity: 0.6, siteFamiliarity: 0.5,
+      socialProofSensitivity: 0.2, mentalModelRigidity: 0.6,
     },
     context: { viewport: [1280, 800] },
   },
@@ -1816,7 +1829,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.3,      // Not swayed, focused on completing
       socialProofSensitivity: 0.5,
       mentalModelRigidity: 0.5,
-      siteFamiliarity: 0.5, // Medium - regular user with motor challenges
     },
   },
 
@@ -1907,7 +1919,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.3,      // Not swayed - focused
       socialProofSensitivity: 0.5,
       mentalModelRigidity: 0.4,   // Adapts but needs time
-      siteFamiliarity: 0.3, // Low - magnification makes layout unfamiliar
     },
   },
 
@@ -1989,7 +2000,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.85,     // Very high - ADHD correlates with FOMO
       socialProofSensitivity: 0.5, // Medium - if interesting
       mentalModelRigidity: 0.7,   // High - adapts easily, novelty-seeking
-      siteFamiliarity: 0.3, // Low - doesn't retain site structure well
     },
   },
 
@@ -2071,7 +2081,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.5,
       socialProofSensitivity: 0.6, // Relies on visual reviews
       mentalModelRigidity: 0.6,   // Good adaptation
-      siteFamiliarity: 0.5, // Medium - knows sites but reading is hard
     },
   },
 
@@ -2151,7 +2160,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.4,
       socialProofSensitivity: 0.6, // Visual reviews/ratings
       mentalModelRigidity: 0.65,  // Good visual adaptation
-      siteFamiliarity: 0.5, // Medium - visual learner, remembers layout
     },
   },
 
@@ -2239,7 +2247,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.25,     // Low - not driven by urgency
       socialProofSensitivity: 0.7, // High - relies on family advice
       mentalModelRigidity: 0.15,  // Very low - rigid, struggles
-      siteFamiliarity: 0.2, // Low - forgets between visits
     },
   },
 
@@ -2322,7 +2329,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.4,
       socialProofSensitivity: 0.5,
       mentalModelRigidity: 0.65,  // Adapts with workarounds
-      siteFamiliarity: 0.6, // Medium-high - functional user
     },
   },
 
@@ -2414,7 +2420,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.2,    // Low - not driven by social urgency
       socialProofSensitivity: 0.25, // Low - evaluates independently
       mentalModelRigidity: 0.2, // Very low (rigid) - needs consistent patterns
-      siteFamiliarity: 0.4,     // Low-medium - remembers structure but needs consistency
     },
   },
 
@@ -2502,7 +2507,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.3,    // Low - not driven by urgency
       socialProofSensitivity: 0.6, // Medium - influenced by social cues
       mentalModelRigidity: 0.1, // Extremely rigid - needs consistency
-      siteFamiliarity: 0.15,    // Very low - limited retention between visits
     },
   },
 
@@ -2589,7 +2593,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.3,
       socialProofSensitivity: 0.4,
       mentalModelRigidity: 0.4, // Medium - adapts visually, not linguistically
-      siteFamiliarity: 0.25,    // Low - text-based nav makes sites feel unfamiliar each visit
     },
   },
 
@@ -2677,7 +2680,6 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fearOfMissingOut: 0.5,
       socialProofSensitivity: 0.5,
       mentalModelRigidity: 0.6, // Medium - adapts well to non-numerical patterns
-      siteFamiliarity: 0.5,     // Medium - normal retention
     },
   },
 };
@@ -2783,7 +2785,6 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.6,      // Medium-high - anxiety about missing out
       socialProofSensitivity: 0.7, // High - seeks validation from others
       mentalModelRigidity: 0.4,   // Low-medium - struggles with unexpected
-      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1280, 800],
@@ -2862,7 +2863,6 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.3,      // Low - not swayed by urgency
       socialProofSensitivity: 0.4, // Low-medium - evaluates on merits
       mentalModelRigidity: 0.8,   // High - adapts easily
-      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1920, 1080],
@@ -2941,7 +2941,6 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.75,     // High - emotional FOMO
       socialProofSensitivity: 0.7, // High - seeks emotional validation
       mentalModelRigidity: 0.5,   // Medium
-      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1280, 800],
@@ -3020,7 +3019,6 @@ export const EMOTIONAL_PERSONAS: Record<string, Persona> = {
       fearOfMissingOut: 0.1,      // Minimum - not driven by urgency
       socialProofSensitivity: 0.3, // Low - evaluates independently
       mentalModelRigidity: 0.7,   // High - adapts methodically
-      siteFamiliarity: 0.5, // Medium
     },
     context: {
       viewport: [1280, 800],
@@ -3100,6 +3098,89 @@ export function getAnyPersona(name: string): Persona | AccessibilityPersona | Ag
  *
  * @returns Combined list of all available persona names
  */
+/**
+ * Raised when a persona name resolves to nothing.
+ *
+ * A distinct class so callers can tell "you asked for someone who does not
+ * exist" apart from "the page would not load", and so the message can carry
+ * suggestions instead of a bare failure.
+ */
+export class UnknownPersonaError extends Error {
+  readonly code = "unknown_persona";
+  constructor(readonly requested: string, readonly suggestions: string[]) {
+    super(
+      `Unknown persona "${requested}".` +
+      (suggestions.length ? ` Did you mean: ${suggestions.join(", ")}?` : "") +
+      ` Run list_cognitive_personas for the full roster. Nothing was measured — a persona that does not exist cannot be simulated.`,
+    );
+    this.name = "UnknownPersonaError";
+  }
+}
+
+/** Closest roster names to a miss, for the error message. */
+export function suggestPersonaNames(requested: string, limit = 3): string[] {
+  const roster = listAllPersonas();
+  const q = requested.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!q) return roster.slice(0, limit);
+  const scored = roster.map((name) => {
+    const n = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    // Exact-after-normalising ranks first: it catches the case and punctuation
+    // misses ("POWER-USER", "power user") that are the commonest way to miss.
+    if (n === q) return { name, score: 0 };
+    if (n.startsWith(q) || q.startsWith(n)) return { name, score: 1 };
+    if (n.includes(q) || q.includes(n)) return { name, score: 2 };
+    // Cheap edit distance, bounded — the roster is small enough that an exact
+    // Levenshtein is affordable and a typo is the other common miss.
+    const d = (a: string, b: string): number => {
+      const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+      for (let i = 1; i <= a.length; i++) {
+        let last = prev[0];
+        prev[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+          const tmp = prev[j];
+          prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, last + (a[i - 1] === b[j - 1] ? 0 : 1));
+          last = tmp;
+        }
+      }
+      return prev[b.length];
+    };
+    return { name, score: 3 + d(q, n) };
+  });
+  return scored.sort((a, b) => a.score - b.score).filter((x) => x.score < 3 + Math.max(4, q.length * 0.5))
+    .slice(0, limit).map((x) => x.name);
+}
+
+/**
+ * Resolve a persona name, or refuse.
+ *
+ * Every persona-accepting tool used to fall back to
+ * `createCognitivePersona(name, name, {})` on a miss, which builds a complete
+ * persona with every trait at its 0.5 default and names it after whatever
+ * string was passed. The result was a full six-layer breakdown, an abandonment
+ * risk, a rendered motor overlay and an interpretation sentence quoting the
+ * typo as if it were a subject — in range, plausible, and indistinguishable
+ * from a real measurement at analysis time.
+ *
+ * That is silent data corruption: it does not fail, it lies quietly, and a
+ * typo inside a batch run enters a results table having passed eyeballing and
+ * range checks. So a miss now throws.
+ *
+ * `syntheticTraits` is the one legitimate synthesis: a caller defining an
+ * ad-hoc persona by supplying its traits outright. Supplying NO traits and no
+ * known name is not defining a persona, it is a typo. (2026-08-02)
+ */
+export function resolvePersonaOrThrow(
+  name: string,
+  syntheticTraits?: Record<string, number> | undefined,
+): Persona | AccessibilityPersona | AgentPersona {
+  const found = getAnyPersona(name);
+  if (found) return found;
+  if (syntheticTraits && Object.keys(syntheticTraits).length > 0) {
+    return createCognitivePersona(name, name, syntheticTraits as Partial<CognitiveTraits>);
+  }
+  throw new UnknownPersonaError(name, suggestPersonaNames(name));
+}
+
 export function listAllPersonas(): string[] {
   const runtimeNames = Object.keys(RUNTIME_PERSONAS);
   const builtinNames = Object.keys(BUILTIN_PERSONAS);

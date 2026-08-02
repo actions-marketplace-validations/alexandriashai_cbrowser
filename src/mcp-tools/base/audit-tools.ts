@@ -515,7 +515,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const { buildOTCognitiveProfile } = await import("../../visual/cognitive-transport.js");
         const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
         const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
-        const { getAnyPersona, createCognitivePersona } = await import("../../personas.js");
+        const { getAnyPersona, createCognitivePersona, resolvePersonaOrThrow } = await import("../../personas.js");
 
         // Navigate in our browser for page metrics
         await browser.navigate(url);
@@ -551,6 +551,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         for (const personaName of personaList) {
           try {
             const existingPersona = getAnyPersona(personaName);
+            if (!existingPersona) resolvePersonaOrThrow(personaName);
             const personaObj = existingPersona || createCognitivePersona(personaName, personaName, {});
             const traits = { ...((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number> };
 
@@ -777,9 +778,10 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         try {
           const { motorAccessibility } = await import("../../visual/cognitive-models.js");
           const { buildOTCognitiveProfile } = await import("../../visual/cognitive-transport.js");
-          const { getAnyPersona, createCognitivePersona } = await import("../../personas.js");
+          const { getAnyPersona, createCognitivePersona, resolvePersonaOrThrow } = await import("../../personas.js");
 
-          const personaObj = getAnyPersona(persona) || createCognitivePersona(persona, persona, {});
+          // A miss throws instead of yielding an all-midpoint stand-in.
+          const personaObj = getAnyPersona(persona) || resolvePersonaOrThrow(persona) as ReturnType<typeof createCognitivePersona>;
           const traits = ((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number>;
           const otProfile = buildOTCognitiveProfile(persona, traits);
 
@@ -900,9 +902,10 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           const { buildOTCognitiveProfile } = await import("../../visual/cognitive-transport.js");
           const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
           const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
-          const { getAnyPersona, createCognitivePersona } = await import("../../personas.js");
+          const { getAnyPersona, createCognitivePersona, resolvePersonaOrThrow } = await import("../../personas.js");
 
-          const personaObj = getAnyPersona(persona) || createCognitivePersona(persona, persona, {});
+          // A miss throws instead of yielding an all-midpoint stand-in.
+          const personaObj = getAnyPersona(persona) || resolvePersonaOrThrow(persona) as ReturnType<typeof createCognitivePersona>;
           const traits = ((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number>;
           const otProfile = buildOTCognitiveProfile(persona, traits);
           const pageMetrics = await extractPageMetrics(page);
