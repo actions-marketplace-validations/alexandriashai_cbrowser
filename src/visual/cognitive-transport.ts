@@ -770,6 +770,82 @@ export function selectMaxCoveragePersonas(
  */
 export type MetricScope = "viewport" | "full_page";
 
+/**
+ * Measure the page one screen at a time, each on its own content.
+ *
+ * The unit of consumption is a screenful, not a document. Measuring per screen
+ * is what makes a sequential score possible, and it also removes the
+ * area-normalisation problem for the two layers that had it: the denominator
+ * becomes one viewport, constant, so a tall page cannot dilute its own density.
+ *
+ * NEWLY-ENCOUNTERED COUNTING. Count-based demands -- interactive elements,
+ * choices -- are charged only for elements not seen on an earlier screen. A
+ * sticky nav is present on every screen and is one decision, made once;
+ * charging it fourteen times would make persistent navigation the most
+ * expensive thing on any long page. Text and visual density are NOT deduped:
+ * re-encountering text is re-reading it, which is a real cost.
+ *
+ * Returns one metrics object per screen, in document order.
+ */
+export async function extractPerScreenMetrics(
+  page: any,
+  maxScreens = 20,
+): Promise<Array<Awaited<ReturnType<typeof extractPageMetrics>>>> {
+  const vh: number = await page.evaluate(() => window.innerHeight);
+  const docHeight: number = await page.evaluate(
+    () => Math.max(window.innerHeight, document.documentElement.scrollHeight));
+  const screenCount = Math.max(1, Math.min(maxScreens, Math.ceil(docHeight / vh)));
+
+  // Identity is assigned once, before any scrolling, so an element keeps the
+  // same tag across screens even as rects change.
+  await page.evaluate(() => {
+    let n = 0;
+    for (const el of Array.from(document.querySelectorAll("*"))) {
+      if (!(el as HTMLElement).dataset) continue;
+      if (!(el as HTMLElement).dataset.cbSeqId) (el as HTMLElement).dataset.cbSeqId = String(n++);
+    }
+    (window as any).__cbSeqSeen = new Set<string>();
+  });
+
+  const out: Array<Awaited<ReturnType<typeof extractPageMetrics>>> = [];
+  for (let i = 0; i < screenCount; i++) {
+    await page.evaluate((y: number) => window.scrollTo(0, y), i * vh);
+    await page.waitForTimeout(250);
+    const metrics = await extractPageMetrics(page, "viewport");
+    // Re-charge only what this screen introduces.
+    const fresh = await page.evaluate(() => {
+      const seen: Set<string> = (window as any).__cbSeqSeen;
+      const vh2 = window.innerHeight;
+      const visible = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < vh2;
+      };
+      let newInteractive = 0, newChoices = 0;
+      for (const el of Array.from(document.querySelectorAll(
+        'a, button, input, select, textarea, [role="button"], [onclick], [tabindex]'))) {
+        if (!visible(el)) continue;
+        const id = (el as HTMLElement).dataset?.cbSeqId;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        newInteractive++;
+        if (el.tagName === "A") newChoices++;
+        if (el.tagName === "SELECT") newChoices += el.querySelectorAll("option").length;
+      }
+      return { newInteractive, newChoices };
+    });
+    out.push({
+      ...metrics,
+      interactiveElementCount: fresh.newInteractive,
+      choiceCount: Math.min(fresh.newChoices, 100),
+      choiceCountRaw: fresh.newChoices,
+      choiceCountCapped: fresh.newChoices > 100,
+    });
+  }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(200);
+  return out;
+}
+
 export async function extractPageMetrics(page: any, scope: MetricScope = "viewport"): Promise<{
   informationDensity: number;
   visualComplexity: number;

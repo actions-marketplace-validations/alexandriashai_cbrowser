@@ -26,13 +26,21 @@ const knowledge = readFileSync(join(SRC, "mcp-tools", "base", "site-knowledge-to
 const audit = readFileSync(join(SRC, "mcp-tools", "base", "audit-tools.ts"), "utf8");
 
 describe("the scope parameter matches empathy_audit", () => {
-  test("cognitive_effort takes the same enum with the same default", () => {
-    // Same spelling, same values, same default. Consistency across the three
-    // tools matters more than any of them picking the better default.
+  test("cognitive_effort shares empathy_audit's values and default, and may add to them", () => {
+    // Was an equality assertion. cognitive_effort gained `sequential`, which
+    // empathy_audit has no analogue for -- it answers "how far do they get",
+    // and a barrier audit has no depth to report. The contract that matters is
+    // that the SHARED values are spelled and defaulted identically, so a caller
+    // moving between tools is never surprised; an additive third value does not
+    // violate that.
     const empathyEnum = audit.match(/scope: z\.enum\(\[([^\]]+)\]\)\.optional\(\)\.default\("viewport"\)/)![1];
     expect(empathyEnum).toContain('"viewport"');
     expect(empathyEnum).toContain('"full_page"');
-    expect(effort).toMatch(/scope: z\.enum\(\["viewport", "full_page"\]\)\.optional\(\)\.default\("viewport"\)/);
+    const effortEnum = effort.match(/scope: z\.enum\(\[([^\]]+)\]\)\.optional\(\)\.default\("viewport"\)/)![1];
+    expect(effortEnum).toContain('"viewport"');
+    expect(effortEnum).toContain('"full_page"');
+    // Both default to viewport, which is the part that preserves published numbers.
+    expect(effort).toMatch(/scope: z\.enum\(\[[^\]]+\]\)\.optional\(\)\.default\("viewport"\)/);
   });
 
   test("page_understand exposes its third mode rather than hiding it", () => {

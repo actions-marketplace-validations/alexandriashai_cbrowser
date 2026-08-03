@@ -717,7 +717,7 @@ Begin with the first persona: ${personas[0]}
       useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values modulate saliency maps, decision costs, and frustration costs. Default: false (trait-only mode)."),
       waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
       waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
-      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to measure: 'viewport' (first impression, above-the-fold — default) or 'full_page' (scroll the whole page, count every element). Viewport is right for landing-page first impressions; full_page for 'how much does this page ask of someone'. Matches empathy_audit's parameter of the same name. NOTE: every published CTC number predates this parameter and is a viewport measurement."),
+      scope: z.enum(["viewport", "full_page", "sequential"]).optional().default("viewport").describe("What to measure: 'viewport' (first impression, above-the-fold — default), 'full_page' (scroll the whole page, count every element), or 'sequential' (score each screen on its own content, carrying capacity forward, and report where people stop). Viewport and full_page match empathy_audit's parameter. 'sequential' answers a different question from either: not 'what would the whole page cost' but 'how far do they get'. NOTE: every published CTC number predates this parameter and is a viewport measurement."),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -896,11 +896,54 @@ Begin with the first persona: ${personas[0]}
       // Extract page metrics
       const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
       const measureScope = scope ?? "viewport";
-      const pageMetrics = await extractPageMetrics(page, measureScope);
+      // Sequential scores each screen on its own content; the aggregate path
+      // below still runs so every existing field keeps its meaning, measured at
+      // full_page since that is the comparable whole-document number.
+      const pageMetrics = await extractPageMetrics(page, measureScope === "sequential" ? "full_page" : measureScope);
 
       // Compute full COT
       const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
       const demand = computeDemandDistribution(pageMetrics);
+
+      // SEQUENTIAL PASS. Runs before the aggregate so a failure here degrades to
+      // the normal answer rather than losing the whole call.
+      let sequentialResult: Record<string, unknown> | undefined;
+      if (measureScope === "sequential") {
+        try {
+          const { extractPerScreenMetrics } = await import("../../visual/cognitive-transport.js");
+          const { computeSequentialScrollCTC } = await import("../../visual/cognitive-transport-chain.js");
+          const perScreen = await extractPerScreenMetrics(page);
+          const seqProfile = buildOTProfile(personaName, traits);
+          const seq = computeSequentialScrollCTC(
+            seqProfile,
+            perScreen.map((m) => computeDemandDistribution(m)),
+            { asymmetric: true, interactions: true },
+          );
+          sequentialResult = {
+            screensMeasured: seq.screens.length,
+            totalAbandonment: `${Math.round(seq.totalAbandonment * 100)}%`,
+            expectedDepthScreens: seq.expectedDepthScreens,
+            dropOff: seq.dropOff
+              ? { screen: seq.dropOff.screen, layer: seq.dropOff.layer, shareOfSessions: `${Math.round(seq.dropOff.share * 100)}%` }
+              : null,
+            reachWeightedCTC: seq.reachWeightedCTC,
+            curve: seq.screens.map((x) => ({
+              screen: x.screen,
+              reach: `${Math.round(x.reachProbability * 100)}%`,
+              stopHere: `${Math.round(x.stopHazard * 100)}%`,
+              cumulativeAbandonment: `${Math.round(x.cumulativeAbandonment * 100)}%`,
+              screenCTC: x.screenCTC,
+              bottleneck: x.bottleneckLayer,
+            })),
+            note: "Each screen is measured on ITS OWN content, and capacity carries forward -- screen 7 is scored against what screens 1-6 left, not against a fresh persona. Count-based demands (interactive elements, choices) charge only elements not seen on an earlier screen, so a sticky nav is one decision rather than one per screen; text and visual density are NOT deduplicated, because re-encountering text is re-reading it.",
+            differsFrom: "The aggregate `abandonmentRisk` above asks what the whole document would cost if it were all processed. This asks how far they get. They are different questions and will not agree.",
+            uncalibrated: "The per-screen hazard uses the same ABANDONMENT_HILL_EXPONENT as the aggregate, which nothing empirical set. At 2 the curve is superlinear, so this model inherits a thumb on the scale.",
+            readThisFirst: "TRUST THE SHAPE, NOT THE TOTAL. `totalAbandonment` compounds a per-screen hazard across every screen, so on a long page it saturates toward 100% almost regardless of the page -- measured, elderly-user reached 100% on a 7-screen university homepage. That is the uncalibrated exponent compounding, not a finding about that page. `expectedDepthScreens` and `dropOff` are the numbers to act on: they say how far people get and what stops them, and both depend on the RANKING of per-screen hazards rather than their absolute level, which is the part the exponent least disturbs. `dropOff` is persona-dependent by design and that is not noise: an impatient reader drops on screen one, a patient one survives to whichever screen is genuinely hardest, and the two answers are both correct for their reader.",
+          };
+        } catch (e) {
+          sequentialResult = { error: `sequential pass failed: ${(e as Error).message}`, note: "The aggregate figures below are unaffected." };
+        }
+      }
 
       // Modulate demand by motivational values (opt-in, default off)
       if (useValues) try {
@@ -1307,6 +1350,7 @@ Begin with the first persona: ${personas[0]}
             "traits.comprehension": "grasp of UI conventions, not reading. Consumed by cognitiveLoad only. A persona's 0.5 here says nothing about how well they read.",
           },
         },
+        ...(sequentialResult ? { sequential: sequentialResult } : {}),
         scope: measureScope,
         pageScreens: pageMetrics.pageScreens,
         scopeNote: measureScope === "full_page"

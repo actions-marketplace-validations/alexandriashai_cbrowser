@@ -80,6 +80,13 @@ export interface SequentialTransportResult {
   bottleneckLayer: string;
   /** Predicted abandonment probability (0-1) */
   abandonmentRisk: number;
+  /**
+   * Capacity remaining when the chain finished, per dimension.
+   *
+   * Feed it back in as `carriedCapacity` to score the next screen against the
+   * budget this one left behind.
+   */
+  remainingCapacity: Record<string, number>;
 }
 
 // ── Constants ──
@@ -794,7 +801,18 @@ const VALUE_DEMAND_MODULATION: Array<{
 export function computeSequentialCTC(
   persona: OTCognitiveProfile,
   demand: DemandDistribution,
-  options?: { asymmetric?: boolean; interactions?: boolean; schwartzValues?: Record<string, number> },
+  options?: {
+    asymmetric?: boolean; interactions?: boolean; schwartzValues?: Record<string, number>;
+    /**
+     * Capacity carried in from a previous screen. Omit to start from the
+     * persona's full trait vector, which is what a single-page run does.
+     *
+     * This is the whole mechanism behind sequential scoring: a screen is not a
+     * fresh persona, it is the same account after everything above it has been
+     * spent. (2026-08-03)
+     */
+    carriedCapacity?: Record<string, number>;
+  },
 ): SequentialTransportResult {
   const useAsymmetric = options?.asymmetric !== false; // default true
   const useInteractions = options?.interactions !== false; // default true
@@ -866,7 +884,7 @@ export function computeSequentialCTC(
   // Initialize residual capacity from persona traits
   const residualCapacity: Record<string, number> = {};
   for (const dim of DEMAND_DIMENSIONS) {
-    residualCapacity[dim] = traitValue(persona.traits, dim);
+    residualCapacity[dim] = options?.carriedCapacity?.[dim] ?? traitValue(persona.traits, dim);
   }
 
   const layers: LayerResult[] = [];
@@ -1079,6 +1097,7 @@ export function computeSequentialCTC(
     traitCosts,
     bottleneckLayer,
     abandonmentRisk,
+    remainingCapacity: { ...residualCapacity },
   };
 }
 
@@ -1206,4 +1225,124 @@ export function baselineCTC(persona: OTCognitiveProfile): SequentialTransportRes
     emptyDemand.variance[dim] = 0;
   }
   return computeSequentialCTC(persona, emptyDemand);
+}
+
+// ── Sequential (per-screen) scoring ──
+
+export interface ScreenResult {
+  /** 1-based screen index from the top of the document. */
+  screen: number;
+  /** Layer costs for this screen alone. */
+  layers: LayerResult[];
+  /** This screen's own transport cost. */
+  screenCTC: number;
+  /** P(this persona stops HERE, given they reached this screen). */
+  stopHazard: number;
+  /** P(they have stopped at or before this screen). */
+  cumulativeAbandonment: number;
+  /** P(they are still reading when this screen begins). */
+  reachProbability: number;
+  /** The costliest layer on this screen. */
+  bottleneckLayer: string;
+  /** Capacity left when this screen finished. */
+  remainingCapacity: Record<string, number>;
+}
+
+export interface SequentialScrollResult {
+  screens: ScreenResult[];
+  /** P(abandoned by the end of the document). */
+  totalAbandonment: number;
+  /** Expected number of screens reached, weighted by reach probability. */
+  expectedDepthScreens: number;
+  /** The screen where the most sessions end, and the layer that ends them. */
+  dropOff: { screen: number; layer: string; share: number } | null;
+  /** Demand each screen contributed, weighted by the chance of reaching it. */
+  reachWeightedCTC: number;
+}
+
+/**
+ * Score a page as a SEQUENCE of screens rather than one aggregate.
+ *
+ * The aggregate model answers "what would this cost if the whole document were
+ * processed at once", which is a counterfactual almost nobody performs. This
+ * answers the question customers actually have: where do people stop.
+ *
+ * Three things make it different from dividing the aggregate by k, which was
+ * the obvious wrong implementation:
+ *
+ * 1. EACH SCREEN'S DEMAND IS MEASURED ON ITS OWN CONTENT. Splitting a fixed
+ *    total across k screens makes long pages safer than short ones -- measured,
+ *    a deficit of 0.607 split fourteen ways drops cumulative abandonment from
+ *    22% to 2%, because the hazard is superlinear. A genuinely sparse long page
+ *    SHOULD be safer; a dense one must not become safe by being tall.
+ * 2. CAPACITY CARRIES FORWARD. Screen 7 is scored against the budget screens
+ *    1-6 left, not against a fresh persona. This is why depletion had to stop
+ *    saturating first: with the old clamp, every screen after the third saw an
+ *    identical capacity vector.
+ * 3. DEMAND IS WEIGHTED BY THE CHANCE OF EVER GETTING THERE. A cost on screen
+ *    twelve that 4% of sessions reach is not a cost of the same size as one on
+ *    screen one.
+ *
+ * The hazard is the same Hill function the aggregate uses, applied per screen
+ * against the capacity remaining at that point -- so ABANDONMENT_HILL_EXPONENT
+ * is load-bearing here too and remains uncalibrated.
+ */
+export function computeSequentialScrollCTC(
+  persona: OTCognitiveProfile,
+  screenDemands: DemandDistribution[],
+  options?: { asymmetric?: boolean; interactions?: boolean; schwartzValues?: Record<string, number> },
+): SequentialScrollResult {
+  const screens: ScreenResult[] = [];
+  let carried: Record<string, number> | undefined;
+  let survive = 1;
+
+  const patience = traitValue(persona.traits, 'patience');
+  const resilience = traitValue(persona.traits, 'resilience');
+  const tolerance = Math.max(0.05, (patience * 0.7 + resilience * 0.3) * 1.5);
+
+  for (let i = 0; i < screenDemands.length; i++) {
+    const r = computeSequentialCTC(persona, screenDemands[i], { ...options, carriedCapacity: carried });
+    carried = r.remainingCapacity;
+
+    // Hazard for THIS screen, from this screen's own unmet demand. Surplus
+    // relief applies as it does in the aggregate.
+    const screenCost = Math.max(0, r.deficitCost - r.surplusCost * 0.3);
+    const stopHazard = screenCost <= 0 ? 0 : Math.min(1,
+      Math.pow(screenCost, ABANDONMENT_HILL_EXPONENT) /
+      (Math.pow(screenCost, ABANDONMENT_HILL_EXPONENT) + Math.pow(tolerance, ABANDONMENT_HILL_EXPONENT)));
+
+    const reachProbability = survive;
+    survive = survive * (1 - stopHazard);
+
+    screens.push({
+      screen: i + 1,
+      layers: r.layers,
+      screenCTC: Math.round(r.totalCTC * 1000) / 1000,
+      stopHazard: Math.round(stopHazard * 1000) / 1000,
+      cumulativeAbandonment: Math.round((1 - survive) * 1000) / 1000,
+      reachProbability: Math.round(reachProbability * 1000) / 1000,
+      bottleneckLayer: r.bottleneckLayer,
+      remainingCapacity: r.remainingCapacity,
+    });
+  }
+
+  // Where the most sessions end. Mass lost on a screen is reach x hazard, so a
+  // brutal screen nobody reaches does not win.
+  let dropOff: SequentialScrollResult["dropOff"] = null;
+  for (const s of screens) {
+    const lost = s.reachProbability * s.stopHazard;
+    if (!dropOff || lost > dropOff.share) {
+      dropOff = { screen: s.screen, layer: s.bottleneckLayer, share: Math.round(lost * 1000) / 1000 };
+    }
+  }
+  if (dropOff && dropOff.share <= 0) dropOff = null;
+
+  return {
+    screens,
+    totalAbandonment: Math.round((1 - survive) * 1000) / 1000,
+    // Sum of reach probabilities: the expected count of screens actually seen.
+    expectedDepthScreens: Math.round(screens.reduce((a, s) => a + s.reachProbability, 0) * 100) / 100,
+    dropOff,
+    reachWeightedCTC: Math.round(screens.reduce((a, s) => a + s.reachProbability * s.screenCTC, 0) * 1000) / 1000,
+  };
 }
