@@ -1204,6 +1204,22 @@ Begin with the first persona: ${personas[0]}
             hardestBlock: readabilityResult.blocks.length > 0
               ? (readabilityResult.blocks as Array<{ difficulty: number; penalties: string[] }>).reduce((worst, b) => b.difficulty > worst.difficulty ? b : worst).penalties
               : [],
+            // Every component of that block, including the zeroes.
+            //
+            // `hardestBlock` is a prose list and each entry is gated behind its
+            // own threshold, so a component evaluating to 0 is simply absent --
+            // and absent is indistinguishable from not modelled. That is how
+            // `crowdingSensitivity` came to look like a trait that does
+            // nothing: it is weighted 0.15 into readingCapacity AND priced per
+            // block, but Pelli's crowding effect only begins below 16px and
+            // every page tested sets body text at 16px or more. At 13px it
+            // discriminates cleanly -- adhd +6ms, dyslexic +17ms, low-vision
+            // +21ms, tracking sensitivities of 0.20 / 0.55 / 0.70. (BUG-12)
+            ...(readabilityResult.blocks.length > 0 ? {
+              hardestBlockPenaltyMs: (readabilityResult.blocks as Array<{ difficulty: number; penaltyBreakdown: Record<string, number> }>)
+                .reduce((worst, b) => b.difficulty > worst.difficulty ? b : worst).penaltyBreakdown,
+              penaltyNote: "hardestBlockPenaltyMs carries every component, including those that came to 0. A 0 means the component was evaluated and does not apply to this text -- crowding, for one, only begins below 16px (Pelli et al. 2004) -- not that it is unmodelled. crowdingSensitivity additionally carries a 0.15 weight into readingCapacity, which reaches the readability layer at every font size.",
+            } : {}),
           },
         } : {}),
         // The verdict names its own scope. Reading "should handle this page

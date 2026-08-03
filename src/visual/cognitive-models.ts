@@ -402,6 +402,12 @@ export interface ReadabilityResult {
     fixationDuration: number;
     wordsPerMinute: number;
     penalties: string[];
+  /** Every penalty component in ms, including the zeroes. See BUG-12. */
+  penaltyBreakdown: {
+    baseFixationMs: number; orthographicMs: number; phonologicalMs: number;
+    visualSpanMs: number; vocabularyMs: number; crowdingMs: number;
+    serifFontMs: number; lowContrastMs: number;
+  };
   }>;
   /** Overall readability score (0-1, higher = more readable) */
   score: number;
@@ -579,6 +585,12 @@ export function computeReadingDifficulty(
   fixationDuration: number;
   wordsPerMinute: number;
   penalties: string[];
+  /** Every penalty component in ms, including the zeroes. See BUG-12. */
+  penaltyBreakdown: {
+    baseFixationMs: number; orthographicMs: number; phonologicalMs: number;
+    visualSpanMs: number; vocabularyMs: number; crowdingMs: number;
+    serifFontMs: number; lowContrastMs: number;
+  };
 } {
   const words = text.trim().split(/\s+/);
   const wordCount = Math.max(1, words.length);
@@ -666,6 +678,33 @@ export function computeReadingDifficulty(
     fixationDuration: Math.round(totalFixation),
     wordsPerMinute: wpm,
     penalties,
+    /**
+     * Every component, including the ones that came to zero.
+     *
+     * `penalties` above is a PROSE list and each entry is gated behind its own
+     * threshold, so a component that evaluated to 0 is simply absent from it --
+     * and absent is indistinguishable from not modelled at all. That is exactly
+     * how `crowdingSensitivity` came to be reported as a trait that does
+     * nothing: it is weighted at 0.15 in readingCapacityOf AND priced here, but
+     * Pelli's critical-spacing effect only begins below 16px, and every page
+     * tested set its body text at 16px or larger. Measured on 13px text it
+     * discriminates cleanly -- adhd +6ms, dyslexic +17ms, low-vision +21ms,
+     * tracking their crowding sensitivities of 0.20 / 0.55 / 0.70.
+     *
+     * So the breakdown ships whole. A zero here means evaluated and not
+     * applicable to this text; a missing key would mean something else.
+     * (2026-08-03, BUG-12)
+     */
+    penaltyBreakdown: {
+      baseFixationMs: Math.round(baseFixation),
+      orthographicMs: Math.round(orthoPenalty),
+      phonologicalMs: Math.round(phonoPenalty),
+      visualSpanMs: Math.round(spanPenalty),
+      vocabularyMs: Math.round(vocabPenalty),
+      crowdingMs: Math.round(crowdingPenalty),
+      serifFontMs: Math.round(fontPenalty),
+      lowContrastMs: Math.round(contrastPenalty),
+    },
   };
 }
 
@@ -701,7 +740,7 @@ export function readability(
   const profile = getReadingProfile(persona);
 
   const results = blocks.map(block => {
-    const { difficulty, fixationDuration, wordsPerMinute, penalties } = computeReadingDifficulty(
+    const { difficulty, fixationDuration, wordsPerMinute, penalties, penaltyBreakdown } = computeReadingDifficulty(
       block.text,
       profile,
       block,
@@ -713,6 +752,7 @@ export function readability(
       fixationDuration,
       wordsPerMinute,
       penalties,
+      penaltyBreakdown,
     };
   });
 
