@@ -152,8 +152,16 @@ export const DEMAND_DIMENSIONS = [
 /**
  * Layer definitions for the sequential transport chain.
  * Order reflects temporal processing: perception -> cognition -> decision -> action -> affect -> comprehension.
+ *
+ * Exported (2026-08-03) so that prose ABOUT the chain can be checked against the
+ * chain. Two served strings stated a layer count -- a tool description and the
+ * server's own instructions -- and they disagreed with each other and with this
+ * array, because nothing could compare them to it. The instructions still said
+ * "6-layer" two layers after the chain became eight, and an external client read it
+ * and reasoned about a six-layer model. A count in a served string is a claim about
+ * this list; a claim about a list should be checkable against the list.
  */
-const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
+export const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   {
     name: 'saliency',
     traits: ['changeBlindness', 'attentionPattern'],

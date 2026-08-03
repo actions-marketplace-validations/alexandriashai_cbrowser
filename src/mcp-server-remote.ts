@@ -1164,7 +1164,7 @@ CORE TOOLS (use these first):
 • navigate, click, fill, scroll, screenshot, extract — browser control
 • agent_ready_audit — AI-friendliness score (A-F grade)
 • empathy_audit — disability barrier detection
-• cognitive_effort — 6-layer cognitive transport cost per persona
+• cognitive_effort — 8-layer cognitive transport cost per persona
 • site_cognitive_assessment — 3-gate pipeline (bot detection → qualification → persona analysis)
 • page_understand — page type, affordances, structure
 • cognitive_journey_init/update_state — persona journey simulation
@@ -2101,7 +2101,45 @@ ${VERSION}
       const baseUrl = `${protocol}://${serverHost}`;
 
       if (auth0Enabled) {
-        // Auth0-backed OAuth (existing behavior)
+        // This branch was EMPTY. No response written, no return -- just a comment
+        // claiming "existing behavior" -- so an Auth0-configured server fell through
+        // to the protected-endpoint auth gate below and answered its own OAuth
+        // discovery document with 401. A client cannot authenticate when the metadata
+        // telling it HOW to authenticate is itself behind authentication.
+        //
+        // That is the whole of the "enterprise connector exposes zero tools" report.
+        // The enterprise deployment sets AUTH0_DOMAIN, so it took this branch and
+        // 401'd; the pro deployment does not, took the else branch, and worked. A
+        // client that cannot complete discovery keeps the connector unauthenticated
+        // and renders only its own placeholder tools, which reads to a user as "this
+        // server has no tools". The server was serving 130 the whole time.
+        //
+        // Auth0 publishes its own RFC 8414 document, so derive from the tenant rather
+        // than restating endpoints that would then have two places to drift.
+        const tenant = process.env.AUTH0_DOMAIN;
+        if (tenant) {
+          const issuer = `https://${tenant}/`;
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            issuer,
+            authorization_endpoint: `${issuer}authorize`,
+            token_endpoint: `${issuer}oauth/token`,
+            registration_endpoint: `${issuer}oidc/register`,
+            jwks_uri: `${issuer}.well-known/jwks.json`,
+            response_types_supported: ["code"],
+            grant_types_supported: ["authorization_code", "refresh_token", "client_credentials"],
+            code_challenge_methods_supported: ["S256"],
+            token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
+            scopes_supported: ["openid", "profile", "email"],
+          }));
+          return;
+        }
+        // auth0Enabled with no domain is a misconfiguration, not a request to fall
+        // through into the auth gate. Say so, rather than emitting a 401 that blames
+        // the caller for the server's own config.
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "server_error", error_description: "OAuth is enabled but AUTH0_DOMAIN is unset." }));
+        return;
       } else {
         // Self-hosted OAuth PKCE (built-in /authorize + /token)
         res.writeHead(200, { "Content-Type": "application/json" });
