@@ -521,7 +521,25 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         // Navigate in our browser for page metrics
         await browser.navigate(url);
         const metricsPage = await browser.getPage();
-        const pageMetrics = await extractPageMetrics(metricsPage);
+        // `auditScope`, not the default. This argument was omitted, so every layer
+        // cost this tool produced was computed from viewport-only metrics while the
+        // payload said `"scope": "full_page"` (set at :369). The response asserted a
+        // scope the measurement never used.
+        //
+        // The report that found it compared this tool at full_page against
+        // cognitive_effort at viewport and got six of eight layers identical to three
+        // decimals. That is the signature: cognitive_effort DOES thread scope
+        // (persona-comparison-tools.ts), this did not, so both measured the same first
+        // screenful.
+        //
+        // This is worse than the undeclared-viewport defect it replaced. That one was
+        // a silent default; this one was an explicit false claim, and the criterion
+        // asserting "every response states its scope" passed throughout, because the
+        // response did state one. It just was not true.
+        //
+        // extractPageMetrics runs its own lazy-load scroll walk at full_page, so
+        // forwarding the scope is the entire fix.
+        const pageMetrics = await extractPageMetrics(metricsPage, auditScope);
         const demand = computeDemandDistribution(pageMetrics);
 
         // Page understanding
@@ -529,7 +547,10 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         try {
           const { PageUnderstandingEngine } = await import("../../analysis/page-understanding.js");
           const engine = new PageUnderstandingEngine();
-          const pu = await engine.analyze(metricsPage);
+          // Display-only — it feeds no layer. Scoped anyway: a payload reporting
+          // affordanceCount beside a full_page verdict should be counting the full
+          // page's affordances, or it is the same false claim one field over.
+          const pu = await engine.analyze(metricsPage, auditScope);
           pageUnderstanding = {
             type: pu.type,
             affordanceCount: pu.affordances.length,
@@ -922,6 +943,12 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           const personaObj = getAnyPersona(persona) || resolvePersonaOrThrow(persona) as ReturnType<typeof createCognitivePersona>;
           const traits = ((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number>;
           const otProfile = buildOTCognitiveProfile(persona, traits);
+          // viewport-by-design: visual_cognitive_story declares no `scope` parameter,
+          // so it promises the caller nothing about how much of the page it read, and
+          // measuring the viewport is an honest default rather than a dropped
+          // argument. Distinct from the site_cognitive_assessment defect above, where
+          // a scope WAS offered, echoed, and then not applied. If this tool ever gains
+          // a scope, this marker must go and the scope must be threaded.
           const pageMetrics = await extractPageMetrics(page);
           const demand = computeDemandDistribution(pageMetrics);
           const ctcResult = computeSequentialCTC(otProfile, demand, { asymmetric: true, interactions: true });
