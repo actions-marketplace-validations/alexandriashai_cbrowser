@@ -869,19 +869,15 @@ Begin with the first persona: ${personas[0]}
       // can drift from the model that produces it. (2026-08-02)
       let pointingProfileForResponse: { sigmaX: number; sigmaY: number; rho: number; throughput: number } | undefined;
       try {
-        const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf, sustainedAttentionOf } =
-          await import("../../visual/cognitive-models.js");
+        const { bridgeCapacityTraits } = await import("../../visual/cognitive-models.js");
         // accessibilityTraits passed so an author's STATED reading capacity is
         // honoured; without it the name lookup wins and the fields are inert.
         const accTraits = (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
-        traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits, accessibilityTraits: accTraits }));
-        const _pp = getPointingProfile({ name: personaName, traits });
-        pointingProfileForResponse = _pp;
-        traits.motorCapacity = motorCapacityOf(_pp);
-        // The attentional half of reading. Unlike the other two this one has no
-        // formal model behind it -- attentionSpan is stated directly, and the
-        // fallback is interruptRecovery -- so the resolver is the whole bridge.
-        traits.sustainedAttention = sustainedAttentionOf({ traits, accessibilityTraits: accTraits });
+        // One helper, shared with site_cognitive_assessment. This block used to be
+        // inline here and NOWHERE ELSE, which is why the two tools disagreed by
+        // 2.6x on the motor layer: the other path scored against the missing-trait
+        // fallback of 0.5 and called it a pointing ability.
+        pointingProfileForResponse = bridgeCapacityTraits(personaName, traits, accTraits);
       } catch (e) {
         // Left absent rather than defaulted: a missing capacity is visible as a
         // gap, a defaulted one silently reads as average.

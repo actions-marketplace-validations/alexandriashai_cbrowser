@@ -858,3 +858,46 @@ export function cognitiveAccessibility(
 
 export { normalCDF as _normalCDF, normalPDF as _normalPDF };
 export { KNOWN_POINTING_PROFILES, KNOWN_READING_PROFILES };
+
+/**
+ * Bridge the formal reading and pointing models onto a persona's trait vector.
+ *
+ * Three of the capacity dimensions -- readingCapacity, motorCapacity,
+ * sustainedAttention -- are not authored on personas. They are DERIVED from the
+ * formal models here, and injected before the profile is built rather than stored,
+ * so no second copy can drift from the model that produces it.
+ *
+ * Extracted 2026-08-03 because it existed in exactly one of the two tools that score
+ * the same chain. `cognitive_effort` bridged; `site_cognitive_assessment` did not, so
+ * its motor layer scored against `traitValue`'s missing-trait fallback of 0.5 -- a
+ * placeholder meaning "trait absent", not "this persona's pointing ability". On the
+ * same page in the same run window that produced motor 0.022 in one tool and 0.058 in
+ * the other, a 2.6x disagreement on the only layer whose sole trait is bridged.
+ *
+ * A helper rather than a copied block, deliberately. The defect IS two tools sharing
+ * one model with only one of them wired to it; duplicating the block would fix this
+ * instance and preserve the class.
+ *
+ * Mutates `traits` in place and never throws: a bridge that fails leaves the
+ * dimensions ABSENT rather than defaulted, because a missing capacity is visible as a
+ * gap while a defaulted one silently reads as average -- which is the exact failure
+ * this function exists to end.
+ */
+export function bridgeCapacityTraits(
+  personaName: string,
+  traits: Record<string, number>,
+  accessibilityTraits?: Record<string, number>,
+): { sigmaX: number; sigmaY: number; rho: number; throughput: number } | undefined {
+  try {
+    traits.readingCapacity = readingCapacityOf(
+      getReadingProfile({ name: personaName, traits, accessibilityTraits }),
+    );
+    const pointing = getPointingProfile({ name: personaName, traits });
+    traits.motorCapacity = motorCapacityOf(pointing);
+    traits.sustainedAttention = sustainedAttentionOf({ traits, accessibilityTraits });
+    return pointing;
+  } catch (e) {
+    console.debug(`[capacity-bridge] unavailable: ${(e as Error).message}`);
+    return undefined;
+  }
+}

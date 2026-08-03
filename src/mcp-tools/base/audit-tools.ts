@@ -10,6 +10,7 @@ import { barrierWeightFor, weightedSeverity, weightKeyFor } from "../../visual/p
 import { randomBytes } from "crypto";
 import { htmlUiResource, attachUiResource, uiResourcesEnabled, type ToolContentBlock } from "../../mcp-ui-resources.js";
 import { writeArtifact } from "../../artifact-store.js";
+import { bridgeCapacityTraits } from "../../visual/cognitive-models.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import {
   runAgentReadyAudit,
@@ -595,6 +596,24 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
               }
             }
 
+            // Bridge the derived capacities before building the profile. This was
+            // MISSING here and present in cognitive_effort, so the motor layer --
+            // whose sole trait is motorCapacity -- scored against traitValue's
+            // missing-trait fallback of 0.5. That constant means "trait absent",
+            // not "average pointing ability", and the two tools disagreed by 2.6x
+            // on the same page in the same run window (0.058 here vs 0.022 there).
+            //
+            // The bridged number is the correct one: the model defines
+            // motorCapacity as derived from the Fitts pointing model, and reading
+            // dispositional traits instead is the defect the bridge was written to
+            // fix. Scoring against a placeholder was never a second opinion.
+            //
+            // This moves more than motor. readability, readingAttention, totalCTC,
+            // bottleneck and abandonmentRisk all shift for every persona here, all
+            // converging on what cognitive_effort already reported.
+            bridgeCapacityTraits(personaName, traits,
+              (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits);
+
             const otProfile = buildOTCognitiveProfile(personaName, traits);
             const result = computeSequentialCTC(otProfile, demand, { asymmetric: true, interactions: true });
 
@@ -942,6 +961,11 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           // A miss throws instead of yielding an all-midpoint stand-in.
           const personaObj = getAnyPersona(persona) || resolvePersonaOrThrow(persona) as ReturnType<typeof createCognitivePersona>;
           const traits = ((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number>;
+          // Same bridge as Gate 3 and cognitive_effort. Without it this tool has
+          // the identical missing-capacity defect and would reproduce the motor
+          // disagreement against cognitive_effort the moment anyone compared them.
+          bridgeCapacityTraits(persona, traits,
+            (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits);
           const otProfile = buildOTCognitiveProfile(persona, traits);
           // viewport-by-design: visual_cognitive_story declares no `scope` parameter,
           // so it promises the caller nothing about how much of the page it read, and

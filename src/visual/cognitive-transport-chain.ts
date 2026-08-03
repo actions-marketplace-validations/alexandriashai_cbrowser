@@ -630,7 +630,30 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   // measured: at a flat 1.0 base, ADHD outscored dyslexic on readability on a
   // page with animationLevel 0, which is the wrong answer.
   const distractorPressure = Math.min(1, animDemand * 0.7 + visDemand * 0.3);
-  const sustainDemand = Math.min(1, textDemand * 0.7 * (1 + distractorPressure * 0.7));
+  // `max(textDens, infoDensity)`, not `textDens` alone -- the same base
+  // readingCapacity uses below, and for the same reason.
+  //
+  // textDensity is AREA-NORMALISED: logScale(textLength / (viewportArea * 0.001)),
+  // and at full_page the divisor is the whole document height. So on a tall page
+  // it FALLS as the page grows -- measured on a 6.7-screen page, 0.698 -> 0.492 --
+  // and since it was the multiplicative base here, attentional reading cost fell
+  // with it, to zero for two of four personas. A longer page came out SAFER on
+  // this layer, which is the direction the whole scoring model forbids.
+  //
+  // Attentional reading cost is absolute: twice the prose is twice the
+  // line-holding, however it is spread. informationDensity is logScale(textLength,
+  // 5000) with no area term -- it RISES 0.587 -> 0.799 on the same measurement --
+  // which is exactly why readability moved correctly while its sibling inverted.
+  // Sharing the base makes the two halves of reading agree about how much there is
+  // to read; the 0.7 vs 0.9 coefficients still order them.
+  //
+  // NOT applied to saliency, whose fall has a different cause: its inputs
+  // (visualComplexity, animationLevel) are counts and RISE with page size. It falls
+  // because its traits are surplus-BILLED, so rising demand shrinks the surplus gap
+  // and the 0.3-weighted cost with it. Same symptom, unrelated mechanism, and it
+  // needs its own decision rather than this one applied twice.
+  const sustainBase = Math.max(textDemand, infoDensity);
+  const sustainDemand = Math.min(1, sustainBase * 0.7 * (1 + distractorPressure * 0.7));
   demands.sustainedAttention = Math.max(demands.sustainedAttention, sustainDemand);
   variance.sustainedAttention += textDens * 0.1 + animLevel * 0.08;
 
