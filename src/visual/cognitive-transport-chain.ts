@@ -193,7 +193,7 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
     // 0.107 on identical demand, while their hit probabilities are 48.4% and
     // 81.9%. That is the layer describing what it says it describes. Whether the
     // two halves SHOULD weigh equally is a calibration question about a research
-    // instrument, and it is the principal's to answer, not something to change
+    // instrument, and it is the maintainer's to answer, not something to change
     // as a side effect of writing this comment. (2026-08-03, D-9)
     traits: ['proceduralFluency', 'motorCapacity'],
   },

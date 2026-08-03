@@ -43,7 +43,7 @@ function traitsUsedByLayers(): Set<string> {
  * personas differing only in `curiosity` or `trustCalibration` produce the same
  * cognitive transport cost. It is pinned rather than fixed because the six-layer
  * weighting is a calibrated research instrument and re-partitioning it changes
- * every number the tool has ever produced — that is the principal's call, not a
+ * every number the tool has ever produced — that is the maintainer's call, not a
  * side effect of a bug fix.
  */
 const KNOWN_UNLAYERED = [

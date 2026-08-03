@@ -97,6 +97,6 @@ describe("the layer and the audit are different instruments (D-9)", () => {
     // Whether the two halves should weigh equally is a decision about a
     // calibrated instrument. Writing a comment is not licence to change it.
     const block = CHAIN.slice(CHAIN.indexOf("name: 'motor'"), CHAIN.indexOf("name: 'frustration'"));
-    expect(block).toContain("principal's to answer");
+    expect(block).toContain("maintainer's to answer");
   });
 });
