@@ -1358,7 +1358,36 @@ async function handleMcpRequest(
       // Deduct credits and enforce domain scoping (blocking for denials)
       const toolName = params.name as string;
       const toolArgs = params.arguments as Record<string, unknown> | undefined;
-      const targetUrl = (toolArgs?.url || (Array.isArray(toolArgs?.sites) ? (toolArgs.sites as string[])[0] : "") || "") as string;
+      const requestedUrl = (toolArgs?.url || (Array.isArray(toolArgs?.sites) ? (toolArgs.sites as string[])[0] : "") || "") as string;
+      // GATE ON WHERE THE URL GOES, NOT WHERE IT WAS TYPED.
+      //
+      // ucdenver.edu is a registered domain and 301s to cudenver.edu, which is
+      // not, so every call in a five-hour session was accepted against the
+      // registered host and then analysed the unregistered one. Any
+      // unregistered domain reachable by redirect from a registered one was
+      // analysable at no charge.
+      //
+      // Resolution failure falls back to the requested URL. That is the
+      // pre-fix behaviour and it is the right direction to fail: denying
+      // whenever a HEAD is blocked would break every site that rejects HEAD.
+      let targetUrl = requestedUrl;
+      let resolvedNote = "";
+      if (requestedUrl) {
+        try {
+          const { resolveFinalUrl } = await import("./url-resolution.js");
+          const r = await resolveFinalUrl(requestedUrl);
+          if (r.hostChanged && !r.error) {
+            targetUrl = r.finalUrl;
+            resolvedNote = ` [redirects ${r.requestedHost} -> ${r.finalHost}, gating on ${r.finalHost}]`;
+            console.log(`[Domain] ${toolName}: ${requestedUrl} resolves to ${r.finalUrl} after ${r.hops} hop(s); gating on ${r.finalHost}`);
+          } else if (r.error) {
+            console.log(`[Domain] ${toolName}: could not resolve ${requestedUrl} (${r.error}); gating on the requested host`);
+          }
+        } catch (e) {
+          console.log(`[Domain] ${toolName}: resolver unavailable (${String(e)}); gating on the requested host`);
+        }
+      }
+      if (resolvedNote) logLine += resolvedNote;
       // Derived from THIS request, not from the module global — see resolveRequestKeyHash.
       const keyHash = await resolveRequestKeyHash(req);
 
