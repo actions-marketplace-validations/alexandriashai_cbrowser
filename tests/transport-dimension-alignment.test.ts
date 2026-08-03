@@ -47,6 +47,13 @@ function traitsUsedByLayers(): Set<string> {
  * side effect of a bug fix.
  */
 const KNOWN_UNLAYERED = [
+  // interruptRecovery reaches no layer BY NAME, and is no longer inert: it is
+  // the fallback source for `sustainedAttention` whenever a persona states no
+  // accessibilityTraits.attentionSpan, which is 24 of 36 personas -- so for most
+  // of the roster it now drives the readability layer. It stays on this list
+  // because the list is computed from LAYER_DEFINITIONS membership, and the
+  // sentence above about contributing "to no score at all" no longer applies to
+  // it. (2026-08-02, BUG-07)
   "attributionStyle", "authoritySensitivity", "curiosity", "interruptRecovery",
   "mentalModelFlexibility", "metacognitivePlanning", "persistence", "timeHorizon",
   "trustCalibration",
@@ -685,5 +692,167 @@ describe("reading capacity is reachable from the trait schema", () => {
     expect(at.visualSpan).toBe(3);          // low vision, the worse of 3 and 5
     expect(at.phonologicalDecoding).toBe(0.65); // elderly, the worse of 0.65 and 0.75
     expect(at.vocabularyBreadth).toBe(0.85);    // elderly, crystallized vocabulary
+  });
+});
+
+describe("attentional reading cost has a home (BUG-07)", () => {
+  // Reading has two halves: decoding the words, and holding the line while you
+  // do it. When `readingTendency` came out of the readability layer the chain
+  // was left with decoding and nothing else, so the persona whose reading
+  // difficulty is ENTIRELY attentional -- ADHD, intact decoding, loses place,
+  // re-reads -- was scored as an unimpaired reader. `sustainedAttention` is
+  // that half. It sits in readability rather than frustration because losing
+  // your place is a processing cost, not an emotional response to one.
+  const STATIC = {
+    informationDensity: 0.6, visualComplexity: 0.3, interactiveElementCount: 20,
+    textDensity: 0.8, animationLevel: 0.0, choiceCount: 8, navigationDepth: 2,
+  };
+  const BUSY = { ...STATIC, animationLevel: 0.8, visualComplexity: 0.7 };
+
+  async function bridged(name: string): Promise<Record<string, number>> {
+    const { getAnyPersona, getCognitiveProfile } = await import("../src/personas.js");
+    const m = await import("../src/visual/cognitive-models.js");
+    const p = getAnyPersona(name)!;
+    const t = { ...(getCognitiveProfile(p as never).traits as Record<string, number>) };
+    const acc = (p as never as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
+    t.readingCapacity = m.readingCapacityOf(m.getReadingProfile({ name, traits: t, accessibilityTraits: acc }));
+    t.motorCapacity = m.motorCapacityOf(m.getPointingProfile({ name, traits: t }));
+    t.sustainedAttention = m.sustainedAttentionOf({ traits: t, accessibilityTraits: acc });
+    return t;
+  }
+
+  async function readabilityOf(name: string, page: object): Promise<number> {
+    const demand = computeDemandDistribution(page as never);
+    const r = computeSequentialCTC(buildOTCognitiveProfile(name, await bridged(name)), demand,
+      { asymmetric: true, interactions: true });
+    const l = (r.layers as Array<{ name: string; transportCost: number }>).find((x) => x.name === "readability");
+    return l!.transportCost;
+  }
+
+  test("it reaches a layer and has a demand term", () => {
+    expect(COGNITIVE_TRAITS as readonly string[]).toContain("sustainedAttention");
+    expect(DEMAND_DIMENSIONS as readonly string[]).toContain("sustainedAttention");
+    expect(traitsUsedByLayers().has("sustainedAttention")).toBe(true);
+  });
+
+  test("it is in readability, NOT frustration", () => {
+    // The decision the report left open. Routing it through frustration would
+    // report an ADHD reader's bottleneck as affect, pointing remediation at
+    // reassurance instead of at chunking and fewer distractors.
+    const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("name: 'readability'"));
+    expect(block.slice(0, block.indexOf("];"))).toContain("'sustainedAttention'");
+    const frus = CHAIN_SRC.slice(CHAIN_SRC.indexOf("name: 'frustration'"), CHAIN_SRC.indexOf("name: 'readability'"));
+    expect(frus).not.toContain("'sustainedAttention'");
+  });
+
+  test("a page with no text demands none of it", () => {
+    // Gated on text: however busy a page is, there is no line to lose your
+    // place in if there is nothing to read.
+    const d = computeDemandDistribution({ ...BUSY, textDensity: 0 } as never);
+    expect(d.demands.sustainedAttention).toBe(0);
+  });
+
+  test("distractors raise the demand, and text alone does not max it", () => {
+    const quiet = computeDemandDistribution(STATIC as never).demands.sustainedAttention;
+    const loud = computeDemandDistribution(BUSY as never).demands.sustainedAttention;
+    expect(loud).toBeGreaterThan(quiet);
+    // Below decoding demand on a still page: decoding is the primary cost of
+    // text, attention the secondary one. Reversing this re-creates the exact
+    // inversion that removing readingTendency fixed.
+    expect(quiet).toBeLessThan(computeDemandDistribution(STATIC as never).demands.readingCapacity);
+  });
+
+  test("an attentional reader now responds to a page full of movement", async () => {
+    // The bug, stated as the number that would not move. Measured at HEAD
+    // before this change, adding animationLevel 0.8 and visualComplexity 0.7 to
+    // a text-dense page moved cognitive-adhd's readability cost from 0.082 to
+    // 0.083, and distracted-user's from 0.064 to 0.064. An autoplaying carousel
+    // beside a wall of text cost the two personas defined by distractibility
+    // one thousandth of a point and nothing at all respectively.
+    //
+    // This is the detector: it is the delta, not the level. An ordering
+    // assertion would have passed at HEAD -- adhd already scored above
+    // careful-reader (0.082 vs 0.067) on decoding and comprehension alone.
+    for (const name of ["cognitive-adhd", "distracted-user"]) {
+      const delta = await readabilityOf(name, BUSY) - await readabilityOf(name, STATIC);
+      expect(delta).toBeGreaterThan(0.05);
+    }
+  });
+
+  test("decoding still dominates on a page with nothing moving", async () => {
+    // The guard against re-creating the inversion in a new dimension. On a
+    // STATIC text-dense page a dyslexic reader must cost more than an ADHD
+    // reader: decoding is the larger demand when nothing competes for the line.
+    expect(await readabilityOf("dyslexic-user", STATIC))
+      .toBeGreaterThan(await readabilityOf("cognitive-adhd", STATIC));
+  });
+
+  test("and distractors close that gap, which is the whole point", async () => {
+    // The differential response is what makes this dimension worth having: the
+    // same page plus movement costs the ADHD reader more than the dyslexic one.
+    const dAdhd = await readabilityOf("cognitive-adhd", BUSY) - await readabilityOf("cognitive-adhd", STATIC);
+    const dDys = await readabilityOf("dyslexic-user", BUSY) - await readabilityOf("dyslexic-user", STATIC);
+    expect(dAdhd).toBeGreaterThan(dDys);
+  });
+
+  test("concentrating better than the page needs is never a penalty", async () => {
+    // Surplus-free, for the reason siteFamiliarity is: billed, it charged
+    // power-user for having an attention capacity of 0.85 against a demand of
+    // 0.50 -- a penalty for concentrating well.
+    const { sustainedAttentionOf } = await import("../src/visual/cognitive-models.js");
+    const base = await bridged("power-user");
+    const demand = computeDemandDistribution(STATIC as never);
+    const at = (v: number) => {
+      const r = computeSequentialCTC(buildOTCognitiveProfile("p", { ...base, sustainedAttention: v }),
+        demand, { asymmetric: true, interactions: true });
+      return (r.layers as Array<{ name: string; transportCost: number }>).find((x) => x.name === "readability")!.transportCost;
+    };
+    expect(sustainedAttentionOf({ traits: base })).toBeGreaterThan(0.5);
+    for (const v of [0.6, 0.75, 0.9, 1.0]) expect(at(v)).toBeLessThanOrEqual(at(0.5) + 1e-9);
+  });
+});
+
+describe("sustainedAttention resolves from what the persona actually states", () => {
+  test("a stated attentionSpan wins", async () => {
+    const { sustainedAttentionOf } = await import("../src/visual/cognitive-models.js");
+    expect(sustainedAttentionOf({ traits: { interruptRecovery: 0.9 }, accessibilityTraits: { attentionSpan: 0.2 } }))
+      .toBe(0.2);
+  });
+
+  test("interruptRecovery is the fallback, and it matters", async () => {
+    // 24 of 36 personas state no accessibility traits, including
+    // `distracted-user`, whose entire identity is this dimension. Without the
+    // fallback it would have been handed the same attention as power-user.
+    const { sustainedAttentionOf } = await import("../src/visual/cognitive-models.js");
+    const { getAnyPersona, getCognitiveProfile } = await import("../src/personas.js");
+    const attn = (n: string) => {
+      const p = getAnyPersona(n)!;
+      return sustainedAttentionOf({
+        traits: getCognitiveProfile(p as never).traits as Record<string, number>,
+        accessibilityTraits: (p as never as { accessibilityTraits?: { attentionSpan?: number } }).accessibilityTraits,
+      });
+    };
+    expect(attn("distracted-user")).toBeLessThan(attn("power-user"));
+    expect(attn("distracted-user")).toBeLessThan(0.2);
+  });
+
+  test("a persona stating neither gets an unremarkable value, not a perfect one", async () => {
+    const { sustainedAttentionOf } = await import("../src/visual/cognitive-models.js");
+    const v = sustainedAttentionOf({});
+    expect(v).toBe(0.7);
+    expect(v).toBeLessThan(1);
+  });
+
+  test("it is runtime-scoped, so no persona is warned for lacking it", async () => {
+    const personas = readFileSync(join(import.meta.dir, "..", "src", "personas.ts"), "utf8");
+    expect(personas).toMatch(/RUNTIME_SCOPED = new Set\(\[[^\]]*"sustainedAttention"/);
+  });
+
+  test("the tool bridges it, or the dimension is inert in production", async () => {
+    // The failure this whole class of bug keeps taking: a dimension wired into
+    // the model and never populated by the caller reads as 0.5 for everyone.
+    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    expect(tool).toContain("traits.sustainedAttention = sustainedAttentionOf(");
+    expect(tool).toMatch(/sustainedAttentionOf[\s\S]{0,200}await import\("\.\.\/\.\.\/visual\/cognitive-models\.js"\)|sustainedAttentionOf \}[\s\S]{0,120}cognitive-models\.js/);
   });
 });

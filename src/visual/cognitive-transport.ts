@@ -122,7 +122,13 @@ export const COGNITIVE_TRAITS = [
   // Experience (1)
   'siteFamiliarity',
   // Capacity dimensions, bridged from the formal models (2026-08-02)
-  'readingCapacity', 'motorCapacity',
+  //
+  // `sustainedAttention` is the third: the capacity to hold a line of text
+  // under competition. It is bridged from `accessibilityTraits.attentionSpan`,
+  // falling back to `interruptRecovery`. Attentional reading cost had no home
+  // after `readingTendency` left the readability layer -- see the layer's own
+  // comment in cognitive-transport-chain.ts.
+  'readingCapacity', 'motorCapacity', 'sustainedAttention',
 ] as const;
 
 export type CognitiveTrait = typeof COGNITIVE_TRAITS[number];

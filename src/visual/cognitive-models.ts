@@ -103,6 +103,40 @@ export function motorCapacityOf(profile: PointingProfile): number {
   return Math.max(0, Math.min(1, tp * 0.75 + (1 - spread) * 0.25));
 }
 
+/**
+ * Resolve the persona's capacity to HOLD attention on text, 0-1.
+ *
+ * The third capacity bridge, and the one that closes the gap the readability
+ * rewrite opened. Reading has two halves -- decoding the words, and staying on
+ * the line while you do it -- and after `readingTendency` left the layer the
+ * chain modelled only the first. A persona whose reading difficulty is entirely
+ * attentional was scored as an unimpaired reader.
+ *
+ * Resolution order, most-stated first:
+ *
+ * 1. `accessibilityTraits.attentionSpan`. Already authored on all 12 personas
+ *    that carry accessibility traits, already documented as "focus duration
+ *    before fatigue", and until now it reached no layer of the transport chain
+ *    at all -- only perceptual noiseTolerance and some prose warnings.
+ * 2. `interruptRecovery`. The closest thing in the cognitive vector: task
+ *    resumption after interruption is the standard HCI measure of attentional
+ *    control. It matters that this exists -- 24 of 36 personas state no
+ *    accessibility traits, including `distracted-user`, whose entire identity
+ *    is this dimension (interruptRecovery 0.10) and who would otherwise have
+ *    been handed the same attention as `power-user` (0.85).
+ * 3. 0.7. Unremarkable rather than perfect, for a persona that states neither.
+ */
+export function sustainedAttentionOf(persona: {
+  traits?: Record<string, number>;
+  accessibilityTraits?: { attentionSpan?: number };
+}): number {
+  const stated = persona.accessibilityTraits?.attentionSpan;
+  if (typeof stated === "number") return Math.max(0, Math.min(1, stated));
+  const recovery = persona.traits?.interruptRecovery;
+  if (typeof recovery === "number") return Math.max(0, Math.min(1, recovery));
+  return 0.7;
+}
+
 export interface TargetElement {
   /** CSS selector or description */
   selector: string;

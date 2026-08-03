@@ -922,12 +922,13 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     // Run-scoped and runtime-derived dimensions are excluded from the count.
     //
     // siteFamiliarity is deliberately not stored on personas (it is a
-    // persona-SITE pair supplied per run), and readingCapacity/motorCapacity are
-    // injected from the formal models at analysis time. Counting them as
-    // "missing" made every persona in the roster warn on every load, which
-    // turns a real signal -- a persona that genuinely skipped traits -- into
-    // noise nobody reads. (2026-08-02)
-    const RUNTIME_SCOPED = new Set(["siteFamiliarity", "readingCapacity", "motorCapacity"]);
+    // persona-SITE pair supplied per run), and readingCapacity/motorCapacity/
+    // sustainedAttention are injected at analysis time -- the first two from the
+    // formal models, the third resolved from accessibilityTraits.attentionSpan.
+    // Counting them as "missing" made every persona in the roster warn on every
+    // load, which turns a real signal -- a persona that genuinely skipped traits
+    // -- into noise nobody reads. (2026-08-02)
+    const RUNTIME_SCOPED = new Set(["siteFamiliarity", "readingCapacity", "motorCapacity", "sustainedAttention"]);
     const expectedTraitCount = Object.keys(TRAIT_DEFINITIONS).filter((t) => !RUNTIME_SCOPED.has(t)).length;
     const actualTraitCount = Object.keys(traits)
       .filter((k) => !RUNTIME_SCOPED.has(k) && traits[k as keyof typeof traits] !== undefined).length;

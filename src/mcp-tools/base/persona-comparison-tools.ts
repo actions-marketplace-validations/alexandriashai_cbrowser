@@ -866,13 +866,17 @@ Begin with the first persona: ${personas[0]}
       // the persona's profile, so storing them would create a second copy that
       // can drift from the model that produces it. (2026-08-02)
       try {
-        const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf } =
+        const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf, sustainedAttentionOf } =
           await import("../../visual/cognitive-models.js");
         // accessibilityTraits passed so an author's STATED reading capacity is
         // honoured; without it the name lookup wins and the fields are inert.
         const accTraits = (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
         traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits, accessibilityTraits: accTraits }));
         traits.motorCapacity = motorCapacityOf(getPointingProfile({ name: personaName, traits }));
+        // The attentional half of reading. Unlike the other two this one has no
+        // formal model behind it -- attentionSpan is stated directly, and the
+        // fallback is interruptRecovery -- so the resolver is the whole bridge.
+        traits.sustainedAttention = sustainedAttentionOf({ traits, accessibilityTraits: accTraits });
       } catch (e) {
         // Left absent rather than defaulted: a missing capacity is visible as a
         // gap, a defaulted one silently reads as average.

@@ -127,7 +127,13 @@ export const DEMAND_DIMENSIONS = [
   // WPM, visual span, phonological penalties, movement times and hit
   // probabilities that no layer ever consumed. A dyslexic persona therefore
   // scored LOWER readability cost than an ADHD persona on a text-dense page.
-  'readingCapacity', 'motorCapacity',
+  //
+  // `sustainedAttention` is the attentional half of reading, and it was missing
+  // from the model entirely. Taking `readingTendency` out of the readability
+  // layer left decoding and nothing else, so an ADHD reader -- whose decoding is
+  // typically intact and whose difficulty is holding the line -- read a wall of
+  // text at no attentional cost at all.
+  'readingCapacity', 'motorCapacity', 'sustainedAttention',
 ] as const;
 
 /**
@@ -181,7 +187,21 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
     // orphaned it -- it reached no other layer -- which is a cost the fix did
     // not need to pay.
     // `comprehension` stays; it is genuinely a capacity for grasping content.
-    traits: ['comprehension', 'transferLearning', 'readingCapacity'],
+    //
+    // `sustainedAttention` added 2026-08-02, and it is what the readingTendency
+    // removal actually cost. Reading has two halves: decoding the words, and
+    // holding the line while you do it. The chain modelled only the first, so
+    // the persona whose reading difficulty is entirely attentional -- ADHD,
+    // intact decoding, loses place, re-reads -- was scored as an unimpaired
+    // reader.
+    //
+    // It is a CAPACITY, so it belongs here and not in `frustration`. Losing
+    // your place in a paragraph is a processing cost, not an emotional response
+    // to one. Routing it through frustration would have reported an ADHD
+    // reader's bottleneck as affect, which points remediation at reassurance
+    // and error recovery instead of at chunking, shorter blocks and fewer
+    // moving distractors. Attribution is the reason there are six layers.
+    traits: ['comprehension', 'transferLearning', 'readingCapacity', 'sustainedAttention'],
   },
 ];
 
@@ -216,8 +236,24 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
  * low demand and a familiarity of 1.0 is then almost entirely surplus. An
  * inverted knob is worse than an inert one: it produces a confident number
  * pointing the wrong way. (2026-08-02)
+ *
+ * `sustainedAttention` joins it on the same argument: being able to concentrate
+ * harder than a page requires cannot make that page harder to read. Billed as
+ * surplus it charged `power-user` 0.027 of readability cost on a text-dense
+ * page for having an attention capacity of 0.85 against a demand of 0.50 --
+ * i.e. a penalty for concentrating well. Free, it charges nothing.
+ *
+ * A related and LARGER effect is pre-existing and deliberately untouched here.
+ * Because surplus is billed on the other capacity dimensions AND earlier layers
+ * deplete capacity, a busier page can LOWER a strong persona's readability
+ * cost: measured at HEAD before this change, raising animationLevel from 0 to
+ * 0.8 moved `power-user` from 0.150 to 0.111 while `dyslexic-user` correctly
+ * rose from 0.163 to 0.181. That is `readingCapacity` and `comprehension`
+ * behaving the way this set exists to prevent, and re-billing them is a
+ * calibration decision on numbers customers have already seen -- not something
+ * to change as a side effect of adding a dimension. Recorded, not fixed.
  */
-const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity']);
+const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention']);
 
 /** Capacity depletion rate per layer (alpha_i, Section 3.4) */
 const DEPLETION_RATE = 0.15;
@@ -374,6 +410,35 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.changeBlindness += animLevel * 0.1;
   variance.interruptRecovery += animLevel * 0.09;
   variance.emotionalContagion += animLevel * 0.07;
+
+  // ── textDensity × distractor pressure → sustainedAttention
+  //
+  // How much attention the page asks you to HOLD, as opposed to how hard its
+  // words are to decode (readingCapacity) or how much of it you choose to read
+  // (readingTendency, which modulates demand below). Gated on text: a page with
+  // no prose asks nothing here, however busy it is, because there is no line to
+  // lose your place in.
+  //
+  // Multiplicative rather than this file's usual `max`, deliberately -- the
+  // interaction IS the mechanism. A long article with nothing moving on it is
+  // readable; the same article beside an autoplaying carousel is where the
+  // re-reading happens. Two `max` terms would score those two pages the same.
+  //
+  // Animation dominates the distractor term because moving peripheral content
+  // captures attention involuntarily, while static clutter merely competes for
+  // it (Yantis & Jonides 1990 on abrupt-onset capture).
+  //
+  // The 0.7 base sits deliberately BELOW readingCapacity's 0.9: on a page with
+  // nothing moving, decoding is the larger demand of text and attention is the
+  // secondary one. The distractor multiplier is what lets it overtake decoding,
+  // and only on a page that has earned it. Without that ordering this dimension
+  // re-creates the exact inversion that removing readingTendency fixed --
+  // measured: at a flat 1.0 base, ADHD outscored dyslexic on readability on a
+  // page with animationLevel 0, which is the wrong answer.
+  const distractorPressure = Math.min(1, animDemand * 0.7 + visDemand * 0.3);
+  const sustainDemand = Math.min(1, textDemand * 0.7 * (1 + distractorPressure * 0.7));
+  demands.sustainedAttention = Math.max(demands.sustainedAttention, sustainDemand);
+  variance.sustainedAttention += textDens * 0.1 + animLevel * 0.08;
 
   // ── choiceCount → satisficing, anchoringBias, fearOfMissingOut, socialProofSensitivity
   // LogScale: 10 choices = 0.5, 30 = 0.75, 100 = 0.91
@@ -582,10 +647,17 @@ export function computeSequentialCTC(
   // outweigh decoding ability -- verified it does not: dyslexic still costs more
   // than ADHD on a text-dense page after this. (2026-08-02)
   const readingTendency = persona.traits?.readingTendency;
-  if (typeof readingTendency === "number" && modulatedDemand.demands.readingCapacity) {
+  if (typeof readingTendency === "number") {
     const engagement = 0.75 + readingTendency * 0.5; // 0.75 at pure skim, 1.25 at careful
-    modulatedDemand.demands.readingCapacity = Math.max(0, Math.min(1,
-      modulatedDemand.demands.readingCapacity * engagement));
+    // Both halves of reading, for the same reason: text you do not engage with
+    // asks neither decoding NOR sustained attention of you. Applying it to one
+    // and not the other would say a skimmer holds attention across text they
+    // never read. (sustainedAttention added 2026-08-02)
+    for (const dim of ["readingCapacity", "sustainedAttention"] as const) {
+      if (!modulatedDemand.demands[dim]) continue;
+      modulatedDemand.demands[dim] = Math.max(0, Math.min(1,
+        modulatedDemand.demands[dim] * engagement));
+    }
   }
 
   if (values && Object.keys(values).length > 0) {
