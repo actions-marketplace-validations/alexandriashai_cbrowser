@@ -223,7 +223,10 @@ describe("capture tools category", () => {
     expect(category).toBeDefined();
     expect(category!.tools).toEqual(["capture_start", "capture_stop", "capture_status"]);
     expect(category!.tier).toBe(2);
-    expect(category!.pricingTier).toBe("pro");
+    // Capture itself is free on purpose: recording a page costs no inference.
+    // The gate is on the LLM calls a capture can feed, not on the capture.
+    // (Confirmed 2026-08-01.)
+    expect(category!.pricingTier).toBe("free");
   });
 });
 

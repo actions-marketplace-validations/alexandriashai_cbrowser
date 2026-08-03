@@ -43,6 +43,37 @@ function normalPDF(x: number): number {
 
 // ── Layer 4: Probabilistic Pointing Model ──
 
+/**
+ * Collapse a reading profile into one 0-1 capacity for the transport chain.
+ *
+ * The chain models cost as transport between a persona's CAPACITY on a
+ * dimension and the page's DEMAND for it. Until now its readability layer read
+ * `readingTendency` -- a DISPOSITION ("how much text does this person read")
+ * -- which is not decoding ability, so a dyslexic persona with a higher
+ * tendency scored LOWER readability cost than an ADHD persona on a text-dense
+ * page, while this module's own decomposition reported the dyslexic reader at
+ * 157 WPM against 204, a 4-character visual span against 6, and a +65ms
+ * phonological penalty against +25ms.
+ *
+ * Two models of reading, disagreeing under one name, with the layer using the
+ * one that knows nothing about decoding. This is the bridge. (2026-08-02)
+ *
+ * Weighted toward decoding, because that is what the layer's own reported
+ * decomposition measures: orthographic and phonological carry the fluency of
+ * word recognition, visualSpan is normalised against the neurotypical 7
+ * characters, vocabulary bounds comprehension, and crowding subtracts.
+ */
+export function readingCapacityOf(profile: ReadingProfile): number {
+  const span = Math.min(1, profile.visualSpan / 7);
+  const raw =
+    profile.orthographic * 0.3 +
+    profile.phonological * 0.3 +
+    span * 0.2 +
+    profile.vocabulary * 0.2 -
+    profile.crowding * 0.15;
+  return Math.max(0, Math.min(1, raw));
+}
+
 export interface PointingProfile {
   /** Endpoint dispersion SD in pixels (x-axis) */
   sigmaX: number;
@@ -52,6 +83,58 @@ export interface PointingProfile {
   rho: number;
   /** Fitts' throughput (bits/s) */
   throughput: number;
+}
+
+/**
+ * Collapse a pointing profile into one 0-1 capacity for the transport chain.
+ *
+ * Same defect as reading: the motor layer read `patience` and
+ * `proceduralFluency`, so two personas with no motor traits at all differed 5.6x
+ * in motor cost while this module was computing real Fitts movement times and
+ * hit probabilities that the layer never saw.
+ *
+ * Throughput is the standard Fitts capacity measure (bits/s); a neurotypical
+ * pointer sits near 5-6, tremor far below. Endpoint dispersion subtracts,
+ * because a wide landing distribution misses small targets regardless of speed.
+ */
+export function motorCapacityOf(profile: PointingProfile): number {
+  const tp = Math.min(1, profile.throughput / 6);
+  const spread = Math.min(1, (profile.sigmaX + profile.sigmaY) / 2 / 40);
+  return Math.max(0, Math.min(1, tp * 0.75 + (1 - spread) * 0.25));
+}
+
+/**
+ * Resolve the persona's capacity to HOLD attention on text, 0-1.
+ *
+ * The third capacity bridge, and the one that closes the gap the readability
+ * rewrite opened. Reading has two halves -- decoding the words, and staying on
+ * the line while you do it -- and after `readingTendency` left the layer the
+ * chain modelled only the first. A persona whose reading difficulty is entirely
+ * attentional was scored as an unimpaired reader.
+ *
+ * Resolution order, most-stated first:
+ *
+ * 1. `accessibilityTraits.attentionSpan`. Already authored on all 12 personas
+ *    that carry accessibility traits, already documented as "focus duration
+ *    before fatigue", and until now it reached no layer of the transport chain
+ *    at all -- only perceptual noiseTolerance and some prose warnings.
+ * 2. `interruptRecovery`. The closest thing in the cognitive vector: task
+ *    resumption after interruption is the standard HCI measure of attentional
+ *    control. It matters that this exists -- 24 of 36 personas state no
+ *    accessibility traits, including `distracted-user`, whose entire identity
+ *    is this dimension (interruptRecovery 0.10) and who would otherwise have
+ *    been handed the same attention as `power-user` (0.85).
+ * 3. 0.7. Unremarkable rather than perfect, for a persona that states neither.
+ */
+export function sustainedAttentionOf(persona: {
+  traits?: Record<string, number>;
+  accessibilityTraits?: { attentionSpan?: number };
+}): number {
+  const stated = persona.accessibilityTraits?.attentionSpan;
+  if (typeof stated === "number") return Math.max(0, Math.min(1, stated));
+  const recovery = persona.traits?.interruptRecovery;
+  if (typeof recovery === "number") return Math.max(0, Math.min(1, recovery));
+  return 0.7;
 }
 
 export interface TargetElement {
@@ -353,11 +436,45 @@ const KNOWN_READING_PROFILES: Record<string, ReadingProfile> = {
  * @returns Empirically calibrated reading profile
  */
 export function getReadingProfile(persona: {
+  /**
+   * Explicit reading capacity, if the persona states it.
+   *
+   * Checked BEFORE the name lookup: an author who has written down a reading
+   * profile means it, and matching on name.includes("dyslexic") instead is how
+   * the model became untunable. Partial objects are allowed -- each field falls
+   * back to whatever the name lookup would have produced, so stating one value
+   * does not silently reset the other four. (2026-08-02)
+   */
+  accessibilityTraits?: {
+    orthographicFluency?: number;
+    phonologicalDecoding?: number;
+    visualSpan?: number;
+    vocabularyBreadth?: number;
+    crowdingSensitivity?: number;
+  };
   traits?: Record<string, number>;
   name?: string;
 }): ReadingProfile {
   const traits = persona.traits ?? {};
   const name = (persona.name ?? '').toLowerCase();
+  const stated = persona.accessibilityTraits;
+
+  // Stated capacity wins over every other route.
+  //
+  // Applied as an OVERLAY on whatever the rest of this function would have
+  // returned, so a persona can state one field without silently resetting the
+  // other four to defaults. Computed by recursing with the stated values
+  // stripped, which keeps the name and trait paths as the base.
+  if (stated && Object.values(stated).some((v) => typeof v === "number")) {
+    const base = getReadingProfile({ traits: persona.traits, name: persona.name });
+    return {
+      orthographic: stated.orthographicFluency ?? base.orthographic,
+      phonological: stated.phonologicalDecoding ?? base.phonological,
+      visualSpan: stated.visualSpan ?? base.visualSpan,
+      vocabulary: stated.vocabularyBreadth ?? base.vocabulary,
+      crowding: stated.crowdingSensitivity ?? base.crowding,
+    };
+  }
 
   // Direct name matching for known profiles
   if (name.includes('dyslexic') || name.includes('dyslexia')) {
@@ -567,6 +684,14 @@ export function readability(
   persona: {
     traits?: Record<string, number>;
     name?: string;
+    /** Passed straight through to getReadingProfile: stated capacity wins. */
+    accessibilityTraits?: {
+      orthographicFluency?: number;
+      phonologicalDecoding?: number;
+      visualSpan?: number;
+      vocabularyBreadth?: number;
+      crowdingSensitivity?: number;
+    };
   },
 ): ReadabilityResult {
   if (blocks.length === 0) {

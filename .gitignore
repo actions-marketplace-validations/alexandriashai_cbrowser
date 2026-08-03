@@ -80,3 +80,4 @@ bun.lock
 
 # Browser state
 browser-state/
+.test-scratch-autocapture-*

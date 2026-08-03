@@ -25,9 +25,10 @@ export function registerSiteKnowledgeTools(
 
   server.registerTool("page_understand", {
     title: "Page Understanding Analysis",
-    description: "Analyze the current page to understand its type, available actions, form structure, and navigation. Returns a rich page model with affordances, structure, and element relationships. Useful before interacting with a page to know what's possible.",
+    description: "Analyze the current page to understand its type, available actions, form structure, and navigation. Returns a rich page model with affordances, structure, and element relationships. Useful before interacting with a page to know what's possible. SCOPE: defaults to 'auto', which reads the whole document on small pages and silently falls back to the viewport above 1000 elements — the response reports which one ran. Pass scope='full_page' to count everything regardless of size.",
     inputSchema: {
       _browserToken: z.string().optional().describe("Browser session token from a previous tool call. Pass this to analyze the same page you navigated to."),
+      scope: z.enum(["auto", "viewport", "full_page"]).optional().default("auto").describe("What to extract: 'auto' (default, historical behaviour — whole document unless the page exceeds 1000 elements, then viewport), 'viewport' (first screenful plus landmarks), or 'full_page' (scroll for lazy content and count everything). Check `extractionScope` in the response for what actually ran."),
     },
     annotations: {
       title: "Page Understanding Analysis",
@@ -36,7 +37,7 @@ export function registerSiteKnowledgeTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async ({ _browserToken }) => {
+  }, async ({ _browserToken, scope }) => {
       try {
         // Classifies "the current page". Unbound it classifies about:blank and
         // still returns a confident page type and affordance list.
@@ -56,7 +57,7 @@ export function registerSiteKnowledgeTools(
         const page = await b.getPage();
         const { PageUnderstandingEngine } = await import("../../analysis/page-understanding.js");
         const engine = new PageUnderstandingEngine();
-        const understanding = await engine.analyze(page);
+        const understanding = await engine.analyze(page, scope ?? "auto");
 
         // Record a structural fingerprint. SiteModelManager.updateFingerprint was
         // fully implemented and had ZERO callers anywhere, so model.fingerprints
@@ -128,6 +129,16 @@ export function registerSiteKnowledgeTools(
                 {
                   url: understanding.url,
                   type: understanding.type,
+                  // What was actually measured. Without this the counts below
+                  // are unreadable: on a page above the element cap they
+                  // describe the first screenful, on a smaller page the whole
+                  // document, and the response looked identical either way.
+                  extractionScope: understanding.extractionScope,
+                  pageScreens: understanding.pageScreens,
+                  totalElements: understanding.totalElements,
+                  scopeNote: understanding.extractionScope === "viewport"
+                    ? `VIEWPORT ONLY: counts below describe the first screenful plus landmarks, out of ${understanding.totalElements} elements across ${understanding.pageScreens} screens. Pass scope='full_page' to count the whole document.`
+                    : `Whole document: ${understanding.totalElements} elements across ${understanding.pageScreens} screens.`,
                   affordanceCount: understanding.affordances.length,
                   // How many of those were NEW to the site model, so a caller can
                   // tell learning from re-reading.

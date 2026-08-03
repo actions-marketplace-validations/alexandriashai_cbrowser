@@ -1402,7 +1402,7 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
     ],
   },
   {
-    name: "mentalModelRigidity",
+    name: "mentalModelFlexibility",
     description: "Ability to update mental models when interfaces change",
     researchBasis: "Johnson-Laird (1983) - Mental Models; Norman (2013) - Design of Everyday Things",
     levels: [
@@ -1458,63 +1458,6 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
       },
     ],
   },
-  {
-    name: "siteFamiliarity",
-    description: "How much the persona knows about a site from prior visits",
-    researchBasis: "Cockburn et al. (2007) - Familiar Interfaces; Tauscher & Greenberg (1997) - How people revisit web pages; Weinreich et al. (2008) - Off the beaten tracks",
-    levels: [
-      {
-        value: 0.0,
-        label: "Brand New Visitor",
-        behaviors: [
-          "Has never visited this site before",
-          "No memory of navigation or layout",
-          "Explores blindly, no shortcuts",
-          "Every page is a discovery",
-        ],
-      },
-      {
-        value: 0.25,
-        label: "Vague Memory",
-        behaviors: [
-          "Has visited once or twice before",
-          "Remembers what went wrong, not where things are",
-          "May avoid known problem areas",
-          "Doesn't remember navigation structure",
-        ],
-      },
-      {
-        value: 0.5,
-        label: "Occasional Visitor",
-        behaviors: [
-          "Knows the general site structure",
-          "Remembers main navigation but not details",
-          "Has partial memory of common paths",
-          "Needs some re-orientation each visit",
-        ],
-      },
-      {
-        value: 0.75,
-        label: "Regular User",
-        behaviors: [
-          "Knows the site well",
-          "Navigates efficiently to common areas",
-          "Remembers specific paths and shortcuts",
-          "Only confused by new or changed sections",
-        ],
-      },
-      {
-        value: 1.0,
-        label: "Daily User / Expert",
-        behaviors: [
-          "Uses the site daily or near-daily",
-          "Knows exactly where everything is",
-          "Uses keyboard shortcuts and direct URLs",
-          "Navigates entirely from memory",
-        ],
-      },
-    ],
-  },
 ];
 
 // ============================================================================
@@ -1523,7 +1466,25 @@ export const TRAIT_REFERENCE_MATRIX: TraitReference[] = [
 
 export interface QuestionnaireQuestion {
   id: string;
-  trait: keyof CognitiveTraits;
+  /**
+   * Absent on Big Five items. They previously carried a placeholder trait to
+   * satisfy this field, which implied a trait-to-factor link that does not
+   * exist and invited exactly the wrong reading of the derivation chain:
+   * that Big Five is computed FROM the 26 traits and values are two hops
+   * downstream. It is not. Big Five is supplied by whoever answers, and values
+   * derive from it in one hop. (2026-08-01)
+   */
+  trait?: keyof CognitiveTraits;
+  /**
+   * Set instead of a trait when the question asks about a value axis directly.
+   *
+   * Four Schwartz axes -- hedonism, power, universalism, relatednessNeed -- have
+   * no trait correlation, so no combination of trait answers can move them off
+   * the 0.5 baseline. Asking about them straight is the only route to a real
+   * number that involves no inference at all, which makes it the most defensible
+   * one available. (2026-08-01)
+   */
+  valueAxis?: string;
   question: string;
   options: Array<{
     value: number;
@@ -1536,6 +1497,108 @@ export interface QuestionnaireQuestion {
  * Generate a questionnaire for building a custom persona.
  * Returns a subset of questions covering the most impactful traits.
  */
+/**
+ * Direct questions for the value axes no trait can reach.
+ *
+ * Worded as everyday preferences rather than as the Schwartz construct name:
+ * "power" asks about wanting influence over outcomes, not about the word power.
+ * Four options, matching the trait questions' 0 / 0.33 / 0.67 / 1 scale.
+ */
+/**
+ * Five Big Five items, one per factor.
+ *
+ * This is the better route to values than the four direct questions below,
+ * because the published value correlations are with the Big Five — deriving
+ * from these crosses no gap the research does not cover, whereas deriving from
+ * cognitive traits always does. Five items also reach all thirteen axes rather
+ * than the four the direct questions patch.
+ *
+ * Written plainly rather than reproducing a published instrument's items. That
+ * costs validation: these are not the TIPI or the BFI-10 and carry none of
+ * their psychometric properties. They are a usable estimate for simulation, not
+ * a measurement of a person. (2026-08-01)
+ */
+export const BIG_FIVE_QUESTIONS: QuestionnaireQuestion[] = [
+  {
+    id: "bigfive-openness", valueAxis: "bigfive:openness",
+    question: "How drawn is this person to new ideas, unfamiliar things and abstract thinking?",
+    options: [
+      { value: 0, label: "Prefers the familiar", description: "Sticks to what is known and proven; novelty is a cost" },
+      { value: 0.33, label: "Mildly curious", description: "Open to new things when there is a clear reason" },
+      { value: 0.67, label: "Actively curious", description: "Seeks out unfamiliar ideas and enjoys the unusual" },
+      { value: 1, label: "Strongly exploratory", description: "Novelty and abstraction are their default interest" },
+    ],
+  },
+  {
+    id: "bigfive-conscientiousness", valueAxis: "bigfive:conscientiousness",
+    question: "How organised and follow-through-oriented is this person?",
+    options: [
+      { value: 0, label: "Spontaneous", description: "Improvises; plans and deadlines slide" },
+      { value: 0.33, label: "Loosely organised", description: "Gets there, not always methodically" },
+      { value: 0.67, label: "Organised", description: "Plans ahead and generally finishes what they start" },
+      { value: 1, label: "Highly diligent", description: "Systematic, thorough, finishes reliably" },
+    ],
+  },
+  {
+    id: "bigfive-extraversion", valueAxis: "bigfive:extraversion",
+    question: "How outgoing and energised by people and activity is this person?",
+    options: [
+      { value: 0, label: "Reserved", description: "Quiet, drained by social activity, prefers solitude" },
+      { value: 0.33, label: "Somewhat reserved", description: "Sociable in small doses" },
+      { value: 0.67, label: "Outgoing", description: "Comfortable and energised in company" },
+      { value: 1, label: "Highly gregarious", description: "Seeks stimulation, attention and company" },
+    ],
+  },
+  {
+    id: "bigfive-agreeableness", valueAxis: "bigfive:agreeableness",
+    question: "How warm, trusting and accommodating is this person toward others?",
+    options: [
+      { value: 0, label: "Sceptical", description: "Guarded, competitive, quick to doubt motives" },
+      { value: 0.33, label: "Cautious", description: "Civil but slow to trust" },
+      { value: 0.67, label: "Warm", description: "Trusting, cooperative, gives people the benefit of the doubt" },
+      { value: 1, label: "Highly agreeable", description: "Trusting and accommodating almost by default" },
+    ],
+  },
+  {
+    id: "bigfive-neuroticism", valueAxis: "bigfive:neuroticism",
+    question: "How readily does this person feel anxious, stressed or thrown by setbacks?",
+    options: [
+      { value: 0, label: "Very steady", description: "Calm under pressure; setbacks barely register" },
+      { value: 0.33, label: "Mostly steady", description: "Occasional worry, recovers quickly" },
+      { value: 0.67, label: "Reactive", description: "Stress lands hard and lingers" },
+      { value: 1, label: "Highly reactive", description: "Anxious by default; setbacks are destabilising" },
+    ],
+  },
+];
+
+/** Big Five scores from questionnaire answers; absent factors are omitted. */
+export function buildBigFiveFromAnswers(answers: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const q of BIG_FIVE_QUESTIONS) {
+    const a = answers[q.id];
+    const factor = q.valueAxis?.split(":")[1];
+    if (typeof a === "number" && factor) out[factor] = a;
+  }
+  return out;
+}
+
+/**
+ * There is no VALUE_AXIS_QUESTIONS here on purpose.
+ *
+ * A first pass added four direct questions for hedonism, power, universalism
+ * and relatedness — the axes no cognitive trait can reach. They were redundant:
+ * persona-creation-tools.ts already carries VALUES_QUESTIONS, ten items, one
+ * per Schwartz value, and the questionnaire flow already prefers an answered
+ * value over a derived one. The four axes were never broken for personas built
+ * through the questionnaire; they are broken for every other route, which is
+ * what the Big Five items above are for.
+ *
+ * Two competing sets of questions for the same axes would have been the worse
+ * outcome — whichever one a caller found first would silently decide which
+ * wording a persona was scored against. (2026-08-01)
+ */
+
+
 export function generatePersonaQuestionnaire(options?: {
   comprehensive?: boolean;  // All traits vs. core subset
   traits?: (keyof CognitiveTraits)[];  // Specific traits to include
@@ -1558,7 +1621,7 @@ export function generatePersonaQuestionnaire(options?: {
     ? TRAIT_REFERENCE_MATRIX.map(t => t.name)
     : coreTraits);
 
-  return traitsToInclude.map(traitName => {
+  const traitQuestions = traitsToInclude.map(traitName => {
     const traitRef = TRAIT_REFERENCE_MATRIX.find(t => t.name === traitName);
     if (!traitRef) return null;
 
@@ -1581,6 +1644,17 @@ export function generatePersonaQuestionnaire(options?: {
       })),
     };
   }).filter(Boolean) as QuestionnaireQuestion[];
+
+  // The four value questions always ride along: they are the only way those
+  // axes ever get a real number, and they are cheap — four items on a
+  // questionnaire that already runs to eight or more.
+  // Big Five first: it reaches all thirteen axes through published
+  // correlations. The four direct value questions stay as an override for
+  // anyone who would rather state an axis than have it inferred, and as the
+  // fallback when the Big Five items go unanswered.
+  // Big Five rides along because it is the only route to values for personas
+  // that never go through the creation questionnaire's own ten value items.
+  return [...traitQuestions, ...BIG_FIVE_QUESTIONS];
 }
 
 function generateQuestionText(trait: TraitReference): string {
@@ -1609,8 +1683,7 @@ function generateQuestionText(trait: TraitReference): string {
     emotionalContagion: "How much does the visual design and aesthetics of a website affect your experience?",
     fearOfMissingOut: "How do 'limited time' offers and countdown timers affect your decisions?",
     socialProofSensitivity: "How much do reviews, ratings, and testimonials influence your decisions?",
-    mentalModelRigidity: "When a website you use regularly changes its layout, how do you respond?",
-    siteFamiliarity: "How well do you typically know the websites you visit — are you usually a first-time visitor or a returning regular?",
+    mentalModelFlexibility: "When a website you use regularly changes its layout, how do you respond?",
   };
 
   return questionMap[trait.name] || `How would you describe your ${trait.name}?`;
@@ -1664,8 +1737,7 @@ export function buildTraitsFromAnswers(
     emotionalContagion: 0.55,   // Research: emotional mirroring is default
     fearOfMissingOut: 0.50,     // Neutral - highly age-dependent
     socialProofSensitivity: 0.60, // Research: social proof is powerful (Cialdini)
-    mentalModelRigidity: 0.55,  // Research: confirmation bias is common
-    siteFamiliarity: 0.5,       // Research: 58% of pages are revisits (Tauscher & Greenberg)
+    mentalModelFlexibility: 0.55,  // Research: confirmation bias is common
   };
 
   // Apply answers
@@ -1716,8 +1788,7 @@ const BASELINE_TRAITS: Record<string, number> = {
   emotionalContagion: 0.55,
   fearOfMissingOut: 0.50,
   socialProofSensitivity: 0.60,
-  mentalModelRigidity: 0.55,
-  siteFamiliarity: 0.5,
+  mentalModelFlexibility: 0.55,
 };
 
 /** Check if a trait is at its baseline (wasn't explicitly set) */
@@ -1847,8 +1918,7 @@ const TRAIT_SHORT_HEADERS: Record<string, string> = {
   emotionalContagion: "Emotional",
   fearOfMissingOut: "FOMO",
   socialProofSensitivity: "SocialProof",
-  mentalModelRigidity: "Rigidity",
-  siteFamiliarity: "SiteMem",
+  mentalModelFlexibility: "Rigidity",
 };
 
 /**
@@ -1869,7 +1939,11 @@ export function formatForAskUserQuestion(questions: QuestionnaireQuestion[]): Ar
 }> {
   return questions.map(q => ({
     question: q.question,
-    header: getTraitShortHeader(q.trait),  // v16.7.2: Use meaningful abbreviations
+    // Big Five items have no trait; their short header comes from the factor
+    // name in the id rather than the trait abbreviation table.
+    header: q.trait
+      ? getTraitShortHeader(q.trait)
+      : (q.valueAxis?.split(":")[1] ?? q.id).slice(0, 8),
     options: q.options.map(o => ({
       label: o.label,
       description: o.description,
@@ -2391,6 +2465,24 @@ export const TRAIT_VALUE_CORRELATIONS: Record<string, {
  * @param traits - Cognitive traits (0-1 scale)
  * @returns Derived values with research basis
  */
+/**
+ * How many trait correlations target each value axis.
+ *
+ * Lets a consumer tell two very different 0.5s apart: an axis with no
+ * correlations can never leave the baseline, while an axis whose correlations
+ * happen to cancel is a real reading that landed near the middle. tradition on
+ * one persona nets to -0.01 from patience and authoritySensitivity pulling
+ * opposite ways -- indistinguishable from unpopulated in the output, and not
+ * the same thing at all. (2026-08-01)
+ */
+export function valueAxisCorrelationCounts(): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const c of Object.values(TRAIT_VALUE_CORRELATIONS)) {
+    for (const e of c.affects) counts[e.value] = (counts[e.value] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function deriveValuesFromTraits(
   traits: Partial<CognitiveTraits> | Record<string, number>
 ): {
@@ -2475,7 +2567,15 @@ export function deriveValuesFromTraits(
   for (const key of Object.keys(derivedValues)) {
     const raw = rawTotals[key] ?? 0;
     const squashed = 0.5 + 0.5 * Math.tanh(raw / SQUASH_K);
-    derivedValues[key] = Math.round(squashed * 100) / 100;
+    // Three decimals, not two.
+    //
+    // tradition derives to 0.495 for one persona and rounded to 0.50 — the
+    // same literal power returns from never being touched at all. The list of
+    // unpopulated axes disambiguated them, which works only if someone reads
+    // the list. A number formatted identically to a measurement is the failure
+    // this whole exercise is about, so the distinction belongs in the value.
+    // (2026-08-01)
+    derivedValues[key] = Math.round(squashed * 1000) / 1000;
   }
 
   return {

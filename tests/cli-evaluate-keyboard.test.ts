@@ -10,7 +10,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { AddressInfo } from "node:net";
@@ -22,22 +22,72 @@ const TIMEOUT = 60_000;
 let server: Server;
 let baseUrl = "";
 let dataDir = "";
+/** Distinct output files per invocation, so concurrent reads never collide. */
+let runSeq = 0;
 
 interface RunResult { code: number; stdout: string; stderr: string }
 
 /** Run the CLI in an isolated data dir and capture everything. */
 async function cli(...args: string[]): Promise<RunResult> {
-  const proc = Bun.spawn(["bun", "run", CLI, ...args], {
-    env: { ...process.env, CBROWSER_DATA_DIR: dataDir },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  const code = await proc.exited;
-  return { code, stdout, stderr };
+  // Neither pipes nor `proc.exited` are trusted here.
+  //
+  // Two separate races, found in that order. First, the original helper read
+  // stdout/stderr with `new Response(stream).text()`, and under load one of
+  // those promises never settled while the child had already exited -- a sweep
+  // for long-lived children during a hang found none. Redirecting output to
+  // files fixed that pairing 3 runs of 3.
+  //
+  // The full suite still hung one test, and the same probe gave the same
+  // answer: child gone, parent still waiting. So `await proc.exited` itself does
+  // not always settle under load. `spawnSync` avoids both races and was tried,
+  // but it blocks the event loop and pushed a paired run past ten minutes.
+  //
+  // So the shell records the exit status to a file and we race that against
+  // `proc.exited`. Whichever answers first is correct -- the wrapper only writes
+  // the code after both redirects have closed, so the output files are complete
+  // whenever the code file exists. Nothing depends on Bun reaping the child
+  // promptly. (2026-08-02)
+  const n = runSeq++;
+  const outPath = join(dataDir, `out-${n}.txt`);
+  const errPath = join(dataDir, `err-${n}.txt`);
+  const codePath = join(dataDir, `code-${n}.txt`);
+
+  const proc = Bun.spawn(
+    // The wrapper must EXIT with the CLI's status, not the echo's. Without the
+    // trailing `exit $c` the script returns 0 (echo succeeded), proc.exited wins
+    // the race with that 0, and every test asserting a failure exit code passes
+    // a command that actually failed.
+    ["bash", "-c", 'bun run "$0" "$@" > "$CB_OUT" 2> "$CB_ERR"; c=$?; echo $c > "$CB_CODE"; exit $c', CLI, ...args],
+    {
+      env: {
+        ...process.env,
+        CBROWSER_DATA_DIR: dataDir,
+        CB_OUT: outPath, CB_ERR: errPath, CB_CODE: codePath,
+      },
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+  );
+
+  const fromFile = (async () => {
+    // 25ms poll, bounded well inside the test budget so a genuine hang still
+    // fails as a hang rather than being masked by this fallback.
+    for (let i = 0; i < 1800; i++) {
+      if (existsSync(codePath)) {
+        const raw = readFileSync(codePath, "utf8").trim();
+        if (raw) return Number(raw);
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(`cli never reported an exit code: ${args.join(" ")}`);
+  })();
+
+  const code = await Promise.race([proc.exited, fromFile]);
+  return {
+    code,
+    stdout: existsSync(outPath) ? readFileSync(outPath, "utf8") : "",
+    stderr: existsSync(errPath) ? readFileSync(errPath, "utf8") : "",
+  };
 }
 
 /** Read the fixture's recorded key events back out of the page. */
@@ -154,9 +204,23 @@ describe("evaluate", () => {
   }, TIMEOUT);
 
   test("--wait-for that never matches fails loudly", async () => {
-    const result = await cli("evaluate", "1", "--url", `${baseUrl}/keyboard.html`, "--wait-for", "#never-there");
+    // --timeout keeps this honest AND quick. Without it the wait was a hardcoded
+    // 30s, so this test spent half its 60s budget waiting on purpose and the
+    // remaining half had to cover browser launch and teardown -- which it did
+    // alone and did not once the full suite ran browsers in parallel. Bounding
+    // the wait tests the same behaviour against a constant the test controls.
+    const result = await cli("evaluate", "1", "--url", `${baseUrl}/keyboard.html`, "--wait-for", "#never-there", "--timeout", "1500");
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("Timed out waiting for selector");
+    // The message names the bound, so a wait that ended early is distinguishable
+    // from one that ran its course.
+    expect(result.stderr).toContain("1500ms");
+  }, TIMEOUT);
+
+  test("--timeout rejects a value that is not a positive number", async () => {
+    const result = await cli("evaluate", "1", "--url", `${baseUrl}/keyboard.html`, "--wait-for", "#never-there", "--timeout", "nope");
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("--timeout must be a positive number");
   }, TIMEOUT);
 
   test("an error inside the page surfaces its stack and exits 1", async () => {

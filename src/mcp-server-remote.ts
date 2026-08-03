@@ -58,6 +58,33 @@ import {
 // (see resolveRequestKeyHash). setActiveKeyHash stays for the usage-logging path, which
 // is per-session rather than per-charge.
 import { registerAllPublicTools, setRemoteMode, setActiveTier as setTierGate, setActiveKeyHash, isToolAccessible, upgradePrompt } from "./mcp-tools/index.js";
+import { withPersonaScope } from "./persona-scope.js";
+
+/**
+ * keyHash -> accountId, so a request can be scoped to the tenant that owns it.
+ *
+ * Deliberately NOT a module-level "current account" the way setActiveKeyHash
+ * works: that shape is why billing identity had to be moved to a per-request
+ * resolver, and applied to personas it would let one tenant's tool call read
+ * another's directory whenever two requests overlap. This is a lookup keyed by
+ * the request's own hash, and the value is carried through AsyncLocalStorage.
+ */
+const accountCache = new Map<string, { accountId: number; expiresAt: number }>();
+
+/** The account owning this request, or null when unauthenticated/unknown. */
+async function resolveRequestAccountId(req: IncomingMessage): Promise<number | null> {
+  const apiKey = extractApiKey(req);
+  if (!apiKey) return null;
+  const { createHash } = await import("crypto");
+  const keyHash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const hit = accountCache.get(keyHash);
+  if (hit && hit.expiresAt > Date.now()) return hit.accountId;
+  // Populated as a side effect of tier resolution, which every authed request
+  // already performs.
+  await resolveApiKeyTier(apiKey);
+  const after = accountCache.get(keyHash);
+  return after && after.expiresAt > Date.now() ? after.accountId : null;
+}
 import type { PricingTier } from "./mcp-tools/tool-categories.js";
 import type { ToolRegistrationContext } from "./mcp-tools/types.js";
 
@@ -845,10 +872,15 @@ async function resolveApiKeyTier(apiKey: string): Promise<PricingTier | null> {
       headers: { "X-API-Key": apiKey },
     });
     if (!res.ok) return "free"; // Invalid key → free tier
-    const data = await res.json() as { valid: boolean; tier?: string };
+    // accountId was already in this response and was being discarded. It is
+    // what scopes persona reads to one tenant. (2026-08-01)
+    const data = await res.json() as { valid: boolean; tier?: string; accountId?: number };
     if (!data.valid) return "free";
     const tier = (data.tier as PricingTier) || "free";
     tierCache.set(keyHash, { tier, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
+    if (typeof data.accountId === "number") {
+      accountCache.set(keyHash, { accountId: data.accountId, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
+    }
     return tier;
   } catch {
     // CMS unreachable — fall back to free
@@ -1433,7 +1465,18 @@ async function handleMcpRequest(
       console.log(`[Session Debug] ${method}: client sent session=${clientSessionId?.substring(0, 8) || "NONE"}, mode=${process.env.MCP_SESSION_MODE || "stateless"}`);
     }
 
-    await transport.handleRequest(req, res, parsedBody);
+    // Persona reads inside this request see ONLY the calling account's
+    // directory. The scope wraps the dispatch rather than being assigned to a
+    // module variable, so two overlapping requests cannot observe each other's
+    // — the whole reason this uses AsyncLocalStorage. Unauthenticated requests
+    // enter no scope and fall back to the process default, which is the
+    // behaviour every local install already has. (2026-08-01)
+    const scopeAccountId = await resolveRequestAccountId(req);
+    if (scopeAccountId !== null) {
+      await withPersonaScope(scopeAccountId, () => transport.handleRequest(req, res, parsedBody));
+    } else {
+      await transport.handleRequest(req, res, parsedBody);
+    }
 
     const duration = Date.now() - start;
     if (!connectionClosed) {
@@ -2416,7 +2459,15 @@ ${VERSION}
         }
       }
     } catch (err) {
-      console.log(`[tools/list] Direct cache failed, will cache on first authenticated request`);
+      // The REASON, not just the fact. This swallowed its error and logged a
+      // shrug, so an enterprise server whose manifest build throws advertises
+      // ZERO tools to any unauthenticated lister -- which is what a connector
+      // does when it refreshes -- and the log said only that something failed.
+      // A silent catch on a discovery path is indistinguishable from a server
+      // with no tools. (2026-08-01)
+      console.error(`[tools/list] Direct manifest cache FAILED: ${(err as Error)?.message ?? err}`);
+      console.error(`[tools/list] Unauthenticated tools/list will return an EMPTY list until the first authenticated request populates it. Connectors refreshing now will see no tools.`);
+      const st = (err as Error)?.stack; if (st) console.error(st.split("\n").slice(0, 4).join("\n"));
     }
   })(); });
 

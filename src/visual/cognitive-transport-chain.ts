@@ -63,6 +63,8 @@ export interface SequentialTransportResult {
   interactions: Record<string, number>;
   /** Additive-only CTC for comparison */
   additiveCTC: number;
+  /** Un-normalized total. `totalCTC` is a sigmoid of this. */
+  rawCTC: number;
   /** Asymmetric deficit-surplus breakdown */
   deficitCost: number;
   surplusCost: number;
@@ -101,9 +103,37 @@ export const DEMAND_DIMENSIONS = [
   // Trust
   'trustCalibration',
   // Additional extended traits
-  'mentalModelRigidity', 'curiosity',
+  'mentalModelFlexibility', 'curiosity',
   // Processing
   'processingSpeed', 'textProcessing',
+  // Experience
+  //
+  // Absent until 2026-08-02, which is why the siteFamiliarity parameter was
+  // inert. It is a member of COGNITIVE_TRAITS, so a persona carried a capacity
+  // on this dimension, but the demand vector had no slot for it -- so the
+  // capacity was transported against a demand that did not exist and
+  // contributed nothing. Runs at familiarity 0 and 1 came back byte-identical
+  // while the tool attested the parameter had been applied.
+  //
+  // The two vectors are supposed to be the same space. A dimension present in
+  // one and missing from the other is silently dropped, and there is now a test
+  // asserting COGNITIVE_TRAITS and DEMAND_DIMENSIONS do not diverge.
+  'siteFamiliarity',
+  // Capacity, bridged from the formal reading and pointing models.
+  //
+  // These layers previously read DISPOSITION traits -- readingTendency for
+  // readability, patience and proceduralFluency for motor -- while the modules
+  // that actually model decoding and Fitts pointing sat beside them, computing
+  // WPM, visual span, phonological penalties, movement times and hit
+  // probabilities that no layer ever consumed. A dyslexic persona therefore
+  // scored LOWER readability cost than an ADHD persona on a text-dense page.
+  //
+  // `sustainedAttention` is the attentional half of reading, and it was missing
+  // from the model entirely. Taking `readingTendency` out of the readability
+  // layer left decoding and nothing else, so an ADHD reader -- whose decoding is
+  // typically intact and whose difficulty is holding the line -- read a wall of
+  // text at no attentional cost at all.
+  'readingCapacity', 'motorCapacity', 'sustainedAttention',
 ] as const;
 
 /**
@@ -117,7 +147,16 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'cognitiveLoad',
-    traits: ['comprehension', 'workingMemory', 'informationForaging'],
+    // siteFamiliarity added 2026-08-02. It was in COGNITIVE_TRAITS and in no
+    // layer, so it reached the profile, got a capacity, and then contributed to
+    // nothing -- the third and final reason the parameter was inert. Knowing a
+    // site is a substitute for holding its layout in working memory, which is
+    // exactly this layer, and the demand term for it comes from the same
+    // navigationDepth signal that already feeds workingMemory here.
+    // `transferLearning` moved here from readability 2026-08-02: applying a
+    // pattern learned on one interface to another is a load question, not a
+    // decoding one, and readability is now decoding-only.
+    traits: ['comprehension', 'workingMemory', 'informationForaging', 'siteFamiliarity', 'transferLearning'],
   },
   {
     name: 'decision',
@@ -125,7 +164,11 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'motor',
-    traits: ['patience', 'proceduralFluency'],
+    // `patience` REMOVED: it is a disposition, it already drives the frustration
+    // layer, and here it made two personas with no motor traits differ 5.6x in
+    // motor cost. proceduralFluency stays -- multi-step flow execution is a real
+    // motor-adjacent capacity -- alongside the Fitts throughput bridge.
+    traits: ['proceduralFluency', 'motorCapacity'],
   },
   {
     name: 'frustration',
@@ -133,7 +176,53 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'readability',
-    traits: ['readingTendency', 'comprehension', 'transferLearning'],
+    // DECODING ONLY, as of 2026-08-02 (D-3 Option 1). This layer answers one
+    // question -- how expensive is it for this person to turn these glyphs into
+    // words -- and it is the layer `legibilityQuality` makes a promise about:
+    // lower legibility for someone means higher readability cost for them.
+    //
+    // Everything else that was here has been moved out, and the history is why
+    // it had to be:
+    //
+    //   R1  adhd 0.401 / dyslexic 0.189   inverted   (disposition drove it)
+    //   R2  adhd 0.112 / dyslexic 0.142   correct    (attentional term removed)
+    //   R4  adhd 0.161 / dyslexic 0.126   inverted   (attentional term restored)
+    //
+    // Removing the attentional term fixed the ordering and deleted ADHD reading
+    // cost. Restoring it recovered ADHD reading cost and broke the ordering.
+    // BOTH were correct fixes. The layer was carrying two mechanisms through
+    // one scalar under a contract that only describes one of them, and no
+    // weighting satisfies both -- an ADHD attentionSpan of 0.30 against a
+    // dyslexic 0.50 swamps five decoding terms pointing the other way.
+    //
+    // So the second mechanism gets its own layer rather than a smaller weight.
+    // `sustainedAttention` moved to `readingAttention` below.
+    // `comprehension` moved out entirely: it is "grasp of UI conventions", not
+    // decoding, and it already drives cognitiveLoad -- keeping it here made the
+    // contract non-monotonic for personas whose comprehension and decoding
+    // disagree, which after the reading-capacity schema change is most of them.
+    // `transferLearning` moved to cognitiveLoad: applying a pattern learned on
+    // one interface to another is not reading. It is not orphaned by the move.
+    traits: ['readingCapacity'],
+  },
+  {
+    name: 'readingAttention',
+    // The attentional half of reading, split out of `readability` so both are
+    // separately attributable rather than summed into one number that can only
+    // be right about one of them.
+    //
+    // This is the layer an ADHD reader's cost lands in: decoding intact, loses
+    // place, re-reads, pulled off the line by movement in the periphery. It is
+    // NOT frustration -- losing your place is a processing cost, not an
+    // emotional response to one, and routing it through frustration would point
+    // remediation at reassurance instead of at chunking, shorter blocks and
+    // fewer moving distractors.
+    //
+    // Appended as layer 7 rather than inserted before readability, deliberately:
+    // layers spend from a budget the earlier ones depleted, so inserting would
+    // have changed readability's numbers through depletion as well as through
+    // its trait list, and the two effects could not be told apart.
+    traits: ['sustainedAttention'],
   },
 ];
 
@@ -152,6 +241,44 @@ const INTERACTION_PAIRS: Array<{ a: string; b: string; weight: number }> = [
 /** Asymmetric cost weights (Theorem 2 in paper) */
 const WEIGHT_DEFICIT = 1.0;   // demand > capacity: high cost
 const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
+
+/**
+ * Dimensions where having MORE than the page asks for costs nothing at all.
+ *
+ * Surplus is cheap rather than free for most traits, which is defensible: a
+ * maximiser on a trivial page really does spend effort the page did not need.
+ * It is not defensible for site knowledge. Knowing a site better cannot make it
+ * harder to use, and because familiarity is a parameter the caller sets
+ * explicitly, the wrongness is directly visible rather than buried.
+ *
+ * Measured on cbrowser.ai, a shallow site, right after wiring the demand term:
+ * familiarity 0 gave total 0.19 and familiarity 1 gave 0.268 — the daily user
+ * charged more than the first-time visitor, because low navigation depth means
+ * low demand and a familiarity of 1.0 is then almost entirely surplus. An
+ * inverted knob is worse than an inert one: it produces a confident number
+ * pointing the wrong way. (2026-08-02)
+ *
+ * `sustainedAttention` joins it on the same argument: being able to concentrate
+ * harder than a page requires cannot make that page harder to read. Billed as
+ * surplus it charged `power-user` 0.027 of readability cost on a text-dense
+ * page for having an attention capacity of 0.85 against a demand of 0.50 --
+ * i.e. a penalty for concentrating well. Free, it charges nothing.
+ *
+ * `readingCapacity` joined them on 2026-08-02, and unlike the other two it is
+ * REQUIRED rather than merely defensible. `readability` is now decoding-only
+ * and carries a stated contract -- lower `legibilityQuality` for someone means
+ * higher readability cost for them. Both quantities derive from the same
+ * reading profile, so the contract is monotonic exactly as long as cost falls
+ * monotonically in capacity. Billed surplus breaks that at the top: above the
+ * page's demand, cost starts RISING again at 0.3 per unit, so the strongest
+ * readers re-enter the cost curve from the other side and a graph of
+ * legibility against cost turns back on itself.
+ *
+ * This was deferred one commit earlier as "a calibration decision on numbers
+ * customers have already seen". Splitting the layer removed the choice: a
+ * contract the tool prints in its own output has to hold.
+ */
+const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity']);
 
 /** Capacity depletion rate per layer (alpha_i, Section 3.4) */
 const DEPLETION_RATE = 0.15;
@@ -223,13 +350,13 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.readingTendency += infoDensity * 0.07;
   variance.informationForaging += infoDensity * 0.06;
 
-  // ── visualComplexity → changeBlindness, mentalModelRigidity, attentionPattern (inferred)
+  // ── visualComplexity → changeBlindness, mentalModelFlexibility, attentionPattern (inferred)
   const visDemand = visCplx; // already 0-1 from logScale
   demands.changeBlindness = Math.max(demands.changeBlindness, visDemand);
-  demands.mentalModelRigidity = Math.max(demands.mentalModelRigidity, visDemand * 0.7);
+  demands.mentalModelFlexibility = Math.max(demands.mentalModelFlexibility, visDemand * 0.7);
   demands.attentionPattern = Math.max(demands.attentionPattern, visDemand * 0.85);
   variance.changeBlindness += visCplx * 0.12;
-  variance.mentalModelRigidity += visCplx * 0.08;
+  variance.mentalModelFlexibility += visCplx * 0.08;
   variance.attentionPattern += visCplx * 0.1;
 
   // ── interactiveElementCount → riskTolerance, satisficing, proceduralFluency, motorPrecision (inferred)
@@ -290,14 +417,14 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
     demands.comprehension = Math.max(demands.comprehension, longWordR * 0.8);
     variance.readingTendency += longWordR * 0.11;
 
-    // technicalDensity → comprehension, transferLearning, mentalModelRigidity
+    // technicalDensity → comprehension, transferLearning, mentalModelFlexibility
     // 10+ character words signal compound terms, jargon, domain-specific vocabulary
     demands.comprehension = Math.max(demands.comprehension, techDens * 0.95);
     demands.transferLearning = Math.max(demands.transferLearning, techDens * 0.8);
-    demands.mentalModelRigidity = Math.max(demands.mentalModelRigidity, techDens * 0.7);
+    demands.mentalModelFlexibility = Math.max(demands.mentalModelFlexibility, techDens * 0.7);
     variance.comprehension += techDens * 0.13;
     variance.transferLearning += techDens * 0.09;
-    variance.mentalModelRigidity += techDens * 0.07;
+    variance.mentalModelFlexibility += techDens * 0.07;
   }
 
   // ── animationLevel → changeBlindness, interruptRecovery, emotionalContagion
@@ -308,6 +435,35 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   variance.changeBlindness += animLevel * 0.1;
   variance.interruptRecovery += animLevel * 0.09;
   variance.emotionalContagion += animLevel * 0.07;
+
+  // ── textDensity × distractor pressure → sustainedAttention
+  //
+  // How much attention the page asks you to HOLD, as opposed to how hard its
+  // words are to decode (readingCapacity) or how much of it you choose to read
+  // (readingTendency, which modulates demand below). Gated on text: a page with
+  // no prose asks nothing here, however busy it is, because there is no line to
+  // lose your place in.
+  //
+  // Multiplicative rather than this file's usual `max`, deliberately -- the
+  // interaction IS the mechanism. A long article with nothing moving on it is
+  // readable; the same article beside an autoplaying carousel is where the
+  // re-reading happens. Two `max` terms would score those two pages the same.
+  //
+  // Animation dominates the distractor term because moving peripheral content
+  // captures attention involuntarily, while static clutter merely competes for
+  // it (Yantis & Jonides 1990 on abrupt-onset capture).
+  //
+  // The 0.7 base sits deliberately BELOW readingCapacity's 0.9: on a page with
+  // nothing moving, decoding is the larger demand of text and attention is the
+  // secondary one. The distractor multiplier is what lets it overtake decoding,
+  // and only on a page that has earned it. Without that ordering this dimension
+  // re-creates the exact inversion that removing readingTendency fixed --
+  // measured: at a flat 1.0 base, ADHD outscored dyslexic on readability on a
+  // page with animationLevel 0, which is the wrong answer.
+  const distractorPressure = Math.min(1, animDemand * 0.7 + visDemand * 0.3);
+  const sustainDemand = Math.min(1, textDemand * 0.7 * (1 + distractorPressure * 0.7));
+  demands.sustainedAttention = Math.max(demands.sustainedAttention, sustainDemand);
+  variance.sustainedAttention += textDens * 0.1 + animLevel * 0.08;
 
   // ── choiceCount → satisficing, anchoringBias, fearOfMissingOut, socialProofSensitivity
   // LogScale: 10 choices = 0.5, 30 = 0.75, 100 = 0.91
@@ -328,6 +484,31 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   demands.metacognitivePlanning = Math.max(demands.metacognitivePlanning, navDemand * 0.8);
   demands.persistence = Math.max(demands.persistence, navDemand * 0.7);
   demands.transferLearning = Math.max(demands.transferLearning, navDemand * 0.65);
+  // ── navigationDepth → siteFamiliarity
+  //
+  // This dimension had NO demand term at all. It was initialised to 0 and never
+  // raised, so the persona's familiarity was transported against zero demand and
+  // contributed exactly nothing to the chain — three runs at familiarity unset,
+  // 1 and 0 returned byte-identical results while the tool reported the
+  // parameter as applied. The value was never overridden; nothing ever asked
+  // for it.
+  //
+  // Navigation depth is the honest driver: the further content sits from the
+  // entry point, the more the page asks you to already know where things are.
+  // A one-click page demands no site knowledge no matter who you are, which is
+  // why this is proportional to navDemand rather than a constant. Weighted just
+  // under workingMemory (0.95), since knowing the layout substitutes for
+  // holding it in mind. (2026-08-02)
+  demands.siteFamiliarity = Math.max(demands.siteFamiliarity, navDemand * 0.85);
+  // Reading capacity is demanded by how much text there is to decode, and motor
+  // capacity by how many things there are to hit. Both proportional, so a page
+  // with no text asks nothing of decoding and a page with no controls asks
+  // nothing of pointing.
+  demands.readingCapacity = Math.max(demands.readingCapacity, Math.max(textDens, infoDensity) * 0.9);
+  demands.motorCapacity = Math.max(demands.motorCapacity, interDemand * 0.9);
+  variance.readingCapacity += textDens * 0.08;
+  variance.motorCapacity += interDemand * 0.08;
+  variance.siteFamiliarity += Math.min(1, navDepth / 5) * 0.08;
   variance.workingMemory += Math.min(1, navDepth / 5) * 0.09;
   variance.metacognitivePlanning += Math.min(1, navDepth / 5) * 0.07;
   variance.persistence += Math.min(1, navDepth / 5) * 0.06;
@@ -422,8 +603,8 @@ const VALUE_DEMAND_MODULATION: Array<{
   // Self-Direction → amplifies metacognitive planning (plan their own path)
   { value: 'selfDirection', trait: 'metacognitivePlanning', coefficient: -0.15, layer: 'cognitiveLoad' },
 
-  // Tradition → amplifies mentalModelRigidity (resist new UI patterns)
-  { value: 'tradition', trait: 'mentalModelRigidity', coefficient: 0.25, layer: 'cognitiveLoad' },
+  // Tradition → amplifies mentalModelFlexibility (resist new UI patterns)
+  { value: 'tradition', trait: 'mentalModelFlexibility', coefficient: 0.25, layer: 'cognitiveLoad' },
 
   // Benevolence → reduces emotionalContagion cost (emotionally regulated)
   { value: 'benevolence', trait: 'emotionalContagion', coefficient: -0.15, layer: 'frustration' },
@@ -471,6 +652,48 @@ export function computeSequentialCTC(
     demands: { ...demand.demands },
     variance: { ...demand.variance },
   };
+
+  // readingTendency modulates DEMAND, not capacity.
+  //
+  // It was in the readability layer as a capacity and inverted it: an ADHD
+  // persona who skims (0.2) scored a large capacity deficit against text
+  // demand, so a text-dense page cost them MORE than a dyslexic reader at 0.4,
+  // while the same run reported the dyslexic reader at 157 WPM against 204.
+  //
+  // The trait is not an ability, it is a STRATEGY -- its own criteria are
+  // "skims, reads carefully, scans for buttons" -- and skimming is how someone
+  // spends less effort on text, not evidence they cannot decode it. On the
+  // demand side that reads correctly: a skimmer engages less of the page's text,
+  // a careful reader engages more.
+  //
+  // Bounded to +/-25% around neutral, for two reasons. A skimmer still has to
+  // find the content, so demand cannot fall toward zero. And an unbounded
+  // modulator would recreate the very inversion this fixes by letting strategy
+  // outweigh decoding ability -- verified it does not: dyslexic still costs more
+  // than ADHD on a text-dense page after this. (2026-08-02)
+  const readingTendency = persona.traits?.readingTendency;
+  if (typeof readingTendency === "number") {
+    const engagement = 0.75 + readingTendency * 0.5; // 0.75 at pure skim, 1.25 at careful
+    // ATTENTIONAL demand only. Applied to `readingCapacity` as well for one
+    // commit, and that was wrong on the merits as well as breaking a contract.
+    //
+    // Engagement is how much of the page you read. That scales how long you
+    // must hold the line -- genuinely an attentional quantity -- but it does
+    // not change how hard the words you do read are to decode. Skimming reduces
+    // exposure, not difficulty.
+    //
+    // It also made decoding demand persona-specific, which silently voided the
+    // `legibilityQuality` contract the readability layer prints in its own
+    // output: measured, `distracted-user` at legibility 0.619 paid 0.000 while
+    // `careful-reader` at 0.724 paid 0.016 -- lower legibility, lower cost --
+    // purely because the skimmer's demand had been scaled down. A contract
+    // stated cross-persona has to be computed against a demand that does not
+    // vary by persona. (2026-08-02)
+    if (modulatedDemand.demands.sustainedAttention) {
+      modulatedDemand.demands.sustainedAttention = Math.max(0, Math.min(1,
+        modulatedDemand.demands.sustainedAttention * engagement));
+    }
+  }
 
   if (values && Object.keys(values).length > 0) {
     for (const mod of VALUE_DEMAND_MODULATION) {
@@ -522,7 +745,8 @@ export function computeSequentialCTC(
         layerDeficit += cost;
       } else {
         // Surplus: capacity exceeds demand — cheap
-        cost = (useAsymmetric ? WEIGHT_SURPLUS : 1.0) * gap * gap;
+        const surplusWeight = SURPLUS_FREE_DIMENSIONS.has(trait) ? 0 : WEIGHT_SURPLUS;
+        cost = (useAsymmetric ? surplusWeight : 1.0) * gap * gap;
         layerSurplus += cost;
       }
 
@@ -626,6 +850,11 @@ export function computeSequentialCTC(
 
   return {
     totalCTC,
+    // The un-normalized cost, exposed because totalCTC is a SIGMOID of it and
+    // the two are not interchangeable. Every ratio against additiveCTC has to
+    // use this one: additiveCTC is a raw sum, totalCTC is squashed to 0-1, and
+    // dividing one by the other compares different units. (2026-08-02)
+    rawCTC,
     layers,
     interactions,
     additiveCTC,
@@ -698,14 +927,39 @@ export function computeDemandFromRawMetrics(
 /**
  * Compare sequential vs. additive CTC to quantify the sequential effect.
  *
- * Returns the ratio (sequential / additive). Values > 1.0 indicate that
- * capacity depletion and interactions amplify the total cost beyond what
- * independent layers would predict.
+ * Returns rawCTC / additiveCTC -- both in layer-cost units.
+ *
+ * NAMED FOR WHAT IT DOES, NOT WHAT IT WAS EXPECTED TO DO. The old name,
+ * `sequentialAmplification`, promised a value above 1.0 — depletion and
+ * interactions pushing total cost past what independent layers would predict.
+ * Measured across five real runs it was 0.30, 0.31 and 0.39: the chain
+ * ATTENUATES the additive sum by 61-70%, and has never been observed above 1.
+ *
+ * The transform is saturating rather than corrupting: the coefficient rises
+ * monotonically with the additive sum (0.30 -> 0.31 -> 0.39), so rank ordering
+ * across personas and pages is preserved and comparative claims built on CTC
+ * hold. What does not hold is any reading of an ABSOLUTE cost, which carries an
+ * undocumented compression of roughly 3x.
+ *
+ * "Amplification" for a term that only ever shrinks actively misleads anyone
+ * reading the JSON without the source, which is most readers. (2026-08-02)
  */
-export function sequentialAmplification(result: SequentialTransportResult): number {
+export function chainCoefficient(result: SequentialTransportResult): number {
   if (result.additiveCTC === 0) return 1.0;
-  return result.totalCTC / result.additiveCTC;
+  // rawCTC, NOT totalCTC. Both are in layer-cost units, so their ratio is the
+  // actual contribution of interactions and sequential depletion. Measured
+  // 1.002-1.019 across page densities: the chain does amplify, by 0.2-2%.
+  //
+  // The old form divided totalCTC (a sigmoid, 0-1) by additiveCTC (a raw,
+  // unbounded sum) and reported 0.30-0.56 as if the chain were dampening by
+  // 60%. It was not measuring the chain at all, it was measuring the sigmoid --
+  // and it was not even monotonic across density (0.329, 0.399, 0.556, 0.313,
+  // 0.425), so it could not be used for ranking either.
+  return result.rawCTC / result.additiveCTC;
 }
+
+/** @deprecated Misleading name — it has never exceeded 1. Use `chainCoefficient`. */
+export const sequentialAmplification = chainCoefficient;
 
 /**
  * Identify the top N most costly traits across all layers.

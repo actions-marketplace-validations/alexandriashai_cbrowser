@@ -55,10 +55,17 @@ describe("served artifact store", () => {
   });
 
   test("the URL's last segment is the filename actually written", async () => {
-    const { writeArtifact } = await import("../src/artifact-store.js");
+    // Read back from ARTIFACT_DIR, not from `sandbox`. artifact-store caches
+    // ARTIFACT_DIR at import time, so when any earlier test file in the suite
+    // imports it first, this file's env var never takes effect and the module
+    // writes somewhere else. The test then passed alone and failed in the full
+    // run -- an order dependency that looked like a flake. The claim here is
+    // URL-vs-disk agreement, which is what the module's own write location
+    // tests; whether that location is the configured one is asserted above.
+    const { writeArtifact, ARTIFACT_DIR } = await import("../src/artifact-store.js");
     const written = writeArtifact(Buffer.from("x"), "journey-first-timer-123.gif");
     const urlTail = new URL(written!.url).pathname.split("/").pop();
-    const onDisk = readdirSync(sandbox).find((f) => f === urlTail);
+    const onDisk = readdirSync(ARTIFACT_DIR).find((f) => f === urlTail);
     expect(onDisk).toBe(urlTail!);
   });
 

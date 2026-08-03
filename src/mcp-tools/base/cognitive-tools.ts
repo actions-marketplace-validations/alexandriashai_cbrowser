@@ -16,7 +16,8 @@ import {
   isAgentPersonaObject,
 } from "../../personas.js";
 import { listAccessibilityPersonas, getAccessibilityPersona } from "../../personas.js";
-import { getPersonaValues, rankInfluencePatternsForProfile } from "../../values/index.js";
+import { getPersonaValues, rankInfluencePatternsForProfile, resolveValuesForPersona } from "../../values/index.js";
+import { resolvePersonaValues } from "./values-tools.js";
 import type {
   CognitiveState,
   AbandonmentThresholds,
@@ -30,7 +31,7 @@ import type {
  * Fetch custom personas from CMS for the current account.
  * Uses the API key from the session to authenticate.
  */
-async function fetchCustomPersonasFromCMS(apiKey?: string): Promise<Array<{
+export async function fetchCustomPersonasFromCMS(apiKey?: string): Promise<Array<{
   name: string; slug: string; description: string; traits: Record<string, number>; values?: Record<string, number>; source: string;
 }>> {
   if (!apiKey?.startsWith("cbk_")) return [];
@@ -100,7 +101,7 @@ export function registerCognitiveTools(
         emotionalContagion: z.number().min(0).max(1).optional(),
         fearOfMissingOut: z.number().min(0).max(1).optional(),
         socialProofSensitivity: z.number().min(0).max(1).optional(),
-        mentalModelRigidity: z.number().min(0).max(1).optional(),
+        mentalModelFlexibility: z.number().min(0).max(1).optional(),
         siteFamiliarity: z.number().min(0).max(1).optional(),
       }).optional().describe("Override specific cognitive traits (26 available, including siteFamiliarity: 0=brand new visitor, 1=daily user)"),
       location: z.object({
@@ -213,7 +214,7 @@ export function registerCognitiveTools(
           emotionalContagion: 0.5,
           fearOfMissingOut: 0.5,
           socialProofSensitivity: 0.5,
-          mentalModelRigidity: 0.5,
+          mentalModelFlexibility: 0.5,
           siteFamiliarity: 0.5,
         };
         personaObj = {
@@ -325,6 +326,11 @@ export function registerCognitiveTools(
         familiarityLevel?: string;
         familiarityDowngraded?: boolean;
         originalFamiliarity?: number;
+        /** Pages this install has crawled for the domain. Drives the ceiling. */
+        pagesCrawled?: number;
+        /** The constant the coverage ratio divides by. Chosen, not measured. */
+        fullCoverageAt?: number;
+        provenance?: string;
       } = { hasModel: false };
 
       try {
@@ -343,12 +349,25 @@ export function registerCognitiveTools(
             familiarityLevel: "none",
             familiarityDowngraded: true,
             originalFamiliarity: requestedFamiliarity,
+            pagesCrawled: 0,
+            fullCoverageAt: 20,
+            provenance: "siteFamiliarity is a persona-site variable, not a disposition like the other 25 traits: the same persona is familiar with one site and not another. The effective value is capped by how many pages this install has crawled, which grows as you use the tool — so it is not reproducible across runs and should be read as a ceiling on what may be simulated, not as a measurement of the persona.",
             suggestion: familiarityWarning,
           };
         } else if (hasData && requestedFamiliarity > 0.05) {
           // Scale familiarity by data coverage — partial knowledge = partial familiarity
           // A site with 3 pages mapped shouldn't give "expert" level access
-          const coverageScore = Math.min(1.0, stats.navigationNodes / 20); // 20+ pages = full coverage
+          // Coverage, not familiarity.
+          //
+          // navigationNodes counts pages THIS INSTALL has crawled, and it grows
+          // on every navigate and click. So the same persona on the same site
+          // yields a different number depending on how much crawling happened
+          // first — the value is not a property of the persona or the site, and
+          // it is not reproducible across runs. It is a ceiling on what we are
+          // entitled to simulate, which is a useful guard and a bad measurement.
+          // The 20-page threshold is a chosen constant, not a finding.
+          // Reported alongside so the number explains itself. (2026-08-01)
+          const coverageScore = Math.min(1.0, stats.navigationNodes / 20);
           effectiveFamiliarity = Math.min(requestedFamiliarity, coverageScore);
 
           if (effectiveFamiliarity < requestedFamiliarity - 0.1) {
@@ -363,6 +382,9 @@ export function registerCognitiveTools(
           if (effectiveFamiliarity >= 0.8) {
             siteModelContext = {
               hasModel: true,
+              pagesCrawled: stats.navigationNodes,
+              fullCoverageAt: 20,
+              provenance: "Capped by crawl coverage (pagesCrawled/fullCoverageAt), which grows as this install uses the tool — a ceiling on what may be simulated, not a reproducible measurement of the persona. siteFamiliarity is a persona-site variable, not a disposition like the other 25 traits.",
               knownPaths: stats.goalPaths,
               familiarityLevel,
               familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
@@ -374,6 +396,9 @@ export function registerCognitiveTools(
           } else if (effectiveFamiliarity >= 0.5) {
             siteModelContext = {
               hasModel: true,
+              pagesCrawled: stats.navigationNodes,
+              fullCoverageAt: 20,
+              provenance: "Capped by crawl coverage (pagesCrawled/fullCoverageAt), which grows as this install uses the tool — a ceiling on what may be simulated, not a reproducible measurement of the persona. siteFamiliarity is a persona-site variable, not a disposition like the other 25 traits.",
               familiarityLevel,
               familiarityDowngraded: effectiveFamiliarity < requestedFamiliarity,
               originalFamiliarity: effectiveFamiliarity < requestedFamiliarity ? requestedFamiliarity : undefined,
@@ -407,7 +432,7 @@ export function registerCognitiveTools(
         }
       }
 
-      const personaValues = getPersonaValues(personaObj.name);
+      const personaValues = resolveValuesForPersona(personaObj.name);
       const influencePatterns = personaValues
         ? rankInfluencePatternsForProfile(personaValues).slice(0, 5)
         : undefined;
@@ -748,7 +773,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
         const p = getPersona(name);
         if (!p) return null;
         const profile = getCognitiveProfile(p);
-        const values = getPersonaValues(p.name);
+        const values = resolveValuesForPersona(p.name);
         return {
           name: p.name,
           description: p.description,
@@ -822,7 +847,7 @@ Begin the simulation now. Narrate your thoughts as this persona.
           else if (p.name.includes("cognitive") || p.name.includes("adhd")) disabilityType = "Cognitive";
         }
 
-        const values = getPersonaValues(p.name);
+        const values = resolveValuesForPersona(p.name);
         return {
           name: p.name,
           description: p.description,
@@ -897,20 +922,48 @@ Begin the simulation now. Narrate your thoughts as this persona.
             benevolence: p.values.benevolence ?? 0.5,
             universalism: p.values.universalism ?? 0.5,
           };
+          // Delegated to the shared resolver rather than recomputed here.
+          //
+          // This block had both defects the derivation was fixed for, in one
+          // object. `maslowLevel` was the LITERAL "esteem" — so every custom
+          // persona in the roster reported esteem regardless of its values,
+          // right for six of twelve by coincidence and wrong for the rest by
+          // as much as 0.3. And the rollups averaged in the 0.5 placeholders
+          // that the live tools now exclude, so the roster and
+          // persona_values_lookup disagreed on selfEnhancement for every
+          // custom persona (alexa-eden 0.599 here against 0.698 there).
+          //
+          // Two fixes propagated to the derivation and neither reached this
+          // copy, which is the argument against the copy existing. One
+          // resolver now answers both, so they cannot drift again.
+          // (2026-08-01)
+          // Data passed in, not looked up by name. These personas come from
+          // the CMS, so in a process whose data dir is not scoped to that
+          // account the name resolves to nothing and the resolver reports
+          // `source: "none"` -- correct about the lookup, and a lie about a
+          // persona whose values are right here in `p.values`. (2026-08-01)
+          const resolved = resolvePersonaValues(p.name, {
+            values: sv,
+            valuesDerivation: (p as { values_derivation?: { method?: string } }).values_derivation
+              ?? (p as { valuesDerivation?: { method?: string } }).valuesDerivation
+              ?? { method: "traits" },
+            traits: p.traits as Record<string, number> | undefined,
+          });
           return {
             schwartz: sv,
-            higherOrder: {
-              openness: (sv.selfDirection + sv.stimulation) / 2,
-              selfEnhancement: (sv.achievement + sv.power) / 2,
-              conservation: (sv.security + sv.conformity + sv.tradition) / 3,
-              selfTranscendence: (sv.benevolence + sv.universalism) / 2,
-            },
+            higherOrder: resolved.higherOrder ?? {},
+            ...(resolved.higherOrderWithImputed
+              ? { higherOrderWithImputed: resolved.higherOrderWithImputed }
+              : {}),
             sdt: {
               autonomyNeed: p.values.autonomyNeed ?? 0.5,
               competenceNeed: p.values.competenceNeed ?? 0.5,
               relatednessNeed: p.values.relatednessNeed ?? 0.5,
             },
-            maslowLevel: "esteem" as const,
+            valuesSource: resolved.source,
+            maslowLevel: resolved.maslowLevel,
+            ...(resolved.maslowCaveat ? { maslowCaveat: resolved.maslowCaveat } : {}),
+            ...(resolved.imputationPolicy ? { imputationPolicy: resolved.imputationPolicy } : {}),
           };
         })() : undefined,
       }));

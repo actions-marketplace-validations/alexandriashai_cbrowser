@@ -441,24 +441,29 @@ export interface CognitiveTraits {
    * @see Norman (1988) - "The Design of Everyday Things"
    * @see Gentner & Stevens (1983) - "Mental Models"
    */
-  mentalModelRigidity?: number;
+  mentalModelFlexibility?: number;
 
   /**
-   * How much the persona "knows" about a site from prior visits (0 = brand new, 1 = daily user)
+   * How well this persona knows THIS site, resolved per tool run.
    *
-   * Controls how much site model data is exposed during cognitive journeys:
-   * - 0.0: No site model — truly blind first visit
-   * - 0.1–0.4: Failure patterns only — knows what to avoid, not where to go
-   * - 0.5–0.7: Failure patterns + page structure — vague familiarity
-   * - 0.8–1.0: Full site model — navigation paths, goal sequences, element reliability
+   * RUN-SCOPED, NEVER STORED. It is the one entry here that is not a
+   * disposition: the same person is a daily user of one site and a first-time
+   * visitor to another, so "familiarity" has no value until a URL is named.
+   * Stored on a persona it answered "familiar with which site?" by accident,
+   * and whichever site its author had in mind silently outranked the caller.
    *
-   * Research basis: Cockburn et al. (2007) - "Familiar Interfaces"
-   * Revisitation accounts for 58% of web pages viewed. Familiar users navigate
-   * 2-4x faster via spatial memory and landmark recognition.
+   * That is not hypothetical. Every builtin carried one (power-user 0.9,
+   * first-timer 0.0) and the persona builder merged the stored value over the
+   * per-run parameter, so three runs at familiarity unset / 1 / 0 returned
+   * byte-identical results while the response attested the parameter had been
+   * applied. `stripStoredFamiliarity` now removes it on the way to disk.
+   *
+   * Populated at runtime by the tools that audit a specific site
+   * (cognitive_effort, site_cognitive_assessment), from the caller's parameter
+   * or from how much of the site this install has actually crawled.
    *
    * @see Tauscher & Greenberg (1997) - "How people revisit web pages"
-   * @see Weinreich et al. (2008) - "Off the beaten tracks: exploring three aspects of web navigation"
-   * @since v18.35.0
+   * @since v18.35.0, run-scoped since 2026-08-02
    */
   siteFamiliarity?: number;
 }
@@ -756,7 +761,15 @@ export interface EmotionalConfig {
 export interface CognitiveProfile {
   traits: CognitiveTraits;
   attentionPattern: AttentionPatternType;
-  decisionStyle: DecisionStyleType;
+  /**
+   * Omitted when the top two derived styles are indistinguishable.
+   *
+   * Optional as of 2026-08-02: the label carried identical authority at a margin
+   * of 0.03 as at 0.90, and a consumer reading only this field got a coin flip
+   * presented as a finding. Below the threshold the candidates are published
+   * instead, under decisionStyleCandidates.
+   */
+  decisionStyle?: DecisionStyleType | null;
   /**
    * How each of the two fields above got its value. Both are initialised to a
    * literal ("f-pattern", "cautious") and only overwritten when a rule matches
@@ -766,13 +779,31 @@ export interface CognitiveProfile {
    * not a conclusion about that persona. (2026-07-31)
    */
   attentionPatternSource?: "declared" | "derived" | "default";
-  decisionStyleSource?: "declared" | "derived" | "default";
+  /** Gap to the runner-up pattern. Small means the derivation is a near-tie. */
+  attentionPatternMargin?: number;
+  /** Set when a declared pattern disagrees with what the traits score highest. */
+  attentionPatternConflict?: string;
+  /** Tech level as the traits imply it, or the declared one when present. */
+  techLevel?: "beginner" | "intermediate" | "expert";
+  techLevelSource?: "declared" | "derived";
+  /** Set when the stored tech_level disagrees with the fluency traits. */
+  techLevelConflict?: string;
+  decisionStyleSource?: "declared" | "derived" | "default" | "suppressed";
   /**
    * Gap between the winning decision style's score and the runner-up. A small
    * margin means the trait vector does not clearly favour one, and the label
    * should be read as weak rather than as a finding.
    */
   decisionStyleMargin?: number;
+  /** clear (>=0.20) | weak (>=0.05) | indistinguishable (<0.05). */
+  decisionStyleConfidence?: "clear" | "weak" | "indistinguishable";
+  decisionStyleRunnerUp?: string;
+  decisionStyleCandidates?: string[];
+  decisionStyleNote?: string;
+  /** True when the label was withheld because the top two styles tied. */
+  decisionStyleSuppressed?: boolean;
+  /** The margin below which the label is withheld. */
+  decisionStyleThreshold?: number;
   /** Template for generating inner monologue */
   innerVoiceTemplate?: string;
 }
@@ -5060,6 +5091,36 @@ export interface AccessibilityTraits {
   /** Focus duration before fatigue 0-1 */
   attentionSpan?: number;
 
+  // Reading capacity
+  //
+  // Added 2026-08-02 because the reading model was UNREACHABLE from the trait
+  // system. getReadingProfile matched on the persona's NAME -- name.includes
+  // ("dyslexic") returned a hardcoded profile -- so WPM, fixation span and
+  // phonological penalty could not be tuned by any trait edit. Twelve trait
+  // changes to dyslexic-user moved cognitiveLoad and frustration substantially
+  // and left every reading measure byte-identical, which is what demonstrated
+  // it.
+  //
+  // Two consequences that made this a schema change rather than a patch: a
+  // custom persona built from a description could not express reading capacity
+  // at all, and any persona whose name did not contain a recognised keyword
+  // silently got the neurotypical profile.
+  //
+  // These five are exactly the ReadingProfile fields, so an author can state a
+  // reading profile directly and the name lookup becomes the fallback rather
+  // than the only path. All optional: omitting them preserves the previous
+  // name-keyed behaviour exactly.
+  /** Orthographic (whole-word) recognition fluency 0-1. */
+  orthographicFluency?: number;
+  /** Phonological decoding ability 0-1. */
+  phonologicalDecoding?: number;
+  /** Characters processed per fixation. Neurotypical is about 7. */
+  visualSpan?: number;
+  /** Vocabulary breadth 0-1. */
+  vocabularyBreadth?: number;
+  /** Sensitivity to visual crowding 0-1, HIGHER = more affected. */
+  crowdingSensitivity?: number;
+
   // Fatigue
   /** Performance degradation over time 0-1 */
   fatigueSusceptibility?: number;
@@ -5162,7 +5223,23 @@ export interface AccessibilityEmpathyResult {
   persona: string;
   /** Type of disability simulated */
   disabilityType: string;
-  /** Whether the goal was achieved */
+  /**
+   * Whether the audit found any barrier that would BLOCK this persona.
+   *
+   * Renamed from `goalAchieved`, which claimed something the code never
+   * computed. The value is `blockingBarriers.length === 0` — a statement about
+   * the page, not about anyone completing a task. No traversal is required to
+   * produce it, and when a cognitive journey does run its SUCCESS never sets
+   * this true; only an explicit journey failure can force it false.
+   *
+   * "The goal was achieved" and "we found nothing that would stop you" are
+   * different claims, and the old name asserted the stronger one. (2026-08-02)
+   */
+  noBlockingBarriers: boolean;
+  /**
+   * @deprecated Use `noBlockingBarriers`. Same value, honest name. Emitted for
+   * one release so existing consumers do not break, then removed.
+   */
   goalAchieved: boolean;
   /** Barriers encountered */
   barriers: AccessibilityBarrier[];
@@ -5188,8 +5265,8 @@ export interface AccessibilityEmpathyResult {
 export interface EmpathyAuditResult {
   /** URL tested */
   url: string;
-  /** Goal attempted */
-  goal: string;
+  /** The goal, when one was supplied and a journey used it. */
+  goal?: string;
   /** When audit was run */
   timestamp: string;
   /** Results per disability type */
@@ -5210,8 +5287,17 @@ export interface EmpathyAuditResult {
 
 /** Options for accessibility empathy audit */
 export interface EmpathyAuditOptions {
-  /** Goal to accomplish */
-  goal: string;
+  /**
+   * Optional. Only consumed when an API key is configured AND a cognitive
+   * journey therefore runs: it drives that traversal and is recorded as a goal
+   * path on the site model. Barrier detection — which is what the audit's
+   * score and its `noBlockingBarriers` verdict are actually built from — does
+   * not read it at all.
+   *
+   * It was required, which implied every audit traversed toward it. Most do
+   * not. (2026-08-02)
+   */
+  goal?: string;
   /** Disability types to simulate */
   disabilities: string[];
   /** WCAG level to check against */

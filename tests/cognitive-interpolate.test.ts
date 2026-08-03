@@ -76,12 +76,21 @@ describe("endpoint identity", () => {
       10,
     );
     const atB = geodesic[geodesic.length - 1].traits;
-    // Reported as 0.7778 / 0.1667 / 0.3333 / 0.3889 / 1.0 — each 1/0.9 too big.
-    expect(atB.patience).toBeCloseTo(0.7, 6);
-    expect(atB.riskTolerance).toBeCloseTo(0.15, 6);
-    expect(atB.comprehension).toBeCloseTo(0.3, 6);
-    expect(atB.workingMemory).toBeCloseTo(0.35, 6);
-    expect(atB.attributionStyle).toBeCloseTo(0.9, 6);
+    // The bug was a NORMALISATION error: every endpoint trait came back 1/0.9
+    // too big (0.7 read as 0.7778, 0.9 as 1.0). So the claim is that the
+    // endpoint equals the persona, whatever the persona currently is.
+    //
+    // It used to assert five literals copied from elderly-low-vision, which
+    // made a test about interpolation arithmetic fail whenever a persona was
+    // legitimately re-tuned -- as it did when the trait vectors were reconciled
+    // with their own documentation and patience moved 0.7 to 0.9. Pinning
+    // another module's data is how a test starts reporting on the wrong thing.
+    const live = traitsOf("elderly-low-vision");
+    for (const t of ["patience", "riskTolerance", "comprehension", "workingMemory", "attributionStyle"]) {
+      expect(atB[t]).toBeCloseTo(live[t], 6);
+      // And specifically not inflated by the 1/0.9 factor the bug applied.
+      expect(atB[t]).not.toBeCloseTo(live[t] / 0.9, 6);
+    }
   });
 
   test("PROPERTY: endpoint identity holds for every pair of built-in personas", () => {
@@ -184,8 +193,15 @@ describe("barycenter lands on the trait scale too", () => {
     const bary = cognitiveBarycenter([profileOf("power-user"), profileOf("elderly-low-vision")]);
     for (const t of COGNITIVE_TRAITS) {
       if (typeof a[t] !== "number" || typeof b[t] !== "number") continue;
-      const lo = Math.min(a[t], b[t]) - 1e-6;
-      const hi = Math.max(a[t], b[t]) + 1e-6;
+      // Entropic regularisation means the barycenter cannot land exactly on a
+      // point mass, so a trait where BOTH personas hold the same value has a
+      // zero-width interval the result provably cannot sit inside. Measured
+      // 4.58e-4 outside on fearOfMissingOut once the two personas' values
+      // converged to 0.2 apiece. That is Sinkhorn smoothing, not drift, so the
+      // tolerance is named and small rather than the interval being widened.
+      const SINKHORN_SLACK = 1e-3;
+      const lo = Math.min(a[t], b[t]) - SINKHORN_SLACK;
+      const hi = Math.max(a[t], b[t]) + SINKHORN_SLACK;
       expect({ t, inside: bary.traits[t] >= lo && bary.traits[t] <= hi }).toEqual({ t, inside: true });
     }
   });

@@ -18,6 +18,7 @@ import {
   runWebMCPReadyAudit,
 } from "../../analysis/index.js";
 import { listAccessibilityPersonas } from "../../personas.js";
+import { getDefaultConfig } from "../../config.js";
 import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -90,7 +91,34 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         score: result.score,
         grade: result.grade,
         summary: result.summary,
-        topIssues: result.issues.slice(0, 5),
+        // Worst-first, and the cut is reported.
+        //
+        // This was a plain slice(0,5) over the issues in detection order, so
+        // severity had no bearing on what survived: a critical finding placed
+        // sixth by the order detectors happen to run was dropped in favour of
+        // five low ones, with nothing saying anything had been dropped. Found
+        // when a new critical detector fired in the audit and was invisible in
+        // the tool that wraps it. (2026-08-01)
+        ...(() => {
+          const rank = (sev: string) =>
+            ({ critical: 0, high: 1, medium: 2, low: 3, info: 4 }[String(sev).toLowerCase()] ?? 5);
+          const sorted = [...result.issues].sort((a, b) => rank(a.severity) - rank(b.severity));
+          const shown = sorted.slice(0, 5);
+          const omitted = sorted.length - shown.length;
+          return {
+            topIssues: shown,
+            issuesFound: result.issues.length,
+            ...(omitted > 0
+              ? {
+                  issuesOmitted: omitted,
+                  issuesNote: `Showing the 5 most severe of ${result.issues.length}. Severity counts across ALL findings: ` +
+                    Object.entries(result.issues.reduce((m: Record<string, number>, i) => {
+                      const k = String(i.severity); m[k] = (m[k] ?? 0) + 1; return m;
+                    }, {})).map(([k, v]) => `${k} ${v}`).join(", ") + ".",
+                }
+              : {}),
+          };
+        })(),
         topRecommendations: result.recommendations.slice(0, 5),
         duration: result.duration,
       };
@@ -201,6 +229,12 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       url: z.string().url().describe("URL to assess"),
       personas: z.string().optional().default("first-timer,cognitive-adhd").describe("Comma-separated persona names (default: first-timer,cognitive-adhd)"),
       threshold: z.number().optional().default(60).describe("Minimum agent-ready score to proceed to persona analysis (default: 60)"),
+      // Per RUN, not per persona. The same person is familiar with one site and new
+      // to another, so this has no value until a site is named -- a stored value only
+      // ever answered "familiar with which site?" by accident. The persona's value is
+      // the fallback when a caller does not pass one. (2026-08-01)
+      siteFamiliarity: z.number().min(0).max(1).optional()
+        .describe("How familiar these personas are with THIS site: 0 first visit, 1 regular user. Overrides any value stored on the persona. Familiarity is a persona-site pair, not a disposition, so set it per run."),
       userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US') — for geo-aware content expectations"),
       userTimezone: z.string().optional().describe("User's timezone (e.g., 'America/Denver') — for time-sensitive content evaluation"),
       userLanguage: z.string().optional().describe("User's expected language (e.g., 'en-US') — for readability calibration"),
@@ -219,7 +253,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       idempotentHint: false,
       openWorldHint: true,
     },
-  }, async ({ url, personas, threshold, userLocation, userTimezone, userLanguage, proxy, geoRegion, device, waitAfterLoad, waitForSelector, scope, _browserToken }) => {
+  }, async ({ url, personas, threshold, siteFamiliarity, userLocation, userTimezone, userLanguage, proxy, geoRegion, device, waitAfterLoad, waitForSelector, scope, _browserToken }) => {
     const startTime = Date.now();
     const personaList = (personas || "first-timer,cognitive-adhd").split(",").map(s => s.trim()).filter(Boolean);
 
@@ -482,7 +516,7 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         const { buildOTCognitiveProfile } = await import("../../visual/cognitive-transport.js");
         const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
         const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
-        const { getAnyPersona, createCognitivePersona } = await import("../../personas.js");
+        const { getAnyPersona, createCognitivePersona, resolvePersonaOrThrow } = await import("../../personas.js");
 
         // Navigate in our browser for page metrics
         await browser.navigate(url);
@@ -518,19 +552,26 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         for (const personaName of personaList) {
           try {
             const existingPersona = getAnyPersona(personaName);
+            if (!existingPersona) resolvePersonaOrThrow(personaName);
             const personaObj = existingPersona || createCognitivePersona(personaName, personaName, {});
             const traits = { ...((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number> };
 
-            // v18.61.0: siteFamiliarity is a binary gate, not a gradient
-            // Has site knowledge → persona keeps its configured familiarity (maxed to 1.0 for high-familiarity personas)
-            // No site knowledge → forced to 0.0 regardless of persona definition
+            // Familiarity is a persona-SITE pair, so the caller's value for THIS
+            // run wins over anything stored on the persona. A stored value only
+            // ever answered "familiar with which site?" by accident.
+            // (2026-08-01)
             const reqFam = traits.siteFamiliarity ?? 0.5;
-            if (hasSiteKnowledge) {
-              // Site knowledge exists — high-familiarity personas get max familiarity
-              if (reqFam > 0.5) traits.siteFamiliarity = 1.0;
+            const familiarityFromCaller = typeof siteFamiliarity === "number";
+            if (familiarityFromCaller) {
+              traits.siteFamiliarity = siteFamiliarity;
             } else {
-              // No site knowledge — everyone is a first-time visitor
-              traits.siteFamiliarity = 0.0;
+              // v18.61.0: without an explicit value it stays a binary gate on
+              // whether this install has crawled the site at all.
+              if (hasSiteKnowledge) {
+                if (reqFam > 0.5) traits.siteFamiliarity = 1.0;
+              } else {
+                traits.siteFamiliarity = 0.0;
+              }
             }
 
             const otProfile = buildOTCognitiveProfile(personaName, traits);
@@ -546,9 +587,13 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
                 name: l.name,
                 cost: Math.round(l.transportCost * 1000) / 1000,
               })),
-              ...(reqFam > 0.5 && !hasSiteKnowledge ? {
-                familiarityWarning: `siteFamiliarity downgraded from ${reqFam} to 0.0 — no site knowledge exists. Run page_understand first for accurate ${personaName} results.`,
+              // Only warn about the automatic downgrade. A caller who SET the
+              // value for this run has already answered the question the
+              // downgrade exists to answer.
+              ...(!familiarityFromCaller && reqFam > 0.5 && !hasSiteKnowledge ? {
+                familiarityWarning: `siteFamiliarity downgraded from ${reqFam} to 0.0 — no site knowledge exists for this domain. Pass siteFamiliarity on this call to state it directly, or run page_understand first.`,
               } : {}),
+              ...(familiarityFromCaller ? { siteFamiliaritySource: "supplied for this run" } : {}),
             };
           } catch (personaErr) {
             personaResults[personaName] = { error: personaErr instanceof Error ? personaErr.message : String(personaErr) };
@@ -672,7 +717,20 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
       } else {
         browser = new BrowserClass({
           headless: true,
-          ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
+          // The CONFIGURED viewport, not a hardcoded 1920x1080.
+          //
+          // cognitive_effort and every other tool render at the configured
+          // default (1280x800), and this one alone rendered at 1920x1080. The
+          // two tools were therefore measuring different rendered pages while
+          // reporting coordinates as if they shared a space -- attention regions
+          // came back at x=1312 against a config that says the viewport is 1280
+          // wide, which is impossible and was the tell. Any comparison between
+          // an attention run and a CTC run was comparing two different layouts.
+          // (2026-08-02)
+          ...(device ? { device: device.toLowerCase() } : {
+            viewportWidth: getDefaultConfig().viewportWidth,
+            viewportHeight: getDefaultConfig().viewportHeight,
+          }),
         });
         await browser.launch();
       }
@@ -734,9 +792,10 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
         try {
           const { motorAccessibility } = await import("../../visual/cognitive-models.js");
           const { buildOTCognitiveProfile } = await import("../../visual/cognitive-transport.js");
-          const { getAnyPersona, createCognitivePersona } = await import("../../personas.js");
+          const { getAnyPersona, createCognitivePersona, resolvePersonaOrThrow } = await import("../../personas.js");
 
-          const personaObj = getAnyPersona(persona) || createCognitivePersona(persona, persona, {});
+          // A miss throws instead of yielding an all-midpoint stand-in.
+          const personaObj = getAnyPersona(persona) || resolvePersonaOrThrow(persona) as ReturnType<typeof createCognitivePersona>;
           const traits = ((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number>;
           const otProfile = buildOTCognitiveProfile(persona, traits);
 
@@ -857,9 +916,10 @@ export function registerAuditTools(server: McpServer, context?: ToolRegistration
           const { buildOTCognitiveProfile } = await import("../../visual/cognitive-transport.js");
           const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
           const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
-          const { getAnyPersona, createCognitivePersona } = await import("../../personas.js");
+          const { getAnyPersona, createCognitivePersona, resolvePersonaOrThrow } = await import("../../personas.js");
 
-          const personaObj = getAnyPersona(persona) || createCognitivePersona(persona, persona, {});
+          // A miss throws instead of yielding an all-midpoint stand-in.
+          const personaObj = getAnyPersona(persona) || resolvePersonaOrThrow(persona) as ReturnType<typeof createCognitivePersona>;
           const traits = ((personaObj as unknown as Record<string, unknown>).cognitiveTraits || {}) as Record<string, number>;
           const otProfile = buildOTCognitiveProfile(persona, traits);
           const pageMetrics = await extractPageMetrics(page);
@@ -1079,7 +1139,11 @@ export function registerEmpathyAuditTool(server: McpServer): void {
     description: "Simulate how real users experience a site. Accepts ANY persona — disability personas get specialized barrier detection, non-disability personas get general UX analysis with a flag. Tests ONE persona per call. Disability: motor-impairment-tremor, low-vision-magnified, cognitive-adhd, dyslexic-user, deaf-user, elderly-low-vision, color-blind-deuteranopia. General: first-timer, power-user, mobile-user, elderly-user, impatient-user, or any custom persona.",
     inputSchema: {
       url: z.string().url().describe("URL to audit"),
-      goal: z.string().describe("Task goal (e.g., 'complete checkout')"),
+      // Optional as of 2026-08-02. It was required, which implied every audit
+      // traversed toward it — most do not. A cognitive journey runs only when an
+      // API key is configured; without one, nothing reads this. Barrier
+      // detection, the score, and the noBlockingBarriers verdict never do.
+      goal: z.string().optional().describe("Optional. What the persona is trying to do (e.g. 'complete checkout'). Used ONLY when an API key is set, to drive a cognitive journey and record a goal path. Barrier detection and the empathy score do not use it, so omitting it changes nothing about the accessibility findings."),
       disabilities: z.array(z.string()).optional().describe("Persona to test. Accepts disability names OR any cognitive persona (first-timer, power-user, etc). Non-disability personas are flagged. Pass ONE for reliable results."),
       wcagLevel: z.enum(["A", "AA", "AAA"]).optional().default("AA").describe("WCAG conformance level"),
       maxSteps: z.number().optional().default(5).describe("Max cognitive journey steps (keep low for MCP)"),
@@ -1171,7 +1235,12 @@ export function registerEmpathyAuditTool(server: McpServer): void {
             return {
               persona: r.persona,
               disabilityType: r.disabilityType,
-              goalAchieved: r.goalAchieved,
+              // What the audit actually computed: no barrier found that would
+              // block this persona. Renamed from goalAchieved, which asserted a
+              // completed task nobody attempted.
+              noBlockingBarriers: r.noBlockingBarriers,
+              /** @deprecated one release only — use noBlockingBarriers */
+              goalAchieved: r.noBlockingBarriers,
               empathyScore: r.empathyScore,
               // v18.22.0: Added score context for transparency
               // Whitelist projection: anything added to scoreContext upstream is

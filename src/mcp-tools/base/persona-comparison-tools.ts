@@ -6,12 +6,14 @@
  */
 
 import { z } from "zod";
+import { resolveValuesForPersona } from "../../values/persona-values.js";
 import { writeArtifact } from "../../artifact-store.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { comparePersonas } from "../../analysis/index.js";
 import { isApiKeyConfigured } from "../../cognitive/index.js";
 import {
   getAnyPersona,
+  resolvePersonaOrThrow,
   getCognitiveProfile,
   createCognitivePersona,
   isAgentPersonaObject,
@@ -221,6 +223,9 @@ Example:
         let personaObj: Persona | AccessibilityPersona;
 
         if (!existingPersona) {
+          // Unknown name: refuse. A fabricated persona here produces a complete
+          // per-persona assessment nobody can distinguish from a real one.
+          resolvePersonaOrThrow(personaName);
           personaObj = createCognitivePersona(personaName, personaName, {});
         } else {
           // Safe cast - we filtered out agent personas above
@@ -693,10 +698,16 @@ Begin with the first persona: ${personas[0]}
   // ── Cognitive Effort (Full COT) ──
 
   server.registerTool("cognitive_effort", {
+    _meta: { ui: { resourceUri: "ui://cbrowser/effort" } },
     title: "Cognitive Effort Analysis",
-    description: "Compute total cognitive effort for a persona to use a page. Uses the 6-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability. IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
+    description: "Compute total cognitive effort for a persona to use a page. MEASURES THE VIEWPORT BY DEFAULT (above the fold); pass scope='full_page' to measure the whole page. Uses the 7-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
       url: z.string().url().describe("URL to analyze"),
+      // Per RUN, not per persona. A persona is familiar with one site and new
+      // to another, so this only has an answer once a URL is named. The
+      // persona's stored value, where one exists, is the fallback. (2026-08-01)
+      siteFamiliarity: z.number().min(0).max(1).optional()
+        .describe("How familiar this persona is with THIS url: 0 first visit, 1 daily user. Set it per run — familiarity is a persona-site pair, not a disposition. Supplying it also skips the site-knowledge downgrade, which exists only to stop a stored value asserting experience of a site nobody has crawled."),
       persona: z.string().describe("Persona name. WORKFLOW: For power-user, confident-user, or any persona the user describes as 'experienced' — check site_model_status first. If site knowledge exists, ask the user: 'Site knowledge exists for this domain. Should I use it to simulate an experienced user, or test as a first-time visitor?' If no site knowledge exists, warn: 'No site knowledge for this domain. power-user will be tested as a first-time visitor. Run page_understand first to build site knowledge.'"),
       _browserToken: z.string().optional().describe("Browser session token"),
       userLocation: z.string().optional().describe("User's approximate location (e.g., 'Denver, Colorado, US')"),
@@ -706,6 +717,7 @@ Begin with the first persona: ${personas[0]}
       useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values modulate saliency maps, decision costs, and frustration costs. Default: false (trait-only mode)."),
       waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
       waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
+      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to measure: 'viewport' (first impression, above-the-fold — default) or 'full_page' (scroll the whole page, count every element). Viewport is right for landing-page first impressions; full_page for 'how much does this page ask of someone'. Matches empathy_audit's parameter of the same name. NOTE: every published CTC number predates this parameter and is a viewport measurement."),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -714,7 +726,7 @@ Begin with the first persona: ${personas[0]}
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona: personaName, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues, waitAfterLoad, waitForSelector }) => {
+  }, async ({ url, persona: personaName, siteFamiliarity, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues, waitAfterLoad, waitForSelector, scope }) => {
     try {
       // Get browser
       let b: Awaited<ReturnType<typeof getBrowser>>;
@@ -796,13 +808,14 @@ Begin with the first persona: ${personas[0]}
       }
 
       // Get persona
+      // Refuses an unknown name rather than inventing one. An agent persona is
+      // still synthesised -- it exists, it just has no cognitive profile of its
+      // own -- but a name that resolves to nothing stops the run.
       const existingPersona = getAnyPersona(personaName);
-      let personaObj: Persona;
-      if (!existingPersona || isAgentPersonaObject(existingPersona)) {
-        personaObj = createCognitivePersona(personaName, personaName, {});
-      } else {
-        personaObj = existingPersona as Persona;
-      }
+      if (!existingPersona) resolvePersonaOrThrow(personaName);
+      const personaObj: Persona = isAgentPersonaObject(existingPersona)
+        ? createCognitivePersona(personaName, personaName, {})
+        : existingPersona as Persona;
 
       // v18.61.0: siteFamiliarity is a binary gate based on site knowledge
       // Has site knowledge → persona keeps its familiarity (maxed to 1.0 for experts)
@@ -821,15 +834,54 @@ Begin with the first persona: ${personas[0]}
         hasSiteKnowledge = !!(stats && stats.navigationNodes > 0);
       } catch {}
 
-      if (hasSiteKnowledge) {
+      // A caller who states familiarity for THIS run has answered the question
+      // the downgrade exists to answer. The gate guards against a value STORED
+      // on a persona claiming experience of a site nobody has crawled -- it was
+      // never meant to overrule someone naming the pair directly.
+      const familiarityFromCaller = typeof siteFamiliarity === "number";
+      if (familiarityFromCaller) {
+        traits.siteFamiliarity = siteFamiliarity;
+      } else if (hasSiteKnowledge) {
         // Site knowledge exists — high-familiarity personas get max familiarity
         if (requestedFamiliarity > 0.5) traits.siteFamiliarity = 1.0;
       } else {
         // No site knowledge — everyone is a first-time visitor
         traits.siteFamiliarity = 0.0;
         if (requestedFamiliarity > 0.5) {
-          familiarityWarning = `"${personaName}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} but no site knowledge exists. Downgraded to 0.0 (first visit). To build site knowledge: navigate the site (navigate + click builds it automatically), or run page_understand for deeper analysis. Then re-run this tool.`;
+          familiarityWarning = `"${personaName}" has siteFamiliarity=${requestedFamiliarity.toFixed(1)} stored on the persona but no site knowledge exists for this domain. Downgraded to 0.0 (first visit). Familiarity is a persona-site pair: pass siteFamiliarity on this call to state it for this run, or build knowledge by navigating the site (page_understand goes deeper).`;
         }
+      }
+
+      // Bridge the formal models into the trait vector BEFORE the chain runs.
+      //
+      // getReadingProfile and getPointingProfile already model this persona's
+      // decoding ability and Fitts pointing -- visual span, phonological
+      // decoding, throughput, endpoint dispersion -- and until now the chain
+      // never saw any of it. Its readability layer read `readingTendency`
+      // (a disposition: how much text someone reads) and its motor layer read
+      // patience and proceduralFluency, so a dyslexic persona scored LOWER
+      // readability cost than an ADHD persona on a text-dense page while the
+      // same response reported them at 157 WPM against 204.
+      //
+      // Injected here rather than stored on the persona: these are derived from
+      // the persona's profile, so storing them would create a second copy that
+      // can drift from the model that produces it. (2026-08-02)
+      try {
+        const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf, sustainedAttentionOf } =
+          await import("../../visual/cognitive-models.js");
+        // accessibilityTraits passed so an author's STATED reading capacity is
+        // honoured; without it the name lookup wins and the fields are inert.
+        const accTraits = (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
+        traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits, accessibilityTraits: accTraits }));
+        traits.motorCapacity = motorCapacityOf(getPointingProfile({ name: personaName, traits }));
+        // The attentional half of reading. Unlike the other two this one has no
+        // formal model behind it -- attentionSpan is stated directly, and the
+        // fallback is interruptRecovery -- so the resolver is the whole bridge.
+        traits.sustainedAttention = sustainedAttentionOf({ traits, accessibilityTraits: accTraits });
+      } catch (e) {
+        // Left absent rather than defaulted: a missing capacity is visible as a
+        // gap, a defaulted one silently reads as average.
+        console.debug(`[cognitive_effort] capacity bridge unavailable: ${(e as Error).message}`);
       }
 
       // Build OT profile (with potentially adjusted siteFamiliarity)
@@ -840,7 +892,8 @@ Begin with the first persona: ${personas[0]}
 
       // Extract page metrics
       const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
-      const pageMetrics = await extractPageMetrics(page);
+      const measureScope = scope ?? "viewport";
+      const pageMetrics = await extractPageMetrics(page, measureScope);
 
       // Compute full COT
       const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
@@ -849,7 +902,7 @@ Begin with the first persona: ${personas[0]}
       // Modulate demand by motivational values (opt-in, default off)
       if (useValues) try {
         const { getPersonaValues, registerPersonaValues: regPV2, createPersonaValues: createPV2 } = await import("../../values/index.js");
-        let pValues = getPersonaValues(personaName);
+        let pValues = resolveValuesForPersona(personaName);
 
         // Custom persona CMS fallback
         if (!pValues) {
@@ -904,6 +957,14 @@ Begin with the first persona: ${personas[0]}
       // Also compute motor and readability from formal models
       let motorResult = null;
       let readabilityResult = null;
+      // Hoisted out of the try below: the readability OVERLAY is drawn later,
+      // outside that block, and needs the on-page rectangles the analysis
+      // itself does not carry.
+      let textBlockGeom: Array<{ x: number; y: number; width: number; height: number; text: string }> = [];
+      // Hoisted for the same reason as textBlockGeom: the motor OVERLAY is drawn
+      // outside the block that scores these, and it must use the scored list
+      // rather than a second query with a different filter.
+      let motorGeom: Array<{ selector: string; x: number; y: number; width: number; height: number }> = [];
       try {
         const { motorAccessibility, readability, getPointingProfile, getReadingProfile } = await import("../../visual/cognitive-models.js");
 
@@ -912,31 +973,95 @@ Begin with the first persona: ${personas[0]}
           const vw = window.innerWidth;
           const vh = window.innerHeight;
           const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
+          // Only elements a POINTING DEVICE could actually hit.
+          //
+          // The old filter asked for non-zero size and in-viewport, which a
+          // visually-hidden skip link passes: the standard implementation is a
+          // 1px box with clip: rect(0,0,0,0), so it has non-zero geometry and
+          // sits at the top of the page. It was then fed to Fitts, which
+          // correctly reported a multi-second movement time at 1% accuracy for
+          // a 1px target -- and the tool docked the site's motor accessibility
+          // score for implementing WCAG 2.4.1 Bypass Blocks.
+          //
+          // An accessibility product penalising a site for correct accessibility
+          // is the most expensive false positive available here, so the check is
+          // now what actually decides a mouse click: elementFromPoint at the
+          // element's centre. If the click would land on something else, it is
+          // not a pointing target. Cheap style and area checks run first because
+          // elementFromPoint forces layout.
+          //
+          // Skip links ARE interactive for keyboard users. If the motor model is
+          // ever extended to keyboard traversal they belong there, with their
+          // FOCUSED geometry rather than their hidden geometry. (2026-08-02)
+          const MIN_TARGET_PX = 4;
           return Array.from(interactive).filter((el) => {
             const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0 &&
-              rect.bottom > 0 && rect.top < vh &&
-              rect.right > 0 && rect.left < vw;
+            if (rect.width < MIN_TARGET_PX || rect.height < MIN_TARGET_PX) return false;
+            if (rect.bottom <= 0 || rect.top >= vh || rect.right <= 0 || rect.left >= vw) return false;
+            const cs = window.getComputedStyle(el);
+            if (cs.visibility === "hidden" || cs.display === "none") return false;
+            if (parseFloat(cs.opacity || "1") < 0.05) return false;
+            if (cs.pointerEvents === "none") return false;
+            // clip / clip-path collapsing the box to nothing is the classic
+            // visually-hidden idiom and leaves the bounding rect intact.
+            const clip = cs.clip || "";
+            if (/rect\(\s*0(px)?[,\s]+0(px)?[,\s]+0(px)?[,\s]+0(px)?\s*\)/.test(clip)) return false;
+            if ((cs.clipPath || "").replace(/\s/g, "") === "inset(50%)") return false;
+            // The decisive test: would a click at the centre reach this element?
+            const x = Math.min(vw - 1, Math.max(0, rect.left + rect.width / 2));
+            const y = Math.min(vh - 1, Math.max(0, rect.top + rect.height / 2));
+            const hit = document.elementFromPoint(x, y);
+            return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
           }).slice(0, 30).map((el) => {
             const rect = el.getBoundingClientRect();
             const cx = vw / 2;
             const cy = vh / 2;
             return {
-              selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+              // Identifying, not just the tag name.
+              //
+              // This reported barriers as bare "a", so every anchor on the page
+              // looked identical and a finding like "an <a> with 1% hit
+              // probability" named nothing anyone could go and fix. It also made
+              // two runs look like they were measuring the same element when
+              // they had surfaced different links -- which is how a slower
+              // movement time appeared alongside a HIGHER throughput and read as
+              // a model inversion. (2026-08-02)
+              selector: (() => {
+                const tag = el.tagName.toLowerCase();
+                if (el.id) return `${tag}#${el.id}`;
+                // className via the guarded read: on an SVG element it is an
+                // SVGAnimatedString, not a string, and calling .trim() on it
+                // throws. There is a class-sweep test for exactly this and it
+                // caught this line.
+                const rawCls = (el as unknown as { className?: unknown }).className;
+                const clsStr = typeof rawCls === "string"
+                  ? rawCls
+                  : String((rawCls as { baseVal?: string } | undefined)?.baseVal ?? "");
+                const cls = clsStr.trim() ? `.${clsStr.trim().split(/\s+/)[0]}` : "";
+                const label = (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 30);
+                const sibs = el.parentElement ? Array.from(el.parentElement.children).filter((c) => c.tagName === el.tagName) : [];
+                const nth = sibs.length > 1 ? `:nth-of-type(${sibs.indexOf(el) + 1})` : "";
+                return `${tag}${cls}${nth}${label ? ` "${label}"` : ""}`;
+              })(),
               width: rect.width,
               height: rect.height,
+              // Carried so the overlay can be drawn from THIS list rather than
+              // re-querying: see the note at the overlay site.
+              x: rect.x,
+              y: rect.y,
               distance: Math.sqrt((rect.x + rect.width/2 - cx) ** 2 + (rect.y + rect.height/2 - cy) ** 2),
             };
           });
         });
 
+        motorGeom = elements.map((e) => ({ selector: e.selector, x: e.x, y: e.y, width: e.width, height: e.height }));
         motorResult = motorAccessibility(elements, otProfile);
 
         // Get text blocks for readability analysis — viewport-visible only
         const textBlocks = await page.evaluate(() => {
           const vw = window.innerWidth;
           const vh = window.innerHeight;
-          const blocks: Array<{ text: string; fontSize: number; lineHeight: number; fontFamily: string; isSerif: boolean; contrastRatio: number }> = [];
+          const blocks: Array<{ text: string; fontSize: number; lineHeight: number; fontFamily: string; isSerif: boolean; contrastRatio: number; x: number; y: number; width: number; height: number }> = [];
           const textEls = Array.from(document.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td, th, span, div'));
           for (const el of textEls) {
             const rect = (el as HTMLElement).getBoundingClientRect();
@@ -949,14 +1074,24 @@ Begin with the first persona: ${personas[0]}
             const lineHeight = parseFloat(style.lineHeight) / fontSize || 1.5;
             const fontFamily = style.fontFamily || 'sans-serif';
             const isSerif = /serif/i.test(fontFamily) && !/sans-serif/i.test(fontFamily);
-            blocks.push({ text: text.slice(0, 500), fontSize, lineHeight, fontFamily, isSerif, contrastRatio: 7 });
+            // Geometry travels with the block. Without it the readability
+            // overlay cannot be drawn at all -- the analysis knew which text was
+            // hard and not where any of it was.
+            blocks.push({ text: text.slice(0, 500), fontSize, lineHeight, fontFamily, isSerif, contrastRatio: 7,
+              x: rect.x, y: rect.y, width: rect.width, height: rect.height });
             if (blocks.length >= 20) break;
           }
           return blocks;
         });
 
+        textBlockGeom = textBlocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, text: b.text }));
         if (textBlocks.length > 0) {
-          readabilityResult = readability(textBlocks, otProfile);
+          // otProfile carries name + traits but not accessibilityTraits, so the
+          // stated reading capacity is attached here or the fields stay inert.
+          readabilityResult = readability(textBlocks, {
+            ...otProfile,
+            accessibilityTraits: (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits,
+          });
         }
       } catch {}
 
@@ -967,7 +1102,24 @@ Begin with the first persona: ${personas[0]}
         cognitiveTransportCost: {
           total: Math.round(result.totalCTC * 1000) / 1000,
           additive: Math.round(result.additiveCTC * 1000) / 1000,
-          sequentialAmplification: Math.round((result.totalCTC / Math.max(0.001, result.additiveCTC)) * 100) / 100,
+          // The un-normalized cost. `total` is a sigmoid of this, so the two
+          // are not interchangeable and any ratio must use `raw`.
+          raw: Math.round(result.rawCTC * 1000) / 1000,
+          // raw / additive — both in layer-cost units, so this is the genuine
+          // contribution of interactions and sequential depletion.
+          chainCoefficient: Math.round((result.rawCTC / Math.max(0.001, result.additiveCTC)) * 1000) / 1000,
+          /**
+           * @deprecated Use chainCoefficient. NOTE ITS VALUE CHANGED: this used
+           * to divide `total` (a sigmoid, 0-1) by `additive` (a raw sum) and
+           * reported ~0.3-0.5, which read as the chain dampening by 60%. That
+           * was a unit error, not a measurement — it was reporting the sigmoid.
+           * Preserving the old number bit-for-bit would preserve a meaningless
+           * one, so this now carries the corrected value.
+           */
+          sequentialAmplification: Math.round((result.rawCTC / Math.max(0.001, result.additiveCTC)) * 1000) / 1000,
+          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Re-measured 1.003-1.054 across page densities x personas after the readability layer was split in two (2026-08-02); it was 1.002-1.019 at six layers, and the range widened because a seventh layer spends from a budget six others depleted. Real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
+          interpretationBasis: "total",
+          interpretationBands: "total < 0.3 comfortable, < 0.6 moderate, < 0.8 struggling, else likely abandon",
         },
         layers: result.layers.map(l => ({
           name: l.name,
@@ -980,6 +1132,16 @@ Begin with the first persona: ${personas[0]}
           surplus: Math.round(result.surplusCost * 1000) / 1000,
         },
         abandonmentRisk: Math.round(result.abandonmentRisk * 100) + "%",
+        // Says out loud that these two are different constructs.
+        //
+        // A run can read "easy" on CTC and 53% on abandonment and both be
+        // correct, which looks like a contradiction and is not one:
+        // abandonmentRisk is a sigmoid of (deficit - 0.3*surplus) against this
+        // persona's blended patience and resilience, and never touches
+        // totalCTC. CTC asks how expensive the page is; abandonment asks
+        // whether THIS persona's tolerance runs out first. A page can be cheap
+        // in absolute terms and still exceed someone with little patience.
+        abandonmentBasis: "deficit vs this persona's patience and resilience — independent of totalCTC, so the two can disagree without either being wrong",
         interactions: Object.fromEntries(
           Object.entries(result.interactions)
             .filter(([, v]) => v > 0.001)
@@ -998,7 +1160,25 @@ Begin with the first persona: ${personas[0]}
         } : {}),
         ...(readabilityResult ? {
           readability: {
+            // Renamed from `score`. This is a QUALITY percentage where high is
+            // good; the chain's `readability` layer is a COST where high is bad.
+            // Both were called readability, so a run could report readability
+            // 91% and readability as the bottleneck in the same payload and
+            // look self-contradictory when it was reporting two different
+            // measurements under one word. (2026-08-02)
+            legibilityQuality: Math.round(readabilityResult.score * 100) + "%",
+            /** @deprecated ambiguous against the layer cost — use legibilityQuality */
             score: Math.round(readabilityResult.score * 100) + "%",
+            // The note here previously said this was "a quality score for the
+            // text itself", contrasted against the persona-relative layer cost.
+            // That was wrong, and I wrote it. It comes from readability(), which
+            // resolves a per-persona reading profile (visual span, phonological
+            // decoding, crowding sensitivity) -- so it is persona-RELATIVE by
+            // construction and reads 91% for one persona and 73% for another on
+            // identical text. A field promising objectivity is the one most
+            // likely to be quoted as an objective page score. (2026-08-02)
+            note: "legibilityQuality is how legible this text is FOR THIS PERSONA (higher is better) — it is computed from their reading profile, so it varies across personas on identical text and is NOT an objective property of the page. The `readability` entry in `layers` is the DECODING transport cost for the same persona (higher is worse), and the two move together: for a given persona, lower legibility means strictly higher readability cost. Across personas the ordering holds for any material difference in legibility, but not to the last decimal — layers spend from a budget the earlier ones depleted, so two readers with near-identical legibility can differ slightly if one arrived more depleted. The ATTENTIONAL cost of reading (holding the line, re-reading, being pulled away) is a separate layer, `readingAttention`, and is deliberately not part of this number.",
+            legibilityQualityIsPersonaRelative: true,
             averageWPM: Math.round(
               readabilityResult.blocks.reduce((s: number, b: { wordsPerMinute: number }) => s + b.wordsPerMinute, 0) / readabilityResult.blocks.length
             ),
@@ -1007,14 +1187,50 @@ Begin with the first persona: ${personas[0]}
               : [],
           },
         } : {}),
-        interpretation: result.totalCTC < 0.3
-          ? `${personaName} should handle this page comfortably.`
-          : result.totalCTC < 0.6
-          ? `${personaName} will experience moderate cognitive effort. Bottleneck: ${result.bottleneckLayer}.`
-          : result.totalCTC < 0.8
-          ? `${personaName} will struggle significantly. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
-          : `${personaName} is likely to abandon this page. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`,
+        // The verdict names its own scope. Reading "should handle this page
+        // comfortably" off a measurement of the top 800px of a 6436px page is
+        // the same class of output defect as the skip-link false positive:
+        // internally consistent and indefensible to a customer.
+        //
+        // `subject` is what was actually measured, so the sentence stays true
+        // at either scope instead of the scope being a footnote elsewhere.
+        interpretation: (() => {
+          const subject = measureScope === "full_page" ? "this page" : "the top of this page";
+          const where = measureScope === "full_page" ? "" : " (viewport only";
+          const screens = pageMetrics.pageScreens > 1.2
+            ? `${measureScope === "full_page" ? " Measured across" : `${where}; the page is`} ${pageMetrics.pageScreens} screens${measureScope === "full_page" ? "." : ", so most of it was not measured — pass scope='full_page' for the whole thing.)"}`
+            : where ? `${where}.)` : "";
+          const verdict = result.totalCTC < 0.3
+            ? `${personaName} should handle ${subject} comfortably.`
+            : result.totalCTC < 0.6
+            ? `${personaName} will experience moderate cognitive effort on ${subject}. Bottleneck: ${result.bottleneckLayer}.`
+            : result.totalCTC < 0.8
+            ? `${personaName} will struggle significantly with ${subject}. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
+            : `${personaName} is likely to abandon ${subject}. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`;
+          return verdict + screens;
+        })(),
+        scope: measureScope,
+        pageScreens: pageMetrics.pageScreens,
+        scopeNote: measureScope === "full_page"
+          ? "Whole-page measurement: every laid-out element counted, densities normalised against document area, and the page scrolled first so lazy content exists. Not comparable with viewport-scoped numbers, including every CTC this tool published before 2026-08-02."
+          : "VIEWPORT ONLY: demand is computed from elements intersecting the first screenful. Content below the fold contributed nothing. This was the tool's undeclared behaviour until 2026-08-02 — measured on a 229-link, 8-screen page it saw 4 links and 47 words and reported LOWER cognitive load than a shorter homepage. Pass scope='full_page' to measure the whole page.",
         ...(familiarityWarning ? { familiarityWarning, siteFamiliarityAdjusted: true, originalFamiliarity: requestedFamiliarity, effectiveFamiliarity: traits.siteFamiliarity } : {}),
+        // Reports what was USED, not what was passed.
+        //
+        // This previously said "supplied for this run" whenever the caller sent
+        // a number, without any check that the number reached the model. It
+        // did not: siteFamiliarity had no demand term and no home layer, so
+        // three runs at unset / 1 / 0 came back byte-identical under a response
+        // asserting the parameter had been applied. An attestation nobody
+        // verifies is worse than no attestation, because it makes an
+        // output-level audit report the knob as working. (2026-08-02)
+        siteFamiliarity: traits.siteFamiliarity,
+        siteFamiliaritySource: familiarityFromCaller
+          ? "supplied for this run"
+          : hasSiteKnowledge
+          ? "derived from this install's crawl of the site"
+          : "defaulted to first visit — no site knowledge and none supplied",
+        siteFamiliarityEffect: `Consumed by the cognitiveLoad layer against a demand set by navigation depth. A page reachable in one click demands no site knowledge, so this changes nothing there.`,
         ...(languageWarning ? { languageWarning } : {}),
         ...(userLocation ? { userContext: { location: userLocation, timezone: userTimezone, language: userLanguage } } : {}),
         ...(token ? { _browserToken: token } : {}),
@@ -1033,19 +1249,22 @@ Begin with the first persona: ${personas[0]}
 
           // Get element bounding boxes for motor overlay
           const motorElements = await page.evaluate(() => {
-            const els = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
-            return Array.from(els).slice(0, 30).map(el => {
-              const rect = (el as HTMLElement).getBoundingClientRect();
-              return {
-                selector: el.tagName.toLowerCase(),
-                x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-              };
-            }).filter((e: { width: number; height: number }) => e.width > 0 && e.height > 0);
+            return [];
           });
 
           const { generateMotorOverlay } = await import("../../visual/visual-overlays.js");
-          const motorOverlayElements = motorElements.map((el: { selector: string; x: number; y: number; width: number; height: number }, i: number) => ({
-            ...el,
+          // Drawn from the SAME list that was scored.
+          //
+          // This used to run a second querySelectorAll with a different filter
+          // and zip it to motorResult.elements BY INDEX, so the two lists only
+          // lined up while both filters happened to admit the same elements in
+          // the same order. Tightening the scoring filter to exclude
+          // non-hit-testable targets would have guaranteed a mismatch, and the
+          // overlay would have drawn each element's hit probability on some
+          // other element's box. (2026-08-02)
+          const motorOverlayElements = motorGeom.map((el, i: number) => ({
+            selector: el.selector,
+            x: el.x, y: el.y, width: el.width, height: el.height,
             hitProbability: motorResult.elements[i]?.hitProbability ?? 0.9,
             isBarrier: motorResult.elements[i]?.isBarrier ?? false,
           }));
@@ -1057,11 +1276,116 @@ Begin with the first persona: ${personas[0]}
           if (written) response.motorOverlayUrl = written.url;
           response.motorOverlayNote = "Green = easy to click. Yellow = moderate difficulty. Red = motor barrier for this persona.";
 
-          content.push({ type: "image" as const, data: motorBase64, mimeType: "image/png" });
-          try { ul(ssPath); } catch {}
+          // Inlined ONLY when small. A tool result is not an image transport.
+          //
+          // This pushed the full base64 overlay unconditionally, and on a real
+          // page that was 309,296 of a 312,580-byte result -- 99% image around
+          // 2,828 bytes of data. Hosts cap tool-result size, and past that cap
+          // the widget does not degrade, it fails to load. The MCP Apps guidance
+          // says heavy assets travel via callServerTool, which is exactly what
+          // the chain widget now does: every overlay, motor included, is written
+          // as an artifact and fetched on demand by the bar that shows it.
+          //
+          // A small overlay still rides along so the model can see it without a
+          // round trip. A large one is named, not carried. (2026-08-02)
+          const INLINE_IMAGE_MAX_B64 = 40_000;
+          if (motorBase64.length <= INLINE_IMAGE_MAX_B64) {
+            content.push({ type: "image" as const, data: motorBase64, mimeType: "image/png" });
+          } else {
+            response.motorOverlayInline = false;
+            response.motorOverlayNote = `${response.motorOverlayNote ?? ""} Overlay is ${Math.round(motorBase64.length / 1024)}KB, too large to inline in a tool result; fetch it with artifact_fetch using the filename in layerOverlays, or open it from the chain view.`.trim();
+          }
+          // ssPath is deliberately NOT deleted here any more -- the other
+          // layer overlays are drawn from the same screenshot below.
         }
       } catch (e) {
         console.debug(`[cognitive_effort] Motor overlay failed: ${(e as Error).message}`);
+      }
+
+      // Per-layer visual evidence, so a bar in the chain can be opened into the
+      // thing it measured.
+      //
+      // Only layers with a real generator get one. The other two are listed with
+      // the reason rather than omitted: a chain of six where four are clickable
+      // and two silently are not reads as a broken widget, while "no overlay for
+      // this layer, and here is why" is information. Nothing is fabricated to
+      // fill the gap. (2026-08-02)
+      const layerOverlays: Array<{ layer: string; file?: string; legend?: string; available: boolean; reason?: string }> = [];
+      try {
+        const { join: joinPath } = await import("path");
+        const { tmpdir: getTmpDir } = await import("os");
+        const { unlinkSync: ul, existsSync: ex } = await import("fs");
+        const ssPath = joinPath(getTmpDir(), `cog-effort-layers-${Date.now()}.png`);
+        await page.screenshot({ path: ssPath, fullPage: false });
+
+        // saliency -- keyless. Lab-space centre-surround over the screenshot,
+        // so this needs no API key and no model call.
+        try {
+          const { computeLabSaliency } = await import("../../visual/attention-transport.js");
+          const { generateHeatmapOverlay } = await import("../../visual/heatmap-overlay.js");
+          const sal = await computeLabSaliency(ssPath);
+          const b64 = await generateHeatmapOverlay(ssPath, sal.cells, sal.rows, sal.cols, `${personaName} — saliency`);
+          const w = writeArtifact(Buffer.from(b64, "base64"), `saliency-${personaName}-${Date.now()}.png`);
+          if (w) layerOverlays.push({ layer: "saliency", file: w.url.split("/").pop(), available: true,
+            legend: "Hotter = more visually salient before any reading happens." });
+        } catch (e) {
+          layerOverlays.push({ layer: "saliency", available: false, reason: `saliency map failed: ${(e as Error).message}` });
+        }
+
+        // motor -- already drawn above; surfaced here so the chain has one list.
+        if (response.motorOverlayUrl) {
+          layerOverlays.push({ layer: "motor", file: String(response.motorOverlayUrl).split("/").pop(), available: true,
+            legend: String(response.motorOverlayNote || "") });
+        } else {
+          layerOverlays.push({ layer: "motor", available: false, reason: "no interactive elements were found to score" });
+        }
+
+        // readability
+        if (readabilityResult && readabilityResult.blocks.length > 0) {
+          try {
+            const { generateReadabilityOverlay } = await import("../../visual/visual-overlays.js");
+            const rb = readabilityResult.blocks.map((b: { difficulty: number; wordsPerMinute: number }, i: number) => ({
+              x: textBlockGeom[i]?.x ?? 0, y: textBlockGeom[i]?.y ?? 0,
+              width: textBlockGeom[i]?.width ?? 0, height: textBlockGeom[i]?.height ?? 0,
+              difficulty: b.difficulty ?? 0, wpm: b.wordsPerMinute ?? 0,
+              text: textBlockGeom[i]?.text ?? "",
+            })).filter((b: { width: number; height: number }) => b.width > 0 && b.height > 0);
+            if (rb.length) {
+              const b64 = await generateReadabilityOverlay(ssPath, rb, personaName);
+              const w = writeArtifact(Buffer.from(b64, "base64"), `readability-${personaName}-${Date.now()}.png`);
+              if (w) layerOverlays.push({ layer: "readability", file: w.url.split("/").pop(), available: true,
+                legend: "Hotter = slower for this persona to read." });
+            } else {
+              layerOverlays.push({ layer: "readability", available: false, reason: "text blocks carried no on-page geometry" });
+            }
+          } catch (e) {
+            layerOverlays.push({ layer: "readability", available: false, reason: `readability overlay failed: ${(e as Error).message}` });
+          }
+        } else {
+          layerOverlays.push({ layer: "readability", available: false, reason: "no readable text blocks in the viewport" });
+        }
+
+        // The remaining two have no generator, and no data here to build one
+        // from. Said plainly rather than left as a dead bar.
+        // camelCase, matching LAYER_DEFINITIONS. Emitted as "cognitive-load" at
+        // first, which matched nothing: the bar got neither a button nor a
+        // no-overlay tag and silently looked different from its five siblings.
+        layerOverlays.push({ layer: "cognitiveLoad", available: false,
+          reason: "no per-region load data is produced by this tool, so there is nothing to draw" });
+        layerOverlays.push({ layer: "decision", available: false,
+          reason: "decision cost is computed over the page as a whole, not per region" });
+        layerOverlays.push({ layer: "frustration", available: false,
+          reason: "frustration is a running state across the chain, not a place on the page" });
+        layerOverlays.push({ layer: "readingAttention", available: false,
+          reason: "attentional reading cost is a property of the reader against the whole page, not of any one region \u2014 the readability overlay above shows where DECODING is slow" });
+
+        if (ex(ssPath)) { try { ul(ssPath); } catch {} }
+      } catch (e) {
+        console.debug(`[cognitive_effort] Layer overlays failed: ${(e as Error).message}`);
+      }
+      if (layerOverlays.length) {
+        response.layerOverlays = layerOverlays;
+        response.layerOverlayNote = "Each entry maps to a bar in the transport chain. Layers without an overlay say why.";
       }
 
       content.unshift({

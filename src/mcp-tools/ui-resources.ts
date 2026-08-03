@@ -190,7 +190,12 @@ export const PERSONA_SPEC: WidgetSpec = {
     ],
   },
   blocks: [
-    { type: "traits", title: "Cognitive traits", field: "traits", ramp: "trait", describe: true },
+    // Editable. The sandbox has no network of its own, but callServerTool
+    // reaches the server that rendered this -- the same channel the image
+    // blocks already use -- so the sliders write straight back through
+    // persona_update rather than asking the reader to copy numbers into a
+    // separate tool call. (2026-08-01)
+    { type: "editor", title: "Cognitive traits", field: "traits", personaField: "name", ramp: "trait", describe: true },
     { type: "traits", title: "Values", field: "values", ramp: "value" },
     { type: "traits", title: "Accessibility traits", field: "accessibility_traits", ramp: "accessibility", describe: true },
     {
@@ -198,6 +203,126 @@ export const PERSONA_SPEC: WidgetSpec = {
       title: "Details",
       blocks: [
         { type: "kv", title: "Demographics", field: "demographics" },
+        { type: "rest", title: "Other fields" },
+      ],
+    },
+  ],
+};
+
+/**
+ * One interactive surface for persona CRUD.
+ *
+ * The roster, the selected persona's editable traits, save and delete, in a
+ * single view. Reads ship with the tool result so switching personas costs no
+ * round trip; writes go back through persona_update and persona_delete, which
+ * already handle both stores, the built-in guard and the description-drift
+ * check. This is a surface over those tools, not a second copy of them --
+ * nine duplicate tool families in this subsystem are what a second copy costs.
+ * (2026-08-01)
+ */
+export const PERSONA_MANAGER_SPEC: WidgetSpec = {
+  id: "persona-manager",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-manager/",
+  title: "Personas",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "summary" },
+    facts: [
+      { field: "personas", label: "personas" },
+      { field: "editable", label: "editable" },
+    ],
+    actions: [{ label: "Manage on cbrowser.ai", url: "https://cbrowser.ai/account/personas" }],
+  },
+  blocks: [
+    { type: "manager", title: "Personas", field: "personas" },
+    { type: "note", title: "Creating a persona", field: "createHint" },
+  ],
+};
+
+/**
+ * A persona that was just created.
+ *
+ * The creation tools returned JSON and nothing else, so "what did I just make?"
+ * meant reading a trait map by eye. This shows the finished persona the way the
+ * lookup widget does, plus the two things only creation knows: which route
+ * produced the values, and which traits the caller declared the description
+ * could not support.
+ *
+ * Those declared-unsupported traits are the point. They sit at a population
+ * baseline and are indistinguishable from considered values in every later
+ * view; naming them at the moment of creation is the only place the
+ * distinction is free. (2026-08-01)
+ */
+export const PERSONA_CREATED_SPEC: WidgetSpec = {
+  id: "persona-created",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-create-from-description/",
+  title: "Persona created",
+  titleField: "persona_name",
+  titlePrefix: "Created: ",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "description" },
+    facts: [
+      { field: "traits", label: "traits" },
+      { field: "valuesRoute", label: "values route" },
+      { field: "unsupportedTraits", label: "unsupported" },
+    ],
+    actions: [{ label: "Manage personas", url: "https://cbrowser.ai/account/personas" }],
+  },
+  blocks: [
+    { type: "note", title: "What the trait vector says", field: "traitSummary" },
+    { type: "traits", title: "Cognitive traits", field: "traits", ramp: "trait", describe: true },
+    { type: "traits", title: "Values", field: "values", ramp: "value" },
+    { type: "table", title: "Declared unsupported", field: "unsupportedDetail" },
+    {
+      type: "drawer",
+      title: "Details",
+      blocks: [
+        { type: "kv", title: "Values route", field: "valuesDerivation" },
+        { type: "kv", title: "Demographics", field: "demographics" },
+        { type: "rest", title: "Other fields" },
+      ],
+    },
+  ],
+};
+
+/**
+ * What an update changed.
+ *
+ * A diff rather than a snapshot, because the question after an edit is not
+ * "what is this persona" but "what did I just do to it" — and the second is not
+ * answerable from the first without having memorised the before.
+ *
+ * Carries the description-drift check: traits are updated and prose is not, so
+ * a persona ends up with a vector saying "impatient" under a description that
+ * still says "patient". The prose is never rewritten here; the contradiction is
+ * reported and the decision left alone. (2026-08-01)
+ */
+export const PERSONA_UPDATED_SPEC: WidgetSpec = {
+  id: "persona-updated",
+  toolPage: "https://cbrowser.ai/docs/tool-persona-update/",
+  title: "Persona updated",
+  titleField: "persona",
+  titlePrefix: "Updated: ",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "note" },
+    facts: [
+      { field: "changed", label: "fields changed" },
+      { field: "descriptionDrift", label: "description conflicts" },
+    ],
+    actions: [{ label: "Manage personas", url: "https://cbrowser.ai/account/personas" }],
+  },
+  blocks: [
+    { type: "table", title: "What changed", field: "changes" },
+    { type: "table", title: "Description now contradicts the traits", field: "descriptionDrift" },
+    { type: "note", title: "What the trait vector says now", field: "traitSummary" },
+    { type: "kv", title: "Where the write landed", field: "stores" },
+    {
+      type: "drawer",
+      title: "Details",
+      blocks: [
+        { type: "traits", title: "Traits after update", field: "traits", ramp: "trait", describe: true },
         { type: "rest", title: "Other fields" },
       ],
     },
@@ -424,6 +549,92 @@ export const EMPATHY_SPEC: WidgetSpec = {
   ],
 };
 
+/**
+ * Cognitive effort: the sequential transport chain, and what running it in
+ * sequence costs over running it in parallel.
+ *
+ * The JSON answers "how expensive is this page for this persona" with a number,
+ * and buries the reason inside `cognitiveTransportCost.chainCoefficient`.
+ * The chain block puts the reason on screen: one bar per layer with
+ * the bottleneck named, then the sum-of-parts against the actual sequential
+ * total. The gap between those last two is the claim the whole model rests on.
+ */
+export const EFFORT_SPEC: WidgetSpec = {
+  id: "effort",
+  toolPage: "https://cbrowser.ai/docs/tool-cognitive-effort/",
+  title: "Cognitive effort",
+  // Who was measured belongs in the title; the cost is meaningless without them.
+  titleField: "persona",
+  titlePrefix: "Cognitive Effort: ",
+  hero: {
+    variant: "gradient",
+    subtitle: { field: "interpretation" },
+    facts: [
+      { field: "cognitiveTransportCost.total", label: "transport cost" },
+      { field: "abandonmentRisk", label: "abandonment risk" },
+      { field: "bottleneck", label: "bottleneck" },
+      { field: "url", label: "page" },
+    ],
+  },
+  blocks: [
+    // Leads, because it is the finding. Everything below is detail behind it.
+    // Title carries no layer COUNT on purpose. It named a count and went stale
+    // within the hour when readability was split into decoding and attention
+    // (2026-08-02), so the widget captioned seven bars as six. The bars state
+    // the count themselves; a number in prose is a second copy that drifts.
+    { type: "chain", title: "The sequential transport chain", field: "layers",
+      nameKey: "name", costKey: "cost", capacityKey: "capacityConsumed",
+      bottleneckField: "bottleneck",
+      additiveField: "cognitiveTransportCost.additive",
+      totalField: "cognitiveTransportCost.total",
+      // Each bar opens into that layer's overlay on the real page. Layers with
+      // no overlay stay inert and say why.
+      overlaysField: "layerOverlays", fetchTool: "artifact_fetch" },
+    // Surfaced when the run was told, or forced, to treat the persona as new to
+    // the site. It changes every number above and is easy to miss in JSON.
+    { type: "note", field: "familiarityWarning" },
+    { type: "note", field: "languageWarning" },
+    // Everything below the chain is behind an accordion.
+    //
+    // The chain IS the finding; the rest is the evidence behind it, and eight
+    // stacked cards made the panel a scroll rather than an answer. Native
+    // <details>, so each one is keyboard operable and announced as an expander
+    // without any ARIA of our own.
+    //
+    // The two warnings above stay OUT of the accordions on purpose: a familiarity
+    // downgrade or a language mismatch changes how every number below should be
+    // read, and a warning behind a click is a warning nobody reads.
+    { type: "drawer", title: "Where the cost sits", blocks: [
+      { type: "kv", title: "Deficit vs surplus", field: "deficitVsSurplus" },
+      { type: "kv", title: "Layer interactions", field: "interactions" },
+    ] },
+    { type: "drawer", title: "Motor accessibility", blocks: [
+      { type: "kv", title: "Summary", fields: ["motorAccessibility.score", "motorAccessibility.barriers"] },
+      { type: "table", title: "Hardest targets", field: "motorAccessibility.elements",
+        columns: ["element", "hitProbability", "movementTimeMs"] },
+    ] },
+    { type: "drawer", title: "Readability", blocks: [
+      // legibilityQuality, not score: high is GOOD here, while the readability
+      // LAYER above is a cost where high is bad. Same word, opposite direction.
+      { type: "kv", title: "Summary", fields: ["readability.legibilityQuality", "readability.averageWPM"] },
+      { type: "findings", title: "Hardest block", field: "readability.hardestBlock", textKey: "0" },
+    ] },
+    { type: "drawer", title: "How these numbers are built", blocks: [
+      { type: "kv", title: "Chain", fields: ["cognitiveTransportCost.raw", "cognitiveTransportCost.chainCoefficient"] },
+      { type: "note", field: "cognitiveTransportCost.chainNote" },
+      { type: "note", field: "abandonmentBasis" },
+      { type: "note", field: "siteFamiliarityEffect" },
+    ] },
+    { type: "drawer", title: "Everything else", blocks: [
+      { type: "rest", title: "Remaining fields" },
+    ] },
+  ],
+};
+
+export function buildEffortTemplate(): string {
+  return buildWidget(EFFORT_SPEC);
+}
+
 export function buildEmpathyTemplate(): string {
   return buildWidget(EMPATHY_SPEC);
 }
@@ -442,6 +653,18 @@ export function buildAttentionTemplate(): string {
 
 export function buildPersonaTemplate(): string {
   return buildWidget(PERSONA_SPEC);
+}
+
+export function buildPersonaManagerTemplate(): string {
+  return buildWidget(PERSONA_MANAGER_SPEC);
+}
+
+export function buildPersonaCreatedTemplate(): string {
+  return buildWidget(PERSONA_CREATED_SPEC);
+}
+
+export function buildPersonaUpdatedTemplate(): string {
+  return buildWidget(PERSONA_UPDATED_SPEC);
 }
 
 export function buildStatusTemplate(): string {
@@ -500,6 +723,15 @@ export function registerUiResources(server: McpServer): void {
   );
 
   server.registerResource(
+    "cbrowser-effort-ui",
+    widgetUri("effort"),
+    { description: "Sequential cognitive transport chain with its bottleneck", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("effort"), mimeType: MCP_APP_MIME, text: buildEffortTemplate() }],
+    }),
+  );
+
+  server.registerResource(
     "cbrowser-trait-ui",
     widgetUri("trait-v2"),
     { description: "Trait level scale with behavioural bands", mimeType: MCP_APP_MIME },
@@ -532,6 +764,33 @@ export function registerUiResources(server: McpServer): void {
     { description: "Persona traits, values and accessibility profile", mimeType: MCP_APP_MIME },
     async () => ({
       contents: [{ uri: widgetUri("persona"), mimeType: MCP_APP_MIME, text: buildPersonaTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-persona-manager-ui",
+    widgetUri("persona-manager"),
+    { description: "Interactive persona CRUD: roster, inline trait editor, save and delete", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("persona-manager"), mimeType: MCP_APP_MIME, text: buildPersonaManagerTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-persona-created-ui",
+    widgetUri("persona-created"),
+    { description: "A persona that was just created, with its values route and any traits declared unsupported", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("persona-created"), mimeType: MCP_APP_MIME, text: buildPersonaCreatedTemplate() }],
+    }),
+  );
+
+  server.registerResource(
+    "cbrowser-persona-updated-ui",
+    widgetUri("persona-updated"),
+    { description: "What a persona update changed, and whether the description still matches the traits", mimeType: MCP_APP_MIME },
+    async () => ({
+      contents: [{ uri: widgetUri("persona-updated"), mimeType: MCP_APP_MIME, text: buildPersonaUpdatedTemplate() }],
     }),
   );
 

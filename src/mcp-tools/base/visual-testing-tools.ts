@@ -6,6 +6,8 @@
  */
 
 import { z } from "zod";
+import { getDefaultConfig } from "../../config.js";
+import { resolveValuesForPersona } from "../../values/persona-values.js";
 import { writeArtifact } from "../../artifact-store.js";
 
 /**
@@ -458,7 +460,19 @@ export function registerVisualTestingTools(server: McpServer): void {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({
         headless: true,
-        ...(device ? { device: device.toLowerCase() } : { viewportWidth: 1920, viewportHeight: 1080 }),
+        // The CONFIGURED viewport, not a hardcoded 1920x1080.
+        //
+        // Every other tool renders at the configured default (1280x800) and
+        // this one alone rendered at 1920x1080, so an attention run and a
+        // cognitive_effort run were measuring DIFFERENT rendered pages while
+        // reporting coordinates as if they shared a space. The tell was
+        // attention regions coming back at x=1312 against a config that says
+        // the viewport is 1280 wide -- impossible unless the page was wider.
+        // (2026-08-02)
+        ...(device ? { device: device.toLowerCase() } : {
+          viewportWidth: getDefaultConfig().viewportWidth,
+          viewportHeight: getDefaultConfig().viewportHeight,
+        }),
       });
       const { join } = await import("path");
       const { tmpdir } = await import("os");
@@ -552,7 +566,7 @@ export function registerVisualTestingTools(server: McpServer): void {
           if (useValues) {
             try {
               const { getPersonaValues, registerPersonaValues, createPersonaValues } = await import("../../values/index.js");
-              let vals = getPersonaValues(persona);
+              let vals = resolveValuesForPersona(persona);
 
               // If not found in built-ins, check CMS for custom persona values
               if (!vals) {
@@ -593,6 +607,13 @@ export function registerVisualTestingTools(server: McpServer): void {
           type: "text" as const,
           text: JSON.stringify({
             persona: result.persona,
+            // Stated, because two tools silently rendering at different sizes is
+            // exactly what made these coordinates incomparable with a CTC run.
+            // A reader can now check instead of assuming they match.
+            renderedViewport: device
+              ? `device: ${device.toLowerCase()}`
+              : `${getDefaultConfig().viewportWidth}x${getDefaultConfig().viewportHeight}`,
+            coordinateSpace: "CSS pixels in the rendered viewport above — compare only against runs reporting the same renderedViewport",
             alignmentScore: result.alignmentScore,
             entropy: result.entropy,
             concentration: result.concentration,
@@ -621,7 +642,18 @@ export function registerVisualTestingTools(server: McpServer): void {
             // `pattern` gives the single combined verdict a caller actually
             // wants. (2026-07-28)
             interpretation: {
-              alignment: result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design",
+              // Each verdict names its BASIS, because two of them in one payload
+              // read as a contradiction otherwise.
+              //
+              // Measured: attentionQuality.interpretation said "design intent is
+              // working" while this line said "attention diverges from intended
+              // design", in the same response, off an alignmentScore of 0.484.
+              // Both were right about different questions -- one asks whether
+              // the CTAs captured attention, the other whether the overall
+              // distribution matches where the design puts emphasis -- and a
+              // reader has no way to know that from two bare verdicts.
+              // (2026-08-02)
+              alignment: `${result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design"} (alignmentScore ${result.alignmentScore.toFixed(3)}: how closely the whole attention distribution matches where the design places emphasis — a different question from whether the CTAs specifically captured attention, which attentionQuality answers)`,
               entropy: `Evenness of attention across the areas that draw it: ${result.entropy > 0.8 ? "very even" : result.entropy > 0.5 ? "moderately even" : "sharply peaked"} (${result.entropy.toFixed(2)} of 1.0)`,
               concentration: `Share of attention landing in the top 20% of the page: ${(result.concentration * 100).toFixed(0)}% (a perfectly uniform page scores 20%)`,
               pattern: result.concentration > 0.6
@@ -758,7 +790,15 @@ export function registerVisualTestingTools(server: McpServer): void {
     },
   }, async ({ url, personaA, personaB }) => {
       const { CBrowser } = await import("../../browser.js");
-      const browser = new CBrowser({ headless: true, viewportWidth: 1920, viewportHeight: 1080 });
+      // Same configured viewport as attention_analysis. This tool COMPARES two
+      // attention runs, so rendering at a size no other tool uses meant its
+      // comparison was internally consistent and incomparable with everything
+      // else that reports attention coordinates. (2026-08-02)
+      const browser = new CBrowser({
+        headless: true,
+        viewportWidth: getDefaultConfig().viewportWidth,
+        viewportHeight: getDefaultConfig().viewportHeight,
+      });
       const { join } = await import("path");
       const { tmpdir } = await import("os");
       const { unlinkSync } = await import("fs");

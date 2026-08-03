@@ -168,7 +168,7 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
       high: ["first-timer", "cognitive-adhd"],
       low: ["power-user", "impatient-user", "elderly-user"],
     },
-    correlates: ["fearOfMissingOut", "timeHorizon", "mentalModelRigidity"],
+    correlates: ["fearOfMissingOut", "timeHorizon", "mentalModelFlexibility"],
     defaultValue: 0.5,
   },
 
@@ -272,7 +272,7 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
      *
      * "Low satisficing" in a reasoning string reads to most people as "does
      * not settle" when it means "compares everything" -- the same trap the
-     * mentalModelRigidity note above exists for. Describe the behaviour, not
+     * mentalModelFlexibility note above exists for. Describe the behaviour, not
      * the trait direction.
      */
     research: "Simon (1956) - Bounded Rationality; Schwartz, B. et al. (2002) - Maximizing vs Satisficing",
@@ -398,7 +398,7 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
       high: ["elderly-user", "first-timer", "elderly-low-vision"],
       low: ["power-user", "confident-user"],
     },
-    correlates: ["satisficing", "mentalModelRigidity", "comprehension"],
+    correlates: ["satisficing", "mentalModelFlexibility", "comprehension"],
     defaultValue: 0.5,
   },
 
@@ -503,7 +503,7 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
       high: ["power-user", "mobile-user"],
       low: ["elderly-low-vision", "first-timer", "elderly-user"],
     },
-    correlates: ["comprehension", "mentalModelRigidity", "proceduralFluency"],
+    correlates: ["comprehension", "mentalModelFlexibility", "proceduralFluency"],
     defaultValue: 0.5,
   },
 
@@ -595,7 +595,7 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
     name: "mentalModelFlexibility",
     description: "Ability to adapt mental models to unexpected UI patterns",
     /**
-     * Renamed from mentalModelRigidity, which asserted the opposite of what it
+     * Renamed from mentalModelFlexibility, which asserted the opposite of what it
      * measured: 1.0 meant maximally FLEXIBLE while the name said rigid.
      *
      * The old name is kept as an alias rather than dropped, and every stored
@@ -678,7 +678,7 @@ export const PERSONA_TRAIT_GUIDELINES: Record<string, Record<string, number>> = 
     transferLearning: 0.95,
     metacognitivePlanning: 0.8,
     informationForaging: 0.9,
-    mentalModelRigidity: 0.8,
+    mentalModelFlexibility: 0.8,
   },
   "intermediate": {
     patience: 0.5,
@@ -688,7 +688,7 @@ export const PERSONA_TRAIT_GUIDELINES: Record<string, Record<string, number>> = 
     transferLearning: 0.5,
     metacognitivePlanning: 0.5,
     informationForaging: 0.5,
-    mentalModelRigidity: 0.5,
+    mentalModelFlexibility: 0.5,
   },
   "beginner": {
     patience: 0.6,
@@ -698,7 +698,7 @@ export const PERSONA_TRAIT_GUIDELINES: Record<string, Record<string, number>> = 
     transferLearning: 0.2,
     metacognitivePlanning: 0.3,
     informationForaging: 0.3,
-    mentalModelRigidity: 0.3,
+    mentalModelFlexibility: 0.3,
   },
 
   // Age spectrum
@@ -722,7 +722,7 @@ export const PERSONA_TRAIT_GUIDELINES: Record<string, Record<string, number>> = 
     attributionStyle: 0.8,
     authoritySensitivity: 0.8,
     workingMemory: 0.35,
-    mentalModelRigidity: 0.2,
+    mentalModelFlexibility: 0.2,
     timeHorizon: 0.4,
   },
 
@@ -780,6 +780,33 @@ export const TRAIT_ALIASES: Record<string, string> = {
 /** Canonical name for a trait, resolving any deprecated alias. */
 export function canonicalTraitName(traitName: string): string {
   return TRAIT_ALIASES[traitName] ?? traitName;
+}
+
+/**
+ * Rewrite a trait map's keys to their canonical names.
+ *
+ * The alias map above existed for months with `canonicalTraitName` beside it
+ * and NOTHING outside this file calling either -- so a persona stored with
+ * `mentalModelRigidity` loaded with that key, matched no member of
+ * COGNITIVE_TRAITS, and contributed nothing to any score. The compatibility
+ * layer was written and never wired, which is the same shape as the trait that
+ * was in the persona vector and in no demand dimension.
+ *
+ * Applied at every read boundary (file store, CMS, tool input) so the old key
+ * keeps working while nothing downstream has to know it exists. (2026-08-02)
+ */
+export function canonicalizeTraits<T extends Record<string, unknown>>(traits: T | undefined): T | undefined {
+  if (!traits) return traits;
+  let changed = false;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(traits)) {
+    const c = canonicalTraitName(k);
+    if (c !== k) changed = true;
+    // A canonical key already present wins: an explicit new-name value is not
+    // overwritten by a stale alias sitting beside it.
+    if (!(c in out) || c === k) out[c] = v;
+  }
+  return (changed ? out : traits) as T;
 }
 
 export function getTraitDefinition(traitName: string): TraitDefinition | undefined {

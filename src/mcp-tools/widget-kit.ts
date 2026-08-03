@@ -110,6 +110,27 @@ export type BlockSpec =
       /** Show a definition tooltip on each label, from the baked-in glossary. */
       describe?: boolean }
   /**
+   * Editable trait sliders that write back through app.callServerTool.
+   *
+   * Same shape as `traits`, plus where to find the persona's name and which
+   * tool to call on save. Read-only blocks stay read-only: this is opt-in per
+   * block rather than a mode on the widget.
+   */
+  /**
+   * The full persona CRUD surface: roster, inline editor, save and delete.
+   * Writes go out through callServerTool to the existing tools rather than
+   * being reimplemented here.
+   */
+  | { type: "manager"; title: string; field: FieldPath }
+  | { type: "editor"; title: string; field: FieldPath;
+      /** Where the persona's name lives in the payload; defaults to `persona`. */
+      personaField?: FieldPath;
+      /** Tool called on save; defaults to persona_update. */
+      saveTool?: string;
+      ramp?: "trait" | "value" | "accessibility";
+      nameKey?: string; valueKey?: string;
+      describe?: boolean }
+  /**
    * A banded scale with the queried point marked.
    *
    * For data shaped as "here are the five levels this trait can take, here is
@@ -132,6 +153,37 @@ export type BlockSpec =
   | { type: "overlay"; title: string; field: FieldPath;
       fetchTool?: string; fileKey?: string; rectsKey?: string;
       widthKey?: string; heightKey?: string; labelKey?: string }
+  /**
+   * A sequential cost chain with its bottleneck named.
+   *
+   * Built for cognitive_effort, whose whole thesis is that the layers are
+   * SEQUENTIAL, not additive: each layer hands its residual capacity to the
+   * next, so a cost late in the chain lands on an already-depleted budget. The
+   * payload states that outright as `chainCoefficient = total / additive`
+   * and the JSON buries it in a nested object.
+   *
+   * So the block shows two bars against one scale -- what the layers cost added
+   * up, and what they actually cost in sequence -- and the gap between them IS
+   * the product's central claim, made visible instead of asserted.
+   *
+   * The bottleneck carries a text label, never colour alone (WCAG 1.4.1).
+   */
+  | { type: "chain"; title: string; field: FieldPath;
+      nameKey?: string; costKey?: string; capacityKey?: string;
+      /** Where the named bottleneck layer lives. */
+      bottleneckField?: FieldPath;
+      /** Sum-of-parts and in-sequence totals, for the amplification bars. */
+      additiveField?: FieldPath; totalField?: FieldPath;
+      /**
+       * Per-layer overlays, so a bar opens into the thing it measured.
+       *
+       * Entries carry {layer, file, legend, available, reason}. A layer with an
+       * overlay becomes a real <button>; a layer without one stays an inert row
+       * that states why. An affordance that does nothing is worse than no
+       * affordance, and "there is no overlay for frustration because it is a
+       * running state, not a place on the page" is information.
+       */
+      overlaysField?: FieldPath; fetchTool?: string }
   /** Free prose. */
   | { type: "note"; title?: string; field: FieldPath }
   /** Everything not consumed by another block, so no field is silently dropped. */
@@ -448,6 +500,47 @@ const CSS = `
      below-average read instantly, and a two-decimal monospace readout. */
   .traits{display:flex;flex-direction:column;gap:.28rem}
   .trait{display:flex;align-items:center;gap:.5rem}
+  /* Editor. The dirty state is a left border rather than a colour change on the
+     value, so it survives both themes and does not rely on hue alone --
+     WCAG 1.4.1: colour is not the only channel carrying the information. */
+  .trait.dirty{border-left:3px solid var(--accent);padding-left:.5rem;margin-left:-.75rem}
+  .mgrcols{display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap}
+  .mgrlist{flex:0 0 13rem;display:flex;flex-direction:column;gap:.15rem;
+    max-height:22rem;overflow-y:auto}
+  .mgrpane{flex:1 1 18rem;min-width:0}
+  .mgrrow{display:flex;flex-direction:column;align-items:flex-start;gap:.1rem;
+    font:inherit;text-align:left;background:none;border:0;border-radius:.375rem;
+    padding:.4rem .55rem;cursor:pointer;color:var(--ink)}
+  .mgrrow:hover{background:color-mix(in oklch,var(--accent) 12%,transparent)}
+  .mgrrow.on{background:color-mix(in oklch,var(--accent) 22%,transparent);
+    box-shadow:inset 3px 0 0 var(--accent)}
+  .mgrrow:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .mgrname{font-size:.85rem;font-weight:600}
+  .modetabs{display:flex;gap:.3rem;flex-wrap:wrap;margin:.4rem 0 .5rem}
+  .modetab{font:inherit;font-size:.78rem;padding:.3rem .6rem;border-radius:999px;
+    border:1px solid var(--line);background:none;color:var(--sub);cursor:pointer}
+  .modetab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .modetab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .tin{width:100%;box-sizing:border-box;font:inherit;font-size:.85rem;
+    padding:.4rem .5rem;border-radius:.375rem;border:1px solid var(--line);
+    background:transparent;color:var(--ink);margin-bottom:.5rem}
+  .tin:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .fields{max-height:20rem;overflow-y:auto}
+  .mgrh{font-size:1rem;margin:0 0 .15rem}
+  /* Single column on narrow viewports: a 13rem list beside an 18rem pane
+     cannot both fit on a phone, and side-by-side would force a horizontal
+     scroll on the whole widget. */
+  @media (max-width:34rem){ .mgrlist{flex-basis:100%;max-height:11rem} }
+  .tedit{flex:1;min-width:6rem;accent-color:var(--accent);height:1.25rem}
+  .tedit:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .tval{font-variant-numeric:tabular-nums;font-size:.78rem;width:2.6rem;text-align:right}
+  .editbar{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-top:.75rem;
+    padding-top:.75rem;border-top:1px solid var(--line)}
+  .btn{font:inherit;font-size:.8rem;padding:.35rem .7rem;border-radius:.375rem;
+    border:1px solid var(--line);background:var(--accent);color:#fff;cursor:pointer}
+  .btn:disabled{opacity:.45;cursor:default}
+  .btn.ghost{background:none;color:var(--sub)}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   /* Labels wrap instead of truncating, in a column wide enough to hold a real
      trait name. At .68rem in 5.6rem with nowrap+ellipsis these read
      "Metacognitive...", "Interrupt Reco...", "Fear Of Missin..." -- 10.88px
@@ -487,6 +580,35 @@ const CSS = `
   /* Top margin is the marker's room. Without it the value label collides with
      the block heading above, and the tick ran the full height of the band and
      struck through the label it was pointing at. */
+  .chain{margin:1rem 0}
+  .chain .seg{display:flex;align-items:center;gap:.5rem;margin:.35rem 0}
+  .chain .lbl{flex:0 0 9.5rem;font-size:.8rem;opacity:.85;text-align:right}
+  .chain .track{flex:1;height:1.35rem;background:rgba(127,127,127,.16);border-radius:3px;position:relative;overflow:hidden}
+  .chain .fill{height:100%;border-radius:3px}
+  .chain .num{flex:0 0 3.6rem;font-size:.78rem;font-variant-numeric:tabular-nums;opacity:.8}
+  .chain .seg.peak .lbl{font-weight:700;opacity:1}
+  .chain .peaktag{font-size:.68rem;letter-spacing:.04em;text-transform:uppercase;padding:.05rem .3rem;border:1px solid currentColor;border-radius:3px;margin-left:.35rem}
+  .chain button.seg{width:100%;background:none;border:0;padding:.1rem 0;font:inherit;color:inherit;cursor:pointer;border-radius:4px}
+  .chain button.seg:hover .track,.chain button.seg:focus-visible .track{outline:2px solid var(--brand);outline-offset:2px}
+  .chain button.seg:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+  .chain button.seg[aria-expanded="true"] .lbl{text-decoration:underline}
+  .chain .noov{flex:0 0 auto;font-size:.7rem;opacity:.55;margin-left:.35rem}
+  .ovpane{margin:.6rem 0 1rem;padding:.6rem;border:1px solid rgba(127,127,127,.28);border-radius:6px}
+  .ovpane img{max-width:100%;height:auto;display:block;border-radius:4px}
+  .ovpane .cap{font-size:.8rem;opacity:.8;margin:.45rem 0 0}
+  @media (max-width:520px){
+    /* The fixed 9.5rem label column took a third of a 393px viewport and left
+       the bars as stubs — the one thing the block exists to show. Labels move
+       above their track so the bar gets the full width. */
+    .chain .seg{flex-wrap:wrap;row-gap:.15rem}
+    .chain .lbl{flex:1 1 100%;text-align:left;font-size:.78rem}
+    .chain .track{flex:1 1 auto;min-width:0}
+    .chain .num{flex:0 0 3.2rem;text-align:right}
+    .chain button.seg{text-align:left}
+  }
+  .amp{margin:1.1rem 0 .3rem;padding-top:.8rem;border-top:1px solid rgba(127,127,127,.22)}
+  .amp .seg .lbl{flex:0 0 9.5rem}
+  .ampnote{font-size:.8rem;opacity:.75;margin:.45rem 0 0}
   .scale{margin:1.5rem 0 .8rem}
   .bands{display:flex;gap:3px;position:relative}
   .band{flex:1;height:30px;border-radius:5px;display:grid;place-items:center;
@@ -776,6 +898,405 @@ const RUNTIME = String.raw`
     return ul;
   }
 
+  /**
+   * Editable trait sliders that write back through the server.
+   *
+   * The widget sandbox has no network of its own -- it cannot POST anywhere --
+   * but app.callServerTool reaches the MCP server that rendered it, which is
+   * the same channel the image blocks already use to fetch artifacts. So an
+   * editor is possible here without any new transport.
+   *
+   * Save is explicit rather than live-on-drag. Every drag would otherwise be a
+   * write to two stores, and a slider dragged across its range would produce a
+   * dozen persona versions of which only the last was meant.
+   */
+  function editorBlock(rows, b, data) {
+    var wrap = el("div", "traits");
+    var personaName = at(data, b.personaField || "persona") || at(data, "persona_name");
+    var edited = {};
+    var controls = [];
+
+    rows.forEach(function (r) {
+      var name = String(r.name), v = Number(r.value);
+      if (!isFinite(v)) return;
+      var line = el("div", "trait");
+      var label = el("span", "tname", titleize(name));
+      var input = document.createElement("input");
+      input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.05";
+      input.value = String(v); input.className = "tedit";
+      input.setAttribute("aria-label", titleize(name));
+      var out = el("span", "tval", v.toFixed(2));
+      // The original stays visible next to the new value: an editor that hides
+      // what you started from makes "did I mean to move that?" unanswerable.
+      var orig = el("span", "cap", " was " + v.toFixed(2));
+      orig.style.display = "none";
+      input.addEventListener("input", function () {
+        var nv = Number(input.value);
+        out.textContent = nv.toFixed(2);
+        if (Math.abs(nv - v) < 1e-9) { delete edited[name]; orig.style.display = "none"; line.classList.remove("dirty"); }
+        else { edited[name] = nv; orig.style.display = ""; line.classList.add("dirty"); }
+        status.textContent = Object.keys(edited).length
+          ? Object.keys(edited).length + " unsaved change(s)" : "";
+        save.disabled = !Object.keys(edited).length;
+      });
+      line.appendChild(label); line.appendChild(input); line.appendChild(out); line.appendChild(orig);
+      wrap.appendChild(line);
+      controls.push({ name: name, input: input, out: out, base: v });
+    });
+
+    var bar = el("div", "editbar");
+    var save = el("button", "btn", "Save changes");
+    save.type = "button"; save.disabled = true;
+    var reset = el("button", "btn ghost", "Reset");
+    reset.type = "button";
+    var status = el("span", "cap", "");
+    bar.appendChild(save); bar.appendChild(reset); bar.appendChild(status);
+    wrap.appendChild(bar);
+
+    reset.addEventListener("click", function () {
+      controls.forEach(function (c) {
+        c.input.value = String(c.base); c.out.textContent = c.base.toFixed(2);
+        c.input.parentNode.classList.remove("dirty");
+        c.input.parentNode.querySelectorAll(".cap").forEach(function (n) { n.style.display = "none"; });
+      });
+      edited = {}; status.textContent = ""; save.disabled = true;
+    });
+
+    save.addEventListener("click", async function () {
+      if (!personaName) { status.textContent = "No persona name in this result — cannot save."; return; }
+      save.disabled = true; status.textContent = "Saving…";
+      try {
+        var res = await app.callServerTool({
+          name: b.saveTool || "persona_update",
+          arguments: { persona_name: personaName, traits: edited },
+        });
+        var txt = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+        var out = txt ? JSON.parse(txt.text) : {};
+        if (out.error) { status.textContent = "Not saved: " + (out.message || out.error); save.disabled = false; return; }
+        // The drift check comes back with the save, so the moment a trait edit
+        // contradicts the description is the moment it is said -- not the next
+        // time somebody happens to look.
+        var drift = (out.descriptionDrift || []).length;
+        status.textContent = "Saved. " + (out.changed || []).length + " field(s) changed"
+          + (drift ? " — " + drift + " description claim(s) now contradicted" : "")
+          + (out.stores && out.stores.cms !== "written" ? " — CMS NOT written" : "");
+        controls.forEach(function (c) {
+          if (edited[c.name] !== undefined) { c.base = edited[c.name]; }
+          c.input.parentNode.classList.remove("dirty");
+        });
+        edited = {};
+        // Tell the conversation, so the model knows the persona moved under it
+        // rather than answering later from the values it was handed.
+        app.sendMessage({ role: "user", content: [{ type: "text",
+          text: "Updated persona " + personaName + " — " + (out.changed || []).join(", ")
+            + (drift ? ". Description now contradicts: " + out.descriptionDrift.map(function (d) { return d.trait; }).join(", ") : "") }] });
+      } catch (e) {
+        status.textContent = "Save failed: " + (e && e.message ? e.message : e);
+        save.disabled = false;
+      }
+    });
+    return wrap;
+  }
+
+  /**
+   * The whole persona CRUD surface in one block.
+   *
+   * A roster on the left, the selected persona's editable traits on the right,
+   * and save / delete / new. Every write goes out through app.callServerTool to
+   * the tools that already do the work -- persona_update, persona_delete,
+   * persona_create_submit_traits -- so this is a surface over them rather than
+   * a second implementation of them. That matters: a duplicate write path is
+   * the exact defect that has produced nine divergent tool families here.
+   *
+   * The roster ships with the result, so switching personas is instant and
+   * costs no round trip. Only writes go back to the server.
+   */
+  function managerBlock(data, b) {
+    var wrap = el("div", "mgr");
+    var roster = at(data, b.field) || [];
+    if (!roster.length) return wrap;
+    var selected = roster[0];
+    var edited = {};
+
+    var cols = el("div", "mgrcols");
+    var list = el("div", "mgrlist");
+    var pane = el("div", "mgrpane");
+    cols.appendChild(list); cols.appendChild(pane);
+    wrap.appendChild(cols);
+
+    var status = el("p", "cap", "");
+    wrap.appendChild(status);
+
+    function renderList() {
+      list.innerHTML = "";
+      roster.forEach(function (p, i) {
+        var row = el("button", "mgrrow" + (p === selected ? " on" : ""), "");
+        row.type = "button";
+        row.setAttribute("aria-pressed", p === selected ? "true" : "false");
+        row.appendChild(el("span", "mgrname", String(p.name || "(unnamed)")));
+        var meta = [];
+        if (p.builtin) meta.push("built-in");
+        if (p.valuesRoute) meta.push(String(p.valuesRoute));
+        if (meta.length) row.appendChild(el("span", "cap", meta.join(" · ")));
+        row.addEventListener("click", function () {
+          if (Object.keys(edited).length &&
+              !confirm("Discard " + Object.keys(edited).length + " unsaved change(s)?")) return;
+          selected = p; edited = {}; renderList(); renderPane();
+        });
+        list.appendChild(row);
+      });
+    }
+
+    function renderPane() {
+      pane.innerHTML = "";
+      var p = selected;
+      pane.appendChild(el("h3", "mgrh", String(p.name)));
+      if (p.description) pane.appendChild(el("p", "cap", String(p.description)));
+
+      var traits = p.traits || {};
+      var names = Object.keys(traits);
+      var box = el("div", "traits");
+      names.forEach(function (k) {
+        var v = Number(traits[k]);
+        if (!isFinite(v)) return;
+        var line = el("div", "trait");
+        line.appendChild(el("span", "tname", titleize(k)));
+        var input = document.createElement("input");
+        input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.05";
+        input.value = String(v); input.className = "tedit";
+        input.setAttribute("aria-label", titleize(k));
+        var out = el("span", "tval", v.toFixed(2));
+        input.addEventListener("input", function () {
+          var nv = Number(input.value);
+          out.textContent = nv.toFixed(2);
+          if (Math.abs(nv - v) < 1e-9) { delete edited[k]; line.classList.remove("dirty"); }
+          else { edited[k] = nv; line.classList.add("dirty"); }
+          save.disabled = !Object.keys(edited).length;
+          status.textContent = Object.keys(edited).length
+            ? Object.keys(edited).length + " unsaved change(s) on " + p.name : "";
+        });
+        line.appendChild(input); line.appendChild(out);
+        box.appendChild(line);
+      });
+      pane.appendChild(box);
+
+      var bar = el("div", "editbar");
+      var save = el("button", "btn", "Save");
+      save.type = "button"; save.disabled = true;
+      var del = el("button", "btn ghost", "Delete");
+      del.type = "button";
+      // A built-in is shared by every install; the server refuses to edit or
+      // delete one, so the UI does not offer to.
+      if (p.builtin) { save.disabled = true; del.disabled = true; }
+      bar.appendChild(save); bar.appendChild(del);
+      // The same three routes on update: revise from a new description,
+      // re-answer the survey, or supply a Big Five profile. Which fields are
+      // meaningful depends entirely on which route you are taking.
+      var via = el("button", "btn ghost", "Update via…");
+      via.type = "button";
+      via.disabled = !!p.builtin;
+      via.addEventListener("click", function () { renderForm("description", p); });
+      bar.appendChild(via);
+      pane.appendChild(bar);
+
+      save.addEventListener("click", async function () {
+        save.disabled = true; status.textContent = "Saving…";
+        try {
+          var res = await app.callServerTool({ name: "persona_update",
+            arguments: { persona_name: p.name, traits: edited } });
+          var t = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+          var out = t ? JSON.parse(t.text) : {};
+          if (out.error) { status.textContent = "Not saved: " + (out.message || out.error); save.disabled = false; return; }
+          Object.keys(edited).forEach(function (k) { p.traits[k] = edited[k]; });
+          var drift = (out.descriptionDrift || []).length;
+          status.textContent = "Saved " + p.name + ". " + (out.changed || []).length + " field(s)"
+            + (drift ? " — " + drift + " description claim(s) now contradicted" : "")
+            + (out.stores && out.stores.cms !== "written" ? " — CMS NOT written" : "");
+          edited = {}; renderPane();
+          app.sendMessage({ role: "user", content: [{ type: "text",
+            text: "Updated persona " + p.name + ": " + (out.changed || []).join(", ") }] });
+        } catch (e) { status.textContent = "Save failed: " + (e && e.message ? e.message : e); save.disabled = false; }
+      });
+
+      del.addEventListener("click", async function () {
+        if (!confirm("Delete " + p.name + " from both stores? This cannot be undone here.")) return;
+        del.disabled = true; status.textContent = "Deleting…";
+        try {
+          var res = await app.callServerTool({ name: "persona_delete",
+            arguments: { persona_name: p.name, confirm: true } });
+          var t = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+          var out = t ? JSON.parse(t.text) : {};
+          if (out.error) { status.textContent = "Not deleted: " + (out.message || out.error); del.disabled = false; return; }
+          roster = roster.filter(function (x) { return x !== p; });
+          status.textContent = "Deleted " + p.name + ". " + (out.note || "");
+          app.sendMessage({ role: "user", content: [{ type: "text", text: "Deleted persona " + p.name }] });
+          if (!roster.length) { pane.innerHTML = ""; list.innerHTML = ""; return; }
+          selected = roster[0]; edited = {}; renderList(); renderPane();
+        } catch (e) { status.textContent = "Delete failed: " + (e && e.message ? e.message : e); del.disabled = false; }
+      });
+    }
+
+    /**
+     * Create / update in three modes, because a persona's values come from one
+     * of three routes and the route decides which fields are even meaningful.
+     * A single form with every field would ask for a Big Five profile and a
+     * survey and a description at once, when supplying any ONE of them is the
+     * whole job.
+     */
+    function renderForm(mode, existing) {
+      pane.innerHTML = "";
+      var modes = data.modes || {};
+      var spec = modes[mode] || {};
+      var isUpdate = !!existing;
+
+      var tabs = el("div", "modetabs");
+      ["description", "survey", "bigfive"].forEach(function (m) {
+        var t = el("button", "modetab" + (m === mode ? " on" : ""), (modes[m] && modes[m].label) || m);
+        t.type = "button";
+        t.setAttribute("aria-pressed", m === mode ? "true" : "false");
+        t.addEventListener("click", function () { renderForm(m, existing); });
+        tabs.appendChild(t);
+      });
+      pane.appendChild(el("h3", "mgrh", isUpdate ? "Update " + existing.name : "New persona"));
+      pane.appendChild(tabs);
+      if (spec.note) pane.appendChild(el("p", "cap", spec.note));
+
+      var nameIn;
+      if (!isUpdate) {
+        nameIn = document.createElement("input");
+        nameIn.type = "text"; nameIn.className = "tin"; nameIn.placeholder = "persona name";
+        nameIn.setAttribute("aria-label", "Persona name");
+        pane.appendChild(nameIn);
+      }
+
+      var fields = el("div", "fields");
+      pane.appendChild(fields);
+      var collect = function () { return {}; };
+
+      if (mode === "description") {
+        var ta = document.createElement("textarea");
+        ta.className = "tin"; ta.rows = 5;
+        ta.placeholder = "A cautious retiree who double-checks everything before buying…";
+        ta.value = isUpdate ? String(existing.description || "") : "";
+        ta.setAttribute("aria-label", "Description");
+        fields.appendChild(ta);
+        collect = function () { return { description: ta.value.trim() }; };
+      } else if (mode === "survey") {
+        var criteria = data.traitCriteria || {};
+        var names = data.allTraits || Object.keys(criteria);
+        var vals = {};
+        names.forEach(function (k) {
+          var base = isUpdate && existing.traits && typeof existing.traits[k] === "number"
+            ? Number(existing.traits[k]) : 0.5;
+          vals[k] = base;
+          var line = el("div", "trait");
+          var lab = el("span", "tname", titleize(k));
+          if (criteria[k]) lab.title = criteria[k];
+          var input = document.createElement("input");
+          input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.05";
+          input.value = String(base); input.className = "tedit";
+          input.setAttribute("aria-label", titleize(k));
+          var out = el("span", "tval", base.toFixed(2));
+          input.addEventListener("input", function () {
+            vals[k] = Number(input.value); out.textContent = vals[k].toFixed(2);
+          });
+          line.appendChild(lab); line.appendChild(input); line.appendChild(out);
+          fields.appendChild(line);
+        });
+        collect = function () { return { answers: vals }; };
+      } else {
+        var bf = {};
+        (data.bigFiveFactors || []).forEach(function (f) {
+          var base = isUpdate && existing.bigFive && typeof existing.bigFive[f.factor] === "number"
+            ? Number(existing.bigFive[f.factor]) : 0.5;
+          bf[f.factor] = base;
+          var line = el("div", "trait");
+          var lab = el("span", "tname", titleize(f.factor));
+          lab.title = "low: " + f.low + "\nhigh: " + f.high + "\n" + (f.doNotConfuse || "");
+          var input = document.createElement("input");
+          input.type = "range"; input.min = "0"; input.max = "1"; input.step = "0.01";
+          input.value = String(base); input.className = "tedit";
+          input.setAttribute("aria-label", titleize(f.factor));
+          var out = el("span", "tval", base.toFixed(2));
+          input.addEventListener("input", function () {
+            bf[f.factor] = Number(input.value); out.textContent = bf[f.factor].toFixed(2);
+          });
+          line.appendChild(lab); line.appendChild(input); line.appendChild(out);
+          fields.appendChild(line);
+        });
+        collect = function () { return { bigFive: bf }; };
+      }
+
+      var bar = el("div", "editbar");
+      var go = el("button", "btn", isUpdate ? "Apply" : "Create");
+      go.type = "button";
+      var back = el("button", "btn ghost", "Cancel");
+      back.type = "button";
+      back.addEventListener("click", function () { renderPane(); });
+      bar.appendChild(go); bar.appendChild(back);
+      pane.appendChild(bar);
+
+      go.addEventListener("click", async function () {
+        var name = isUpdate ? existing.name : (nameIn.value || "").trim();
+        if (!name) { status.textContent = "A name is required."; return; }
+        var payload = collect();
+        go.disabled = true; status.textContent = "Working…";
+        try {
+          if (mode === "description") {
+            // Handed to the conversation rather than faked. The widget has no
+            // model, and a form that silently did nothing would be worse than
+            // one that says where the work happens.
+            app.sendMessage({ role: "user", content: [{ type: "text",
+              text: (isUpdate ? "Update the persona " + name + " from this description" : "Create a persona named " + name + " from this description")
+                + ", using persona_create_from_description and the completeness contract: " + payload.description }] });
+            status.textContent = "Handed to the assistant — it will infer the traits and write the persona.";
+            go.disabled = false;
+            return;
+          }
+          var res, out, t;
+          if (isUpdate) {
+            res = await app.callServerTool({ name: "persona_update",
+              arguments: mode === "survey"
+                ? { persona_name: name, traits: payload.answers }
+                : { persona_name: name, bigFive: payload.bigFive } });
+          } else if (mode === "survey") {
+            res = await app.callServerTool({ name: "persona_questionnaire_build",
+              arguments: { name: name, description: "Created from a survey in persona_manager", answers: payload.answers, save: true } });
+          } else {
+            // Two calls, both real: build establishes the persona, update
+            // attaches the Big Five and moves it to that values route.
+            await app.callServerTool({ name: "persona_questionnaire_build",
+              arguments: { name: name, description: "Created from a Big Five profile in persona_manager", answers: {}, save: true } });
+            res = await app.callServerTool({ name: "persona_update",
+              arguments: { persona_name: name, bigFive: payload.bigFive } });
+          }
+          t = ((res && res.content) || []).filter(function (c) { return c.type === "text"; })[0];
+          out = t ? JSON.parse(t.text) : {};
+          if (out.error) { status.textContent = "Failed: " + (out.message || out.error); go.disabled = false; return; }
+          status.textContent = (isUpdate ? "Updated " : "Created ") + name
+            + (out.valuesRoute ? " (" + out.valuesRoute + ")" : "")
+            + ((out.descriptionDrift || []).length ? " — " + out.descriptionDrift.length + " description claim(s) now contradicted" : "");
+          app.sendMessage({ role: "user", content: [{ type: "text",
+            text: (isUpdate ? "Updated" : "Created") + " persona " + name + " via " + mode }] });
+          renderPane();
+        } catch (e) {
+          status.textContent = "Failed: " + (e && e.message ? e.message : e);
+          go.disabled = false;
+        }
+      });
+    }
+
+    var newBar = el("div", "editbar");
+    var newBtn = el("button", "btn", "New persona");
+    newBtn.type = "button";
+    newBtn.addEventListener("click", function () { renderForm("description", null); });
+    newBar.appendChild(newBtn);
+    wrap.insertBefore(newBar, status);
+
+    renderList(); renderPane();
+    return wrap;
+  }
+
   function traitsBlock(rows, b) {
     var wrap = el("div", "traits");
     rows.forEach(function (r) {
@@ -831,6 +1352,168 @@ const RUNTIME = String.raw`
         .map(function (k) { return { name: k, value: v[k] }; });
     }
     return [];
+  }
+
+  async function chainBlock(data, b) {
+    var layers = at(data, b.field);
+    if (!isObjArray(layers) || !layers.length) return null;
+    var nameKey = b.nameKey || "name";
+    var costKey = b.costKey || "cost";
+    var bottleneck = b.bottleneckField ? at(data, b.bottleneckField) : undefined;
+    var additive = b.additiveField ? Number(at(data, b.additiveField)) : NaN;
+    var total = b.totalField ? Number(at(data, b.totalField)) : NaN;
+
+    // One scale across every bar, including the two summary bars, or the
+    // comparison the block exists to make would be drawn to different rulers.
+    var costs = layers.map(function (l) { return Number(l[costKey]) || 0; });
+    var scaleMax = Math.max.apply(null, costs.concat(
+      [isFinite(additive) ? additive : 0, isFinite(total) ? total : 0]));
+    if (!(scaleMax > 0)) scaleMax = 1;
+
+    var wrap = el("div", "chain");
+
+    // Overlays keyed by layer name, so a bar can find its own evidence.
+    var ovs = {};
+    var ovList = b.overlaysField ? at(data, b.overlaysField) : null;
+    if (isObjArray(ovList)) {
+      ovList.forEach(function (o) { if (o && o.layer) ovs[String(o.layer)] = o; });
+    }
+    var pane = el("div");
+
+    function bar(label, value, hue, isPeak, ov) {
+      var interactive = !!(ov && ov.available && ov.file);
+      // A real <button> when there is something behind it, so it is keyboard
+      // operable and announced as a control. A plain div when there is not --
+      // styling a dead row to look clickable is the lie this avoids.
+      var seg = interactive
+        ? document.createElement("button")
+        : el("div");
+      seg.className = "seg" + (isPeak ? " peak" : "");
+      if (interactive) { seg.type = "button"; seg.setAttribute("aria-expanded", "false"); }
+      var lbl = el("div", "lbl", label);
+      if (isPeak) lbl.appendChild(el("span", "peaktag", "bottleneck"));
+      var track = el("div", "track");
+      var fill = el("div", "fill");
+      fill.style.width = Math.max(1, (value / scaleMax) * 100) + "%";
+      fill.style.backgroundColor = "hsl(" + hue + ", 62%, 48%)";
+      track.appendChild(fill);
+      var num = el("div", "num", value.toFixed(3));
+      seg.appendChild(lbl); seg.appendChild(track); seg.appendChild(num);
+      if (ov && !ov.available) {
+        var why = el("span", "noov", "no overlay");
+        why.title = String(ov.reason || "no overlay for this layer");
+        seg.appendChild(why);
+      }
+      if (interactive) {
+        seg.addEventListener("click", function () {
+          var open = seg.getAttribute("aria-expanded") === "true";
+          // One pane, so opening a layer replaces the last rather than stacking
+          // six screenshots down the panel.
+          wrap.querySelectorAll("button.seg").forEach(function (n) { n.setAttribute("aria-expanded", "false"); });
+          pane.innerHTML = "";
+          if (open) return;
+          seg.setAttribute("aria-expanded", "true");
+          showOverlay(ov, label);
+        });
+      }
+      return seg;
+    }
+
+    async function showOverlay(ov, label) {
+      pane.className = "ovpane";
+      pane.appendChild(el("p", "cap", "Loading " + label + " overlay…"));
+      try {
+        var res = await app.callServerTool({
+          name: b.fetchTool || "artifact_fetch",
+          arguments: { file: ov.file },
+        });
+        var img = ((res && res.content) || []).filter(function (c) { return c.type === "image"; })[0];
+        pane.innerHTML = "";
+        if (!img) {
+          pane.appendChild(el("p", "cap", "The " + label + " overlay could not be loaded."));
+          return;
+        }
+        var node = document.createElement("img");
+        node.src = "data:" + (img.mimeType || "image/png") + ";base64," + img.data;
+        // Named for what it shows, not "overlay image" -- a screen reader user
+        // gets the same sentence a sighted one reads under it.
+        node.alt = label + " overlay for this page: " + (ov.legend || "");
+        pane.appendChild(node);
+        if (ov.legend) pane.appendChild(el("p", "cap", String(ov.legend)));
+      } catch (e) {
+        pane.innerHTML = "";
+        pane.appendChild(el("p", "cap", "Could not load the " + label + " overlay: " + (e && e.message ? e.message : e)));
+      }
+    }
+
+    // Width and colour deliberately use DIFFERENT denominators.
+    //
+    // Width is on the shared scale, so a layer bar and the sequential-total bar
+    // below it can be compared honestly. Colour is relative to the largest
+    // LAYER, because the shared scale made every layer green: the biggest layer
+    // was 0.171 against a 0.742 total, which is 23% of the ramp, so a page at
+    // 63% abandonment risk rendered as six healthy green bars. Ramping colour
+    // within the layers is what makes the bottleneck the hottest thing on
+    // screen -- which is the one thing this block exists to show.
+    var layerMax = Math.max.apply(null, costs);
+    if (!(layerMax > 0)) layerMax = 1;
+    layers.forEach(function (l) {
+      var name = String(l[nameKey] == null ? "" : l[nameKey]);
+      var cost = Number(l[costKey]) || 0;
+      var isPeak = bottleneck != null && String(bottleneck) === name;
+      // Cost, not capability: high is bad, so the ramp runs green to red.
+      wrap.appendChild(bar(name, cost, 120 - Math.min(1, cost / layerMax) * 120, isPeak, ovs[name]));
+    });
+    wrap.appendChild(pane);
+
+    if (isFinite(additive) && isFinite(total) && additive > 0) {
+      var amp = el("div", "amp");
+      // Computed BEFORE the bars that read it. var hoists, so declaring this
+      // below its first use left the guard comparing undefined !== null, which
+      // is true -- the guard passed and the bar was drawn with no value.
+      //
+      // raw, not total: total is a sigmoid of raw, so plotting additive against
+      // it drew a 1.034 bar beside a 0.410 bar and told the 60%-less story in
+      // pixels while the caption underneath said +2%. Both bars are in
+      // layer-cost units or the comparison is omitted.
+      var rawTotal = at(data, "cognitiveTransportCost.raw");
+      var ratio = typeof rawTotal === "number" ? rawTotal / additive : null;
+      var pct = ratio === null ? 0 : Math.round(Math.abs(1 - ratio) * 100);
+      if (ratio !== null) {
+        amp.appendChild(bar("sum of layers", additive, 205, false, null));
+        amp.appendChild(bar("actual, in sequence", rawTotal, 205, false, null));
+      }
+      // Describes the coefficient it actually measured.
+      //
+      // The first version assumed the chain AMPLIFIES, matching the old
+      // sequentialAmplification name, and fell back to "close to additive"
+      // otherwise. NOTE: no backticks anywhere in this block -- it is inside a
+      // template literal, so one silently ends the string and the whole widget
+      // stops compiling. Against real data the coefficient is 0.30-0.39, so
+      // the widget confidently called a 61-70% compression "close to additive".
+      // The mock payload used to build it had additive < total, which is the
+      // one shape the tool has never actually produced. (2026-08-02)
+      amp.appendChild(el("p", "ampnote",
+        // No raw total, no claim. Falling back to the sigmoid-squashed total
+        // here is what produced "about 60% less" on a chain that actually adds
+        // ~1%: total is a sigmoid and additive is not, so their ratio measures
+        // the squash, not the chain. A payload from before raw existed cannot
+        // answer this, and saying so beats answering it wrongly.
+        ratio === null
+          ? "This result predates the raw cost being reported, so the chain's effect cannot be computed from it. The bars above are still exact; only the comparison below them is unavailable."
+          : ratio > 1.0005
+          ? "The layers run in sequence, so each one spends what the last left over. That adds "
+            + pct + "% over their sum (" + ratio.toFixed(3) + "x)"
+            + (bottleneck ? ", concentrated in " + bottleneck + "." : ".")
+          : ratio < 0.995
+          ? "Running the layers in sequence costs " + ratio.toFixed(3) + "x their sum, about "
+            + pct + "% less"
+            + (bottleneck ? ", and " + bottleneck + " is where the cost concentrates." : ".")
+          : "Sequential and additive cost agree to within a rounding error: no layer is arriving on a materially depleted budget"
+            + (bottleneck ? ", and " + bottleneck + " carries the chain on its own." : ".")));
+      wrap.appendChild(amp);
+    }
+    return wrap;
   }
 
   function levelsBlock(data, b) {
@@ -1263,6 +1946,24 @@ const RUNTIME = String.raw`
       var rows = normaliseTraits(at(data, b.field), b);
       return rows.length ? { node: traitsBlock(rows, b), count: rows.length } : null;
     }
+    if (b.type === "manager") {
+      used[b.field.split(".")[0]] = true;
+      var mnode = managerBlock(data, b);
+      return mnode.childNodes.length ? { node: mnode, count: null } : null;
+    }
+    if (b.type === "editor") {
+      used[b.field.split(".")[0]] = true;
+      if (b.personaField) used[b.personaField.split(".")[0]] = true;
+      var erows = normaliseTraits(at(data, b.field), b);
+      return erows.length ? { node: editorBlock(erows, b, data), count: erows.length } : null;
+    }
+    if (b.type === "chain") {
+      [b.field, b.bottleneckField, b.additiveField, b.totalField, b.overlaysField].forEach(function (f) {
+        if (f) used[f.split(".")[0]] = true;
+      });
+      var node = await chainBlock(data, b);
+      return node ? { node: node, count: null } : null;
+    }
     if (b.type === "levels") {
       [b.field, b.valueField, b.labelField, b.behaviorsField].forEach(function (f) {
         if (f) used[f.split(".")[0]] = true;
@@ -1515,7 +2216,7 @@ const RUNTIME = String.raw`
  * Sourced from TRAIT_DEFINITIONS, the authoritative reference matrix, rather
  * than written fresh -- a tooltip that disagrees with the docs is worse than
  * no tooltip. Keys are short because this ships inside every view; ~4KB for
- * all 25 traits, against a 300KB runtime bundle.
+ * all 26 traits, against a 300KB runtime bundle.
  *
  * Schwartz values have no runtime description map (they are interfaces with
  * JSDoc), so value meters currently render without tooltips rather than with

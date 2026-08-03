@@ -299,7 +299,7 @@ export const VALUE_TRAIT_CORRELATIONS: ValueTraitCorrelation[] = [
   },
   {
     value: "tradition",
-    trait: "mentalModelRigidity",
+    trait: "mentalModelFlexibility",
     direction: "direct",
     strength: "moderate",
     researchBasis: "Tradition correlates with resistance to new mental models (r = 0.38)",

@@ -1491,7 +1491,7 @@ async function detectVisionBarriers(ctx: BarrierContext): Promise<void> {
 async function simulateAccessibilityJourney(
   page: Page,
   url: string,
-  goal: string,
+  goal: string | undefined,
   persona: AccessibilityPersona,
   scope: "viewport" | "full_page" = "viewport",
   maxSteps: number,
@@ -1511,7 +1511,9 @@ async function simulateAccessibilityJourney(
     unverifiableMedia: [],
   };
 
-  let goalAchieved = false;
+  // Named for what it is computed from. See EmpathyPersonaResult in types.ts:
+  // this is `blockingBarriers.length === 0`, not evidence anyone finished a task.
+  let noBlockingBarriers = false;
   /** Set when the navigation simulation threw — see the catch block below. */
   let navigationError: string | undefined;
   let journeyValidation: Record<string, unknown> | undefined;
@@ -1598,7 +1600,10 @@ async function simulateAccessibilityJourney(
     // Use cognitive journey for realistic step tracking if API key available
     // v18.35.0: Add hard timeout to prevent MCP proxy disconnection (~60s limit on claude.ai)
     const journeyTimeoutMs = Math.min(maxTime * 1000, 45000); // Hard cap at 45s to leave margin
-    if (isApiKeyConfigured()) {
+    // No goal, no traversal. A journey needs something to traverse toward, and
+    // inventing one would produce a goal path on the site model that nobody asked
+    // for. Barrier detection above has already run and is unaffected.
+    if (goal && isApiKeyConfigured()) {
       try {
         const journeyPromise = runCognitiveJourney({
           persona: persona.name,
@@ -1638,7 +1643,9 @@ async function simulateAccessibilityJourney(
           });
         }
 
-        goalAchieved = journey.goalAchieved;
+        // Note this is immediately overwritten below by the barrier check —
+        // the journey's success has never been what makes this field true.
+        noBlockingBarriers = journey.goalAchieved;
 
         // v18.29.0: Store journey validation data for attachment to result
         journeyValidation = {
@@ -1771,11 +1778,12 @@ async function simulateAccessibilityJourney(
 
     // v11.11.0: Goal is achievable unless there are truly blocking barriers
     // Friction (small targets, contrast, cognitive load) reduces score but doesn't block
-    goalAchieved = blockingBarriers.length === 0;
+    noBlockingBarriers = blockingBarriers.length === 0;
 
-    // If journey validation says goal failed, override barrier-based goalAchieved
+    // A journey that explicitly failed is evidence of a block, so it can pull
+    // this false — but it can never pull it true.
     if (journeyValidation && journeyValidation.goalAchieved === false) {
-      goalAchieved = false;
+      noBlockingBarriers = false;
     }
 
   } catch (e) {
@@ -1808,7 +1816,7 @@ async function simulateAccessibilityJourney(
     // charges the customer for our failure; passing `true` would invent a
     // success. Treat it as not-failed and mark the result degraded instead, so
     // the score reflects only what was actually measured (the barriers).
-    navigationError ? true : goalAchieved,
+    navigationError ? true : noBlockingBarriers,
     persona.name,
     (persona as any).accessibilityTraits,
   );
@@ -1913,7 +1921,9 @@ async function simulateAccessibilityJourney(
     url,
     persona: persona.name,
     disabilityType: getDisabilityType(persona),
-    goalAchieved,
+    noBlockingBarriers,
+    // Deprecated alias, one release only. See EmpathyPersonaResult.
+    goalAchieved: noBlockingBarriers,
     barriers: ctx.barriers,
     frictionPoints: ctx.frictionPoints,
     // Filtered to the audit's conformance level, exactly as the top-level
@@ -1997,7 +2007,7 @@ interface ScoreResult {
 function calculateEmpathyScoreWithContext(
   barriers: AccessibilityBarrier[],
   frictionPoints: AccessibilityFrictionPoint[],
-  goalAchieved: boolean
+  noBlockingBarriers: boolean
 ): ScoreResult {
   const baseScore = 100;
   let score = baseScore;
@@ -2046,8 +2056,8 @@ function calculateEmpathyScoreWithContext(
 
   // Goal achievement affects score but doesn't zero it
   // v11.10.0: Reduced penalty, page can still be partially accessible
-  const goalDeduction = goalAchieved ? 0 : 15;
-  if (!goalAchieved) score -= 15;
+  const goalDeduction = noBlockingBarriers ? 0 : 15;
+  if (!noBlockingBarriers) score -= 15;
 
   // Ensure minimum score of 10 if there are any working elements
   // A page with issues is still more accessible than a blank/broken page
@@ -2098,9 +2108,9 @@ function calculateEmpathyScoreWithContext(
 function calculateEmpathyScore(
   barriers: AccessibilityBarrier[],
   frictionPoints: AccessibilityFrictionPoint[],
-  goalAchieved: boolean
+  noBlockingBarriers: boolean
 ): number {
-  return calculateEmpathyScoreWithContext(barriers, frictionPoints, goalAchieved).score;
+  return calculateEmpathyScoreWithContext(barriers, frictionPoints, noBlockingBarriers).score;
 }
 
 function generateRemediationPriority(
@@ -2201,8 +2211,7 @@ export function formatEmpathyAuditReport(result: EmpathyAuditResult): string {
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 URL: ${result.url}
-Goal: "${result.goal}"
-Timestamp: ${result.timestamp}
+${result.goal ? `Goal: "${result.goal}"\n` : ""}Timestamp: ${result.timestamp}
 Duration: ${(result.duration / 1000).toFixed(1)}s
 
 ⚠️  METHODOLOGY: Empathy scores are heuristic estimates based on barrier detection.*
@@ -2218,7 +2227,7 @@ Duration: ${(result.duration / 1000).toFixed(1)}s
 
   // Results by persona
   for (const pr of result.results) {
-    const emoji = pr.goalAchieved ? '✓' : '✗';
+    const emoji = pr.noBlockingBarriers ? '✓' : '✗';
     const scoreColor = pr.empathyScore >= 70 ? '🟢' : pr.empathyScore >= 50 ? '🟠' : '🔴';
 
     report += `
@@ -2226,7 +2235,7 @@ ${pr.disabilityType}
 ${'─'.repeat(pr.disabilityType.length)}
   Persona: ${pr.persona}
   Score: ${scoreColor} ${pr.empathyScore}/100
-  Goal: ${emoji} ${pr.goalAchieved ? 'Achieved' : 'Not achieved'}
+  Blocking barriers: ${emoji} ${pr.noBlockingBarriers ? 'None found' : 'Found'}
   Barriers: ${pr.barriers.length} (${pr.barriers.filter(b => b.severity === 'critical').length} critical)
   Friction points: ${pr.frictionPoints.length}
 `;
@@ -2286,7 +2295,7 @@ export function generateEmpathyAuditHtmlReport(result: EmpathyAuditResult): stri
     const personaGrade = getEmpathyGrade(pr.empathyScore);
     const pGradeColor = personaGrade === 'A' || personaGrade === 'B' ? '#10b981' : personaGrade === 'C' ? '#f59e0b' : '#ef4444';
     return `
-    <div class="persona-card ${pr.goalAchieved ? 'success' : 'failure'}">
+    <div class="persona-card ${pr.noBlockingBarriers ? 'success' : 'failure'}">
       <div class="persona-header">
         <h3>${pr.disabilityType}</h3>
         <span class="score" style="background: ${pGradeColor}33; color: ${pGradeColor}">
@@ -2296,8 +2305,8 @@ export function generateEmpathyAuditHtmlReport(result: EmpathyAuditResult): stri
       <p class="persona-name">${pr.persona}</p>
       <div class="persona-stats">
         <div class="stat">
-          <span class="label">Goal</span>
-          <span class="value">${pr.goalAchieved ? '✓ Achieved' : '✗ Failed'}</span>
+          <span class="label">Blocking barriers</span>
+          <span class="value">${pr.noBlockingBarriers ? '✓ None found' : '✗ Found'}</span>
         </div>
         <div class="stat">
           <span class="label">Barriers</span>
@@ -2534,7 +2543,7 @@ export function generateEmpathyAuditHtmlReport(result: EmpathyAuditResult): stri
 
   <div class="meta">
     <p><strong>URL:</strong> ${result.url}</p>
-    <p><strong>Goal:</strong> "${result.goal}"</p>
+    ${result.goal ? `<p><strong>Goal:</strong> "${result.goal}"</p>` : ""}
     <p><strong>Timestamp:</strong> ${result.timestamp}</p>
     <p><strong>Duration:</strong> ${(result.duration / 1000).toFixed(1)}s</p>
   </div>

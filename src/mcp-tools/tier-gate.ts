@@ -23,7 +23,7 @@ const SKIP_AUTOSAVE = new Set([
   "save_session", "load_session", "list_sessions", "delete_session",
   "manage_cookies", "manage_storage", "evaluate_script",
   "get_console_messages", "get_network_requests",
-  "list_cognitive_personas", "list_baselines",
+  "list_cognitive_personas", "list_baselines", "persona_manager",
   "heal_stats",
   "persona_values_list", "persona_values_lookup", "list_influence_patterns",
   "persona_questionnaire_get", "persona_questionnaire_build",
@@ -117,7 +117,7 @@ export function upgradePrompt(toolName: string): {
         upgrade: "https://cbrowser.ai/pricing",
         features: required === 'pro'
           ? [
-            "Cognitive Transport Chain (6-layer effort analysis)",
+            "Cognitive Transport Chain (layered effort analysis)",
             "Attention heatmaps and visual cognitive stories",
             "11 disability persona empathy audits",
             "AI Friendliness Suite (agent-ready, benchmark, remediation)",

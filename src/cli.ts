@@ -1059,8 +1059,8 @@ const COMMAND_FLAGS: Record<string, string[]> = {
     "after", "after-element", "after-delay",
     "until-element", "until-element-gone", "until-idle", "timeout",
   ],
-  evaluate: ["file", "arg", "json", "raw", "wait-for", "expect-truthy"],
-  eval: ["file", "arg", "json", "raw", "wait-for", "expect-truthy"],
+  evaluate: ["file", "arg", "json", "raw", "wait-for", "timeout", "expect-truthy"],
+  eval: ["file", "arg", "json", "raw", "wait-for", "timeout", "expect-truthy"],
   keyboard: ["delay", "selector", "hold", "repeat", "text"],
   "test-suite": [
     "capture", "capture-fps", "capture-format", "capture-out",
@@ -1912,7 +1912,7 @@ function reportAutoCapture(capture: AutoCaptureResult | undefined): void {
 
 /** Flags `evaluate` understands; anything else is rejected rather than ignored. */
 const EVALUATE_FLAGS = new Set([
-  "file", "arg", "json", "raw", "wait-for", "expect-truthy",
+  "file", "arg", "json", "raw", "wait-for", "timeout", "expect-truthy",
   "url", "browser", "device", "headless", "persistent", "restore",
   "locale", "timezone", "geo", "verbose",
 ]);
@@ -2081,10 +2081,34 @@ async function runEvaluate(
   const page = await browser.getPage();
 
   if (typeof options["wait-for"] === "string") {
+    // Bounded by the caller, not by a constant.
+    //
+    // This was a hardcoded 30s, which is two defects wearing one number. For a
+    // user it meant no way to fail fast on a page that renders in 200ms and no
+    // way to wait longer on one that does not. For the suite it meant the test
+    // asserting that a never-matching selector fails loudly spent 30 of its 60
+    // second budget deliberately waiting, so browser launch plus teardown had
+    // to fit in the rest -- which held when the test ran alone and did not when
+    // the full suite ran browsers in parallel. The test read as flaky and was
+    // not: it was structurally tight against a constant it could not reach.
+    // (2026-08-02)
+    // Falls back to the configured default rather than a fresh literal.
+    // `CBROWSER_TIMEOUT` is documented in --help as "Default timeout in ms" and
+    // config.ts already resolves it; a second hardcoded 30_000 here would mean
+    // the documented env var silently did not apply to this one wait.
+    const { getDefaultConfig } = await import("./config.js");
+    const configuredMs = getDefaultConfig().timeout ?? 30_000;
+    const waitMs = typeof options.timeout === "string" ? Number(options.timeout)
+      : typeof options.timeout === "number" ? options.timeout
+      : configuredMs;
+    if (!Number.isFinite(waitMs) || waitMs <= 0) {
+      console.error(`Error: --timeout must be a positive number of milliseconds, got: ${options.timeout}`);
+      process.exit(1);
+    }
     try {
-      await page.waitForSelector(options["wait-for"], { timeout: 30_000 });
+      await page.waitForSelector(options["wait-for"], { timeout: waitMs });
     } catch {
-      console.error(`✗ Timed out waiting for selector: ${options["wait-for"]}`);
+      console.error(`✗ Timed out waiting for selector: ${options["wait-for"]} (after ${waitMs}ms)`);
       process.exit(1);
     }
   }
@@ -7029,7 +7053,10 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             console.log(`\n📄 Report saved: ${options.output}`);
           }
 
-          // Exit with appropriate code
+          // Exit with appropriate code. This IS a cognitive journey, so
+          // goalAchieved genuinely means the persona reached the goal — unlike
+          // the empathy audit's field of the same old name, which measured
+          // barriers and was renamed to noBlockingBarriers.
           process.exit(result.goalAchieved ? 0 : 1);
         } catch (error: any) {
           console.error(`\n❌ Error: ${error.message}`);
@@ -7575,7 +7602,9 @@ Examples:
               if (answer && answer.trim()) {
                 const idx = parseInt(answer.trim()) - 1;
                 if (idx >= 0 && idx < q.options.length) {
-                  answers[q.trait] = q.options[idx].value;
+                  // Keyed by id, not trait: a Big Five item has no trait, and for a trait
+                  // question id and trait are the same string anyway.
+                  answers[q.id] = q.options[idx].value;
                   console.log(`  ✓ ${q.options[idx].label}`);
                 }
               } else {
