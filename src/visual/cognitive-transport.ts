@@ -751,7 +751,26 @@ export function selectMaxCoveragePersonas(
  * Extract page metrics from a Playwright page for cognitive load estimation.
  * Runs a single page.evaluate() to gather all needed dimensions.
  */
-export async function extractPageMetrics(page: any): Promise<{
+/**
+ * What the demand vector is measured over.
+ *
+ * `viewport` counts only elements intersecting the current viewport, which is
+ * the first impression and the historical behaviour of this function. It was
+ * ALSO the undeclared behaviour: every CTC number this tool ever produced
+ * described the top screenful, and nothing in the output said so. Measured on
+ * ucdenver.edu/academics -- 229 links and 6436px of page -- the viewport sees 4
+ * links and 47 words, so the page scored LOWER cognitive load than the
+ * homepage. Internally consistent, indefensible as output.
+ *
+ * `full_page` counts the whole document and normalises area-relative metrics
+ * against the document rather than the viewport. Same formulas and the same
+ * midpoints: nothing here is recalibrated, because inventing new constants
+ * while fixing an undeclared assumption would just be a second undeclared
+ * assumption.
+ */
+export type MetricScope = "viewport" | "full_page";
+
+export async function extractPageMetrics(page: any, scope: MetricScope = "viewport"): Promise<{
   informationDensity: number;
   visualComplexity: number;
   interactiveElementCount: number;
@@ -766,16 +785,43 @@ export async function extractPageMetrics(page: any): Promise<{
   longWordRatio: number;      // 0-1: fraction of words with 7+ characters
   technicalDensity: number;   // 0-1: fraction of words with 10+ characters (technical/compound terms)
   scriptFamily: 'alphabetic' | 'cjk' | 'abjad';  // Detected script family
+  scope: MetricScope;
+  /** Document height in viewports. 1 means the page is one screenful. */
+  pageScreens: number;
+  /** Uncapped choice count, so the cap below is visible rather than silent. */
+  choiceCountRaw: number;
+  choiceCountCapped: boolean;
 }> {
-  return page.evaluate(() => {
+  // Lazy content does not exist until it has been scrolled past, so a full-page
+  // measurement that never scrolls measures a page the user would never see.
+  // Same five-step walk empathy_audit does for scope:"full_page", including the
+  // return to the top so later screenshots and geometry are taken from origin.
+  if (scope === "full_page") {
+    try {
+      const steps = await page.evaluate(() =>
+        Math.min(5, Math.ceil(document.documentElement.scrollHeight / window.innerHeight)));
+      for (let i = 1; i <= steps; i++) {
+        await page.evaluate((y: number) => window.scrollTo(0, y), i * (await page.evaluate(() => window.innerHeight)));
+        await page.waitForTimeout(300);
+      }
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await page.waitForTimeout(300);
+    } catch { /* a page that will not scroll is still measurable */ }
+  }
+  return page.evaluate((measureScope: MetricScope) => {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
+    const fullPage = measureScope === "full_page";
+    const docHeight = Math.max(vh, document.documentElement.scrollHeight);
 
-    // Viewport check — only count elements whose bounding box intersects the viewport
+    // Viewport check — only count elements whose bounding box intersects the
+    // viewport. At full_page scope every laid-out element counts, so the filter
+    // becomes a zero-size check only.
     const inViewport = (el: Element): boolean => {
       const rect = el.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0 &&
-        rect.bottom > 0 && rect.top < vh &&
+      if (rect.width <= 0 || rect.height <= 0) return false;
+      if (fullPage) return true;
+      return rect.bottom > 0 && rect.top < vh &&
         rect.right > 0 && rect.left < vw;
     };
 
@@ -790,7 +836,9 @@ export async function extractPageMetrics(page: any): Promise<{
     });
     // Deduplicate: rough estimate — child text counted in parent. Use 40% factor.
     const textLength = Math.round(viewportTextLength * 0.4);
-    const viewportArea = vw * vh;
+    // Area to normalise density against. Counting whole-page text and dividing
+    // by one screen would report a density the page does not have.
+    const viewportArea = vw * (fullPage ? docHeight : vh);
 
     // Interactive elements — viewport only
     const interactive = Array.from(document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex]'));
@@ -1049,7 +1097,14 @@ export async function extractPageMetrics(page: any): Promise<{
       interactiveElementCount: interactiveCount,
       textDensity,
       animationLevel,
+      // Capped for the demand math, which saturates well before 100 anyway
+      // (choices/(choices+10) is 0.91 at 100 and 0.96 at 235). The raw count is
+      // emitted beside it because a silently truncated number is
+      // indistinguishable from a real one -- at viewport scope the cap was
+      // unreachable, and at full_page the CU Denver homepage hits it.
       choiceCount: Math.min(choiceCount, 100),
+      choiceCountRaw: choiceCount,
+      choiceCountCapped: choiceCount > 100,
       navigationDepth: navDepth,
       avgWordLength,
       avgSentenceLength,
@@ -1057,8 +1112,12 @@ export async function extractPageMetrics(page: any): Promise<{
       longWordRatio,
       technicalDensity,
       scriptFamily: isCJKDominant ? 'cjk' as const : isAbjadDominant ? 'abjad' as const : 'alphabetic' as const,
+      // Emitted so a caller can never again be unable to tell which of these
+      // two very different measurements it is holding.
+      scope: measureScope,
+      pageScreens: Math.round((docHeight / vh) * 10) / 10,
     };
-  });
+  }, scope);
 }
 
 /**

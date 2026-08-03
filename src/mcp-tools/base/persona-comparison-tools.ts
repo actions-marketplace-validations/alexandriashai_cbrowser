@@ -700,7 +700,7 @@ Begin with the first persona: ${personas[0]}
   server.registerTool("cognitive_effort", {
     _meta: { ui: { resourceUri: "ui://cbrowser/effort" } },
     title: "Cognitive Effort Analysis",
-    description: "Compute total cognitive effort for a persona to use a page. Uses the 7-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
+    description: "Compute total cognitive effort for a persona to use a page. MEASURES THE VIEWPORT BY DEFAULT (above the fold); pass scope='full_page' to measure the whole page. Uses the 7-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
       url: z.string().url().describe("URL to analyze"),
       // Per RUN, not per persona. A persona is familiar with one site and new
@@ -717,6 +717,7 @@ Begin with the first persona: ${personas[0]}
       useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values modulate saliency maps, decision costs, and frustration costs. Default: false (trait-only mode)."),
       waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
       waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
+      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to measure: 'viewport' (first impression, above-the-fold — default) or 'full_page' (scroll the whole page, count every element). Viewport is right for landing-page first impressions; full_page for 'how much does this page ask of someone'. Matches empathy_audit's parameter of the same name. NOTE: every published CTC number predates this parameter and is a viewport measurement."),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -725,7 +726,7 @@ Begin with the first persona: ${personas[0]}
       idempotentHint: true,
       openWorldHint: true,
     },
-  }, async ({ url, persona: personaName, siteFamiliarity, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues, waitAfterLoad, waitForSelector }) => {
+  }, async ({ url, persona: personaName, siteFamiliarity, _browserToken, userLocation, userTimezone, userLanguage, proxy, useValues, waitAfterLoad, waitForSelector, scope }) => {
     try {
       // Get browser
       let b: Awaited<ReturnType<typeof getBrowser>>;
@@ -891,7 +892,8 @@ Begin with the first persona: ${personas[0]}
 
       // Extract page metrics
       const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
-      const pageMetrics = await extractPageMetrics(page);
+      const measureScope = scope ?? "viewport";
+      const pageMetrics = await extractPageMetrics(page, measureScope);
 
       // Compute full COT
       const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
@@ -1185,13 +1187,33 @@ Begin with the first persona: ${personas[0]}
               : [],
           },
         } : {}),
-        interpretation: result.totalCTC < 0.3
-          ? `${personaName} should handle this page comfortably.`
-          : result.totalCTC < 0.6
-          ? `${personaName} will experience moderate cognitive effort. Bottleneck: ${result.bottleneckLayer}.`
-          : result.totalCTC < 0.8
-          ? `${personaName} will struggle significantly. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
-          : `${personaName} is likely to abandon this page. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`,
+        // The verdict names its own scope. Reading "should handle this page
+        // comfortably" off a measurement of the top 800px of a 6436px page is
+        // the same class of output defect as the skip-link false positive:
+        // internally consistent and indefensible to a customer.
+        //
+        // `subject` is what was actually measured, so the sentence stays true
+        // at either scope instead of the scope being a footnote elsewhere.
+        interpretation: (() => {
+          const subject = measureScope === "full_page" ? "this page" : "the top of this page";
+          const where = measureScope === "full_page" ? "" : " (viewport only";
+          const screens = pageMetrics.pageScreens > 1.2
+            ? `${measureScope === "full_page" ? " Measured across" : `${where}; the page is`} ${pageMetrics.pageScreens} screens${measureScope === "full_page" ? "." : ", so most of it was not measured — pass scope='full_page' for the whole thing.)"}`
+            : where ? `${where}.)` : "";
+          const verdict = result.totalCTC < 0.3
+            ? `${personaName} should handle ${subject} comfortably.`
+            : result.totalCTC < 0.6
+            ? `${personaName} will experience moderate cognitive effort on ${subject}. Bottleneck: ${result.bottleneckLayer}.`
+            : result.totalCTC < 0.8
+            ? `${personaName} will struggle significantly with ${subject}. ${result.bottleneckLayer} is the primary barrier. Consider simplifying.`
+            : `${personaName} is likely to abandon ${subject}. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`;
+          return verdict + screens;
+        })(),
+        scope: measureScope,
+        pageScreens: pageMetrics.pageScreens,
+        scopeNote: measureScope === "full_page"
+          ? "Whole-page measurement: every laid-out element counted, densities normalised against document area, and the page scrolled first so lazy content exists. Not comparable with viewport-scoped numbers, including every CTC this tool published before 2026-08-02."
+          : "VIEWPORT ONLY: demand is computed from elements intersecting the first screenful. Content below the fold contributed nothing. This was the tool's undeclared behaviour until 2026-08-02 — measured on a 229-link, 8-screen page it saw 4 links and 47 words and reported LOWER cognitive load than a shorter homepage. Pass scope='full_page' to measure the whole page.",
         ...(familiarityWarning ? { familiarityWarning, siteFamiliarityAdjusted: true, originalFamiliarity: requestedFamiliarity, effectiveFamiliarity: traits.siteFamiliarity } : {}),
         // Reports what was USED, not what was passed.
         //

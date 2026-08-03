@@ -75,6 +75,15 @@ export interface PageUnderstanding {
   relationships: ElementRelationship[];
   computedAt: number;
   computeTimeMs: number;
+  /**
+   * What was measured. `auto` resolves to `viewport` on pages above
+   * MAX_ELEMENTS_FULL_SCAN, so the same call measured different things on
+   * different pages and reported neither.
+   */
+  extractionScope: "viewport" | "full_page";
+  /** Document height in viewports. Above 1 at viewport scope, content was missed. */
+  pageScreens: number;
+  totalElements: number;
 }
 
 export interface PageSkeleton {
@@ -163,6 +172,10 @@ interface RawDOMExtraction {
   totalElementCount: number;
   title: string;
   viewportHeight: number;
+  /** What was actually extracted, after `auto` resolved. */
+  extractionScope: "viewport" | "full_page";
+  /** Document height in viewports, so a caller can see what viewport scope missed. */
+  pageScreens: number;
 }
 
 interface RawSkeletonData {
@@ -210,9 +223,34 @@ export class PageUnderstandingEngine {
    * Extracts all interactive elements, headings, forms, nav landmarks, and semantic regions
    * in a single DOM traversal, then classifies, structures, and relates them.
    */
-  async analyze(page: Page): Promise<PageUnderstanding> {
+  /**
+   * @param scope `viewport` restricts extraction to the first screenful plus
+   *   landmarks; `full_page` scrolls to trigger lazy content and counts
+   *   everything; `auto` (the historical behaviour) uses the full page unless
+   *   it exceeds MAX_ELEMENTS_FULL_SCAN, then silently falls back to viewport.
+   *
+   *   `auto` is the default for compatibility and is the worst of the three,
+   *   which is why the mode actually used is now reported: the same tool
+   *   measured two different things depending on page size, and said nothing.
+   *   On ucdenver.edu/academics -- 229 links, 6436px -- it returned
+   *   affordanceCount 10 against 8 above-fold interactive elements.
+   */
+  async analyze(page: Page, scope: "auto" | "viewport" | "full_page" = "auto"): Promise<PageUnderstanding> {
     const url = page.url();
     const start = Date.now();
+    if (scope === "full_page") {
+      try {
+        const vh = await page.evaluate(() => window.innerHeight);
+        const steps = await page.evaluate(() =>
+          Math.min(5, Math.ceil(document.documentElement.scrollHeight / window.innerHeight)));
+        for (let i = 1; i <= steps; i++) {
+          await page.evaluate((y: number) => window.scrollTo(0, y), i * vh);
+          await page.waitForTimeout(300);
+        }
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.waitForTimeout(300);
+      } catch { /* a page that will not scroll is still analysable */ }
+    }
 
     // Check cache: valid if not expired and content hash matches
     const cached = this.cache.get(url);
@@ -223,7 +261,7 @@ export class PageUnderstandingEngine {
       }
     }
 
-    const raw = await this.extractDOM(page);
+    const raw = await this.extractDOM(page, scope);
     const type = classifyPageType(raw, url);
     const affordances = computeAffordances(raw, url);
     const structure = buildStructure(raw);
@@ -239,6 +277,9 @@ export class PageUnderstandingEngine {
       relationships,
       computedAt: Date.now(),
       computeTimeMs,
+      extractionScope: raw.extractionScope,
+      pageScreens: raw.pageScreens,
+      totalElements: raw.totalElementCount,
     };
 
     // Cache with content hash
@@ -419,11 +460,15 @@ export class PageUnderstandingEngine {
    * Single page.evaluate() that extracts everything in one DOM traversal.
    * For pages with >1000 elements, restricts extraction to visible viewport + nav elements.
    */
-  private async extractDOM(page: Page): Promise<RawDOMExtraction> {
-    const raw = await page.evaluate((maxElements: number) => {
+  private async extractDOM(page: Page, scope: "auto" | "viewport" | "full_page" = "auto"): Promise<RawDOMExtraction> {
+    const raw = await page.evaluate(([maxElements, mode]: [number, string]) => {
       const totalElementCount = document.querySelectorAll("*").length;
       const viewportHeight = window.innerHeight;
-      const limitToViewport = totalElementCount > maxElements;
+      // `auto` keeps the size-triggered fallback that shipped; the other two say
+      // what they want and get it regardless of how big the page is.
+      const limitToViewport = mode === "viewport" ? true
+        : mode === "full_page" ? false
+        : totalElementCount > maxElements;
 
       function isInViewport(el: Element): boolean {
         if (!limitToViewport) return true;
@@ -706,10 +751,12 @@ export class PageUnderstandingEngine {
         navs,
         regions,
         totalElementCount,
+        extractionScope: (limitToViewport ? "viewport" : "full_page") as "viewport" | "full_page",
+        pageScreens: Math.round((Math.max(viewportHeight, document.documentElement.scrollHeight) / viewportHeight) * 10) / 10,
         title: document.title || "",
         viewportHeight,
       };
-    }, MAX_ELEMENTS_FULL_SCAN);
+    }, [MAX_ELEMENTS_FULL_SCAN, scope] as [number, string]);
 
     return raw;
   }
