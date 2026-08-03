@@ -50,6 +50,25 @@ const KNOWN_UNLAYERED = [
   "attributionStyle", "authoritySensitivity", "curiosity", "interruptRecovery",
   "mentalModelFlexibility", "metacognitivePlanning", "persistence", "timeHorizon",
   "trustCalibration",
+  // ADDED 2026-08-02 AND THIS IS A REGRESSION, NOT A DESIGN.
+  //
+  // Both were removed from the readability layer when it was rewired to the
+  // decoding model: readingTendency is how much text a person chooses to read
+  // (a disposition) and it was swamping the capacity signal, and
+  // transferLearning is about applying patterns across UIs rather than decoding
+  // text. Removing them fixed the inversion and cost two traits their only
+  // consumer -- they now contribute to no score at all.
+  //
+  // readingTendency in particular is meaningful and should land somewhere:
+  // plausibly modulating DEMAND (a skimmer asks less of a text-dense page)
+  // rather than serving as capacity. That is a modelling decision, not a
+  // cleanup, so it is recorded here rather than guessed at.
+  // readingTendency reaches no LAYER by design, and is not inert: it modulates
+  // DEMAND instead of serving as capacity, which is the correct side of the
+  // model for a strategy rather than an ability. Listed here because this test
+  // asks only about layer membership, and covered by its own describe block
+  // below which asserts the demand consumer exists and behaves.
+  "readingTendency",
 ].sort();
 
 /** Traits with no demand term today. Same status: recorded, not blessed. */
@@ -359,5 +378,124 @@ describe("the mentalModelFlexibility rename is complete and back-compatible", ()
     // nothing on disk uses the old key, but no live code path may read it.
     const ref = readFileSync(join(import.meta.dir, "..", "src/trait-reference.ts"), "utf8");
     expect(ref).toContain('mentalModelRigidity: "mentalModelFlexibility"');
+  });
+});
+
+describe("capacity layers read capacity, not disposition", () => {
+  test("a dyslexic persona costs MORE on readability than an ADHD persona", async () => {
+    // The P0 this wiring exists for. Before it, the readability layer read
+    // readingTendency -- how much text someone chooses to read -- so an ADHD
+    // persona who skims (0.2) scored a larger capacity deficit than a dyslexic
+    // persona who reads more (0.4), and the tool reported that a text-dense
+    // university homepage cost the dyslexic reader LESS THAN HALF as much,
+    // in the same response that reported them at 157 WPM against 204 and a
+    // 4-character visual span against 6.
+    const { getAnyPersona } = await import("../src/personas.js");
+    const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf } =
+      await import("../src/visual/cognitive-models.js");
+    const demand = computeDemandDistribution({
+      informationDensity: 0.8, visualComplexity: 0.6, interactiveElementCount: 60,
+      textDensity: 0.85, animationLevel: 0.1, choiceCount: 20, navigationDepth: 3,
+    } as never);
+    const cost = (name: string) => {
+      const t: Record<string, number> = { ...((getAnyPersona(name) as never as { cognitiveTraits: Record<string, number> }).cognitiveTraits) };
+      t.readingCapacity = readingCapacityOf(getReadingProfile({ name, traits: t }));
+      t.motorCapacity = motorCapacityOf(getPointingProfile({ name, traits: t }));
+      const r = computeSequentialCTC(buildOTCognitiveProfile(name, t), demand, { asymmetric: true, interactions: true });
+      return (r.layers.find((l: { name: string }) => l.name === "readability") as { transportCost: number }).transportCost;
+    };
+    expect(cost("dyslexic-user")).toBeGreaterThan(cost("cognitive-adhd"));
+  });
+
+  test("the reading capacity bridge tracks the decoding model, not the trait vector", async () => {
+    const { getReadingProfile, readingCapacityOf } = await import("../src/visual/cognitive-models.js");
+    const dys = readingCapacityOf(getReadingProfile({ name: "dyslexic-user" }));
+    const adhd = readingCapacityOf(getReadingProfile({ name: "cognitive-adhd" }));
+    // 0.39 vs 0.75 on the shipped profiles. Direction is what matters.
+    expect(dys).toBeLessThan(adhd);
+  });
+
+  test("no disposition trait remains in a capacity layer", () => {
+    // Extract the layer's OWN traits array. A fixed-width window truncated
+    // before the traits line on one layer and spilled into the next on another
+    // -- and the next layer is frustration, which legitimately keeps patience,
+    // so the naive version failed on correct code.
+    const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("LAYER_DEFINITIONS"), CHAIN_SRC.indexOf("INTERACTION_PAIRS"));
+    const traitsOf = (layer: string): string => {
+      const at = block.indexOf(`name: '${layer}'`);
+      expect(at).toBeGreaterThan(-1);
+      const m = block.slice(at).match(/traits: \[([^\]]*)\]/);
+      expect(m).toBeTruthy();
+      return (m as RegExpMatchArray)[1];
+    };
+    const readability = traitsOf("readability");
+    const motor = traitsOf("motor");
+    // The two dispositions that inverted their own layers.
+    expect(readability).not.toContain("readingTendency");
+    expect(motor).not.toContain("patience");
+    expect(readability).toContain("readingCapacity");
+    expect(motor).toContain("motorCapacity");
+    // patience still belongs to frustration, and must not have been swept out.
+    expect(traitsOf("frustration")).toContain("patience");
+  });
+});
+
+describe("readingTendency modulates demand, not capacity", () => {
+  const base: Record<string, number> = Object.fromEntries(
+    (COGNITIVE_TRAITS as readonly string[]).map((t) => [t, 0.5]));
+  const textPage = {
+    informationDensity: 0.8, visualComplexity: 0.5, interactiveElementCount: 30,
+    textDensity: 0.9, animationLevel: 0.1, choiceCount: 10, navigationDepth: 2,
+  } as never;
+  const cost = (readingTendency: number) => {
+    const demand = computeDemandDistribution(textPage);
+    const r = computeSequentialCTC(
+      buildOTCognitiveProfile("probe", { ...base, readingTendency, readingCapacity: 0.5 }),
+      demand, { asymmetric: true, interactions: true });
+    return (r.layers.find((l: { name: string }) => l.name === "readability") as { transportCost: number }).transportCost;
+  };
+
+  test("a skimmer engages less text demand than a careful reader", () => {
+    // The trait is a STRATEGY, not an ability: skimming is how someone spends
+    // less effort on text. On the capacity side it said the opposite — that a
+    // skimmer lacks reading ability — which is what inverted the layer.
+    expect(cost(0.1)).toBeLessThan(cost(0.9));
+  });
+
+  test("the modulation is bounded — strategy cannot outweigh decoding ability", () => {
+    // Asserted on the ENGAGEMENT FACTOR, not on a cost ratio. The first version
+    // divided two costs and blew up whenever the skim cost approached zero,
+    // which is a property of the assertion rather than of the model.
+    // 0.75 at pure skim, 1.25 at pure careful reading: a skimmer still has to
+    // find the content, so demand can never fall toward zero.
+    const src = CHAIN_SRC.slice(CHAIN_SRC.indexOf("const readingTendency ="),
+      CHAIN_SRC.indexOf("const readingTendency =") + 500);
+    expect(src).toContain("0.75 + readingTendency * 0.5");
+    // And the two ends stay within a factor the decoding gap can overcome.
+    expect(cost(0.0)).toBeGreaterThan(0);
+    expect(cost(1.0)).toBeGreaterThan(cost(0.0));
+  });
+
+  test("a skimmer with poor decoding still costs more than a careful reader with good decoding", () => {
+    // The load-bearing case. ADHD skims (0.2) and decodes well (0.75);
+    // dyslexic reads more (0.4) and decodes poorly (0.39). Decoding must win.
+    const demand = computeDemandDistribution(textPage);
+    const run = (readingTendency: number, readingCapacity: number) => {
+      const r = computeSequentialCTC(
+        buildOTCognitiveProfile("p", { ...base, readingTendency, readingCapacity }),
+        demand, { asymmetric: true, interactions: true });
+      return (r.layers.find((l: { name: string }) => l.name === "readability") as { transportCost: number }).transportCost;
+    };
+    expect(run(0.4, 0.39)).toBeGreaterThan(run(0.2, 0.75));
+  });
+
+  test("readingTendency is no longer a capacity in any layer", () => {
+    // Scans the traits ARRAYS, not the block text — the block explains at
+    // length why readingTendency was moved, and the first version of this test
+    // failed on its own explanation.
+    const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("LAYER_DEFINITIONS"), CHAIN_SRC.indexOf("INTERACTION_PAIRS"));
+    const arrays = Array.from(block.matchAll(/traits: \[([^\]]*)\]/g), (m) => m[1]);
+    expect(arrays.length).toBeGreaterThan(0);
+    for (const a of arrays) expect(a).not.toContain("readingTendency");
   });
 });

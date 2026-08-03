@@ -761,7 +761,15 @@ export interface EmotionalConfig {
 export interface CognitiveProfile {
   traits: CognitiveTraits;
   attentionPattern: AttentionPatternType;
-  decisionStyle: DecisionStyleType;
+  /**
+   * Omitted when the top two derived styles are indistinguishable.
+   *
+   * Optional as of 2026-08-02: the label carried identical authority at a margin
+   * of 0.03 as at 0.90, and a consumer reading only this field got a coin flip
+   * presented as a finding. Below the threshold the candidates are published
+   * instead, under decisionStyleCandidates.
+   */
+  decisionStyle?: DecisionStyleType;
   /**
    * How each of the two fields above got its value. Both are initialised to a
    * literal ("f-pattern", "cautious") and only overwritten when a rule matches
@@ -787,6 +795,11 @@ export interface CognitiveProfile {
    * should be read as weak rather than as a finding.
    */
   decisionStyleMargin?: number;
+  /** clear (>=0.20) | weak (>=0.05) | indistinguishable (<0.05). */
+  decisionStyleConfidence?: "clear" | "weak" | "indistinguishable";
+  decisionStyleRunnerUp?: string;
+  decisionStyleCandidates?: string[];
+  decisionStyleNote?: string;
   /** Template for generating inner monologue */
   innerVoiceTemplate?: string;
 }

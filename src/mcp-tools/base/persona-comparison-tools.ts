@@ -851,6 +851,31 @@ Begin with the first persona: ${personas[0]}
         }
       }
 
+      // Bridge the formal models into the trait vector BEFORE the chain runs.
+      //
+      // getReadingProfile and getPointingProfile already model this persona's
+      // decoding ability and Fitts pointing -- visual span, phonological
+      // decoding, throughput, endpoint dispersion -- and until now the chain
+      // never saw any of it. Its readability layer read `readingTendency`
+      // (a disposition: how much text someone reads) and its motor layer read
+      // patience and proceduralFluency, so a dyslexic persona scored LOWER
+      // readability cost than an ADHD persona on a text-dense page while the
+      // same response reported them at 157 WPM against 204.
+      //
+      // Injected here rather than stored on the persona: these are derived from
+      // the persona's profile, so storing them would create a second copy that
+      // can drift from the model that produces it. (2026-08-02)
+      try {
+        const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf } =
+          await import("../../visual/cognitive-models.js");
+        traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits }));
+        traits.motorCapacity = motorCapacityOf(getPointingProfile({ name: personaName, traits }));
+      } catch (e) {
+        // Left absent rather than defaulted: a missing capacity is visible as a
+        // gap, a defaulted one silently reads as average.
+        console.debug(`[cognitive_effort] capacity bridge unavailable: ${(e as Error).message}`);
+      }
+
       // Build OT profile (with potentially adjusted siteFamiliarity)
       const otProfile = buildOTProfile(
         personaName,
@@ -1062,7 +1087,16 @@ Begin with the first persona: ${personas[0]}
             legibilityQuality: Math.round(readabilityResult.score * 100) + "%",
             /** @deprecated ambiguous against the layer cost — use legibilityQuality */
             score: Math.round(readabilityResult.score * 100) + "%",
-            note: "legibilityQuality is a quality score (higher is better) for the text itself. The `readability` entry in `layers` is a transport COST for this persona (higher is worse). A page can be legible in general and still be the costliest layer for someone with a narrow visual span.",
+            // The note here previously said this was "a quality score for the
+            // text itself", contrasted against the persona-relative layer cost.
+            // That was wrong, and I wrote it. It comes from readability(), which
+            // resolves a per-persona reading profile (visual span, phonological
+            // decoding, crowding sensitivity) -- so it is persona-RELATIVE by
+            // construction and reads 91% for one persona and 73% for another on
+            // identical text. A field promising objectivity is the one most
+            // likely to be quoted as an objective page score. (2026-08-02)
+            note: "legibilityQuality is how legible this text is FOR THIS PERSONA (higher is better) — it is computed from their reading profile, so it varies across personas on identical text and is NOT an objective property of the page. The `readability` entry in `layers` is the transport COST for the same persona (higher is worse). The two move together: low legibility for someone means high readability cost for them.",
+            legibilityQualityIsPersonaRelative: true,
             averageWPM: Math.round(
               readabilityResult.blocks.reduce((s: number, b: { wordsPerMinute: number }) => s + b.wordsPerMinute, 0) / readabilityResult.blocks.length
             ),

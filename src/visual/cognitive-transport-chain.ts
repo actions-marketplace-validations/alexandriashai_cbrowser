@@ -119,6 +119,15 @@ export const DEMAND_DIMENSIONS = [
   // one and missing from the other is silently dropped, and there is now a test
   // asserting COGNITIVE_TRAITS and DEMAND_DIMENSIONS do not diverge.
   'siteFamiliarity',
+  // Capacity, bridged from the formal reading and pointing models.
+  //
+  // These layers previously read DISPOSITION traits -- readingTendency for
+  // readability, patience and proceduralFluency for motor -- while the modules
+  // that actually model decoding and Fitts pointing sat beside them, computing
+  // WPM, visual span, phonological penalties, movement times and hit
+  // probabilities that no layer ever consumed. A dyslexic persona therefore
+  // scored LOWER readability cost than an ADHD persona on a text-dense page.
+  'readingCapacity', 'motorCapacity',
 ] as const;
 
 /**
@@ -146,7 +155,11 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'motor',
-    traits: ['patience', 'proceduralFluency'],
+    // `patience` REMOVED: it is a disposition, it already drives the frustration
+    // layer, and here it made two personas with no motor traits differ 5.6x in
+    // motor cost. proceduralFluency stays -- multi-step flow execution is a real
+    // motor-adjacent capacity -- alongside the Fitts throughput bridge.
+    traits: ['proceduralFluency', 'motorCapacity'],
   },
   {
     name: 'frustration',
@@ -154,7 +167,21 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'readability',
-    traits: ['readingTendency', 'comprehension', 'transferLearning'],
+    // Capacity only. `readingTendency` was REMOVED, not merely joined by
+    // readingCapacity: it is how much text a person chooses to read, and an
+    // ADHD persona skims (0.2), which the chain scored as a large capacity
+    // deficit and which swamped the decoding signal. Adding capacity beside it
+    // left the inversion in place -- dyslexic 0.524 against ADHD 0.686 -- so the
+    // disposition had to come out.
+    //
+    // `transferLearning` was briefly removed too and has been RESTORED. Removing
+    // it was a modelling opinion bundled into a bug fix, not something the bug
+    // required: with it back in, dyslexic still costs 0.295 against ADHD's
+    // 0.163, so it never contributed to the inversion. Taking it out also
+    // orphaned it -- it reached no other layer -- which is a cost the fix did
+    // not need to pay.
+    // `comprehension` stays; it is genuinely a capacity for grasping content.
+    traits: ['comprehension', 'transferLearning', 'readingCapacity'],
   },
 ];
 
@@ -383,6 +410,14 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   // under workingMemory (0.95), since knowing the layout substitutes for
   // holding it in mind. (2026-08-02)
   demands.siteFamiliarity = Math.max(demands.siteFamiliarity, navDemand * 0.85);
+  // Reading capacity is demanded by how much text there is to decode, and motor
+  // capacity by how many things there are to hit. Both proportional, so a page
+  // with no text asks nothing of decoding and a page with no controls asks
+  // nothing of pointing.
+  demands.readingCapacity = Math.max(demands.readingCapacity, Math.max(textDens, infoDensity) * 0.9);
+  demands.motorCapacity = Math.max(demands.motorCapacity, interDemand * 0.9);
+  variance.readingCapacity += textDens * 0.08;
+  variance.motorCapacity += interDemand * 0.08;
   variance.siteFamiliarity += Math.min(1, navDepth / 5) * 0.08;
   variance.workingMemory += Math.min(1, navDepth / 5) * 0.09;
   variance.metacognitivePlanning += Math.min(1, navDepth / 5) * 0.07;
@@ -527,6 +562,31 @@ export function computeSequentialCTC(
     demands: { ...demand.demands },
     variance: { ...demand.variance },
   };
+
+  // readingTendency modulates DEMAND, not capacity.
+  //
+  // It was in the readability layer as a capacity and inverted it: an ADHD
+  // persona who skims (0.2) scored a large capacity deficit against text
+  // demand, so a text-dense page cost them MORE than a dyslexic reader at 0.4,
+  // while the same run reported the dyslexic reader at 157 WPM against 204.
+  //
+  // The trait is not an ability, it is a STRATEGY -- its own criteria are
+  // "skims, reads carefully, scans for buttons" -- and skimming is how someone
+  // spends less effort on text, not evidence they cannot decode it. On the
+  // demand side that reads correctly: a skimmer engages less of the page's text,
+  // a careful reader engages more.
+  //
+  // Bounded to +/-25% around neutral, for two reasons. A skimmer still has to
+  // find the content, so demand cannot fall toward zero. And an unbounded
+  // modulator would recreate the very inversion this fixes by letting strategy
+  // outweigh decoding ability -- verified it does not: dyslexic still costs more
+  // than ADHD on a text-dense page after this. (2026-08-02)
+  const readingTendency = persona.traits?.readingTendency;
+  if (typeof readingTendency === "number" && modulatedDemand.demands.readingCapacity) {
+    const engagement = 0.75 + readingTendency * 0.5; // 0.75 at pure skim, 1.25 at careful
+    modulatedDemand.demands.readingCapacity = Math.max(0, Math.min(1,
+      modulatedDemand.demands.readingCapacity * engagement));
+  }
 
   if (values && Object.keys(values).length > 0) {
     for (const mod of VALUE_DEMAND_MODULATION) {

@@ -43,6 +43,37 @@ function normalPDF(x: number): number {
 
 // ── Layer 4: Probabilistic Pointing Model ──
 
+/**
+ * Collapse a reading profile into one 0-1 capacity for the transport chain.
+ *
+ * The chain models cost as transport between a persona's CAPACITY on a
+ * dimension and the page's DEMAND for it. Until now its readability layer read
+ * `readingTendency` -- a DISPOSITION ("how much text does this person read")
+ * -- which is not decoding ability, so a dyslexic persona with a higher
+ * tendency scored LOWER readability cost than an ADHD persona on a text-dense
+ * page, while this module's own decomposition reported the dyslexic reader at
+ * 157 WPM against 204, a 4-character visual span against 6, and a +65ms
+ * phonological penalty against +25ms.
+ *
+ * Two models of reading, disagreeing under one name, with the layer using the
+ * one that knows nothing about decoding. This is the bridge. (2026-08-02)
+ *
+ * Weighted toward decoding, because that is what the layer's own reported
+ * decomposition measures: orthographic and phonological carry the fluency of
+ * word recognition, visualSpan is normalised against the neurotypical 7
+ * characters, vocabulary bounds comprehension, and crowding subtracts.
+ */
+export function readingCapacityOf(profile: ReadingProfile): number {
+  const span = Math.min(1, profile.visualSpan / 7);
+  const raw =
+    profile.orthographic * 0.3 +
+    profile.phonological * 0.3 +
+    span * 0.2 +
+    profile.vocabulary * 0.2 -
+    profile.crowding * 0.15;
+  return Math.max(0, Math.min(1, raw));
+}
+
 export interface PointingProfile {
   /** Endpoint dispersion SD in pixels (x-axis) */
   sigmaX: number;
@@ -52,6 +83,24 @@ export interface PointingProfile {
   rho: number;
   /** Fitts' throughput (bits/s) */
   throughput: number;
+}
+
+/**
+ * Collapse a pointing profile into one 0-1 capacity for the transport chain.
+ *
+ * Same defect as reading: the motor layer read `patience` and
+ * `proceduralFluency`, so two personas with no motor traits at all differed 5.6x
+ * in motor cost while this module was computing real Fitts movement times and
+ * hit probabilities that the layer never saw.
+ *
+ * Throughput is the standard Fitts capacity measure (bits/s); a neurotypical
+ * pointer sits near 5-6, tremor far below. Endpoint dispersion subtracts,
+ * because a wide landing distribution misses small targets regardless of speed.
+ */
+export function motorCapacityOf(profile: PointingProfile): number {
+  const tp = Math.min(1, profile.throughput / 6);
+  const spread = Math.min(1, (profile.sigmaX + profile.sigmaY) / 2 / 40);
+  return Math.max(0, Math.min(1, tp * 0.75 + (1 - spread) * 0.25));
 }
 
 export interface TargetElement {

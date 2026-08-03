@@ -121,6 +121,8 @@ export const COGNITIVE_TRAITS = [
   'workingMemory', 'readingTendency', 'curiosity',
   // Experience (1)
   'siteFamiliarity',
+  // Capacity dimensions, bridged from the formal models (2026-08-02)
+  'readingCapacity', 'motorCapacity',
 ] as const;
 
 export type CognitiveTrait = typeof COGNITIVE_TRAITS[number];

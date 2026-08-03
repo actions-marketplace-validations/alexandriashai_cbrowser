@@ -906,6 +906,9 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   let decisionStyle: DecisionStyleType = "cautious";
   let decisionStyleSource: "declared" | "derived" | "default" = "default";
   let decisionStyleMargin: number | undefined;
+  let decisionStyleConfidence: "clear" | "weak" | "indistinguishable" | undefined;
+  let decisionStyleRunnerUp: string | undefined;
+  let scoresTop: string | undefined;
   const traits = persona.cognitiveTraits;
 
   // v16.7.1: Validate trait completeness
@@ -916,8 +919,18 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     // has to be updated by hand in step with a table is a count that will drift
     // from it -- this file, mcp-server.ts, cognitive/index.ts, widget-kit.ts and
     // cognitive-transport.ts had all drifted to 25 by 2026-08-01.
-    const expectedTraitCount = Object.keys(TRAIT_DEFINITIONS).length;
-    const actualTraitCount = Object.keys(traits).filter(k => traits[k as keyof typeof traits] !== undefined).length;
+    // Run-scoped and runtime-derived dimensions are excluded from the count.
+    //
+    // siteFamiliarity is deliberately not stored on personas (it is a
+    // persona-SITE pair supplied per run), and readingCapacity/motorCapacity are
+    // injected from the formal models at analysis time. Counting them as
+    // "missing" made every persona in the roster warn on every load, which
+    // turns a real signal -- a persona that genuinely skipped traits -- into
+    // noise nobody reads. (2026-08-02)
+    const RUNTIME_SCOPED = new Set(["siteFamiliarity", "readingCapacity", "motorCapacity"]);
+    const expectedTraitCount = Object.keys(TRAIT_DEFINITIONS).filter((t) => !RUNTIME_SCOPED.has(t)).length;
+    const actualTraitCount = Object.keys(traits)
+      .filter((k) => !RUNTIME_SCOPED.has(k) && traits[k as keyof typeof traits] !== undefined).length;
     if (actualTraitCount < expectedTraitCount) {
       console.warn(
         `[CBrowser] Persona "${persona.name}" has ${actualTraitCount}/${expectedTraitCount} traits. ` +
@@ -979,10 +992,27 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     }
     scores.sort((a, b) => b[1] - a[1]);
     decisionStyle = scores[0][0];
+    scoresTop = scores[0][0];
     decisionStyleSource = "derived";
     // A near-tie is a weak reading, and saying so beats presenting the winner
     // as though it were clear.
     decisionStyleMargin = Math.round((scores[0][1] - scores[1][1]) * 100) / 100;
+    // ...but exposing the margin was not enough on its own.
+    //
+    // The style STRING carried identical authority at a margin of 0.03 as at
+    // 0.90, and a consumer reading only `decisionStyle` -- which is most of
+    // them -- got a coin flip presented as a finding. A number nobody is
+    // required to look at does not qualify the claim sitting next to it.
+    //
+    // Below 0.05 the two top styles are indistinguishable given the precision of
+    // the inputs, so the label is withheld rather than guessed and the runner-up
+    // is named so the tie is inspectable. (2026-08-02)
+    decisionStyleConfidence = decisionStyleMargin >= 0.20 ? "clear"
+      : decisionStyleMargin >= 0.05 ? "weak"
+      : "indistinguishable";
+    if (decisionStyleConfidence === "indistinguishable") {
+      decisionStyleRunnerUp = scores[1][0];
+    }
 
     // Tech level, derived rather than trusted.
     //
@@ -1107,7 +1137,8 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   return {
     traits: traits ? { ...defaultTraits, ...traits } : defaultTraits,
     attentionPattern,
-    decisionStyle,
+    // Omitted entirely when the top two styles are indistinguishable.
+    ...(decisionStyleConfidence === "indistinguishable" ? {} : { decisionStyle }),
     attentionPatternSource,
     attentionPatternMargin,
     attentionPatternConflict,
@@ -1116,6 +1147,19 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     techLevelConflict,
     decisionStyleSource,
     ...(decisionStyleMargin !== undefined ? { decisionStyleMargin } : {}),
+    ...(decisionStyleConfidence ? { decisionStyleConfidence } : {}),
+    // The LABEL is withheld at an indistinguishable margin, not just annotated.
+    // Annotating it leaves the string in place for every consumer that reads
+    // only `decisionStyle`, which is the failure this fixes. The candidate is
+    // still available as decisionStyleRunnerUp plus the winner below, so
+    // nothing is hidden -- it just stops being asserted.
+    ...(decisionStyleConfidence === "indistinguishable"
+      ? { decisionStyleCandidates: [scoresTop, decisionStyleRunnerUp].filter((x): x is string => !!x) }
+      : {}),
+    ...(decisionStyleRunnerUp ? { decisionStyleRunnerUp } : {}),
+    ...(decisionStyleConfidence === "indistinguishable"
+      ? { decisionStyleNote: `Withheld: the top two styles differ by ${decisionStyleMargin}, which is inside the noise of the inputs. Runner-up was ${decisionStyleRunnerUp}. A label at this margin is a coin flip wearing a finding's clothes.` }
+      : {}),
     innerVoiceTemplate: persona.behaviors?.innerVoiceTemplate as string | undefined,
   };
 }
