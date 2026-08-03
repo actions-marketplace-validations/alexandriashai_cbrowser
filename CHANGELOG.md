@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.81.2](https://github.com/alexandriashai/cbrowser/compare/v18.81.1...v18.81.2) (2026-08-03)
+
+### Fixed
+
+* attentional reading cost stops falling as the page grows, and one capacity bridge ([8c3202e](https://github.com/alexandriashai/cbrowser/commit/8c3202e707217859153f99896518d18b17ba90a3))
+* scope-dependent prose varies with scope, and a floored layer says which floor ([5629466](https://github.com/alexandriashai/cbrowser/commit/5629466f03c64a8d9236cd6a39c442ffa6c3128d))
+
 ## [18.81.1](https://github.com/alexandriashai/cbrowser/compare/v18.81.0...v18.81.1) (2026-08-03)
 
 ## [18.81.0](https://github.com/alexandriashai/cbrowser/compare/v18.80.0...v18.81.0) (2026-08-03)
