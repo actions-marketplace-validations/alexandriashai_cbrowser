@@ -339,7 +339,11 @@ export function computeAttentionQuality(
   // headingSaliency is zero, and the tool nonetheless reported "the persona
   // sees the value prop". It saw no heading at all.
   if (ctaCaptureRate > 0.3 && headingShare > 0.15) {
-    interpretation = "Strong attention quality — the persona sees the value prop and CTAs. Design intent is working.";
+    // "Design intent is working" removed: it is a claim about the whole design,
+    // and this metric only knows whether the CTAs and heading drew top saliency.
+    // Sitting beside an alignment verdict that said the opposite, it read as the
+    // tool contradicting itself. Scoped to what it measures. (2026-08-02)
+    interpretation = "Strong attention capture — the CTAs and the value prop both drew top attention for this persona. This is about the conversion elements specifically; see interpretation.alignment for whether the overall distribution matches the design.";
   } else if (ctaCaptureRate > 0.3 && headingShare <= 0.02) {
     interpretation = "CTAs capture attention but the value prop does not — headings drew "
       + Math.round(headingShare * 100) + "% of top attention. The persona is seeing where to click without reading what it is for.";

@@ -642,7 +642,18 @@ export function registerVisualTestingTools(server: McpServer): void {
             // `pattern` gives the single combined verdict a caller actually
             // wants. (2026-07-28)
             interpretation: {
-              alignment: result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design",
+              // Each verdict names its BASIS, because two of them in one payload
+              // read as a contradiction otherwise.
+              //
+              // Measured: attentionQuality.interpretation said "design intent is
+              // working" while this line said "attention diverges from intended
+              // design", in the same response, off an alignmentScore of 0.484.
+              // Both were right about different questions -- one asks whether
+              // the CTAs captured attention, the other whether the overall
+              // distribution matches where the design puts emphasis -- and a
+              // reader has no way to know that from two bare verdicts.
+              // (2026-08-02)
+              alignment: `${result.alignmentScore > 0.8 ? "Attention follows intended design" : result.alignmentScore > 0.5 ? "Moderate attention alignment" : "Attention diverges from intended design"} (alignmentScore ${result.alignmentScore.toFixed(3)}: how closely the whole attention distribution matches where the design places emphasis — a different question from whether the CTAs specifically captured attention, which attentionQuality answers)`,
               entropy: `Evenness of attention across the areas that draw it: ${result.entropy > 0.8 ? "very even" : result.entropy > 0.5 ? "moderately even" : "sharply peaked"} (${result.entropy.toFixed(2)} of 1.0)`,
               concentration: `Share of attention landing in the top 20% of the page: ${(result.concentration * 100).toFixed(0)}% (a perfectly uniform page scores 20%)`,
               pattern: result.concentration > 0.6

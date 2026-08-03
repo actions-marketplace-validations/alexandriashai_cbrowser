@@ -3127,6 +3127,29 @@ export function listEmotionalPersonas(): string[] {
  * @param name Persona name to look up
  * @returns Persona object or undefined if not found
  */
+/**
+ * Resolve a persona name tolerantly: case and punctuation do not have to match.
+ *
+ * Resolution was exact-match only, so "POWER-USER" and "power user" both missed
+ * a persona that plainly exists. Before unknown names started throwing, a miss
+ * silently fabricated an all-midpoint persona named after whatever string was
+ * passed -- so a caller who capitalised a name got clean, plausible, invented
+ * data. Now it throws, which is better but still refuses a request anyone would
+ * call valid.
+ *
+ * Exact match is tried FIRST and always wins, so this can only ever add
+ * resolutions, never redirect one that already worked. (2026-08-02)
+ */
+function resolveLoosely(name: string): string | undefined {
+  const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const target = norm(name);
+  if (!target) return undefined;
+  for (const key of listAllPersonas()) {
+    if (norm(key) === target) return key;
+  }
+  return undefined;
+}
+
 export function getAnyPersona(name: string): Persona | AccessibilityPersona | AgentPersona | undefined {
   // 1. Check runtime-registered personas first (Enterprise extensions)
   if (RUNTIME_PERSONAS[name]) {
@@ -3158,6 +3181,11 @@ export function getAnyPersona(name: string): Persona | AccessibilityPersona | Ag
   if (AGENT_PERSONAS[name]) {
     return AGENT_PERSONAS[name];
   }
+
+  // Exact match failed. Try again ignoring case and punctuation -- only after
+  // every exact lookup above has missed, so this can never shadow a real key.
+  const loose = resolveLoosely(name);
+  if (loose && loose !== name) return getAnyPersona(loose);
 
   return undefined;
 }

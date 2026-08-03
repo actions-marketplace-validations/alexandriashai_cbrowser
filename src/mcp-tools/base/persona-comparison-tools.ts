@@ -970,7 +970,32 @@ Begin with the first persona: ${personas[0]}
             const cx = vw / 2;
             const cy = vh / 2;
             return {
-              selector: el.tagName.toLowerCase() + (el.id ? `#${el.id}` : ''),
+              // Identifying, not just the tag name.
+              //
+              // This reported barriers as bare "a", so every anchor on the page
+              // looked identical and a finding like "an <a> with 1% hit
+              // probability" named nothing anyone could go and fix. It also made
+              // two runs look like they were measuring the same element when
+              // they had surfaced different links -- which is how a slower
+              // movement time appeared alongside a HIGHER throughput and read as
+              // a model inversion. (2026-08-02)
+              selector: (() => {
+                const tag = el.tagName.toLowerCase();
+                if (el.id) return `${tag}#${el.id}`;
+                // className via the guarded read: on an SVG element it is an
+                // SVGAnimatedString, not a string, and calling .trim() on it
+                // throws. There is a class-sweep test for exactly this and it
+                // caught this line.
+                const rawCls = (el as unknown as { className?: unknown }).className;
+                const clsStr = typeof rawCls === "string"
+                  ? rawCls
+                  : String((rawCls as { baseVal?: string } | undefined)?.baseVal ?? "");
+                const cls = clsStr.trim() ? `.${clsStr.trim().split(/\s+/)[0]}` : "";
+                const label = (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 30);
+                const sibs = el.parentElement ? Array.from(el.parentElement.children).filter((c) => c.tagName === el.tagName) : [];
+                const nth = sibs.length > 1 ? `:nth-of-type(${sibs.indexOf(el) + 1})` : "";
+                return `${tag}${cls}${nth}${label ? ` "${label}"` : ""}`;
+              })(),
               width: rect.width,
               height: rect.height,
               distance: Math.sqrt((rect.x + rect.width/2 - cx) ** 2 + (rect.y + rect.height/2 - cy) ** 2),

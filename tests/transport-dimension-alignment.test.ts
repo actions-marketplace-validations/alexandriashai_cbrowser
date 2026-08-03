@@ -499,3 +499,45 @@ describe("readingTendency modulates demand, not capacity", () => {
     for (const a of arrays) expect(a).not.toContain("readingTendency");
   });
 });
+
+describe("remaining hardening from the QA reports", () => {
+  test("persona names resolve tolerantly, but an unknown name still fails", async () => {
+    const { getAnyPersona } = await import("../src/personas.js");
+    // Exact match is tried first and always wins, so this only ever ADDS
+    // resolutions. Before unknown names threw, a capitalised name silently
+    // produced an all-midpoint fabricated persona.
+    for (const n of ["POWER-USER", "Power-User", "power user", "cognitive_adhd"]) {
+      expect(getAnyPersona(n)).toBeTruthy();
+    }
+    expect(getAnyPersona("power-user")).toBeTruthy();
+    // Tolerance must not become "resolves anything".
+    expect(getAnyPersona("zzz-not-a-real-persona")).toBeUndefined();
+    expect(getAnyPersona("")).toBeUndefined();
+  });
+
+  test("motor barrier selectors identify WHICH element", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src/mcp-tools/base/persona-comparison-tools.ts"), "utf8");
+    // Reported as bare "a" before, so every anchor looked identical: a finding
+    // like "an <a> with 1% hit probability" named nothing anyone could fix, and
+    // two runs surfacing different links looked like one element behaving
+    // inconsistently.
+    expect(src).toContain("nth-of-type");
+    expect(src).toContain("aria-label");
+  });
+
+  test("each attention verdict names its basis", () => {
+    const vt = readFileSync(join(import.meta.dir, "..", "src/mcp-tools/base/visual-testing-tools.ts"), "utf8");
+    const aq = readFileSync(join(import.meta.dir, "..", "src/visual/attention-quality.ts"), "utf8");
+    // Two bare verdicts in one payload read as the tool contradicting itself:
+    // "design intent is working" beside "attention diverges from intended
+    // design", off an alignmentScore of 0.484. Both were right about different
+    // questions.
+    expect(vt).toContain("alignmentScore ");
+    // Checked on CODE lines, not raw file text: the comment explaining the
+    // removal necessarily quotes the removed string, and the first version of
+    // this assertion failed on its own explanation. Third time today.
+    const codeLines = aq.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*"));
+    expect(codeLines.join("\n")).not.toContain("Design intent is working");
+    expect(aq).toContain("Strong attention capture");
+  });
+});
