@@ -253,6 +253,16 @@ export function getPointingProfile(persona: {
  * @param profile - User's pointing profile
  * @returns Hit probability in [0, 1]
  */
+/**
+ * How far the correlated correction may move the independent estimate before it
+ * is treated as out of range. 1.25 = a 25% perturbation in either direction.
+ *
+ * At realistic target sizes the correction never approaches this: measured 1.00x
+ * at 24px and 48px, 1.04x at 12px, 1.19x at 6px. It is only reached on targets
+ * small enough that the approximation is no longer one.
+ */
+const MAX_CORRELATION_CORRECTION = 1.25;
+
 export function computeHitProbability(target: TargetElement, profile: PointingProfile): number {
   const { width, height } = target;
   const { sigmaX, sigmaY, rho } = profile;
@@ -289,8 +299,39 @@ export function computeHitProbability(target: TargetElement, profile: PointingPr
 
   const correction = 1 + rho * phiX * phiY / (pX * pY);
 
-  // Clamp to valid probability range
-  return Math.max(0, Math.min(1, pIndependent * correction));
+  // THE CORRECTION IS A PERTURBATION, AND IT DIVERGES.
+  //
+  // `pX * pY` is the denominator, so as the target shrinks the term grows
+  // without bound. Measured at sigma 7.7 / rho 0.13:
+  //
+  //   48x48px  factor 1.00     12x12px  factor 1.04     3x3px  factor 1.83
+  //   24x24px  factor 1.00      6x6px   factor 1.19     1x1px  factor 8.69
+  //
+  // That INVERTS the model against its own inputs, because rho co-varies with
+  // sigma across personas -- the more impaired a pointer is, the larger both
+  // are. On a 1x1 target, motor-impairment-tremor (sigma 12, rho 0.30) scored
+  // 4.88% against cognitive-adhd's 0.52%: nine times better BECAUSE it is
+  // worse. That is the ordering the bug report saw, and it read as an inversion
+  // against movement time only because it was measured on one degenerate
+  // element. Movement time and hit probability share no parameter but W --
+  // MT is (D, W, throughput), P(hit) is (W, H, sigma, rho) -- so they were
+  // never expected to track each other.
+  //
+  // Grossman & Balakrishnan derive this as a small correction and it is
+  // trustworthy while it stays one. Past that the approximation has left its
+  // validity domain, and the exact independent-axis form is the honest answer
+  // -- it is a real bound, not a fallback of convenience. (2026-08-03, BUG-02)
+  if (correction > MAX_CORRELATION_CORRECTION || correction < 1 / MAX_CORRELATION_CORRECTION) {
+    return pIndependent;
+  }
+
+  // Frechet bound: a joint probability can never exceed its smaller marginal,
+  // whatever the correlation. Exact and true for every rho -- and, measured, it
+  // never binds once the perturbation bound above is in place: removing this
+  // line turns no test red. Kept as a stated invariant rather than as working
+  // code, so a future change to that bound cannot quietly produce a joint
+  // probability above its own marginal.
+  return Math.max(0, Math.min(1, pX, pY, pIndependent * correction));
 }
 
 /**
