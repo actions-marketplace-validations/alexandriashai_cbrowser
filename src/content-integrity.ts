@@ -85,11 +85,20 @@ const CHALLENGE_TITLES = [
  */
 const IMPLAUSIBLY_SMALL_DOM = 500;
 
-function hostOf(u: string): string {
+/**
+ * Hostname, or null when the string is not a URL.
+ *
+ * Null rather than a lowercased fallback. Falling back to the raw string made two
+ * unparseable inputs compare as two different hosts and report a cross-origin
+ * landing -- a finding manufactured out of an input this function could not read at
+ * all. Undecidable has to stay undecidable; that is the same rule the deploy
+ * freshness probe follows, and for the same reason.
+ */
+function hostOf(u: string): string | null {
   try {
     return new URL(u).hostname.toLowerCase();
   } catch {
-    return u.toLowerCase();
+    return null;
   }
 }
 
@@ -114,7 +123,10 @@ export function describeContentIntegrity(
     // The browser layer's verdict is authoritative where it has one. Recomputing the
     // host comparison here instead of reading it would let the two disagree, and two
     // sources of truth for one fact is how the original defect became invisible.
-    if (result.desyncDetected || (wanted && landed && !sameSite(wanted, landed))) {
+    // The recomputation only runs when BOTH hosts parsed; one that did not parse is
+    // an unknown origin, not a different one.
+    const originsDiffer = wanted !== null && landed !== null && !sameSite(wanted, landed);
+    if (result.desyncDetected || originsDiffer) {
       reasons.push("cross-origin-landing");
     }
 
