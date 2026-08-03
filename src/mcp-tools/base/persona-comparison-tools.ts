@@ -1096,8 +1096,21 @@ Begin with the first persona: ${personas[0]}
       } catch {}
 
       // Format response
+      // What was actually measured, taken from the page after navigation rather
+      // than from the argument. The response used to echo the requested URL
+      // while describing a different site: `url: "https://www.ucdenver.edu"` on
+      // an analysis of cudenver.edu, which ucdenver.edu 301s to. `navigate`
+      // already warns on this mismatch; nothing else did.
+      const landedUrl = (() => { try { return page.url(); } catch { return url; } })();
+      const hostOf = (u: string) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+      const redirected = !!landedUrl && hostOf(landedUrl) !== "" && hostOf(landedUrl) !== hostOf(url);
+
       const response: Record<string, unknown> = {
         url,
+        ...(redirected ? {
+          resolvedUrl: landedUrl,
+          redirectNote: `Requested ${hostOf(url)} and landed on ${hostOf(landedUrl)}. Every number below describes ${hostOf(landedUrl)}.`,
+        } : { resolvedUrl: landedUrl }),
         persona: personaName,
         cognitiveTransportCost: {
           total: Math.round(result.totalCTC * 1000) / 1000,
