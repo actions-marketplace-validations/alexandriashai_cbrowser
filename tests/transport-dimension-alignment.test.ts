@@ -1001,3 +1001,79 @@ describe("the legibilityQuality contract, restored and pinned (BUG-01 / D-3)", (
     for (const n of names) expect(tool).toContain(`layer: "${n}"`);
   });
 });
+
+describe("one authoritative field per reading dimension (BUG-13 / D-11)", () => {
+  /**
+   * Reading ability was encoded twice: five explicit fields in
+   * accessibility_traits, and `comprehension` + `readingTendency` in the main
+   * trait vector, with nothing stating which the model actually reads.
+   * `comprehension` was 0.5 for BOTH personas whose reading profiles differ
+   * sharply, so it was either unused or contradicting the new fields, and no
+   * consumer could tell which.
+   *
+   * That is the two-registry divergence shape, caught before the fields drifted
+   * apart. These tests pin the split rather than the prose describing it.
+   */
+  const CHAIN = CHAIN_SRC.slice(CHAIN_SRC.indexOf("LAYER_DEFINITIONS"), CHAIN_SRC.indexOf("INTERACTION_PAIRS"));
+  const layerTraits = (name: string): string => {
+    const block = CHAIN.slice(CHAIN.indexOf(`name: '${name}'`));
+    return block.slice(0, block.indexOf("]") + 1).match(/traits: \[([^\]]*)\]/)![1];
+  };
+
+  test("decoding reaches readability, and nothing else does", () => {
+    const readability = layerTraits("readability");
+    expect(readability).toContain("readingCapacity");
+    // The two main-vector reading-adjacent traits are absent by construction.
+    expect(readability).not.toContain("comprehension");
+    expect(readability).not.toContain("readingTendency");
+  });
+
+  test("comprehension is consumed, but only as UI-convention grasp", () => {
+    // Not orphaned -- that would be the other failure. It drives cognitiveLoad,
+    // which is what its own criteria describe.
+    expect(layerTraits("cognitiveLoad")).toContain("comprehension");
+    expect(traitsUsedByLayers().has("comprehension")).toBe(true);
+  });
+
+  test("its definition says what it is not, where an author will read it", () => {
+    const ref = readFileSync(join(import.meta.dir, "..", "src", "trait-reference.ts"), "utf8");
+    const entry = ref.slice(ref.indexOf("comprehension: {"));
+    const block = entry.slice(0, entry.indexOf("defaultValue"));
+    expect(block).toContain("NOT reading comprehension");
+    expect(block).toContain("accessibility_traits");
+  });
+
+  test("engagement modulates attention demand and never decoding demand", () => {
+    // readingTendency is a disposition. It reaches no layer as a capacity, and
+    // touches only the attentional half of demand.
+    for (const layer of ["readability", "readingAttention", "cognitiveLoad", "frustration"]) {
+      expect(layerTraits(layer)).not.toContain("readingTendency");
+    }
+    const mod = CHAIN_SRC.slice(CHAIN_SRC.indexOf("const readingTendency = persona.traits?.readingTendency"));
+    const body = mod.slice(0, 1800);
+    expect(body).toContain("modulatedDemand.demands.sustainedAttention");
+    expect(body).not.toContain("modulatedDemand.demands.readingCapacity =");
+  });
+
+  test("the tool states the split, so a consumer never has to infer it", () => {
+    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    const block = tool.slice(tool.indexOf("readingModel: {"), tool.indexOf("scope: measureScope,"));
+    for (const dimension of ["decoding", "attention", "engagement", "notConsumedForReading"]) {
+      expect(block).toContain(dimension);
+    }
+    // And names comprehension explicitly as the one that is NOT consumed for
+    // reading, because a field omitted from the map is indistinguishable from
+    // one nobody thought about.
+    expect(block).toContain("traits.comprehension");
+  });
+
+  test("no field is authoritative for two dimensions", () => {
+    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    const block = tool.slice(tool.indexOf("readingModel: {"), tool.indexOf("scope: measureScope,"));
+    const claims = Array.from(block.matchAll(/authoritative: "([^"]+)"/g), (m) => m[1]);
+    expect(claims.length).toBe(3);
+    // Crude but sufficient: the same field name must not head two claims.
+    const heads = claims.map((c) => c.split(".")[0] + "." + (c.split(".")[1] ?? "").replace(/[{,].*/, ""));
+    expect(new Set(heads).size).toBe(heads.length);
+  });
+});

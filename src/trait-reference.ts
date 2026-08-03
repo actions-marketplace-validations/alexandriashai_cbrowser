@@ -111,7 +111,19 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
 
   comprehension: {
     name: "comprehension",
-    description: "Ability to understand UI conventions and interface patterns",
+    // NOT reading comprehension, despite the name. It is grasp of UI
+    // CONVENTIONS -- hamburger menus, search icons, gestures -- and it is
+    // consumed by the cognitiveLoad layer only.
+    //
+    // It read as the reading trait for long enough to matter: it sat in the
+    // readability layer until 2026-08-02, where it made the legibilityQuality
+    // contract non-monotonic for any persona whose UI fluency and decoding
+    // ability disagree, which after reading capacity became explicit is most of
+    // them. Reading capacity now lives in accessibility_traits and reaches the
+    // chain as `readingCapacity`; this trait has nothing to do with it, and
+    // dyslexic-user's 0.5 here is deliberate rather than an unfilled default.
+    // (2026-08-03, BUG-13 / D-11)
+    description: "Grasp of UI conventions and interface patterns. NOT reading comprehension — reading capacity lives in accessibility_traits (orthographicFluency, phonologicalDecoding, visualSpan, vocabularyBreadth, crowdingSensitivity).",
     lowEnd: "Unfamiliar with modern UI patterns",
     highEnd: "Instant recognition of all conventions",
     research: "Nielsen Norman Group - UI Pattern Recognition Studies",
@@ -196,6 +208,12 @@ export const TRAIT_DEFINITIONS: Record<string, TraitDefinition> = {
 
   readingTendency: {
     name: "readingTendency",
+    // A DISPOSITION -- how much text this person chooses to read -- not an
+    // ability. It is authoritative for reading ENGAGEMENT and is consumed as a
+    // demand modulator on the readingAttention layer only: text you do not
+    // engage with asks less sustained attention of you. It does not touch
+    // decoding demand, because skimming reduces exposure, not difficulty.
+    // (2026-08-03, BUG-13 / D-11)
     description: "Reads content thoroughly vs. scans for CTAs",
     lowEnd: "Visual scanner, ignores all text",
     highEnd: "Reads every word before acting",

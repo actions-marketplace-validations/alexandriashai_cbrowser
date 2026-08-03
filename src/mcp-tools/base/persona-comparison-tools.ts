@@ -1228,6 +1228,29 @@ Begin with the first persona: ${personas[0]}
             : `${personaName} is likely to abandon ${subject}. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`;
           return verdict + screens;
         })(),
+        // ONE AUTHORITATIVE FIELD PER READING DIMENSION, stated rather than
+        // left to be inferred from which layer moved. Reading ability was
+        // encoded in two places -- five explicit fields in accessibility_traits
+        // AND `comprehension` plus `readingTendency` in the main vector -- with
+        // nothing saying which the model reads. That is the two-registry
+        // divergence shape, caught before the fields drifted. (BUG-13 / D-11)
+        readingModel: {
+          decoding: {
+            authoritative: "accessibility_traits.{orthographicFluency, phonologicalDecoding, visualSpan, vocabularyBreadth, crowdingSensitivity}",
+            reaches: "readability layer, via the derived readingCapacity dimension",
+          },
+          attention: {
+            authoritative: "accessibility_traits.attentionSpan, falling back to traits.interruptRecovery",
+            reaches: "readingAttention layer, via the derived sustainedAttention dimension",
+          },
+          engagement: {
+            authoritative: "traits.readingTendency",
+            reaches: "modulates readingAttention DEMAND only — a disposition, not an ability, and it does not touch decoding",
+          },
+          notConsumedForReading: {
+            "traits.comprehension": "grasp of UI conventions, not reading. Consumed by cognitiveLoad only. A persona's 0.5 here says nothing about how well they read.",
+          },
+        },
         scope: measureScope,
         pageScreens: pageMetrics.pageScreens,
         scopeNote: measureScope === "full_page"
