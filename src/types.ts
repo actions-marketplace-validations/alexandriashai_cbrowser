@@ -769,7 +769,7 @@ export interface CognitiveProfile {
    * presented as a finding. Below the threshold the candidates are published
    * instead, under decisionStyleCandidates.
    */
-  decisionStyle?: DecisionStyleType;
+  decisionStyle?: DecisionStyleType | null;
   /**
    * How each of the two fields above got its value. Both are initialised to a
    * literal ("f-pattern", "cautious") and only overwritten when a rule matches
@@ -788,7 +788,7 @@ export interface CognitiveProfile {
   techLevelSource?: "declared" | "derived";
   /** Set when the stored tech_level disagrees with the fluency traits. */
   techLevelConflict?: string;
-  decisionStyleSource?: "declared" | "derived" | "default";
+  decisionStyleSource?: "declared" | "derived" | "default" | "suppressed";
   /**
    * Gap between the winning decision style's score and the runner-up. A small
    * margin means the trait vector does not clearly favour one, and the label
@@ -800,6 +800,10 @@ export interface CognitiveProfile {
   decisionStyleRunnerUp?: string;
   decisionStyleCandidates?: string[];
   decisionStyleNote?: string;
+  /** True when the label was withheld because the top two styles tied. */
+  decisionStyleSuppressed?: boolean;
+  /** The margin below which the label is withheld. */
+  decisionStyleThreshold?: number;
   /** Template for generating inner monologue */
   innerVoiceTemplate?: string;
 }

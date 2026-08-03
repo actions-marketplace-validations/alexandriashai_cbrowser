@@ -589,3 +589,45 @@ describe("dyslexic-user carries a differentiated trait vector", () => {
     expect(ref).toContain("comprehension: \"Grasp of UI conventions");
   });
 });
+
+describe("motor pass admits only real pointing targets", () => {
+  test("non-hit-testable elements are excluded before Fitts", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src/mcp-tools/base/persona-comparison-tools.ts"), "utf8");
+    // BUG-09: a visually-hidden skip link (1px box, clip: rect(0,0,0,0)) passed
+    // the old size-and-viewport filter, went into Fitts, and produced a
+    // multi-second movement time at 1% accuracy — so the tool docked a site's
+    // motor accessibility score for implementing WCAG 2.4.1 Bypass Blocks.
+    expect(src).toContain("elementFromPoint");
+    expect(src).toContain("MIN_TARGET_PX");
+    expect(src).toContain("pointerEvents");
+    expect(src).toMatch(/visibility === "hidden"/);
+  });
+
+  test("the overlay is drawn from the scored list, not a second query", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src/mcp-tools/base/persona-comparison-tools.ts"), "utf8");
+    // The overlay used to re-query with a DIFFERENT filter and zip to
+    // motorResult.elements by index, so tightening the scoring filter would
+    // have drawn each element's hit probability on another element's box.
+    expect(src).toContain("motorGeom.map(");
+    expect(src).not.toMatch(/const els = document\.querySelectorAll\('a, button/);
+  });
+});
+
+describe("suppressed decisionStyle reports itself", () => {
+  test("null plus a suppression flag, not an omitted key", async () => {
+    // BUG-08: the key was omitted while decisionStyleSource still said
+    // "derived", so the source claimed a derivation for an absent value and
+    // consumers could not tell suppression from "never computed".
+    const { createCognitivePersona, getCognitiveProfile } = await import("../src/personas.js");
+    const p = createCognitivePersona("tie-probe-2", "probe", {
+      patience: 0.5, satisficing: 0.5, riskTolerance: 0.5,
+      metacognitivePlanning: 0.5, informationForaging: 0.5, comprehension: 0.5,
+    } as never);
+    delete (p as never as { behaviors: Record<string, unknown> }).behaviors.decisionStyle;
+    const prof = getCognitiveProfile(p) as never as Record<string, unknown>;
+    expect(prof.decisionStyle).toBeNull();
+    expect(prof.decisionStyleSuppressed).toBe(true);
+    expect(prof.decisionStyleThreshold).toBe(0.05);
+    expect(prof.decisionStyleSource).toBe("suppressed");
+  });
+});

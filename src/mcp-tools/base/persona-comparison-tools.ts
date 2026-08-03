@@ -952,6 +952,10 @@ Begin with the first persona: ${personas[0]}
       // outside that block, and needs the on-page rectangles the analysis
       // itself does not carry.
       let textBlockGeom: Array<{ x: number; y: number; width: number; height: number; text: string }> = [];
+      // Hoisted for the same reason as textBlockGeom: the motor OVERLAY is drawn
+      // outside the block that scores these, and it must use the scored list
+      // rather than a second query with a different filter.
+      let motorGeom: Array<{ selector: string; x: number; y: number; width: number; height: number }> = [];
       try {
         const { motorAccessibility, readability, getPointingProfile, getReadingProfile } = await import("../../visual/cognitive-models.js");
 
@@ -960,11 +964,45 @@ Begin with the first persona: ${personas[0]}
           const vw = window.innerWidth;
           const vh = window.innerHeight;
           const interactive = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
+          // Only elements a POINTING DEVICE could actually hit.
+          //
+          // The old filter asked for non-zero size and in-viewport, which a
+          // visually-hidden skip link passes: the standard implementation is a
+          // 1px box with clip: rect(0,0,0,0), so it has non-zero geometry and
+          // sits at the top of the page. It was then fed to Fitts, which
+          // correctly reported a multi-second movement time at 1% accuracy for
+          // a 1px target -- and the tool docked the site's motor accessibility
+          // score for implementing WCAG 2.4.1 Bypass Blocks.
+          //
+          // An accessibility product penalising a site for correct accessibility
+          // is the most expensive false positive available here, so the check is
+          // now what actually decides a mouse click: elementFromPoint at the
+          // element's centre. If the click would land on something else, it is
+          // not a pointing target. Cheap style and area checks run first because
+          // elementFromPoint forces layout.
+          //
+          // Skip links ARE interactive for keyboard users. If the motor model is
+          // ever extended to keyboard traversal they belong there, with their
+          // FOCUSED geometry rather than their hidden geometry. (2026-08-02)
+          const MIN_TARGET_PX = 4;
           return Array.from(interactive).filter((el) => {
             const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0 &&
-              rect.bottom > 0 && rect.top < vh &&
-              rect.right > 0 && rect.left < vw;
+            if (rect.width < MIN_TARGET_PX || rect.height < MIN_TARGET_PX) return false;
+            if (rect.bottom <= 0 || rect.top >= vh || rect.right <= 0 || rect.left >= vw) return false;
+            const cs = window.getComputedStyle(el);
+            if (cs.visibility === "hidden" || cs.display === "none") return false;
+            if (parseFloat(cs.opacity || "1") < 0.05) return false;
+            if (cs.pointerEvents === "none") return false;
+            // clip / clip-path collapsing the box to nothing is the classic
+            // visually-hidden idiom and leaves the bounding rect intact.
+            const clip = cs.clip || "";
+            if (/rect\(\s*0(px)?[,\s]+0(px)?[,\s]+0(px)?[,\s]+0(px)?\s*\)/.test(clip)) return false;
+            if ((cs.clipPath || "").replace(/\s/g, "") === "inset(50%)") return false;
+            // The decisive test: would a click at the centre reach this element?
+            const x = Math.min(vw - 1, Math.max(0, rect.left + rect.width / 2));
+            const y = Math.min(vh - 1, Math.max(0, rect.top + rect.height / 2));
+            const hit = document.elementFromPoint(x, y);
+            return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
           }).slice(0, 30).map((el) => {
             const rect = el.getBoundingClientRect();
             const cx = vw / 2;
@@ -998,11 +1036,16 @@ Begin with the first persona: ${personas[0]}
               })(),
               width: rect.width,
               height: rect.height,
+              // Carried so the overlay can be drawn from THIS list rather than
+              // re-querying: see the note at the overlay site.
+              x: rect.x,
+              y: rect.y,
               distance: Math.sqrt((rect.x + rect.width/2 - cx) ** 2 + (rect.y + rect.height/2 - cy) ** 2),
             };
           });
         });
 
+        motorGeom = elements.map((e) => ({ selector: e.selector, x: e.x, y: e.y, width: e.width, height: e.height }));
         motorResult = motorAccessibility(elements, otProfile);
 
         // Get text blocks for readability analysis — viewport-visible only
@@ -1172,19 +1215,22 @@ Begin with the first persona: ${personas[0]}
 
           // Get element bounding boxes for motor overlay
           const motorElements = await page.evaluate(() => {
-            const els = document.querySelectorAll('a, button, input, select, textarea, [role="button"]');
-            return Array.from(els).slice(0, 30).map(el => {
-              const rect = (el as HTMLElement).getBoundingClientRect();
-              return {
-                selector: el.tagName.toLowerCase(),
-                x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-              };
-            }).filter((e: { width: number; height: number }) => e.width > 0 && e.height > 0);
+            return [];
           });
 
           const { generateMotorOverlay } = await import("../../visual/visual-overlays.js");
-          const motorOverlayElements = motorElements.map((el: { selector: string; x: number; y: number; width: number; height: number }, i: number) => ({
-            ...el,
+          // Drawn from the SAME list that was scored.
+          //
+          // This used to run a second querySelectorAll with a different filter
+          // and zip it to motorResult.elements BY INDEX, so the two lists only
+          // lined up while both filters happened to admit the same elements in
+          // the same order. Tightening the scoring filter to exclude
+          // non-hit-testable targets would have guaranteed a mismatch, and the
+          // overlay would have drawn each element's hit probability on some
+          // other element's box. (2026-08-02)
+          const motorOverlayElements = motorGeom.map((el, i: number) => ({
+            selector: el.selector,
+            x: el.x, y: el.y, width: el.width, height: el.height,
             hitProbability: motorResult.elements[i]?.hitProbability ?? 0.9,
             isBarrier: motorResult.elements[i]?.isBarrier ?? false,
           }));

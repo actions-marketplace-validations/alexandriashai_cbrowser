@@ -1137,15 +1137,25 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
   return {
     traits: traits ? { ...defaultTraits, ...traits } : defaultTraits,
     attentionPattern,
-    // Omitted entirely when the top two styles are indistinguishable.
-    ...(decisionStyleConfidence === "indistinguishable" ? {} : { decisionStyle }),
+    // NULL when suppressed, not omitted.
+    //
+    // Omitting the key left consumers unable to tell suppression from "never
+    // computed", while decisionStyleSource still said "derived" -- claiming a
+    // derivation for a value that was not there. An explicit null plus a
+    // suppression flag and the threshold says what happened. (2026-08-02)
+    decisionStyle: decisionStyleConfidence === "indistinguishable" ? null : decisionStyle,
+    ...(decisionStyleConfidence === "indistinguishable"
+      ? { decisionStyleSuppressed: true, decisionStyleThreshold: 0.05 }
+      : {}),
     attentionPatternSource,
     attentionPatternMargin,
     attentionPatternConflict,
     techLevel,
     techLevelSource,
     techLevelConflict,
-    decisionStyleSource,
+    // Reports SUPPRESSION rather than claiming a derivation whose result was
+    // withheld. It said "derived" beside an absent decisionStyle.
+    decisionStyleSource: decisionStyleConfidence === "indistinguishable" ? "suppressed" : decisionStyleSource,
     ...(decisionStyleMargin !== undefined ? { decisionStyleMargin } : {}),
     ...(decisionStyleConfidence ? { decisionStyleConfidence } : {}),
     // The LABEL is withheld at an indistinguishable margin, not just annotated.
@@ -1871,26 +1881,39 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       selfEfficacy: 0.5,
       // Research: Physical effort increases satisficing (Kool et al., 2010 - Effort discounting)
       // Motor strain leads to accepting "good enough" to minimize fatigue
-      satisficing: 0.7,
-      // Research: Chronic condition users develop moderate trust (Lorig 2001)
+      // High = first adequate option. Each additional comparison means another
+      // set of pointing operations.
+      satisficing: 0.75,
       trustCalibration: 0.5,
       // Research: Motor issues make resumption harder but adaptation helps (Mark)
+      // Re-acquiring a small target after an interruption repeats the hardest
+      // part of the interaction.
       interruptRecovery: 0.4,
-      // New traits (v15.0.0)
-      patience: 0.6,
-      riskTolerance: 0.4,
+      // Every pointing action costs time and repeat attempts, so tolerance for
+      // slow interaction is built in -- the persona's own research note records
+      // 1-15Hz tremor and misclicks as the primary barrier.
+      patience: 0.8,
+      // Low = only clicks obvious, labelled controls. An accidental click is
+      // expensive to undo when re-pointing is itself hard.
+      riskTolerance: 0.3,
       comprehension: 0.7,
+      // A missed target is retried rather than abandoned; the alternative is not
+      // completing the task at all.
       persistence: 0.7,
       curiosity: 0.4,
       workingMemory: 0.7,
       readingTendency: 0.6,
       resilience: 0.6,
-      informationForaging: 0.5,
+      // Low = exhaustive rather than scent-following. Exploratory clicking is
+      // expensive, so paths are chosen carefully and few are sampled.
+      informationForaging: 0.35,
       changeBlindness: 0.4,
       anchoringBias: 0.5,
       timeHorizon: 0.4,           // Patient due to motor constraints
       attributionStyle: 0.4,      // Blames physical constraints, not self
-      metacognitivePlanning: 0.7, // Plans to avoid difficult interactions
+      // Target order and approach are planned to minimise pointing: keyboard
+      // where possible, large targets first.
+      metacognitivePlanning: 0.7,
       proceduralFluency: 0.6,
       transferLearning: 0.6,
       authoritySensitivity: 0.5,
@@ -2407,23 +2430,39 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
     cognitiveTraits: {
       patience: 0.6, // Accustomed to extra verification
       persistence: 0.7, // Used to working around color issues
-      riskTolerance: 0.5, // Cautious with color-only indicators
+      // Low = only clicks the obvious. A control whose state is colour-coded is
+      // ambiguous, so the unambiguous one is chosen.
+      riskTolerance: 0.4,
       resilience: 0.7, // High - adapted to workarounds, recovers quickly (BRS)
-      selfEfficacy: 0.7, // High - adapted strategies work well (Bandura)
+      // Deliberately ABOVE neutral. Deuteranopia is lifelong, common (about 8%
+      // of men of Northern European descent) and compensated from childhood; it
+      // is a perceptual difference, not a confidence deficit, and modelling it
+      // as one would be wrong.
+      selfEfficacy: 0.65,
       satisficing: 0.5, // Medium - needs extra verification (Simon)
-      trustCalibration: 0.55, // Medium - cautious with color-coded security indicators (Fogg)
+      // Low = sceptical. Interfaces routinely signal validity and error through
+      // colour alone, so a page's own status signals are not reliably readable
+      // and get verified rather than believed.
+      trustCalibration: 0.4,
       interruptRecovery: 0.6, // Medium-high - good adaptation, unaffected cognition (Mark)
       // New traits (v15.0.0)
       comprehension: 0.7,
       curiosity: 0.5,
       workingMemory: 0.7,
       readingTendency: 0.7,     // Relies on text labels
-      informationForaging: 0.6, // Good - unaffected cognition
-      changeBlindness: 0.45,    // Medium - misses color-only changes
+      // Scent-following depends on non-colour cues -- position, label, icon --
+      // which is a learned and efficient strategy.
+      informationForaging: 0.65,
+      // High = misses changes. A state change signalled by colour alone -- a
+      // green valid border, a red error border -- is invisible without a second
+      // cue (MDPI 13/2/53; simulated-interface study).
+      changeBlindness: 0.7,
       anchoringBias: 0.5,
       timeHorizon: 0.5,
       attributionStyle: 0.3,    // Blames poor design, not self
-      metacognitivePlanning: 0.6, // Plans for color verification
+      // Compensation is deliberate: read the label, look for the icon, re-check
+      // the text rather than trusting the hue.
+      metacognitivePlanning: 0.7,
       proceduralFluency: 0.7,   // Good with non-color cues
       transferLearning: 0.7,    // Recognizes non-color patterns
       authoritySensitivity: 0.5,
@@ -2757,25 +2796,48 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fatigueSusceptibility: 0.4, // Moderate - number-heavy pages are tiring
     },
     cognitiveTraits: {
-      workingMemory: 0.5,       // Normal verbal, impaired numerical
+      // Working memory underpins number processing, and math anxiety reduces WM
+      // capacity further -- the two compound (PMC8946289, numerical activities
+      // of daily living).
+      workingMemory: 0.35,
       patience: 0.5,            // Medium - frustrated by numbers, fine otherwise
       persistence: 0.6,         // Medium-high - persistent on non-numerical tasks
       curiosity: 0.6,           // Normal - explores freely until numbers appear
       riskTolerance: 0.4,       // Low-medium - cautious with purchases/quantities
       readingTendency: 0.65,    // Medium-high - reads text normally, skips number-heavy sections
       comprehension: 0.65,      // Normal for text, low for numerical content
-      resilience: 0.5,          // Medium - used to numerical difficulty
-      selfEfficacy: 0.5,        // Medium - confident except with numbers
-      satisficing: 0.6,         // Medium - avoids comparing numerical options
-      trustCalibration: 0.5,    // Medium - can evaluate text-based trust, not numerical
+      // Math anxiety is documented as intense and self-reinforcing: errors raise
+      // anxiety, which lowers WM, which produces more errors.
+      resilience: 0.35,
+      // Years of number-task failure produce intense anxiety around bills,
+      // budgeting and any quantity judgement.
+      selfEfficacy: 0.3,
+      // High = takes the first adequate option. Comparison shopping means
+      // comparing numbers, which is the expensive operation.
+      satisficing: 0.75,
+      // High = trusting. A displayed total cannot be sanity-checked mentally, so
+      // it has to be taken on faith.
+      trustCalibration: 0.65,
       interruptRecovery: 0.6,   // Normal
       informationForaging: 0.55, // Medium - normal except for numerical scent
       changeBlindness: 0.5,     // Normal
-      anchoringBias: 0.6,       // Medium - numerical anchoring is especially strong
-      timeHorizon: 0.5,         // Medium
-      attributionStyle: 0.5,    // Medium - knows it's a specific difficulty
-      metacognitivePlanning: 0.6, // Normal - good planning for non-numerical tasks
-      proceduralFluency: 0.55,  // Medium - struggles when steps involve numbers
+      // High = the first number dominates. Unable to evaluate quantities
+      // independently, the first price or figure seen becomes the reference.
+      anchoringBias: 0.75,
+      // High = present-focused. Difficulty judging time and distance is a core
+      // symptom, so future consequences are hard to weigh against an immediate
+      // task.
+      timeHorizon: 0.75,
+      // High = blames self. Numeric failure is culturally read as personal
+      // deficiency rather than a processing difference, so self-attribution runs
+      // high.
+      attributionStyle: 0.7,
+      // Adults describe deliberate workarounds: calculators, written steps,
+      // avoiding mental arithmetic. That is planned strategy, not reflex.
+      metacognitivePlanning: 0.65,
+      // Multi-step numeric flows -- quantities, totals, percentages, dates --
+      // are exactly where slow and error-prone processing bites.
+      proceduralFluency: 0.4,
       transferLearning: 0.6,    // Normal for non-numerical patterns
       authoritySensitivity: 0.5,
       emotionalContagion: 0.5,
