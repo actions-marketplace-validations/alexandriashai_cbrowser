@@ -13,7 +13,7 @@
 import { z } from "zod";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, basename, extname } from "node:path";
-import { ARTIFACT_DIR } from "../../artifact-store.js";
+import { artifactDir } from "../../artifact-store.js";
 import type { McpServer } from "../types.js";
 
 /** Largest artifact returned inline. Base64 adds a third on top of this. */
@@ -43,7 +43,7 @@ export function registerArtifactTools(server: McpServer): void {
     _meta: { ui: { visibility: ["app"] } },
   }, async ({ file }) => {
       // basename strips any directory component, so a traversal attempt
-      // resolves to a plain name inside ARTIFACT_DIR rather than escaping it.
+      // resolves to a plain name inside the artifact dir rather than escaping it.
       // The name is then re-validated, because basename alone would happily
       // return something like ".." on its own.
       const safe = basename(String(file));
@@ -54,7 +54,7 @@ export function registerArtifactTools(server: McpServer): void {
           isError: true,
         };
       }
-      const path = join(ARTIFACT_DIR, safe);
+      const path = join(artifactDir(), safe);
       if (!existsSync(path)) {
         return {
           content: [{ type: "text", text: JSON.stringify({ error: `No such artifact: ${safe}` }) }],
