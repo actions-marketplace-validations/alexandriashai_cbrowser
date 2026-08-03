@@ -700,7 +700,7 @@ Begin with the first persona: ${personas[0]}
   server.registerTool("cognitive_effort", {
     _meta: { ui: { resourceUri: "ui://cbrowser/effort" } },
     title: "Cognitive Effort Analysis",
-    description: "Compute total cognitive effort for a persona to use a page. Uses the 6-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability. IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
+    description: "Compute total cognitive effort for a persona to use a page. Uses the 7-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
       url: z.string().url().describe("URL to analyze"),
       // Per RUN, not per persona. A persona is familiar with one site and new

@@ -550,12 +550,12 @@ export const EMPATHY_SPEC: WidgetSpec = {
 };
 
 /**
- * Cognitive effort: the six-layer transport chain, and what running it in
+ * Cognitive effort: the sequential transport chain, and what running it in
  * sequence costs over running it in parallel.
  *
  * The JSON answers "how expensive is this page for this persona" with a number,
  * and buries the reason inside `cognitiveTransportCost.chainCoefficient`.
- * The chain block puts the reason on screen: six bars for the six layers with
+ * The chain block puts the reason on screen: one bar per layer with
  * the bottleneck named, then the sum-of-parts against the actual sequential
  * total. The gap between those last two is the claim the whole model rests on.
  */
@@ -578,7 +578,11 @@ export const EFFORT_SPEC: WidgetSpec = {
   },
   blocks: [
     // Leads, because it is the finding. Everything below is detail behind it.
-    { type: "chain", title: "The six-layer transport chain", field: "layers",
+    // Title carries no layer COUNT on purpose. It named a count and went stale
+    // within the hour when readability was split into decoding and attention
+    // (2026-08-02), so the widget captioned seven bars as six. The bars state
+    // the count themselves; a number in prose is a second copy that drifts.
+    { type: "chain", title: "The sequential transport chain", field: "layers",
       nameKey: "name", costKey: "cost", capacityKey: "capacityConsumed",
       bottleneckField: "bottleneck",
       additiveField: "cognitiveTransportCost.additive",
@@ -721,7 +725,7 @@ export function registerUiResources(server: McpServer): void {
   server.registerResource(
     "cbrowser-effort-ui",
     widgetUri("effort"),
-    { description: "Six-layer cognitive transport chain with its bottleneck", mimeType: MCP_APP_MIME },
+    { description: "Sequential cognitive transport chain with its bottleneck", mimeType: MCP_APP_MIME },
     async () => ({
       contents: [{ uri: widgetUri("effort"), mimeType: MCP_APP_MIME, text: buildEffortTemplate() }],
     }),

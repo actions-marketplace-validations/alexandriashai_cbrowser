@@ -156,7 +156,7 @@ export type BlockSpec =
   /**
    * A sequential cost chain with its bottleneck named.
    *
-   * Built for cognitive_effort, whose whole thesis is that the six layers are
+   * Built for cognitive_effort, whose whole thesis is that the layers are
    * SEQUENTIAL, not additive: each layer hands its residual capacity to the
    * next, so a cost late in the chain lands on an already-depleted budget. The
    * payload states that outright as `chainCoefficient = total / additive`

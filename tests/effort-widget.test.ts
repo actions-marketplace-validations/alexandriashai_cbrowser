@@ -175,3 +175,56 @@ describe("the widget script is inside a template literal", () => {
     expect(offenders.map((o) => o.line.slice(0, 70))).toEqual([]);
   });
 });
+
+describe("no user-visible string hardcodes a stale layer count", () => {
+  /**
+   * The widget captioned its bars "The six-layer transport chain". Splitting
+   * readability into decoding and attention made that seven, and the caption
+   * went stale within the hour -- so the panel drew seven bars under a heading
+   * that said six, and the tool's own description still listed six layer names
+   * to the model choosing it.
+   *
+   * The count lives in exactly one place, LAYER_DEFINITIONS. Every other
+   * mention is a copy, and this test is what stops a copy from disagreeing.
+   */
+  const CHAIN = readFileSync(join(SRC, "visual", "cognitive-transport-chain.ts"), "utf8");
+  const gate = readFileSync(join(SRC, "mcp-tools", "tier-gate.ts"), "utf8");
+  const layerCount = Array.from(
+    CHAIN.slice(CHAIN.indexOf("LAYER_DEFINITIONS"), CHAIN.indexOf("INTERACTION_PAIRS")).matchAll(/name: '[a-zA-Z]+'/g),
+  ).length;
+
+  const WORDS: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  };
+
+  test("the chain really is more than one layer, or this test proves nothing", () => {
+    expect(layerCount).toBeGreaterThan(1);
+  });
+
+  for (const [label, src] of [["widget spec", uiRes], ["tool description", tool], ["tier gate", gate]] as const) {
+    test(`${label} states no count that contradicts LAYER_DEFINITIONS`, () => {
+      // Only strings a user or the model can actually read: quoted text.
+      const strings = Array.from(src.matchAll(/"((?:[^"\\]|\\.)*)"/g), (m) => m[1]);
+      for (const s of strings) {
+        for (const m of s.matchAll(/\b(\d+|[a-z]+)[\s-]layers?\b/gi)) {
+          const raw = m[1].toLowerCase();
+          const n = /^\d+$/.test(raw) ? Number(raw) : WORDS[raw];
+          if (n === undefined) continue;  // "per-layer", "the layer" etc.
+          // A historical statement is allowed to name the old count, but it has
+          // to say so; a bare count is a claim about now.
+          if (/was |used to|before|previously|at six layers|re-measured/i.test(s) && n !== layerCount) continue;
+          expect(n).toBe(layerCount);
+        }
+      }
+    });
+  }
+
+  test("the widget's chain caption carries no count at all", () => {
+    // Strongest form: the bars state the count themselves, so prose that
+    // restates it is a second copy with nothing keeping it honest.
+    const spec = uiRes.slice(uiRes.indexOf("export const EFFORT_SPEC"));
+    const title = spec.match(/\{ type: "chain", title: "([^"]+)"/)![1];
+    expect(title).toBe("The sequential transport chain");
+    for (const w of Object.keys(WORDS)) expect(title.toLowerCase()).not.toContain(w + "-layer");
+  });
+});

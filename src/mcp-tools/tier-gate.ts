@@ -117,7 +117,7 @@ export function upgradePrompt(toolName: string): {
         upgrade: "https://cbrowser.ai/pricing",
         features: required === 'pro'
           ? [
-            "Cognitive Transport Chain (6-layer effort analysis)",
+            "Cognitive Transport Chain (layered effort analysis)",
             "Attention heatmaps and visual cognitive stories",
             "11 disability persona empathy audits",
             "AI Friendliness Suite (agent-ready, benchmark, remediation)",

@@ -2088,33 +2088,68 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       attentionSpan: 0.3, // Short sustained attention
       fatigueSusceptibility: 0.4,
     },
+    // Reconciled against Persona-ADHD.md, the persona's own published trait
+    // table, on 2026-08-02. Nineteen of twenty-five values disagreed. Each was
+    // arbitrated against trait-reference.ts -- which names specific personas as
+    // typically high or low per trait and defines what each end of the scale
+    // MEANS -- rather than by preferring one file over the other.
+    //
+    // Fifteen adopted the doc's value; the doc was corrected on the other four,
+    // which are recorded in Persona-ADHD.md. The four are worth naming because
+    // they are all one failure: a number written against the plain-English
+    // reading of a trait's NAME instead of its documented scale.
+    //
+    //   timeHorizon           doc said 0.3, meaning "long-term focused"
+    //   attributionStyle      doc said 0.3, meaning "blames the system"
+    //   mentalModelFlexibility doc said 0.4, meaning "somewhat rigid"
+    //   trustCalibration      doc said 0.5, meaning "neutral"
+    //
+    // In each case the doc's own RATIONALE argued for the opposite number. It
+    // said "strong preference for immediate rewards" beside 0.3 on a scale
+    // whose 1.0 end is literally "Immediate gratification, wants results NOW",
+    // and "may blame self" beside 0.3 on a scale whose 1.0 end is "Blames
+    // self". The prose was right every time; the digit was inverted.
     cognitiveTraits: {
-      workingMemory: 0.25, // Research: large magnitude impairment (d=1.63-2.03)
-      patience: 0.25, // Impulsivity: low tolerance for waiting
-      persistence: 0.2, // Low task persistence before switching
-      curiosity: 0.8, // High novelty-seeking
+      workingMemory: 0.3, // Research: large magnitude impairment (d=1.63-2.03)
+      patience: 0.2, // Impulsivity: low tolerance for waiting
+      persistence: 0.3, // Low for unengaging tasks; can hyperfocus on interesting ones
+      curiosity: 0.9, // High novelty-seeking
       riskTolerance: 0.7, // Impulsive clicking
       readingTendency: 0.2, // Skims rather than reads
-      resilience: 0.55, // Medium - recovers emotionally but not focus (BRS)
+      resilience: 0.4, // Emotional dysregulation is common (doc; code had 0.55)
       selfEfficacy: 0.4, // Variable - can feel capable when engaged (Bandura)
-      satisficing: 0.85, // High - ADHD drives "good enough" decisions (Simon)
-      trustCalibration: 0.65, // Medium-high - impulsive clicks without reading (Fogg)
-      interruptRecovery: 0.2, // Very low - WM deficits make recovery difficult (Mark)
+      satisficing: 0.7, // High - ADHD drives "good enough" decisions (Simon)
+      // KEPT over the doc's 0.5: trait-reference lists cognitive-adhd under
+      // typicalScores.high, and 1.0 on this scale is "highly trusting, accepts
+      // claims at face value" -- which is what impulsive clicking without
+      // reading looks like.
+      trustCalibration: 0.65,
+      interruptRecovery: 0.3, // Very low - WM deficits make recovery difficult (Mark)
       // New traits (v15.0.0)
-      comprehension: 0.5,
-      informationForaging: 0.6,   // Follows interesting scents, not systematic
-      changeBlindness: 0.7,       // High - focus elsewhere when changes happen
-      anchoringBias: 0.4,         // Lower - novelty-seeking overrides anchoring
-      timeHorizon: 0.9,           // Very short-term - immediate gratification
-      attributionStyle: 0.6,      // Slightly self-blaming
-      metacognitivePlanning: 0.15, // Very low - impulsive, no planning
-      proceduralFluency: 0.3,     // Low - struggles with sequences
-      transferLearning: 0.6,      // Medium - recognizes patterns when focused
+      comprehension: 0.6,         // Capable when engaged; this is UI-convention grasp, not reading
+      informationForaging: 0.4,   // Distractible; goes down tangential paths (doc; code had 0.6)
+      changeBlindness: 0.6,       // High - focus elsewhere when changes happen
+      anchoringBias: 0.6,         // First option favored, decision-fatigue avoidance (doc; code had 0.4)
+      // KEPT over the doc's 0.3. 1.0 on this scale is "Immediate gratification,
+      // wants results NOW" -- the name reads like "how far ahead do you look",
+      // and it means the opposite. trait-reference lists cognitive-adhd under
+      // typicalScores.high alongside impatient-user and mobile-user.
+      timeHorizon: 0.9,
+      // KEPT over the doc's 0.3. 1.0 is "Blames self (internal attribution)",
+      // and the doc's own rationale for 0.3 was "may blame self".
+      attributionStyle: 0.6,
+      metacognitivePlanning: 0.3, // Very low - impulsive, no planning
+      proceduralFluency: 0.4,     // Inconsistent; routines help but are hard to establish
+      transferLearning: 0.5,      // Variable; depends on engagement level
       authoritySensitivity: 0.4,  // Low - impulsive, ignores authority
       emotionalContagion: 0.6,    // Medium-high - emotional variability
-      fearOfMissingOut: 0.85,     // Very high - ADHD correlates with FOMO
+      fearOfMissingOut: 0.7,      // High - ADHD correlates with FOMO
       socialProofSensitivity: 0.5, // Medium - if interesting
-      mentalModelFlexibility: 0.7,   // High - adapts easily, novelty-seeking
+      // KEPT over the doc's 0.4. 1.0 is "Highly adaptive - quickly forms new
+      // mental models"; the doc's rationale was "flexible thinking, sometimes
+      // too flexible". A fourth instance of the rigidity/flexibility inversion
+      // that commit 086d519 fixed in three other pages.
+      mentalModelFlexibility: 0.7,
     },
   },
 
