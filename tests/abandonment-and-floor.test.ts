@@ -23,6 +23,8 @@
  * @since 2026-08-03
  */
 import { test, expect, describe } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { COGNITIVE_TRAITS, buildOTCognitiveProfile } from "../src/visual/cognitive-transport.js";
 import { computeDemandDistribution, computeSequentialCTC } from "../src/visual/cognitive-transport-chain.js";
 
@@ -125,5 +127,24 @@ describe("a layer at its cost floor still says something (BUG-18)", () => {
       require("node:path").join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
     expect(src).toContain("l.transportCost < 0.001 && l.headroom > 0");
     expect(src).toContain("costIsAtFloor: true");
+  });
+});
+
+describe("the uncalibrated constants are named and flagged", () => {
+  test("the Hill exponent is exported, defaulted, and marked uncalibrated", async () => {
+    // It is doing most of the work in the k-split table -- 22% to 2% across 14
+    // steps on identical total demand -- and nothing empirical set it. Same
+    // status as MOTOR_LAYER_WEIGHTS, same treatment.
+    const { ABANDONMENT_HILL_EXPONENT } = await import("../src/visual/cognitive-transport-chain.js");
+    expect(ABANDONMENT_HILL_EXPONENT).toBe(2);
+    const src = readFileSync(join(import.meta.dir, "..", "src", "visual", "cognitive-transport-chain.ts"), "utf8");
+    const block = src.slice(src.indexOf("Hill exponent on the abandonment curve"), src.indexOf("export const ABANDONMENT_HILL_EXPONENT"));
+    expect(block).toContain("UNCALIBRATED");
+    expect(block).toContain("What would settle it");
+  });
+
+  test("the cost function reads the constant rather than a literal", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src", "visual", "cognitive-transport-chain.ts"), "utf8");
+    expect(src).toContain("ABANDONMENT_STEEPNESS = ABANDONMENT_HILL_EXPONENT");
   });
 });

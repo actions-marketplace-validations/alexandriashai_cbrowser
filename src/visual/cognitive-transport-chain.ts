@@ -340,6 +340,27 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
 const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity', 'motorCapacity', 'proceduralFluency']);
 
 /**
+ * Hill exponent on the abandonment curve. UNCALIBRATED.
+ *
+ * Same status as MOTOR_LAYER_WEIGHTS and flagged for the same reason: it is
+ * doing a great deal of work and nothing empirical set it. At 2 the curve is
+ * superlinear, which means the same total cost delivered in small increments
+ * barely registers -- splitting a fixed deficit of 0.607 across 14 steps takes
+ * cumulative abandonment from 22% to 2%.
+ *
+ * That matters beyond the scalar. Any future per-screen hazard model inherits
+ * this exponent, and at 2 it would make a long page SAFER than a short one with
+ * identical total demand purely from chunking. The exponent is not the fix for
+ * that -- per-screen demand measured on its own content is -- but a sequential
+ * model must not be built without knowing this constant is load-bearing.
+ *
+ * What would settle it: observed abandonment against measured task difficulty,
+ * or a dose-response fit on real session data. Until then it is a shape someone
+ * chose, not a shape anyone measured. (2026-08-03)
+ */
+export const ABANDONMENT_HILL_EXPONENT = 2;
+
+/**
  * Relative weighting between the two motor layers. BOTH DEFAULT TO 1.0 AND ARE
  * UNCALIBRATED.
  *
@@ -961,7 +982,7 @@ export function computeSequentialCTC(
   // Floored so a persona with no patience at all does not divide by zero and
   // read as certain abandonment on a blank page.
   const tolerance = Math.max(0.05, effectivePatience * 1.5);
-  const ABANDONMENT_STEEPNESS = 2;
+  const ABANDONMENT_STEEPNESS = ABANDONMENT_HILL_EXPONENT;
   const abandonmentRisk = adjustedCost <= 0 ? 0 : Math.max(0, Math.min(1,
     Math.pow(adjustedCost, ABANDONMENT_STEEPNESS) /
     (Math.pow(adjustedCost, ABANDONMENT_STEEPNESS) + Math.pow(tolerance, ABANDONMENT_STEEPNESS))
