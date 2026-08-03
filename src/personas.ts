@@ -2124,26 +2124,59 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       fatigueSusceptibility: 0.6, // Reading requires more effort
     },
     cognitiveTraits: {
-      workingMemory: 0.6, // WM typically unaffected
-      patience: 0.5,
+      // WM deficit persists into adulthood across phonological AND visuospatial
+      // modalities; a cognitive marker distinguishing dyslexic from typical
+      // readers in every European orthography (de Jong 2006; n-back fNIRS,
+      // PMC3496727). Was 0.6 -- above average -- which inverted one of the best-
+      // established findings in the literature.
+      workingMemory: 0.3,
+      // Slower reading is one of three documented compensatory mechanisms,
+      // alongside text-structure use and verbal ability (Annals of Dyslexia,
+      // 10.1007/s11881-020-00195-w). Taking extra time with text is the
+      // strategy, not a failure of tolerance.
+      patience: 0.75,
       curiosity: 0.7,
-      readingTendency: 0.4, // Avoids heavy text, prefers visuals
-      resilience: 0.6, // Medium-high - adapted to text challenges (BRS)
-      selfEfficacy: 0.5, // Medium - effective with accommodations (Bandura)
-      satisficing: 0.6, // Medium - avoids text-heavy paths (Simon)
+      // Relies on structure and skimming over sustained prose. Note this is a
+      // STRATEGY, not decoding ability -- decoding now enters the chain via
+      // readingCapacity, bridged from getReadingProfile.
+      readingTendency: 0.35,
+      // Pulled down from 0.6 for documented secondary anxiety (Kapur & Agrawal
+      // 2026), but not lower: the compensation literature describes adults
+      // achieving academic success, so learned helplessness would overstate it.
+      resilience: 0.5,
+      // Dyslexia is a strong predictor of lower academic self-efficacy in higher
+      // education (PMC11488781; Nigerian undergraduate cohort).
+      selfEfficacy: 0.3,
+      // Reading is the expensive operation, so the first adequate option is
+      // strongly preferred over an exhaustive comparison.
+      satisficing: 0.7,
       trustCalibration: 0.5, // Medium - standard trust evaluation (Fogg)
-      interruptRecovery: 0.55, // Medium - visual cues help, text harder (Mark)
+      // Follows from the WM deficit: resuming a task means reloading context
+      // that is expensive to hold.
+      interruptRecovery: 0.35,
       // New traits (v15.0.0)
       riskTolerance: 0.5,
       comprehension: 0.5,      // Comprehension fine for visuals
-      persistence: 0.6,
-      informationForaging: 0.5, // Standard - prefers visual cues
+      // The same compensation literature: strategies are built and sustained
+      // across years of schooling, and mastery experience feeds back into
+      // persistence.
+      persistence: 0.75,
+      // Text-structure sensitivity is the second documented compensator:
+      // headings and layout are used as scent rather than reading everything,
+      // which is the high end of this scale.
+      informationForaging: 0.65,
       changeBlindness: 0.4,     // Lower - visual learner
       anchoringBias: 0.5,
       timeHorizon: 0.5,
-      attributionStyle: 0.5,
-      metacognitivePlanning: 0.5,
-      proceduralFluency: 0.5,   // Fine with visual instructions
+      // High = blames self. Psychoeducation framing dyslexia as
+      // neurodevelopmental rather than personal inadequacy measurably REDUCES
+      // self-blame, which places the untreated baseline above neutral (Kapur &
+      // Agrawal 2026).
+      attributionStyle: 0.7,
+      // Deliberate compensatory strategy use IS metacognition -- choosing
+      // structure over linear prose is a planned approach, not a reflex.
+      metacognitivePlanning: 0.7,
+      proceduralFluency: 0.4,
       transferLearning: 0.6,    // Recognizes visual patterns
       authoritySensitivity: 0.5,
       emotionalContagion: 0.5,

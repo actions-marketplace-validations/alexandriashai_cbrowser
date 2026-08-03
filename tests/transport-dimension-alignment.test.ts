@@ -541,3 +541,51 @@ describe("remaining hardening from the QA reports", () => {
     expect(aq).toContain("Strong attention capture");
   });
 });
+
+describe("dyslexic-user carries a differentiated trait vector", () => {
+  test("working memory is impaired, not above average", async () => {
+    // The single clearest inversion in the old vector: it sat at 0.6, above
+    // neutral, against one of the best-established findings in the dyslexia
+    // literature — a WM deficit that persists into adulthood across both
+    // phonological and visuospatial modalities.
+    const { getAnyPersona } = await import("../src/personas.js");
+    const t = (getAnyPersona("dyslexic-user") as never as { cognitiveTraits: Record<string, number> }).cognitiveTraits;
+    expect(t.workingMemory).toBeLessThan(0.45);
+  });
+
+  test("compensation traits are elevated, not baseline", async () => {
+    // Slower reading, text-structure use and sustained strategy are the three
+    // documented compensatory mechanisms. A persona that models dyslexia purely
+    // as deficit misses what these users actually do.
+    const { getAnyPersona } = await import("../src/personas.js");
+    const t = (getAnyPersona("dyslexic-user") as never as { cognitiveTraits: Record<string, number> }).cognitiveTraits;
+    expect(t.patience).toBeGreaterThan(0.6);
+    expect(t.persistence).toBeGreaterThan(0.6);
+    expect(t.metacognitivePlanning).toBeGreaterThan(0.6);
+    expect(t.informationForaging).toBeGreaterThan(0.55);
+  });
+
+  test("the vector is not effectively a default vector", async () => {
+    // BUG-05: 21 of 25 traits sat at exactly 0.5 or 0.6, so the persona was
+    // barely distinguishable from a generic user in trait space and the layers
+    // had almost nothing persona-specific to read. Bound is deliberately loose
+    // — the point is that it cannot silently flatten back.
+    const { getAnyPersona } = await import("../src/personas.js");
+    const t = (getAnyPersona("dyslexic-user") as never as { cognitiveTraits: Record<string, number> }).cognitiveTraits;
+    const defined = (COGNITIVE_TRAITS as readonly string[]).filter((k) => t[k] !== undefined);
+    const flat = defined.filter((k) => Math.abs(t[k] - 0.5) < 0.001 || Math.abs(t[k] - 0.6) < 0.001);
+    expect(flat.length).toBeLessThan(15);
+  });
+
+  test("comprehension staying at 0.5 is correct, not an oversight", async () => {
+    // Called out in the bug report as a defining-characteristic trait left at
+    // baseline. It is not a reading trait: its own criteria are "grasp of UI
+    // conventions". Dyslexia does not impair that, and decoding ability now
+    // enters the chain through readingCapacity instead.
+    const { getAnyPersona } = await import("../src/personas.js");
+    const t = (getAnyPersona("dyslexic-user") as never as { cognitiveTraits: Record<string, number> }).cognitiveTraits;
+    expect(t.comprehension).toBe(0.5);
+    const ref = readFileSync(join(import.meta.dir, "..", "src/values/persona-completeness.ts"), "utf8");
+    expect(ref).toContain("comprehension: \"Grasp of UI conventions");
+  });
+});
