@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.81.0](https://github.com/alexandriashai/cbrowser/compare/v18.80.0...v18.81.0) (2026-08-03)
+
+### Added
+
+* give the deploy-freshness probe a consumer ([0dd9f16](https://github.com/alexandriashai/cbrowser/commit/0dd9f16546326e7727365f8525c0e888d2aea7e7))
+
+### Fixed
+
+* a declared scope reaches the measurement, not just the response ([95e80ca](https://github.com/alexandriashai/cbrowser/commit/95e80cac175d08559c9579feec372d67b4002fbc))
+* navigate stops reporting success on a page it did not fetch ([fd2e687](https://github.com/alexandriashai/cbrowser/commit/fd2e687747279b49472c32fe788a11643caff218))
+* serve OAuth metadata instead of 401ing our own discovery document ([4471268](https://github.com/alexandriashai/cbrowser/commit/4471268742d10ca367d5b64e4b6a5a91a5651494))
+
 ## [18.80.0](https://github.com/alexandriashai/cbrowser/compare/v18.79.0...v18.80.0) (2026-08-03)
 
 ### Added
