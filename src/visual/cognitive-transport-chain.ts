@@ -288,56 +288,85 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
 /**
  * Dimensions where having MORE than the page asks for costs nothing at all.
  *
- * Surplus is cheap rather than free for most traits, which is defensible: a
- * maximiser on a trivial page really does spend effort the page did not need.
- * It is not defensible for site knowledge. Knowing a site better cannot make it
- * harder to use, and because familiarity is a parameter the caller sets
- * explicitly, the wrongness is directly visible rather than buried.
+ * THE RULE, decided 2026-08-03, and it is derivable rather than chosen: surplus
+ * is FREE where the dimension's own `highEnd` names an ABILITY, and BILLED
+ * where it names a TENDENCY, a BIAS, or a SUSCEPTIBILITY. Read the trait
+ * reference and the classification falls out; a new dimension is classified by
+ * its own definition, not by anyone's taste.
  *
- * Measured on cbrowser.ai, a shallow site, right after wiring the demand term:
- * familiarity 0 gave total 0.19 and familiarity 1 gave 0.268 — the daily user
- * charged more than the first-time visitor, because low navigation depth means
- * low demand and a familiarity of 1.0 is then almost entirely surplus. An
- * inverted knob is worse than an inert one: it produces a confident number
- * pointing the wrong way. (2026-08-02)
+ * Why the split is real. Billing surplus is defensible for a disposition: a
+ * maximiser on a trivial page genuinely over-deliberates, and a careful reader
+ * genuinely reads a page that did not need reading. That is effort spent. It is
+ * NOT defensible for an ability -- having more working memory, or recognising
+ * conventions faster, than a page requires cannot make that page harder. The
+ * capacity/disposition axis is the same one that moved readingTendency to the
+ * demand side and kept comprehension out of the readability layer.
  *
- * `sustainedAttention` joins it on the same argument: being able to concentrate
- * harder than a page requires cannot make that page harder to read. Billed as
- * surplus it charged `power-user` 0.027 of readability cost on a text-dense
- * page for having an attention capacity of 0.85 against a demand of 0.50 --
- * i.e. a penalty for concentrating well. Free, it charges nothing.
+ * What it was costing. Measured on a mid-density page before this change,
+ * SEVENTY PERCENT of `power-user`'s total cost was surplus, and 60% of
+ * `cognitive-adhd`'s. A uniform-capacity sweep produced a U:
  *
- * `readingCapacity` joined them on 2026-08-02, and unlike the other two it is
- * REQUIRED rather than merely defensible. `readability` is now decoding-only
- * and carries a stated contract -- lower `legibilityQuality` for someone means
- * higher readability cost for them. Both quantities derive from the same
- * reading profile, so the contract is monotonic exactly as long as cost falls
- * monotonically in capacity. Billed surplus breaks that at the top: above the
- * page's demand, cost starts RISING again at 0.3 per unit, so the strongest
- * readers re-enter the cost curve from the other side and a graph of
- * legibility against cost turns back on itself.
+ *   capacity  0.2    0.4    0.6    0.8    1.0
+ *   cost      0.549  0.081  0.076  0.179  0.516
  *
- * This was deferred one commit earlier as "a calibration decision on numbers
- * customers have already seen". Splitting the layer removed the choice: a
- * contract the tool prints in its own output has to hold.
+ * A maximally capable persona scored almost exactly as badly as a maximally
+ * impaired one, for opposite reasons, and the output could not tell you which.
+ * That is the same defect as every other one this campaign found: a number that
+ * does not mean what its name says.
  *
- * `proceduralFluency` joined on 2026-08-03 when `motor` was split. Its surplus
- * had been billed all along and the artifact was diluted by sharing a layer
- * with pointing; alone in `motorProcedure` it became the layer, and the layer
- * was not monotonic in its own single input -- measured, fluency 0.2 cost
- * 0.0041 and higher fluency cost 0.0302. Splitting a layer exposes whatever the
- * mixing was hiding, which is the third time that has happened in this chain
- * and is an argument for the splits rather than against them.
+ * Four dimensions are billed BECAUSE THEIR SCALE IS INVERTED -- changeBlindness,
+ * trustCalibration, curiosity and attentionPattern name a deficit at their high
+ * end ("misses most changes", "accepts claims at face value", "easily
+ * distracted"). Surplus there is more of the deficit, and billing it is
+ * correct.
  *
- * `motorCapacity` joined on 2026-08-03 (D-9) on the same forcing argument. It
- * was deferred alongside readingCapacity and the deferral no longer holds:
- * measured on one page at one demand, `cognitive-adhd` (94.3% hit probability
- * on a 24px target) carried a HIGHER motor cost than `elderly-user` (81.9%),
- * purely because its pointing capacity exceeded what the page asked for and the
- * excess was billed at 0.3. Being a more precise pointer than the page requires
- * cannot make that page harder to use.
+ * `selfEfficacy` is the weakest call in the free set: over-confidence is a real
+ * hazard, but its cost surfaces through riskTolerance and trustCalibration
+ * rather than as effort spent, so it is treated as the ability its high end
+ * describes.
  */
-const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity', 'motorCapacity', 'proceduralFluency']);
+const SURPLUS_FREE_DIMENSIONS = new Set([
+  // Derived capacity bridges -- pure abilities by construction.
+  'readingCapacity', 'motorCapacity', 'sustainedAttention', 'processingSpeed', 'textProcessing', 'motorPrecision',
+  // Experience. Knowing a site better cannot make it harder to use.
+  'siteFamiliarity',
+  // Abilities: every one of these has a highEnd naming something a person CAN
+  // do, not something they TEND to do.
+  'comprehension',           // "Instant recognition of all conventions"
+  'workingMemory',           // "Perfect recall of all attempts and context"
+  'resilience',              // "Instantly shrugs off errors, stays positive"
+  'selfEfficacy',            // "I can solve anything"
+  'proceduralFluency',       // "Follows procedures precisely and efficiently"
+  'transferLearning',        // "Instantly applies patterns across all interfaces"
+  'interruptRecovery',       // "Seamlessly resumes exactly where left off"
+  'mentalModelFlexibility',  // "Highly adaptive - quickly forms new mental models"
+  'informationForaging',     // "Follows information scent efficiently, abandons low-yield paths"
+]);
+
+/**
+ * Dimensions whose surplus IS billed, and why each one earns it.
+ *
+ * Stated explicitly rather than left as "everything else", so that a dimension
+ * added to DEMAND_DIMENSIONS cannot acquire a billing treatment by default. A
+ * test asserts every dimension appears in exactly one of the two sets.
+ */
+const SURPLUS_BILLED_DIMENSIONS = new Set([
+  'patience',                // "Waits indefinitely" -- waiting longer than needed is time spent
+  'riskTolerance',           // "Clicks anything that might work" -- a tendency, and a hazard
+  'persistence',             // "Keeps trying same approach repeatedly" -- repeating unnecessary work
+  'readingTendency',         // "Reads every word before acting" -- reading a page that did not need it
+  'emotionalContagion',      // susceptibility to the interface's tone
+  'satisficing',             // a decision STRATEGY, not an ability
+  'anchoringBias',           // a bias, by name
+  'fearOfMissingOut',        // susceptibility to urgency and scarcity
+  'socialProofSensitivity',  // susceptibility to what others chose
+  'metacognitivePlanning',   // "Careful planning before any action" -- planning a trivial page is waste
+  // Inverted scales: the HIGH end is the deficit, so surplus is more deficit.
+  'changeBlindness',         // "Misses most changes outside focus area"
+  'trustCalibration',        // "Highly trusting, accepts claims at face value"
+  'curiosity',               // "Easily distracted by interesting elements"
+  'attentionPattern',        // scanning-vs-thorough disposition
+]);
 
 /**
  * Hill exponent on the abandonment curve. UNCALIBRATED.
