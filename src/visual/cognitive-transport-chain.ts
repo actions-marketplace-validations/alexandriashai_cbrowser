@@ -174,6 +174,27 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
     // layer, and here it made two personas with no motor traits differ 5.6x in
     // motor cost. proceduralFluency stays -- multi-step flow execution is a real
     // motor-adjacent capacity -- alongside the Fitts throughput bridge.
+    //
+    // THIS LAYER IS NOT THE POINTING MODEL, and the difference is the whole of
+    // D-9. It transports aggregate capacity -- pointing AND procedural -- against
+    // a demand derived from how many interactive elements the page has. It never
+    // looks at an individual control. `motorAccessibility`, reported beside it,
+    // runs Fitts and hit probability per element and counts barriers.
+    //
+    // Two different questions, so they move independently and both can be right.
+    // Measured: removing one interactive element moves this cost from 0.0716 to
+    // 0.0696 while `motorAccessibility` moves eleven points, because the layer
+    // reads a COUNT and the audit reads ELEMENTS.
+    //
+    // One consequence is worth stating rather than discovering: `proceduralFluency`
+    // and `motorCapacity` carry equal weight here, so a persona with poor pointing
+    // and strong procedural execution can cost LESS in this layer than one with
+    // the reverse -- measured, motor-impairment-tremor 0.072 against elderly-user
+    // 0.107 on identical demand, while their hit probabilities are 48.4% and
+    // 81.9%. That is the layer describing what it says it describes. Whether the
+    // two halves SHOULD weigh equally is a calibration question about a research
+    // instrument, and it is the principal's to answer, not something to change
+    // as a side effect of writing this comment. (2026-08-03, D-9)
     traits: ['proceduralFluency', 'motorCapacity'],
   },
   {
@@ -283,8 +304,16 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
  * This was deferred one commit earlier as "a calibration decision on numbers
  * customers have already seen". Splitting the layer removed the choice: a
  * contract the tool prints in its own output has to hold.
+ *
+ * `motorCapacity` joined on 2026-08-03 (D-9) on the same forcing argument. It
+ * was deferred alongside readingCapacity and the deferral no longer holds:
+ * measured on one page at one demand, `cognitive-adhd` (94.3% hit probability
+ * on a 24px target) carried a HIGHER motor cost than `elderly-user` (81.9%),
+ * purely because its pointing capacity exceeded what the page asked for and the
+ * excess was billed at 0.3. Being a more precise pointer than the page requires
+ * cannot make that page harder to use.
  */
-const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity']);
+const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity', 'motorCapacity']);
 
 /** Capacity depletion rate per layer (alpha_i, Section 3.4) */
 const DEPLETION_RATE = 0.15;
