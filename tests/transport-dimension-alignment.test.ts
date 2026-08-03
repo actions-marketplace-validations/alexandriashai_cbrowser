@@ -50,7 +50,7 @@ const KNOWN_UNLAYERED = [
   // interruptRecovery reaches no layer BY NAME, and is no longer inert: it is
   // the fallback source for `sustainedAttention` whenever a persona states no
   // accessibilityTraits.attentionSpan, which is 24 of 36 personas -- so for most
-  // of the roster it now drives the readability layer. It stays on this list
+  // of the roster it now drives the readingAttention layer. It stays on this list
   // because the list is computed from LAYER_DEFINITIONS membership, and the
   // sentence above about contributing "to no score at all" no longer applies to
   // it. (2026-08-02, BUG-07)
@@ -454,12 +454,16 @@ describe("readingTendency modulates demand, not capacity", () => {
     informationDensity: 0.8, visualComplexity: 0.5, interactiveElementCount: 30,
     textDensity: 0.9, animationLevel: 0.1, choiceCount: 10, navigationDepth: 2,
   } as never;
+  // Reads readingAttention, not readability. Engagement scales how long you
+  // must hold the line; it does NOT change how hard the words you do read are
+  // to decode, so as of the layer split (2026-08-02) it modulates only the
+  // attentional demand. Skimming reduces exposure, not difficulty.
   const cost = (readingTendency: number) => {
     const demand = computeDemandDistribution(textPage);
     const r = computeSequentialCTC(
-      buildOTCognitiveProfile("probe", { ...base, readingTendency, readingCapacity: 0.5 }),
+      buildOTCognitiveProfile("probe", { ...base, readingTendency, readingCapacity: 0.5, sustainedAttention: 0.3 }),
       demand, { asymmetric: true, interactions: true });
-    return (r.layers.find((l: { name: string }) => l.name === "readability") as { transportCost: number }).transportCost;
+    return (r.layers.find((l: { name: string }) => l.name === "readingAttention") as { transportCost: number }).transportCost;
   };
 
   test("a skimmer engages less text demand than a careful reader", () => {
@@ -467,6 +471,24 @@ describe("readingTendency modulates demand, not capacity", () => {
     // less effort on text. On the capacity side it said the opposite — that a
     // skimmer lacks reading ability — which is what inverted the layer.
     expect(cost(0.1)).toBeLessThan(cost(0.9));
+  });
+
+  test("it does NOT touch decoding demand", () => {
+    // Applied to readingCapacity for one commit. That made decoding demand
+    // persona-specific and silently voided the legibilityQuality contract:
+    // distracted-user at legibility 0.619 paid 0.000 while careful-reader at
+    // 0.724 paid 0.016, purely because the skimmer's demand had been scaled
+    // down. A contract stated across personas must be computed against a demand
+    // that does not vary by persona.
+    const demand = computeDemandDistribution(textPage);
+    const decode = (readingTendency: number) => {
+      const r = computeSequentialCTC(
+        buildOTCognitiveProfile("p", { ...base, readingTendency, readingCapacity: 0.35 }),
+        demand, { asymmetric: true, interactions: true });
+      return (r.layers.find((l: { name: string }) => l.name === "readability") as { transportCost: number }).transportCost;
+    };
+    expect(decode(0.1)).toBeCloseTo(decode(0.9), 9);
+    expect(decode(0.1)).toBeGreaterThan(0);
   });
 
   test("the modulation is bounded — strategy cannot outweigh decoding ability", () => {
@@ -494,6 +516,8 @@ describe("readingTendency modulates demand, not capacity", () => {
       return (r.layers.find((l: { name: string }) => l.name === "readability") as { transportCost: number }).transportCost;
     };
     expect(run(0.4, 0.39)).toBeGreaterThan(run(0.2, 0.75));
+    // And now trivially so, because readability is decoding-only: the skimming
+    // strategy cannot reach this layer at all.
   });
 
   test("readingTendency is no longer a capacity in any layer", () => {
@@ -721,11 +745,11 @@ describe("attentional reading cost has a home (BUG-07)", () => {
     return t;
   }
 
-  async function readabilityOf(name: string, page: object): Promise<number> {
+  async function layerOf(name: string, page: object, layer = "readingAttention"): Promise<number> {
     const demand = computeDemandDistribution(page as never);
     const r = computeSequentialCTC(buildOTCognitiveProfile(name, await bridged(name)), demand,
       { asymmetric: true, interactions: true });
-    const l = (r.layers as Array<{ name: string; transportCost: number }>).find((x) => x.name === "readability");
+    const l = (r.layers as Array<{ name: string; transportCost: number }>).find((x) => x.name === layer);
     return l!.transportCost;
   }
 
@@ -735,14 +759,28 @@ describe("attentional reading cost has a home (BUG-07)", () => {
     expect(traitsUsedByLayers().has("sustainedAttention")).toBe(true);
   });
 
-  test("it is in readability, NOT frustration", () => {
-    // The decision the report left open. Routing it through frustration would
-    // report an ADHD reader's bottleneck as affect, pointing remediation at
-    // reassurance instead of at chunking and fewer distractors.
-    const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("name: 'readability'"));
+  test("it has its OWN layer, not a share of readability and not frustration", () => {
+    // D-3 Option 1. It lived inside `readability` for one commit, which put two
+    // mechanisms through one scalar under a contract describing only one of
+    // them -- an ADHD attentionSpan of 0.30 against a dyslexic 0.50 swamped
+    // five decoding terms pointing the other way, and the ordering inverted on
+    // the real target. No weighting fixes that; separate layers do.
+    const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("name: 'readingAttention'"));
     expect(block.slice(0, block.indexOf("];"))).toContain("'sustainedAttention'");
+    // And it is in neither of the two layers it could plausibly have been buried in.
+    const readBlock = CHAIN_SRC.slice(CHAIN_SRC.indexOf("name: 'readability'"), CHAIN_SRC.indexOf("name: 'readingAttention'"));
+    expect(readBlock.match(/traits: \[([^\]]*)\]/)![1]).not.toContain("sustainedAttention");
     const frus = CHAIN_SRC.slice(CHAIN_SRC.indexOf("name: 'frustration'"), CHAIN_SRC.indexOf("name: 'readability'"));
-    expect(frus).not.toContain("'sustainedAttention'");
+    expect(frus.match(/traits: \[([^\]]*)\]/)![1]).not.toContain("sustainedAttention");
+  });
+
+  test("readability is decoding only, so the legibilityQuality contract is about one thing", () => {
+    const readBlock = CHAIN_SRC.slice(CHAIN_SRC.indexOf("name: 'readability'"), CHAIN_SRC.indexOf("name: 'readingAttention'"));
+    const traits = readBlock.match(/traits: \[([^\]]*)\]/)![1];
+    expect(traits).toContain("readingCapacity");
+    for (const moved of ["comprehension", "transferLearning", "sustainedAttention", "readingTendency"]) {
+      expect(traits).not.toContain(moved);
+    }
   });
 
   test("a page with no text demands none of it", () => {
@@ -774,25 +812,29 @@ describe("attentional reading cost has a home (BUG-07)", () => {
     // assertion would have passed at HEAD -- adhd already scored above
     // careful-reader (0.082 vs 0.067) on decoding and comprehension alone.
     for (const name of ["cognitive-adhd", "distracted-user"]) {
-      const delta = await readabilityOf(name, BUSY) - await readabilityOf(name, STATIC);
+      const delta = await layerOf(name, BUSY) - await layerOf(name, STATIC);
       expect(delta).toBeGreaterThan(0.05);
     }
   });
 
-  test("decoding still dominates on a page with nothing moving", async () => {
-    // The guard against re-creating the inversion in a new dimension. On a
-    // STATIC text-dense page a dyslexic reader must cost more than an ADHD
-    // reader: decoding is the larger demand when nothing competes for the line.
-    expect(await readabilityOf("dyslexic-user", STATIC))
-      .toBeGreaterThan(await readabilityOf("cognitive-adhd", STATIC));
+  test("decoding cost stays with the dyslexic reader, on EVERY page", async () => {
+    // The guard that the first version of this fix failed. It asserted the
+    // ordering on a synthetic page at animationLevel 0 and passed, while on the
+    // report's actual target the attentional term overwhelmed decoding and the
+    // ordering inverted -- adhd 0.161 against dyslexic 0.126. Checked across
+    // the distractor range now, because that is the axis that broke it.
+    for (const page of [STATIC, { ...STATIC, animationLevel: 0.35 }, BUSY, { ...BUSY, animationLevel: 1 }]) {
+      expect(await layerOf("dyslexic-user", page, "readability"))
+        .toBeGreaterThan(await layerOf("cognitive-adhd", page, "readability"));
+    }
   });
 
-  test("and distractors close that gap, which is the whole point", async () => {
-    // The differential response is what makes this dimension worth having: the
-    // same page plus movement costs the ADHD reader more than the dyslexic one.
-    const dAdhd = await readabilityOf("cognitive-adhd", BUSY) - await readabilityOf("cognitive-adhd", STATIC);
-    const dDys = await readabilityOf("dyslexic-user", BUSY) - await readabilityOf("dyslexic-user", STATIC);
-    expect(dAdhd).toBeGreaterThan(dDys);
+  test("and attentional cost stays with the ADHD reader, on every page", async () => {
+    // The other half, and the reason the split exists rather than a reweighting:
+    // both claims are now true at once, which no single scalar allowed.
+    for (const page of [STATIC, { ...STATIC, animationLevel: 0.35 }, BUSY]) {
+      expect(await layerOf("cognitive-adhd", page)).toBeGreaterThan(await layerOf("dyslexic-user", page));
+    }
   });
 
   test("concentrating better than the page needs is never a penalty", async () => {
@@ -805,7 +847,7 @@ describe("attentional reading cost has a home (BUG-07)", () => {
     const at = (v: number) => {
       const r = computeSequentialCTC(buildOTCognitiveProfile("p", { ...base, sustainedAttention: v }),
         demand, { asymmetric: true, interactions: true });
-      return (r.layers as Array<{ name: string; transportCost: number }>).find((x) => x.name === "readability")!.transportCost;
+      return (r.layers as Array<{ name: string; transportCost: number }>).find((x) => x.name === "readingAttention")!.transportCost;
     };
     expect(sustainedAttentionOf({ traits: base })).toBeGreaterThan(0.5);
     for (const v of [0.6, 0.75, 0.9, 1.0]) expect(at(v)).toBeLessThanOrEqual(at(0.5) + 1e-9);
@@ -854,5 +896,101 @@ describe("sustainedAttention resolves from what the persona actually states", ()
     const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
     expect(tool).toContain("traits.sustainedAttention = sustainedAttentionOf(");
     expect(tool).toMatch(/sustainedAttentionOf[\s\S]{0,200}await import\("\.\.\/\.\.\/visual\/cognitive-models\.js"\)|sustainedAttentionOf \}[\s\S]{0,120}cognitive-models\.js/);
+  });
+});
+
+describe("the legibilityQuality contract, restored and pinned (BUG-01 / D-3)", () => {
+  /**
+   * The tool prints this promise in its own output: for a given persona, lower
+   * legibility means higher readability cost. It held in R2 and R3, and R4
+   * broke it -- cognitive-adhd at 91% legibility paid 0.161 while dyslexic-user
+   * at 73% paid 0.126 -- because the readability layer had been given a second
+   * mechanism to carry and only one of them is what legibilityQuality measures.
+   *
+   * Splitting decoding from attention is what makes the promise keepable. These
+   * tests are the promise.
+   */
+  const PAGE = {
+    informationDensity: 0.65, visualComplexity: 0.55, interactiveElementCount: 60,
+    textDensity: 0.7, animationLevel: 0.35, choiceCount: 18, navigationDepth: 2,
+  } as never;
+
+  async function bridged(name: string): Promise<Record<string, number>> {
+    const { getAnyPersona, getCognitiveProfile } = await import("../src/personas.js");
+    const m = await import("../src/visual/cognitive-models.js");
+    const p = getAnyPersona(name)!;
+    const t = { ...(getCognitiveProfile(p as never).traits as Record<string, number>) };
+    const acc = (p as never as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
+    t.readingCapacity = m.readingCapacityOf(m.getReadingProfile({ name, traits: t, accessibilityTraits: acc }));
+    t.motorCapacity = m.motorCapacityOf(m.getPointingProfile({ name, traits: t }));
+    t.sustainedAttention = m.sustainedAttentionOf({ traits: t, accessibilityTraits: acc });
+    return t;
+  }
+  const layer = (traits: Record<string, number>, name = "readability") => {
+    const r = computeSequentialCTC(buildOTCognitiveProfile("p", traits),
+      computeDemandDistribution(PAGE), { asymmetric: true, interactions: true });
+    return (r.layers as Array<{ name: string; transportCost: number }>).find((l) => l.name === name)!.transportCost;
+  };
+
+  test("within a persona it is exact: less legible is never cheaper", async () => {
+    // The strict form. legibilityQuality and readingCapacity are both derived
+    // from the same reading profile, so holding the persona fixed and sweeping
+    // capacity is the contract stated as a function.
+    for (const name of ["cognitive-adhd", "dyslexic-user", "elderly-low-vision"]) {
+      const base = await bridged(name);
+      const costs = [0.2, 0.35, 0.5, 0.65, 0.8, 0.95].map((v) => layer({ ...base, readingCapacity: v }));
+      for (let i = 1; i < costs.length; i++) expect(costs[i]).toBeLessThanOrEqual(costs[i - 1] + 1e-9);
+      expect(costs[0]).toBeGreaterThan(costs[costs.length - 1]);
+    }
+  });
+
+  test("surplus reading capacity is free, or the curve turns back on itself", async () => {
+    // Billed surplus makes cost start RISING again above the page's demand, so
+    // the strongest readers re-enter the cost curve from the far side and the
+    // contract fails at the top end while looking fine in the middle.
+    const base = await bridged("power-user");
+    const beyond = [0.8, 0.9, 1.0].map((v) => layer({ ...base, readingCapacity: v }));
+    expect(new Set(beyond).size).toBe(1);
+    expect(beyond[0]).toBe(0);
+  });
+
+  test("across personas it holds for any material difference in legibility", async () => {
+    // Not to the last decimal, and the note says so: layers spend from a budget
+    // the earlier ones depleted, so two readers with near-identical legibility
+    // can differ slightly by arriving more depleted. Measured: elderly-low-vision
+    // (0.526, spent 0.128) against first-timer (0.520, spent 0.083). The defect
+    // the report filed was a 0.18 legibility gap inverting, not a 0.006 one.
+    const names = ["power-user", "cognitive-adhd", "careful-reader", "first-timer", "distracted-user",
+      "elderly-user", "elderly-low-vision", "dyslexic-user", "intellectual-disability", "autism-spectrum", "deaf-user"];
+    const rows = await Promise.all(names.map(async (n) => {
+      const t = await bridged(n);
+      return { n, legibility: t.readingCapacity, cost: layer(t) };
+    }));
+    let checked = 0;
+    for (const a of rows) for (const b of rows) {
+      if (a.legibility - b.legibility < 0.05) continue;  // a is materially MORE legible
+      checked++;
+      expect(a.cost).toBeLessThanOrEqual(b.cost + 1e-9);
+    }
+    expect(checked).toBeGreaterThan(20);  // the sweep must actually have compared something
+  });
+
+  test("the note tells the customer both of those things", () => {
+    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    expect(tool).toContain("for a given persona, lower legibility means strictly higher readability cost");
+    expect(tool).toContain("readingAttention");
+    // And says the attentional half is deliberately excluded, so a reader does
+    // not go looking for it in this number.
+    expect(tool).toContain("deliberately not part of this number");
+  });
+
+  test("the chain is seven layers and every one is named in the overlay list", () => {
+    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("LAYER_DEFINITIONS"), CHAIN_SRC.indexOf("INTERACTION_PAIRS"));
+    const names = Array.from(block.matchAll(/name: '([a-zA-Z]+)'/g), (m) => m[1]);
+    expect(names).toEqual(["saliency", "cognitiveLoad", "decision", "motor", "frustration", "readability", "readingAttention"]);
+    // A bar with no overlay entry renders as neither a button nor a no-overlay
+    // tag -- it just looks broken next to its siblings.
+    for (const n of names) expect(tool).toContain(`layer: "${n}"`);
   });
 });

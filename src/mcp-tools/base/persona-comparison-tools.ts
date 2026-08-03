@@ -1115,7 +1115,7 @@ Begin with the first persona: ${personas[0]}
            * one, so this now carries the corrected value.
            */
           sequentialAmplification: Math.round((result.rawCTC / Math.max(0.001, result.additiveCTC)) * 1000) / 1000,
-          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Measured 1.002-1.019 across page densities: real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
+          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Re-measured 1.003-1.054 across page densities x personas after the readability layer was split in two (2026-08-02); it was 1.002-1.019 at six layers, and the range widened because a seventh layer spends from a budget six others depleted. Real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
           interpretationBasis: "total",
           interpretationBands: "total < 0.3 comfortable, < 0.6 moderate, < 0.8 struggling, else likely abandon",
         },
@@ -1175,7 +1175,7 @@ Begin with the first persona: ${personas[0]}
             // construction and reads 91% for one persona and 73% for another on
             // identical text. A field promising objectivity is the one most
             // likely to be quoted as an objective page score. (2026-08-02)
-            note: "legibilityQuality is how legible this text is FOR THIS PERSONA (higher is better) — it is computed from their reading profile, so it varies across personas on identical text and is NOT an objective property of the page. The `readability` entry in `layers` is the transport COST for the same persona (higher is worse). The two move together: low legibility for someone means high readability cost for them.",
+            note: "legibilityQuality is how legible this text is FOR THIS PERSONA (higher is better) — it is computed from their reading profile, so it varies across personas on identical text and is NOT an objective property of the page. The `readability` entry in `layers` is the DECODING transport cost for the same persona (higher is worse), and the two move together: for a given persona, lower legibility means strictly higher readability cost. Across personas the ordering holds for any material difference in legibility, but not to the last decimal — layers spend from a budget the earlier ones depleted, so two readers with near-identical legibility can differ slightly if one arrived more depleted. The ATTENTIONAL cost of reading (holding the line, re-reading, being pulled away) is a separate layer, `readingAttention`, and is deliberately not part of this number.",
             legibilityQualityIsPersonaRelative: true,
             averageWPM: Math.round(
               readabilityResult.blocks.reduce((s: number, b: { wordsPerMinute: number }) => s + b.wordsPerMinute, 0) / readabilityResult.blocks.length
@@ -1354,6 +1354,8 @@ Begin with the first persona: ${personas[0]}
           reason: "decision cost is computed over the page as a whole, not per region" });
         layerOverlays.push({ layer: "frustration", available: false,
           reason: "frustration is a running state across the chain, not a place on the page" });
+        layerOverlays.push({ layer: "readingAttention", available: false,
+          reason: "attentional reading cost is a property of the reader against the whole page, not of any one region \u2014 the readability overlay above shows where DECODING is slow" });
 
         if (ex(ssPath)) { try { ul(ssPath); } catch {} }
       } catch (e) {

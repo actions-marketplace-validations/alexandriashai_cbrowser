@@ -153,7 +153,10 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
     // site is a substitute for holding its layout in working memory, which is
     // exactly this layer, and the demand term for it comes from the same
     // navigationDepth signal that already feeds workingMemory here.
-    traits: ['comprehension', 'workingMemory', 'informationForaging', 'siteFamiliarity'],
+    // `transferLearning` moved here from readability 2026-08-02: applying a
+    // pattern learned on one interface to another is a load question, not a
+    // decoding one, and readability is now decoding-only.
+    traits: ['comprehension', 'workingMemory', 'informationForaging', 'siteFamiliarity', 'transferLearning'],
   },
   {
     name: 'decision',
@@ -173,35 +176,53 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'readability',
-    // Capacity only. `readingTendency` was REMOVED, not merely joined by
-    // readingCapacity: it is how much text a person chooses to read, and an
-    // ADHD persona skims (0.2), which the chain scored as a large capacity
-    // deficit and which swamped the decoding signal. Adding capacity beside it
-    // left the inversion in place -- dyslexic 0.524 against ADHD 0.686 -- so the
-    // disposition had to come out.
+    // DECODING ONLY, as of 2026-08-02 (D-3 Option 1). This layer answers one
+    // question -- how expensive is it for this person to turn these glyphs into
+    // words -- and it is the layer `legibilityQuality` makes a promise about:
+    // lower legibility for someone means higher readability cost for them.
     //
-    // `transferLearning` was briefly removed too and has been RESTORED. Removing
-    // it was a modelling opinion bundled into a bug fix, not something the bug
-    // required: with it back in, dyslexic still costs 0.295 against ADHD's
-    // 0.163, so it never contributed to the inversion. Taking it out also
-    // orphaned it -- it reached no other layer -- which is a cost the fix did
-    // not need to pay.
-    // `comprehension` stays; it is genuinely a capacity for grasping content.
+    // Everything else that was here has been moved out, and the history is why
+    // it had to be:
     //
-    // `sustainedAttention` added 2026-08-02, and it is what the readingTendency
-    // removal actually cost. Reading has two halves: decoding the words, and
-    // holding the line while you do it. The chain modelled only the first, so
-    // the persona whose reading difficulty is entirely attentional -- ADHD,
-    // intact decoding, loses place, re-reads -- was scored as an unimpaired
-    // reader.
+    //   R1  adhd 0.401 / dyslexic 0.189   inverted   (disposition drove it)
+    //   R2  adhd 0.112 / dyslexic 0.142   correct    (attentional term removed)
+    //   R4  adhd 0.161 / dyslexic 0.126   inverted   (attentional term restored)
     //
-    // It is a CAPACITY, so it belongs here and not in `frustration`. Losing
-    // your place in a paragraph is a processing cost, not an emotional response
-    // to one. Routing it through frustration would have reported an ADHD
-    // reader's bottleneck as affect, which points remediation at reassurance
-    // and error recovery instead of at chunking, shorter blocks and fewer
-    // moving distractors. Attribution is the reason there are six layers.
-    traits: ['comprehension', 'transferLearning', 'readingCapacity', 'sustainedAttention'],
+    // Removing the attentional term fixed the ordering and deleted ADHD reading
+    // cost. Restoring it recovered ADHD reading cost and broke the ordering.
+    // BOTH were correct fixes. The layer was carrying two mechanisms through
+    // one scalar under a contract that only describes one of them, and no
+    // weighting satisfies both -- an ADHD attentionSpan of 0.30 against a
+    // dyslexic 0.50 swamps five decoding terms pointing the other way.
+    //
+    // So the second mechanism gets its own layer rather than a smaller weight.
+    // `sustainedAttention` moved to `readingAttention` below.
+    // `comprehension` moved out entirely: it is "grasp of UI conventions", not
+    // decoding, and it already drives cognitiveLoad -- keeping it here made the
+    // contract non-monotonic for personas whose comprehension and decoding
+    // disagree, which after the reading-capacity schema change is most of them.
+    // `transferLearning` moved to cognitiveLoad: applying a pattern learned on
+    // one interface to another is not reading. It is not orphaned by the move.
+    traits: ['readingCapacity'],
+  },
+  {
+    name: 'readingAttention',
+    // The attentional half of reading, split out of `readability` so both are
+    // separately attributable rather than summed into one number that can only
+    // be right about one of them.
+    //
+    // This is the layer an ADHD reader's cost lands in: decoding intact, loses
+    // place, re-reads, pulled off the line by movement in the periphery. It is
+    // NOT frustration -- losing your place is a processing cost, not an
+    // emotional response to one, and routing it through frustration would point
+    // remediation at reassurance instead of at chunking, shorter blocks and
+    // fewer moving distractors.
+    //
+    // Appended as layer 7 rather than inserted before readability, deliberately:
+    // layers spend from a budget the earlier ones depleted, so inserting would
+    // have changed readability's numbers through depletion as well as through
+    // its trait list, and the two effects could not be told apart.
+    traits: ['sustainedAttention'],
   },
 ];
 
@@ -243,17 +264,21 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
  * page for having an attention capacity of 0.85 against a demand of 0.50 --
  * i.e. a penalty for concentrating well. Free, it charges nothing.
  *
- * A related and LARGER effect is pre-existing and deliberately untouched here.
- * Because surplus is billed on the other capacity dimensions AND earlier layers
- * deplete capacity, a busier page can LOWER a strong persona's readability
- * cost: measured at HEAD before this change, raising animationLevel from 0 to
- * 0.8 moved `power-user` from 0.150 to 0.111 while `dyslexic-user` correctly
- * rose from 0.163 to 0.181. That is `readingCapacity` and `comprehension`
- * behaving the way this set exists to prevent, and re-billing them is a
- * calibration decision on numbers customers have already seen -- not something
- * to change as a side effect of adding a dimension. Recorded, not fixed.
+ * `readingCapacity` joined them on 2026-08-02, and unlike the other two it is
+ * REQUIRED rather than merely defensible. `readability` is now decoding-only
+ * and carries a stated contract -- lower `legibilityQuality` for someone means
+ * higher readability cost for them. Both quantities derive from the same
+ * reading profile, so the contract is monotonic exactly as long as cost falls
+ * monotonically in capacity. Billed surplus breaks that at the top: above the
+ * page's demand, cost starts RISING again at 0.3 per unit, so the strongest
+ * readers re-enter the cost curve from the other side and a graph of
+ * legibility against cost turns back on itself.
+ *
+ * This was deferred one commit earlier as "a calibration decision on numbers
+ * customers have already seen". Splitting the layer removed the choice: a
+ * contract the tool prints in its own output has to hold.
  */
-const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention']);
+const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity']);
 
 /** Capacity depletion rate per layer (alpha_i, Section 3.4) */
 const DEPLETION_RATE = 0.15;
@@ -649,14 +674,24 @@ export function computeSequentialCTC(
   const readingTendency = persona.traits?.readingTendency;
   if (typeof readingTendency === "number") {
     const engagement = 0.75 + readingTendency * 0.5; // 0.75 at pure skim, 1.25 at careful
-    // Both halves of reading, for the same reason: text you do not engage with
-    // asks neither decoding NOR sustained attention of you. Applying it to one
-    // and not the other would say a skimmer holds attention across text they
-    // never read. (sustainedAttention added 2026-08-02)
-    for (const dim of ["readingCapacity", "sustainedAttention"] as const) {
-      if (!modulatedDemand.demands[dim]) continue;
-      modulatedDemand.demands[dim] = Math.max(0, Math.min(1,
-        modulatedDemand.demands[dim] * engagement));
+    // ATTENTIONAL demand only. Applied to `readingCapacity` as well for one
+    // commit, and that was wrong on the merits as well as breaking a contract.
+    //
+    // Engagement is how much of the page you read. That scales how long you
+    // must hold the line -- genuinely an attentional quantity -- but it does
+    // not change how hard the words you do read are to decode. Skimming reduces
+    // exposure, not difficulty.
+    //
+    // It also made decoding demand persona-specific, which silently voided the
+    // `legibilityQuality` contract the readability layer prints in its own
+    // output: measured, `distracted-user` at legibility 0.619 paid 0.000 while
+    // `careful-reader` at 0.724 paid 0.016 -- lower legibility, lower cost --
+    // purely because the skimmer's demand had been scaled down. A contract
+    // stated cross-persona has to be computed against a demand that does not
+    // vary by persona. (2026-08-02)
+    if (modulatedDemand.demands.sustainedAttention) {
+      modulatedDemand.demands.sustainedAttention = Math.max(0, Math.min(1,
+        modulatedDemand.demands.sustainedAttention * engagement));
     }
   }
 
