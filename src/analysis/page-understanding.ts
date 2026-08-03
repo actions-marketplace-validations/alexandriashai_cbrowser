@@ -112,6 +112,16 @@ interface RawInteractiveElement {
   role: string;
   ariaLabel: string;
   disabled: boolean;
+  /**
+   * The type ATTRIBUTE as written, or "" when absent.
+   *
+   * Distinct from `type` above, which is the IDL property, and the difference
+   * is load-bearing: `HTMLButtonElement.type` returns "submit" for ANY bare
+   * <button> whether or not the author said so and whether or not a form
+   * exists. Reading it as an author declaration turned every menu toggle,
+   * search toggle and video pause button on a page into a call to action.
+   */
+  typeAttr: string;
   rect: { top: number; left: number; width: number; height: number };
   formIndex: number;
   nthOfType: number;
@@ -594,7 +604,12 @@ export class PageUnderstandingEngine {
         interactiveElements.push({
           tag,
           type: inputEl.type || "",
-          text: getVisibleText(el),
+          typeAttr: el.getAttribute("type") || "",
+          // `<input type="submit" value="Apply">` has no textContent at all, so
+          // getVisibleText returns "" and every downstream classifier skipped
+          // it as unlabelled. Its label is the value attribute. Found on the CU
+          // Denver homepage, where the program-finder's submit is exactly that.
+          text: getVisibleText(el) || (tag === "input" ? String(inputEl.value ?? "").trim() : ""),
           href: (el as HTMLAnchorElement).href || "",
           name: inputEl.name || "",
           id: el.id || "",
@@ -1162,17 +1177,80 @@ function buildFormGroups(raw: RawDOMExtraction): FormGroup[] {
   });
 }
 
-function detectCTAs(raw: RawDOMExtraction): CTAElement[] {
+/**
+ * Is this control the thing a form is asking the user to do?
+ *
+ * Per the HTML spec a `<button>` inside a form defaults to `type="submit"`, so
+ * this is a structural reading rather than a heuristic: the submit control of a
+ * form IS the call to action, whatever its label says.
+ *
+ * That is the half the keyword list could never cover. `ctaCount: 0` was
+ * reported on a page carrying a program-finder with three selects and a submit
+ * button, and re-testing at full_page scope only partly explained it -- the
+ * homepage still found one CTA at whole-page scope. The reason is that its
+ * three submit controls are labelled "rechercher", "rechercher" and "Apply",
+ * and the keyword list recognises marketing verbs: sign up, get started, buy,
+ * subscribe, download, learn more. A form's submit button is the most literal
+ * call to action on a page and matched none of them. (2026-08-03, BUG-19)
+ */
+export function isFormSubmitControl(el: RawInteractiveElement): boolean {
+  // The ATTRIBUTE, never the IDL property. `HTMLButtonElement.type` reports
+  // "submit" for any bare <button> -- form or no form, author intent or not --
+  // so testing it made menu toggles, search toggles and a video pause button
+  // into calls to action on the first attempt.
+  //
+  // An explicit type="submit" IS an author declaration, and it holds whether or
+  // not a <form> ancestor exists. That matters here: the widget this bug was
+  // reported against is JS-driven, and its "Submit" button is 68x50, fully
+  // visible, type="submit", and formIndex -1. Requiring a form ancestor was my
+  // first attempt and changed nothing at all.
+  if (el.typeAttr === "submit") return true;
+  // No type attribute at all: the HTML default is submit, but only inside a
+  // form. Outside one a bare <button> does nothing by default, so the form
+  // ancestor is required for this branch and not for the one above.
+  return el.tag === "button" && el.typeAttr === "" && el.formIndex >= 0;
+}
+
+export function detectCTAs(raw: RawDOMExtraction): CTAElement[] {
   const ctas: CTAElement[] = [];
-  const ctaKeywords = /\b(sign up|get started|try|start|buy|subscribe|download|join|register|book|order|contact|learn more|shop now|explore)\b/i;
+  /**
+   * Two vocabularies, and the second one was missing entirely.
+   *
+   * The original list is MARKETING language -- sign up, get started, buy,
+   * subscribe, learn more. That is what a landing page says. It is not what a
+   * form says, and a form's button is the most literal call to action there is.
+   *
+   * `ctaCount: 0` was reported on a page carrying a program-finder with three
+   * selects and a submit button. Re-testing at full_page scope explained part
+   * of it -- /academics went 0 to 6 -- and left the homepage at 1. The button
+   * is `<button>Submit</button>`: no type attribute, no <form> ancestor, so it
+   * declares nothing structurally and only its LABEL says what it does.
+   *
+   * Added verbs are ones that complete a task rather than describe one.
+   * Deliberately excluded: go, view, see, browse, more. Each matches a large
+   * share of ordinary link text and would trade a false negative for a flood of
+   * false positives. (2026-08-03, BUG-19)
+   */
+  const ctaKeywords = /\b(sign up|get started|try|start|buy|subscribe|download|join|register|book|order|contact|learn more|shop now|explore|submit|search|apply|send|continue|enroll|checkout|check out|add to cart|schedule|donate|request info|sign in|log in)\b/i;
+
+  const disclosureLabels = /\b(toggle|expand|collapse|open menu|close|dismiss|show more|hide|previous|next slide|pause|play)\b/i;
 
   for (const el of raw.interactiveElements) {
     if (el.disabled) continue;
-    const text = el.text.trim();
+    // aria-label is a real label; an icon-only submit has nothing else.
+    const text = (el.text || el.ariaLabel || "").trim();
     if (!text || text.length > 60) continue;
 
-    // Check if element text matches CTA patterns
-    if (!ctaKeywords.test(text)) continue;
+    // A disclosure control is never a call to action, whatever verb it uses.
+    // "search toggle" opens a search box; it does not perform a search. Without
+    // this, widening the vocabulary to include `search` turned every header
+    // toggle into a conversion point.
+    if (disclosureLabels.test(text)) continue;
+
+    // TWO independent signals, not one. Language, or structural role.
+    const byKeyword = ctaKeywords.test(text);
+    const bySubmit = isFormSubmitControl(el);
+    if (!byKeyword && !bySubmit) continue;
 
     const selector = buildSelector(el);
     const type: CTAElement["type"] = el.tag === "a" ? "link" : "button";
@@ -1190,6 +1268,9 @@ function detectCTAs(raw: RawDOMExtraction): CTAElement[] {
       prominence = "secondary";
     }
 
+    // A submit control that ALSO reads like marketing copy is the strongest
+    // signal there is; one that only submits is still a call to action.
+    if (bySubmit && prominence === "tertiary") prominence = "secondary";
     ctas.push({ selector, text, prominence, type });
   }
 
