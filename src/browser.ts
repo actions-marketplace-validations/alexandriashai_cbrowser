@@ -4032,6 +4032,13 @@ For more help: https://playwright.dev/docs/browsers
       });
 
       // Analyze buttons
+      //
+      // Capped at 20, and the cap used to be invisible: `buttons: 20` on a page
+      // with hundreds is indistinguishable from a page that has exactly 20.
+      // /academics reported 20 links against a real 229, and 20 buttons against
+      // a real 20 -- the coincidence is what disguised it. Totals are emitted
+      // below. (2026-08-03, BUG-16)
+      const buttonsTotal = document.querySelectorAll('button, [role="button"], input[type="button"]').length;
       const buttons: PageElement[] = Array.from(document.querySelectorAll('button, [role="button"], input[type="button"]'))
         .slice(0, 20)
         .map(el => ({
@@ -4043,6 +4050,7 @@ For more help: https://playwright.dev/docs/browsers
         }));
 
       // Analyze links
+      const linksTotal = document.querySelectorAll("a[href]").length;
       const links: PageElement[] = Array.from(document.querySelectorAll("a[href]"))
         .slice(0, 20)
         .map(el => ({
@@ -4079,6 +4087,12 @@ For more help: https://playwright.dev/docs/browsers
         forms,
         buttons,
         links,
+        // What is really on the page, beside what was returned. Without these a
+        // truncated list reads as a measurement. (BUG-16)
+        buttonsTotal,
+        linksTotal,
+        buttonsTruncated: buttonsTotal > buttons.length,
+        linksTruncated: linksTotal > links.length,
         inputs,
         selects,
         hasLogin: forms.some(f => f.purpose === "login"),

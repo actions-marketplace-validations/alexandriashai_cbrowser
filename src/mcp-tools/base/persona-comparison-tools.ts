@@ -1138,6 +1138,12 @@ Begin with the first persona: ${personas[0]}
           name: l.name,
           cost: Math.round(l.transportCost * 1000) / 1000,
           capacityConsumed: Math.round(l.capacityConsumed * 1000) / 1000,
+          // Emitted only where it says something the cost cannot: at zero cost
+          // the layer has stopped discriminating and headroom is the remaining
+          // signal. Above zero the cost carries it, and a second number would
+          // just be noise. (BUG-18)
+          ...(l.transportCost < 0.001 && l.headroom > 0
+            ? { headroom: l.headroom, costIsAtFloor: true } : {}),
         })),
         bottleneck: result.bottleneckLayer,
         deficitVsSurplus: {
@@ -1190,7 +1196,7 @@ Begin with the first persona: ${personas[0]}
             // construction and reads 91% for one persona and 73% for another on
             // identical text. A field promising objectivity is the one most
             // likely to be quoted as an objective page score. (2026-08-02)
-            note: "legibilityQuality is how legible this text is FOR THIS PERSONA (higher is better) — it is computed from their reading profile, so it varies across personas on identical text and is NOT an objective property of the page. The `readability` entry in `layers` is the DECODING transport cost for the same persona (higher is worse), and the two move together: for a given persona, lower legibility means strictly higher readability cost. Across personas the ordering holds for any material difference in legibility, but not to the last decimal — layers spend from a budget the earlier ones depleted, so two readers with near-identical legibility can differ slightly if one arrived more depleted. The ATTENTIONAL cost of reading (holding the line, re-reading, being pulled away) is a separate layer, `readingAttention`, and is deliberately not part of this number.",
+            note: "legibilityQuality is how legible this text is FOR THIS PERSONA (higher is better) — it is computed from their reading profile, so it varies across personas on identical text and is NOT an objective property of the page. The `readability` entry in `layers` is the DECODING transport cost for the same persona (higher is worse), and the two move together: for a given persona, lower legibility means higher readability cost until the cost reaches its floor of 0, which it does whenever decoding capacity exceeds what the page demands — at that point read `headroom` on the readability layer instead, because the cost cannot tell a comfortable reader from a very comfortable one. Across personas the ordering holds for any material difference in legibility, but not to the last decimal — layers spend from a budget the earlier ones depleted, so two readers with near-identical legibility can differ slightly if one arrived more depleted. The ATTENTIONAL cost of reading (holding the line, re-reading, being pulled away) is a separate layer, `readingAttention`, and is deliberately not part of this number.",
             legibilityQualityIsPersonaRelative: true,
             averageWPM: Math.round(
               readabilityResult.blocks.reduce((s: number, b: { wordsPerMinute: number }) => s + b.wordsPerMinute, 0) / readabilityResult.blocks.length

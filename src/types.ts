@@ -3747,6 +3747,11 @@ export interface PageAnalysis {
   forms: FormAnalysis[];
   buttons: PageElement[];
   links: PageElement[];
+  /** How many exist on the page, against however many `buttons`/`links` returned. */
+  buttonsTotal?: number;
+  linksTotal?: number;
+  buttonsTruncated?: boolean;
+  linksTruncated?: boolean;
   inputs: PageElement[];
   selects: PageElement[];
   hasLogin: boolean;

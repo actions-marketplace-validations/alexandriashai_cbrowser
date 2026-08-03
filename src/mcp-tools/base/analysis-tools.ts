@@ -57,8 +57,18 @@ export function registerAnalysisTools(
               ...(token ? { _browserToken: token } : {}),
               title: analysis.title,
               forms: analysis.forms.length,
-              buttons: analysis.buttons.length,
-              links: analysis.links.length,
+              // The element lists are capped at 20. Reporting only the returned
+              // length made a truncated count indistinguishable from a real
+              // one: /academics reported 20 links against a real 229, and 20
+              // buttons against a real 20, and the coincidence disguised it.
+              // (BUG-16)
+              buttons: analysis.buttonsTotal ?? analysis.buttons.length,
+              links: analysis.linksTotal ?? analysis.links.length,
+              buttonsReturned: analysis.buttons.length,
+              linksReturned: analysis.links.length,
+              ...(analysis.buttonsTruncated || analysis.linksTruncated
+                ? { truncated: true, truncationNote: "buttons and links are capped at 20 in the detailed lists; the counts above are the real totals." }
+                : {}),
               hasLogin: analysis.hasLogin,
               hasSearch: analysis.hasSearch,
               hasNavigation: analysis.hasNavigation,

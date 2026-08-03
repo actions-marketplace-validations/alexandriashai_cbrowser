@@ -975,13 +975,20 @@ describe("the legibilityQuality contract, restored and pinned (BUG-01 / D-3)", (
     expect(checked).toBeGreaterThan(20);  // the sweep must actually have compared something
   });
 
-  test("the note tells the customer both of those things", () => {
+  test("the note tells the customer both of those things, and where the promise stops", () => {
     const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
-    expect(tool).toContain("for a given persona, lower legibility means strictly higher readability cost");
+    expect(tool).toContain("lower legibility means higher readability cost");
     expect(tool).toContain("readingAttention");
     // And says the attentional half is deliberately excluded, so a reader does
     // not go looking for it in this number.
     expect(tool).toContain("deliberately not part of this number");
+    // The word "strictly" was in this sentence and was not true at the floor:
+    // cost is 0 at 91% legibility and stays 0 at 99%, so the layer stops
+    // discriminating across its whole upper range. The note now says so and
+    // points at the field that still carries signal there. (BUG-18)
+    expect(tool).not.toContain("means strictly higher readability cost");
+    expect(tool).toContain("its floor of 0");
+    expect(tool).toContain("read `headroom`");
   });
 
   test("the chain is seven layers and every one is named in the overlay list", () => {

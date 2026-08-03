@@ -52,6 +52,12 @@ export interface LayerResult {
   transportCost: number;
   capacityConsumed: number;
   residualCapacity: Record<string, number>;
+  /**
+   * Mean spare capacity across this layer's dimensions, 0 when the layer is in
+   * deficit. Read it when `transportCost` is 0: the cost floor cannot tell a
+   * comfortable reader from an extremely comfortable one, and this can.
+   */
+  headroom: number;
 }
 
 export interface SequentialTransportResult {
@@ -733,6 +739,14 @@ export function computeSequentialCTC(
     let layerSurplus = 0;
 
     // Compute transport cost for this layer's traits (using modulated demands)
+    //
+    // Headroom is tracked alongside cost because a surplus-free layer reports a
+    // bare 0 across its whole upper range and stops discriminating there. A
+    // reader at 91% legibility and one at 99% both cost 0 on a page neither of
+    // them struggles with -- true, and useless as a signal. Headroom is the
+    // spare capacity that produced the zero, so the upper range is readable
+    // without inventing a cost that is not there. (2026-08-03, BUG-18)
+    let layerHeadroom = 0;
     for (const trait of layerDef.traits) {
       const d = modulatedDemand.demands[trait] ?? 0;
       const c = residualCapacity[trait] ?? 0.5;
@@ -750,9 +764,11 @@ export function computeSequentialCTC(
         layerSurplus += cost;
       }
 
+      if (gap < 0) layerHeadroom += -gap;
       layerCost += cost;
       traitCosts[trait] = (traitCosts[trait] ?? 0) + cost;
     }
+    layerHeadroom = layerHeadroom / Math.max(1, layerDef.traits.length);
 
     // Scale layer cost by demand presence — empty pages shouldn't produce high costs
     const layerDemandMagnitude = layerDef.traits.reduce(
@@ -792,6 +808,10 @@ export function computeSequentialCTC(
       transportCost: layerCost,
       capacityConsumed,
       residualCapacity: { ...residualCapacity },
+      // Mean spare capacity across this layer's dimensions. Only meaningful
+      // when the cost is at or near zero; above that the cost carries the
+      // signal itself.
+      headroom: Math.round(layerHeadroom * 1000) / 1000,
     });
   }
 
@@ -836,16 +856,41 @@ export function computeSequentialCTC(
     }
   }
 
-  // Compute abandonment risk
-  // Based on deficit relative to patience capacity
-  // deficit < 0.5 → risk < 30%, deficit ≈ patience → risk ≈ 50%, deficit >> patience → risk → 100%
+  // Compute abandonment risk.
+  //
+  // A page that costs this persona NOTHING must produce a risk of zero. The
+  // previous shape could not: it was a logistic centred at 1.5x tolerance, and
+  // a logistic evaluated below its centre still returns a substantial value, so
+  // every persona carried a floor that no page could lower. Measured:
+  //
+  //   persona          risk at deficit 0    real range over these pages (0-0.28)
+  //   impatient-user               40%              40% -> 52%
+  //   cognitive-adhd               34%              34% -> 45%
+  //   power-user                   25%              25% -> 34%
+  //   elderly-user                 11%              11% -> 16%
+  //   perfect patience              8%                    --
+  //
+  // So "39% abandonment" beside "should handle this page comfortably" was never
+  // two independent measures disagreeing. It was one number that is ~85% floor
+  // and ~15% page. The reported fix -- fold abandonment into the verdict --
+  // would have made it worse, importing a near-constant into the sentence so
+  // that every ADHD run read as risky regardless of the page.
+  //
+  // Replaced with a Hill function: zero cost gives exactly zero risk, cost
+  // equal to tolerance gives 50%, and it approaches 1 from below. The
+  // "centre at 1.5x blended patience" intent is unchanged and so is the
+  // persona ordering; what is gone is the offset. (2026-08-03, BUG-17)
   const patienceCapacity = traitValue(persona.traits, 'patience');
   const resilienceCapacity = traitValue(persona.traits, 'resilience');
   const effectivePatience = patienceCapacity * 0.7 + resilienceCapacity * 0.3; // blended tolerance
-  const adjustedCost = totalDeficit - totalSurplus * 0.3; // surplus comfort (30%)
-  const riskInput = Math.max(0, adjustedCost) - effectivePatience * 1.5; // center at 1.5x patience
-  const abandonmentRisk = Math.max(0, Math.min(1,
-    1 / (1 + Math.exp(-riskInput / 0.6)) // wider sigmoid scale
+  const adjustedCost = Math.max(0, totalDeficit - totalSurplus * 0.3); // surplus comfort (30%)
+  // Floored so a persona with no patience at all does not divide by zero and
+  // read as certain abandonment on a blank page.
+  const tolerance = Math.max(0.05, effectivePatience * 1.5);
+  const ABANDONMENT_STEEPNESS = 2;
+  const abandonmentRisk = adjustedCost <= 0 ? 0 : Math.max(0, Math.min(1,
+    Math.pow(adjustedCost, ABANDONMENT_STEEPNESS) /
+    (Math.pow(adjustedCost, ABANDONMENT_STEEPNESS) + Math.pow(tolerance, ABANDONMENT_STEEPNESS))
   ));
 
   return {
