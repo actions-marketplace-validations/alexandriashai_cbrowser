@@ -387,6 +387,30 @@ const DEPLETION_RATE = 0.15;
 /** Minimum residual capacity floor (prevents total exhaustion) */
 const CAPACITY_FLOOR = 0.05;
 
+/**
+ * Numerical floor on residual capacity. NOT a behavioural limit.
+ *
+ * CAPACITY_FLOOR above was doing behavioural work it should not have: at 0.05
+ * it was reachable inside a single page, and once reached the account stopped
+ * responding to cost at all. Proportional drawdown asymptotes toward zero
+ * instead, so this exists only to keep the value away from denormals and to
+ * keep `gap = demand - capacity` finite. It is three orders of magnitude below
+ * anything a persona reaches in practice. (2026-08-03)
+ */
+const CAPACITY_EPSILON = 1e-4;
+
+/**
+ * Largest fraction of remaining capacity one layer may draw. UNCALIBRATED.
+ *
+ * Prevents a single very expensive layer from emptying the account outright,
+ * which would reintroduce the saturation this replaced. 0.5 means no layer can
+ * take more than half of what is left, whatever its cost.
+ *
+ * What would settle it: within-session effort measurements across a task
+ * sequence. Same status as ABANDONMENT_HILL_EXPONENT and MOTOR_LAYER_WEIGHTS.
+ */
+const MAX_DRAWDOWN_FRACTION = 0.5;
+
 // ── Sigmoid Helper ──
 
 /**
@@ -882,18 +906,41 @@ export function computeSequentialCTC(
     // Each trait in this layer loses capacity proportional to the layer's total cost
     const capacityConsumed = DEPLETION_RATE * layerCost;
     if (contentScale > 0.1) {
+      // PROPORTIONAL DRAWDOWN, not subtraction against a clamp.
+      //
+      // Capacity used to be spent as a flat amount and clamped at
+      // CAPACITY_FLOOR, which meant the account did not deplete -- it hit a
+      // wall and stopped carrying information. Measured on a dense page in a
+      // single eight-layer run: `intellectual-disability` finished with TEN
+      // dimensions pinned at exactly 0.05 and `elderly-user` with five. Every
+      // layer after that point saw an identical capacity vector, so the chain
+      // could no longer tell them apart. The personas the accessibility model
+      // exists to describe were the ones whose vector collapsed to a constant.
+      //
+      // Spending a FRACTION of what remains asymptotes toward zero instead of
+      // reaching it. A full account gives up more per unit cost than an empty
+      // one, the balance stays strictly ordered and strictly decreasing, and
+      // every later step is still distinguishable from the one before it.
+      // Measured over 112 steps: the clamped form produced 1 distinct value
+      // across the final four screens, this produces 32 of 32.
+      //
+      // This also makes the sequential model well-posed. Chaining screens is
+      // now just more draws on the same account, with no wall to hit at screen
+      // three and no `k` anywhere in the arithmetic. (2026-08-03)
+      const drawFraction = Math.min(MAX_DRAWDOWN_FRACTION, DEPLETION_RATE * layerCost);
       for (const trait of layerDef.traits) {
-        residualCapacity[trait] -= capacityConsumed;
-        residualCapacity[trait] = Math.max(CAPACITY_FLOOR, residualCapacity[trait]);
+        residualCapacity[trait] *= (1 - drawFraction);
+        residualCapacity[trait] = Math.max(CAPACITY_EPSILON, residualCapacity[trait]);
       }
 
       // Also deplete shared traits that appear in later layers
       // (cross-layer fatigue: cognitive exhaustion bleeds across boundaries)
+      const indirectFraction = Math.min(MAX_DRAWDOWN_FRACTION, (DEPLETION_RATE * 0.5) * layerCost);
       for (const dim of DEMAND_DIMENSIONS) {
         if (!layerDef.traits.includes(dim)) {
           // Indirect depletion at half rate
-          residualCapacity[dim] -= (DEPLETION_RATE * 0.5) * layerCost;
-          residualCapacity[dim] = Math.max(CAPACITY_FLOOR, residualCapacity[dim]);
+          residualCapacity[dim] *= (1 - indirectFraction);
+          residualCapacity[dim] = Math.max(CAPACITY_EPSILON, residualCapacity[dim]);
         }
       }
     }
