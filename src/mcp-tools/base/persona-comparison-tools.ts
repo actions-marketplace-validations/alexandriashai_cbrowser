@@ -868,7 +868,10 @@ Begin with the first persona: ${personas[0]}
       try {
         const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf } =
           await import("../../visual/cognitive-models.js");
-        traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits }));
+        // accessibilityTraits passed so an author's STATED reading capacity is
+        // honoured; without it the name lookup wins and the fields are inert.
+        const accTraits = (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
+        traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits, accessibilityTraits: accTraits }));
         traits.motorCapacity = motorCapacityOf(getPointingProfile({ name: personaName, traits }));
       } catch (e) {
         // Left absent rather than defaulted: a missing capacity is visible as a
@@ -1077,7 +1080,12 @@ Begin with the first persona: ${personas[0]}
 
         textBlockGeom = textBlocks.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height, text: b.text }));
         if (textBlocks.length > 0) {
-          readabilityResult = readability(textBlocks, otProfile);
+          // otProfile carries name + traits but not accessibilityTraits, so the
+          // stated reading capacity is attached here or the fields stay inert.
+          readabilityResult = readability(textBlocks, {
+            ...otProfile,
+            accessibilityTraits: (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits,
+          });
         }
       } catch {}
 

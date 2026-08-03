@@ -402,11 +402,45 @@ const KNOWN_READING_PROFILES: Record<string, ReadingProfile> = {
  * @returns Empirically calibrated reading profile
  */
 export function getReadingProfile(persona: {
+  /**
+   * Explicit reading capacity, if the persona states it.
+   *
+   * Checked BEFORE the name lookup: an author who has written down a reading
+   * profile means it, and matching on name.includes("dyslexic") instead is how
+   * the model became untunable. Partial objects are allowed -- each field falls
+   * back to whatever the name lookup would have produced, so stating one value
+   * does not silently reset the other four. (2026-08-02)
+   */
+  accessibilityTraits?: {
+    orthographicFluency?: number;
+    phonologicalDecoding?: number;
+    visualSpan?: number;
+    vocabularyBreadth?: number;
+    crowdingSensitivity?: number;
+  };
   traits?: Record<string, number>;
   name?: string;
 }): ReadingProfile {
   const traits = persona.traits ?? {};
   const name = (persona.name ?? '').toLowerCase();
+  const stated = persona.accessibilityTraits;
+
+  // Stated capacity wins over every other route.
+  //
+  // Applied as an OVERLAY on whatever the rest of this function would have
+  // returned, so a persona can state one field without silently resetting the
+  // other four to defaults. Computed by recursing with the stated values
+  // stripped, which keeps the name and trait paths as the base.
+  if (stated && Object.values(stated).some((v) => typeof v === "number")) {
+    const base = getReadingProfile({ traits: persona.traits, name: persona.name });
+    return {
+      orthographic: stated.orthographicFluency ?? base.orthographic,
+      phonological: stated.phonologicalDecoding ?? base.phonological,
+      visualSpan: stated.visualSpan ?? base.visualSpan,
+      vocabulary: stated.vocabularyBreadth ?? base.vocabulary,
+      crowding: stated.crowdingSensitivity ?? base.crowding,
+    };
+  }
 
   // Direct name matching for known profiles
   if (name.includes('dyslexic') || name.includes('dyslexia')) {
@@ -616,6 +650,14 @@ export function readability(
   persona: {
     traits?: Record<string, number>;
     name?: string;
+    /** Passed straight through to getReadingProfile: stated capacity wins. */
+    accessibilityTraits?: {
+      orthographicFluency?: number;
+      phonologicalDecoding?: number;
+      visualSpan?: number;
+      vocabularyBreadth?: number;
+      crowdingSensitivity?: number;
+    };
   },
 ): ReadabilityResult {
   if (blocks.length === 0) {

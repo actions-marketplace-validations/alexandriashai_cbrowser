@@ -1972,6 +1972,17 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       viewport: [1280, 800], // But effectively sees 1/9th at a time
     },
     accessibilityTraits: {
+      // Reading capacity, stated rather than inferred from the persona's NAME.
+      // These are the same values getReadingProfile returned for this persona
+      // via name matching, so behaviour is unchanged -- but they are now
+      // editable, which they were not: no trait change could move WPM, fixation
+      // span or phonological penalty. Source: Legge et al. (2007) -- central
+      // scotoma and crowding. (2026-08-02)
+      orthographicFluency: 0.6,
+      phonologicalDecoding: 0.75,
+      visualSpan: 3,
+      vocabularyBreadth: 0.75,
+      crowdingSensitivity: 0.7,
       visionLevel: 0.3,
       contrastSensitivity: 3.0,
       processingSpeed: 0.7,
@@ -2061,6 +2072,17 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       viewport: [1920, 1080],
     },
     accessibilityTraits: {
+      // Reading capacity, stated rather than inferred from the persona's NAME.
+      // These are the same values getReadingProfile returned for this persona
+      // via name matching, so behaviour is unchanged -- but they are now
+      // editable, which they were not: no trait change could move WPM, fixation
+      // span or phonological penalty. Source: Dhar et al. (2010) -- intact
+      // decoding, reduced sustained attention. (2026-08-02)
+      orthographicFluency: 0.8,
+      phonologicalDecoding: 0.75,
+      visualSpan: 6,
+      vocabularyBreadth: 0.7,
+      crowdingSensitivity: 0.2,
       processingSpeed: 0.6, // Variable - can be fast when interested
       attentionSpan: 0.3, // Short sustained attention
       fatigueSusceptibility: 0.4,
@@ -2142,6 +2164,17 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       viewport: [1280, 800],
     },
     accessibilityTraits: {
+      // Reading capacity, stated rather than inferred from the persona's NAME.
+      // These are the same values getReadingProfile returned for this persona
+      // via name matching, so behaviour is unchanged -- but they are now
+      // editable, which they were not: no trait change could move WPM, fixation
+      // span or phonological penalty. Source: Perry, Zorzi & Ziegler (2019),
+      // Psychological Science. (2026-08-02)
+      orthographicFluency: 0.4,
+      phonologicalDecoding: 0.35,
+      visualSpan: 4,
+      vocabularyBreadth: 0.65,
+      crowdingSensitivity: 0.55,
       processingSpeed: 0.5, // Slower text processing
       attentionSpan: 0.5,
       fatigueSusceptibility: 0.6, // Reading requires more effort
@@ -2336,6 +2369,21 @@ export const ACCESSIBILITY_PERSONAS: Record<string, AccessibilityPersona> = {
       viewport: [1280, 800],
     },
     accessibilityTraits: {
+      // This persona is BOTH elderly and low-vision, and the name lookup
+      // resolved it by accident: it tests 'low-vision' before 'elderly', so it
+      // silently returned the low-vision profile and the aging half was never
+      // applied. Rather than preserve an ordering accident, each dimension
+      // takes the MORE impaired of the two profiles -- both conditions impair
+      // reading -- except vocabulary, where age is an advantage: crystallized
+      // vocabulary grows across the lifespan (Rayner et al. 2006), so the
+      // elderly value of 0.85 is kept over low vision's 0.75.
+      // orthographic 0.6 (lowVision) / phonological 0.65 (elderly) /
+      // span 3 (lowVision) / vocabulary 0.85 (elderly) / crowding 0.7 (lowVision).
+      orthographicFluency: 0.6,
+      phonologicalDecoding: 0.65,
+      visualSpan: 3,
+      vocabularyBreadth: 0.85,
+      crowdingSensitivity: 0.7,
       motorControl: 0.5,
       tremor: false, // Not necessarily present
       reachability: 0.6,

@@ -5091,6 +5091,36 @@ export interface AccessibilityTraits {
   /** Focus duration before fatigue 0-1 */
   attentionSpan?: number;
 
+  // Reading capacity
+  //
+  // Added 2026-08-02 because the reading model was UNREACHABLE from the trait
+  // system. getReadingProfile matched on the persona's NAME -- name.includes
+  // ("dyslexic") returned a hardcoded profile -- so WPM, fixation span and
+  // phonological penalty could not be tuned by any trait edit. Twelve trait
+  // changes to dyslexic-user moved cognitiveLoad and frustration substantially
+  // and left every reading measure byte-identical, which is what demonstrated
+  // it.
+  //
+  // Two consequences that made this a schema change rather than a patch: a
+  // custom persona built from a description could not express reading capacity
+  // at all, and any persona whose name did not contain a recognised keyword
+  // silently got the neurotypical profile.
+  //
+  // These five are exactly the ReadingProfile fields, so an author can state a
+  // reading profile directly and the name lookup becomes the fallback rather
+  // than the only path. All optional: omitting them preserves the previous
+  // name-keyed behaviour exactly.
+  /** Orthographic (whole-word) recognition fluency 0-1. */
+  orthographicFluency?: number;
+  /** Phonological decoding ability 0-1. */
+  phonologicalDecoding?: number;
+  /** Characters processed per fixation. Neurotypical is about 7. */
+  visualSpan?: number;
+  /** Vocabulary breadth 0-1. */
+  vocabularyBreadth?: number;
+  /** Sensitivity to visual crowding 0-1, HIGHER = more affected. */
+  crowdingSensitivity?: number;
+
   // Fatigue
   /** Performance degradation over time 0-1 */
   fatigueSusceptibility?: number;

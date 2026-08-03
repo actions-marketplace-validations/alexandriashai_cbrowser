@@ -631,3 +631,59 @@ describe("suppressed decisionStyle reports itself", () => {
     expect(prof.decisionStyleSource).toBe("suppressed");
   });
 });
+
+describe("reading capacity is reachable from the trait schema", () => {
+  test("stating a reading trait changes the reading profile", async () => {
+    // BUG-10: getReadingProfile matched on the persona's NAME, so WPM, fixation
+    // span and phonological penalty could not be tuned by any trait edit.
+    // Twelve trait changes to dyslexic-user moved cognitiveLoad and frustration
+    // substantially and left every reading measure byte-identical.
+    const { getReadingProfile } = await import("../src/visual/cognitive-models.js");
+    const base = getReadingProfile({ name: "dyslexic-user" });
+    const tuned = getReadingProfile({ name: "dyslexic-user", accessibilityTraits: { visualSpan: 7 } });
+    expect(base.visualSpan).toBe(4);
+    expect(tuned.visualSpan).toBe(7);
+  });
+
+  test("a partial statement does not reset the other fields", async () => {
+    // Stating one value must not silently blank the rest to defaults — that
+    // would make the schema unusable for incremental authoring.
+    const { getReadingProfile } = await import("../src/visual/cognitive-models.js");
+    const base = getReadingProfile({ name: "dyslexic-user" });
+    const tuned = getReadingProfile({ name: "dyslexic-user", accessibilityTraits: { visualSpan: 7 } });
+    expect(tuned.phonological).toBe(base.phonological);
+    expect(tuned.orthographic).toBe(base.orthographic);
+    expect(tuned.crowding).toBe(base.crowding);
+  });
+
+  test("it reaches WPM, which is the measure the report tracked", async () => {
+    const { readability } = await import("../src/visual/cognitive-models.js");
+    const blocks = [{ text: "The interdisciplinary undergraduate admissions process requires documentation.".repeat(3),
+      fontSize: 16, lineHeight: 1.5, fontFamily: "sans-serif", isSerif: false, contrastRatio: 7 }];
+    const wpm = (acc?: Record<string, number>) => {
+      const r = readability(blocks as never, { name: "dyslexic-user", accessibilityTraits: acc } as never);
+      return (r.blocks[0] as { wordsPerMinute: number }).wordsPerMinute;
+    };
+    expect(wpm({ visualSpan: 7, phonologicalDecoding: 0.85 })).toBeGreaterThan(wpm());
+  });
+
+  test("the migrated personas state their capacity explicitly", async () => {
+    const { getAnyPersona } = await import("../src/personas.js");
+    for (const n of ["dyslexic-user", "cognitive-adhd", "low-vision-magnified", "elderly-low-vision"]) {
+      const at = (getAnyPersona(n) as never as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
+      expect(at?.visualSpan).toBeGreaterThan(0);
+      expect(typeof at?.phonologicalDecoding).toBe("number");
+    }
+  });
+
+  test("elderly-low-vision is no longer resolved by name-match ordering", async () => {
+    // The lookup tests 'low-vision' before 'elderly', so a persona that is both
+    // silently got only the low-vision half. Each dimension now takes the more
+    // impaired value, except vocabulary where age is an advantage.
+    const { getAnyPersona } = await import("../src/personas.js");
+    const at = (getAnyPersona("elderly-low-vision") as never as { accessibilityTraits: Record<string, number> }).accessibilityTraits;
+    expect(at.visualSpan).toBe(3);          // low vision, the worse of 3 and 5
+    expect(at.phonologicalDecoding).toBe(0.65); // elderly, the worse of 0.65 and 0.75
+    expect(at.vocabularyBreadth).toBe(0.85);    // elderly, crystallized vocabulary
+  });
+});
