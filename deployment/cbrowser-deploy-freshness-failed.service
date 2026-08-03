@@ -1,0 +1,20 @@
+[Unit]
+Description=Alert that the CBrowser deploy-freshness check found drift or could not run
+# Hung off OnFailure= in cbrowser-deploy-freshness.service.
+#
+# Written as its own unit rather than a `|| notify` inside the check, because the two
+# failure modes have to be indistinguishable to the alert path: a STALE result and a
+# check that could not run both mean "a human has to look", and folding the second
+# into the first is how a monitor comes to report health it never measured.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c '\
+  mkdir -p /var/log/cbrowser; \
+  { echo "$(date -Is) DEPLOY FRESHNESS: drift detected or check failed"; \
+    cd /home/wyld-web/static/cbrowser-public && /usr/bin/node scripts/check-deploy-freshness.mjs 2>&1; \
+  } >> /var/log/cbrowser/deploy-freshness.log 2>&1; true'
+
+# Logging to a file on purpose. An alert transport belongs to whoever operates the
+# box, and hard-coding one here would put an operator detail in a public repository.
+# Point systemd, a log shipper, or a cron tail at this file.

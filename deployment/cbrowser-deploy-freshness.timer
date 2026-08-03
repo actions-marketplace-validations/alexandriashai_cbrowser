@@ -1,0 +1,17 @@
+[Unit]
+Description=Run the CBrowser deploy-freshness check every 10 minutes
+# Ten minutes is chosen against the failure it catches, not against tidiness. The
+# 2026-08-03 drift ran fifty minutes before a human noticed by accident; the one
+# before it ran for days. Anything under a quarter hour turns "nobody noticed" into
+# "we were told", which is the whole difference.
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+# A missed window (box asleep, timer disabled during maintenance) should fire on
+# resume rather than wait for the next slot. Drift does not expire.
+Persistent=true
+Unit=cbrowser-deploy-freshness.service
+
+[Install]
+WantedBy=timers.target
