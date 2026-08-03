@@ -1163,7 +1163,14 @@ Begin with the first persona: ${personas[0]}
         // totalCTC. CTC asks how expensive the page is; abandonment asks
         // whether THIS persona's tolerance runs out first. A page can be cheap
         // in absolute terms and still exceed someone with little patience.
-        abandonmentBasis: "deficit vs this persona's patience and resilience — independent of totalCTC, so the two can disagree without either being wrong",
+        // WHAT THIS NUMBER IS CONDITIONAL ON. It was reported as though it were
+        // "the fraction of visitors who leave", and it is not that at either
+        // scope -- it is two different conditional quantities depending on
+        // which scope produced it, and the output did not distinguish them.
+        abandonmentBasis: measureScope === "full_page"
+          ? "P(this persona's budget is exhausted | they process the ENTIRE document). A conditional upper bound, not a prediction of observed behaviour: almost nobody reads a whole page. Deficit is summed across the whole document and compared against this persona's blended patience and resilience. Independent of totalCTC, so the two can disagree without either being wrong."
+          : "P(this persona's budget is exhausted ON THE FIRST SCREEN). Real and interpretable, and it ignores everything below the fold. Deficit is summed across the viewport only and compared against this persona's blended patience and resilience. Independent of totalCTC, so the two can disagree without either being wrong.",
+        abandonmentNotModelled: "Neither figure is 'what fraction of visitors leave'. A page is consumed as a SEQUENCE of screens, each with its own chance of stopping, and this model evaluates one aggregate. Two consequences it cannot express: demand below the fold is not weighted by the probability of ever reaching it, and capacity depletes with scroll depth as well as across layers. A persona also has no variance here -- every trait is a scalar, so this is one hypothetical person's trajectory, not a population, and no fraction-of-visitors reading is available from it at all.",
         interactions: Object.fromEntries(
           Object.entries(result.interactions)
             .filter(([, v]) => v > 0.001)
