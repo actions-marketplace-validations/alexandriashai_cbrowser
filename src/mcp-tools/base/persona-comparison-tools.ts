@@ -700,7 +700,7 @@ Begin with the first persona: ${personas[0]}
   server.registerTool("cognitive_effort", {
     _meta: { ui: { resourceUri: "ui://cbrowser/effort" } },
     title: "Cognitive Effort Analysis",
-    description: "Compute total cognitive effort for a persona to use a page. MEASURES THE VIEWPORT BY DEFAULT (above the fold); pass scope='full_page' to measure the whole page. Uses the 7-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
+    description: "Compute total cognitive effort for a persona to use a page. MEASURES THE VIEWPORT BY DEFAULT (above the fold); pass scope='full_page' to measure the whole page. Uses the 8-layer Sequential Transport Chain: saliency → cognitive load → decision → motor (target acquisition) → motor procedure (executing a sequence) → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
       url: z.string().url().describe("URL to analyze"),
       // Per RUN, not per persona. A persona is familiar with one site and new
@@ -866,6 +866,7 @@ Begin with the first persona: ${personas[0]}
       // Injected here rather than stored on the persona: these are derived from
       // the persona's profile, so storing them would create a second copy that
       // can drift from the model that produces it. (2026-08-02)
+      let pointingProfileForResponse: { sigmaX: number; sigmaY: number; rho: number; throughput: number } | undefined;
       try {
         const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf, sustainedAttentionOf } =
           await import("../../visual/cognitive-models.js");
@@ -873,7 +874,9 @@ Begin with the first persona: ${personas[0]}
         // honoured; without it the name lookup wins and the fields are inert.
         const accTraits = (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
         traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits, accessibilityTraits: accTraits }));
-        traits.motorCapacity = motorCapacityOf(getPointingProfile({ name: personaName, traits }));
+        const _pp = getPointingProfile({ name: personaName, traits });
+        pointingProfileForResponse = _pp;
+        traits.motorCapacity = motorCapacityOf(_pp);
         // The attentional half of reading. Unlike the other two this one has no
         // formal model behind it -- attentionSpan is stated directly, and the
         // fallback is interruptRecovery -- so the resolver is the whole bridge.
@@ -1130,7 +1133,7 @@ Begin with the first persona: ${personas[0]}
            * one, so this now carries the corrected value.
            */
           sequentialAmplification: Math.round((result.rawCTC / Math.max(0.001, result.additiveCTC)) * 1000) / 1000,
-          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Re-measured 1.003-1.054 across page densities x personas after the readability layer was split in two (2026-08-02); it was 1.002-1.019 at six layers, and the range widened because a seventh layer spends from a budget six others depleted. Real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
+          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Re-measured 1.002-1.036 at EIGHT layers, after `motor` was split into target acquisition and sequence execution (2026-08-03). It was 1.003-1.054 at seven and 1.002-1.019 at six. The range narrowed rather than widening this time: splitting one layer into two halves each layer's per-step cost, so the same total is reached through smaller increments and less of it compounds. Real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
           interpretationBasis: "total",
           interpretationBands: "total < 0.3 comfortable, < 0.6 moderate, < 0.8 struggling, else likely abandon",
         },
@@ -1167,7 +1170,37 @@ Begin with the first persona: ${personas[0]}
             .map(([k, v]) => [k, Math.round(v * 1000) / 1000])
         ),
         ...(motorResult ? {
-          motorAccessibility: {
+          // WHY the two motor layers can disagree, shown rather than left to be
+        // discovered. `motor` is target acquisition and `motorProcedure` is
+        // sequence execution, and a persona can be poor at one and competent at
+        // the other -- which is exactly what makes them separable and exactly
+        // what read as a contradiction while they shared a scalar.
+        //
+        // Pointing is decomposed further because `motorCapacity` and
+        // `hitProbability` are two different reductions of the same profile:
+        // capacity weights Fitts throughput at 0.75, hit probability uses
+        // endpoint dispersion alone. They therefore rank personas differently,
+        // and a reader comparing them needs to see that rather than infer it.
+        motorDecomposition: (() => {
+          try {
+            const pp = pointingProfileForResponse;
+            if (!pp) return undefined;
+            const L = result.layers as Array<{ name: string; transportCost: number }>;
+            const acquire = L.find((l) => l.name === "motor")?.transportCost ?? 0;
+            const sequence = L.find((l) => l.name === "motorProcedure")?.transportCost ?? 0;
+            return {
+              targetAcquisition: Math.round(acquire * 1000) / 1000,
+              sequenceExecution: Math.round(sequence * 1000) / 1000,
+              pointingInputs: {
+                fittsThroughput: Math.round(pp.throughput * 100) / 100,
+                endpointDispersionPx: Math.round(((pp.sigmaX + pp.sigmaY) / 2) * 10) / 10,
+                note: "throughput drives movementTimeMs; dispersion drives hitProbability. motorCapacity weights throughput at 0.75, so the `motor` layer and `hitProbability` legitimately rank personas differently.",
+              },
+              note: "These two are additive and unweighted against each other. There is no empirical basis for a relative weighting between acquiring a target and executing a sequence, so none is applied - see MOTOR_LAYER_WEIGHTS, both 1.0 and marked uncalibrated.",
+            };
+          } catch { return undefined; }
+        })(),
+        motorAccessibility: {
             score: Math.round(motorResult.score * 100) + "%",
             barriers: motorResult.barrierCount,
             elements: motorResult.elements.filter((e: { isBarrier: boolean }) => e.isBarrier).slice(0, 5).map((e: { selector: string; hitProbability: number; movementTime: number }) => ({
@@ -1434,6 +1467,8 @@ Begin with the first persona: ${personas[0]}
           reason: "decision cost is computed over the page as a whole, not per region" });
         layerOverlays.push({ layer: "frustration", available: false,
           reason: "frustration is a running state across the chain, not a place on the page" });
+        layerOverlays.push({ layer: "motorProcedure", available: false,
+          reason: "sequence execution is a property of a flow across pages, not a place on this one \u2014 the motor overlay above shows where TARGET ACQUISITION is hard" });
         layerOverlays.push({ layer: "readingAttention", available: false,
           reason: "attentional reading cost is a property of the reader against the whole page, not of any one region \u2014 the readability overlay above shows where DECODING is slow" });
 

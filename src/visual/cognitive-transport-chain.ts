@@ -170,32 +170,48 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'motor',
-    // `patience` REMOVED: it is a disposition, it already drives the frustration
-    // layer, and here it made two personas with no motor traits differ 5.6x in
-    // motor cost. proceduralFluency stays -- multi-step flow execution is a real
-    // motor-adjacent capacity -- alongside the Fitts throughput bridge.
+    // POINTING ONLY, as of 2026-08-03 (D-9 resolution). This layer answers one
+    // question: how expensive is it for this person to ACQUIRE a target.
     //
-    // THIS LAYER IS NOT THE POINTING MODEL, and the difference is the whole of
-    // D-9. It transports aggregate capacity -- pointing AND procedural -- against
-    // a demand derived from how many interactive elements the page has. It never
-    // looks at an individual control. `motorAccessibility`, reported beside it,
-    // runs Fitts and hit probability per element and counts barriers.
+    // It used to sum pointing capability and procedural execution at equal
+    // weight in one scalar, which is the same failure shape the readability
+    // layer had before it was split. Measured on identical demand:
     //
-    // Two different questions, so they move independently and both can be right.
-    // Measured: removing one interactive element moves this cost from 0.0716 to
-    // 0.0696 while `motorAccessibility` moves eleven points, because the layer
-    // reads a COUNT and the audit reads ELEMENTS.
+    //   motor-impairment-tremor  cost 0.072   hitProbability 48.4%
+    //   elderly-user             cost 0.107   hitProbability 81.9%
     //
-    // One consequence is worth stating rather than discovering: `proceduralFluency`
-    // and `motorCapacity` carry equal weight here, so a persona with poor pointing
-    // and strong procedural execution can cost LESS in this layer than one with
-    // the reverse -- measured, motor-impairment-tremor 0.072 against elderly-user
-    // 0.107 on identical demand, while their hit probabilities are 48.4% and
-    // 81.9%. That is the layer describing what it says it describes. Whether the
-    // two halves SHOULD weigh equally is a calibration question about a research
-    // instrument, and it is the maintainer's to answer, not something to change
-    // as a side effect of writing this comment. (2026-08-03, D-9)
-    traits: ['proceduralFluency', 'motorCapacity'],
+    // Worse pointing, lower cost -- because the tremor persona's procedural
+    // fluency (0.60) outweighed its pointing deficit against elderly's 0.40.
+    // `motorAccessibility` is reported in the same response and tracks only
+    // pointing, so every ordering check against it read as broken.
+    //
+    // `proceduralFluency` moved to `motorProcedure` below. Nothing was weighted
+    // to achieve this: the two layers contribute additively like every other
+    // layer, which makes their relative contribution visible and inspectable
+    // rather than hidden inside a scalar. There is no empirical basis for a
+    // relative weighting between target acquisition and sequence execution, and
+    // a constant invented here would acquire false authority by ending up in a
+    // research instrument. The calibration slot is deliberately left empty --
+    // see MOTOR_LAYER_WEIGHTS.
+    traits: ['motorCapacity'],
+  },
+  {
+    name: 'motorProcedure',
+    // Executing an interaction SEQUENCE once a target has been acquired --
+    // multi-step flows, form progressions, anything where the cost is in the
+    // order of operations rather than in hitting the control.
+    //
+    // Separate from `motor` because the two genuinely move in opposite
+    // directions for the same persona, which is precisely what makes them
+    // separable rather than one number: a tremor persona can be a poor pointer
+    // and a competent sequence-follower, and an elderly persona the reverse.
+    //
+    // DEMAND IS ABSOLUTE, not area-normalised. The number of steps in a
+    // sequence does not shrink because the page is tall. Its demand derives
+    // from interactiveElementCount, which is a raw count -- so there is nothing
+    // to remove here today, and this is recorded for the D-12 layer
+    // classification table rather than decided silently in code.
+    traits: ['proceduralFluency'],
   },
   {
     name: 'frustration',
@@ -305,6 +321,14 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
  * customers have already seen". Splitting the layer removed the choice: a
  * contract the tool prints in its own output has to hold.
  *
+ * `proceduralFluency` joined on 2026-08-03 when `motor` was split. Its surplus
+ * had been billed all along and the artifact was diluted by sharing a layer
+ * with pointing; alone in `motorProcedure` it became the layer, and the layer
+ * was not monotonic in its own single input -- measured, fluency 0.2 cost
+ * 0.0041 and higher fluency cost 0.0302. Splitting a layer exposes whatever the
+ * mixing was hiding, which is the third time that has happened in this chain
+ * and is an argument for the splits rather than against them.
+ *
  * `motorCapacity` joined on 2026-08-03 (D-9) on the same forcing argument. It
  * was deferred alongside readingCapacity and the deferral no longer holds:
  * measured on one page at one demand, `cognitive-adhd` (94.3% hit probability
@@ -313,7 +337,28 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
  * excess was billed at 0.3. Being a more precise pointer than the page requires
  * cannot make that page harder to use.
  */
-const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity', 'motorCapacity']);
+const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity', 'motorCapacity', 'proceduralFluency']);
+
+/**
+ * Relative weighting between the two motor layers. BOTH DEFAULT TO 1.0 AND ARE
+ * UNCALIBRATED.
+ *
+ * They exist as named constants so that if a weighting is ever introduced it is
+ * visible, greppable and dated, rather than baked into the cost function as a
+ * bare multiplier. Nothing reads them today; the layers contribute additively
+ * like every other layer.
+ *
+ * What would settle them: motor-control literature on tremor adaptation in
+ * target acquisition, or validation of chain output against measured
+ * task-completion times. Until one of those exists, a number here would be an
+ * invention wearing the authority of a research instrument. (2026-08-03)
+ */
+export const MOTOR_LAYER_WEIGHTS = {
+  /** UNCALIBRATED. Target acquisition. */
+  motor: 1.0,
+  /** UNCALIBRATED. Sequence execution. */
+  motorProcedure: 1.0,
+} as const;
 
 /** Capacity depletion rate per layer (alpha_i, Section 3.4) */
 const DEPLETION_RATE = 0.15;

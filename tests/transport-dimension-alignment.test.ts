@@ -991,11 +991,15 @@ describe("the legibilityQuality contract, restored and pinned (BUG-01 / D-3)", (
     expect(tool).toContain("read `headroom`");
   });
 
-  test("the chain is seven layers and every one is named in the overlay list", () => {
+  test("every layer in the chain is named in the overlay list", () => {
+    // The COUNT is deliberately not asserted here any more. It was seven when
+    // this was written and is eight since the motor split, and a bare number in
+    // a test is the same staleness the widget caption had. tests/motor-split
+    // owns the ordering; this owns the overlay coverage.
     const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
     const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("LAYER_DEFINITIONS"), CHAIN_SRC.indexOf("INTERACTION_PAIRS"));
     const names = Array.from(block.matchAll(/name: '([a-zA-Z]+)'/g), (m) => m[1]);
-    expect(names).toEqual(["saliency", "cognitiveLoad", "decision", "motor", "frustration", "readability", "readingAttention"]);
+    expect(names.length).toBeGreaterThanOrEqual(7);
     // A bar with no overlay entry renders as neither a button nor a no-overlay
     // tag -- it just looks broken next to its siblings.
     for (const n of names) expect(tool).toContain(`layer: "${n}"`);

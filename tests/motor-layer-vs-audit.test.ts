@@ -73,7 +73,7 @@ describe("the layer and the audit are different instruments (D-9)", () => {
   test("the layer reads a COUNT, not elements", () => {
     // BUG-11's observation, as a property. One element in or out barely moves
     // the layer, because the layer never saw the element.
-    const t = { ...base, motorCapacity: 0.4 };
+    const t = { ...base, motorCapacity: 0.4, proceduralFluency: 0.4 };
     const delta = Math.abs(motorCost(t, 60) - motorCost(t, 59));
     expect(delta).toBeLessThan(0.01);
     // But a large change in element count DOES move it, or the layer would be
@@ -81,22 +81,27 @@ describe("the layer and the audit are different instruments (D-9)", () => {
     expect(Math.abs(motorCost(t, 100) - motorCost(t, 5))).toBeGreaterThan(0.01);
   });
 
-  test("the layer carries both pointing and procedural capacity, and says so", () => {
+  test("the layer is pointing only, and the audit relationship is still stated", () => {
+    // CHANGED 2026-08-03 with the motor split, and the change is the point.
+    // This test used to assert `motor` carried BOTH pointing and procedural
+    // capacity, because it did. The equal-weight question that made that
+    // uncomfortable was not answered -- it was dissolved by giving each
+    // mechanism its own layer, so their contributions are additive and visible
+    // instead of summed inside one scalar.
     const block = CHAIN.slice(CHAIN.indexOf("name: 'motor'"), CHAIN.indexOf("name: 'frustration'"));
-    const traits = block.match(/traits: \[([^\]]*)\]/)![1];
-    expect(traits).toContain("motorCapacity");
-    expect(traits).toContain("proceduralFluency");
-    // And the note states the relationship the report asked about, the way the
-    // legibilityQuality note resolved BUG-03 without code.
-    expect(block).toContain("NOT THE POINTING MODEL");
+    const [motorTraits] = Array.from(block.matchAll(/traits: \[([^\]]*)\]/g), (m) => m[1]);
+    expect(motorTraits).toContain("motorCapacity");
+    expect(motorTraits).not.toContain("proceduralFluency");
+    // The D-9 finding it still has to carry: the layer and the audit are
+    // different instruments and can diverge.
     expect(block).toContain("motorAccessibility");
-    expect(block).toContain("reads a COUNT and the audit reads ELEMENTS");
   });
 
-  test("the open calibration question is recorded, not silently resolved", () => {
-    // Whether the two halves should weigh equally is a decision about a
-    // calibrated instrument. Writing a comment is not licence to change it.
-    const block = CHAIN.slice(CHAIN.indexOf("name: 'motor'"), CHAIN.indexOf("name: 'frustration'"));
-    expect(block).toContain("maintainer's to answer");
+  test("no weighting was invented in place of the split", () => {
+    // The calibration question is gone rather than answered. If a weight is
+    // ever needed it has a named home that defaults to 1.0 and says it is
+    // uncalibrated -- see MOTOR_LAYER_WEIGHTS and tests/motor-split.test.ts.
+    expect(CHAIN).toContain("MOTOR_LAYER_WEIGHTS");
+    expect(CHAIN).toContain("UNCALIBRATED");
   });
 });
