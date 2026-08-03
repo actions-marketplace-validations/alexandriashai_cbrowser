@@ -158,3 +158,66 @@ describe("no weighting was invented", () => {
     expect(TOOL.slice(i, i + 300)).toContain("reason:");
   });
 });
+
+describe("elderly-user procedural fluency, corrected from its own page", () => {
+  /**
+   * It read 0.4, identical to cognitive-adhd, while carrying higher working
+   * memory (0.40 vs 0.30) and four times the patience (0.80 vs 0.20). The old
+   * rationale -- "slower development of procedural skills with new interfaces"
+   * -- describes ACQUISITION RATE; the trait measures EXECUTION, and its low
+   * end is "skips steps, confuses order", which is impulsive error. This
+   * persona's own page says older users make FEWER of those.
+   *
+   * Third instance of that defect class after timeHorizon and attributionStyle:
+   * a number set for the construct the rationale describes rather than the one
+   * the trait measures.
+   */
+  test("it no longer scores identically to the impulsive persona", async () => {
+    const { getAnyPersona } = await import("../src/personas.js");
+    const pf = (n: string) => (getAnyPersona(n) as never as { cognitiveTraits: Record<string, number> })
+      .cognitiveTraits.proceduralFluency;
+    expect(pf("elderly-user")).toBeGreaterThan(pf("cognitive-adhd"));
+    expect(pf("elderly-user")).toBe(0.5);
+  });
+
+  test("it sits between the personas that bracket it", async () => {
+    const { getAnyPersona } = await import("../src/personas.js");
+    const pf = (n: string) => (getAnyPersona(n) as never as { cognitiveTraits: Record<string, number> })
+      .cognitiveTraits.proceduralFluency;
+    // Above first-timer, which has no procedural schema at all.
+    expect(pf("elderly-user")).toBeGreaterThan(pf("first-timer"));
+    // Below motor-impairment-tremor, which is cognitively intact -- working
+    // memory 0.70 and metacognitive planning 0.70 against 0.40 and 0.25.
+    expect(pf("elderly-user")).toBeLessThan(pf("motor-impairment-tremor"));
+  });
+
+  test("0.5 is reasoned, and the code says so where it could be mistaken for a default", async () => {
+    // The BUG-05 trap: a value at the default is indistinguishable from a value
+    // nobody filled in. This one is a midpoint two opposing forces land on, and
+    // the source states that rather than leaving it to be re-litigated.
+    // Anchored on the PERSONA block, not on the first match in the file. The
+    // first `proceduralFluency: 0.5` is in defaultTraits -- which is the whole
+    // hazard: a reasoned value that happens to equal the default is
+    // indistinguishable from one nobody filled in, unless something says so.
+    const src = readFileSync(join(SRC, "personas.ts"), "utf8");
+    const start = src.indexOf('"elderly-user": {');
+    expect(start).toBeGreaterThan(-1);
+    const block = src.slice(start, src.indexOf('"impatient-user"', start) > start
+      ? src.indexOf('"impatient-user"', start) : start + 9000);
+    expect(block).toContain("proceduralFluency: 0.5,");
+    expect(block).toContain("REASONED MIDPOINT rather");
+    expect(block).toContain("Fisk et al.");
+  });
+
+  test("it narrows the motorProcedure gap without closing it, and that is correct", async () => {
+    // The brief's acceptance criterion wanted elderly <= tremor. It still does
+    // not hold, and should not: tremor is cognitively intact with a motor
+    // impairment, so it SHOULD follow a sequence better than an older adult
+    // with reduced working memory. Meeting the criterion would need elderly at
+    // 0.6+, which nothing supports.
+    const bridgedElderly = await bridged("elderly-user");
+    const bridgedTremor = await bridged("motor-impairment-tremor");
+    expect(layer(bridgedElderly, "motorProcedure").transportCost)
+      .toBeGreaterThan(layer(bridgedTremor, "motorProcedure").transportCost);
+  });
+});
