@@ -125,8 +125,24 @@ describe("a layer at its cost floor still says something (BUG-18)", () => {
   test("the tool emits headroom only at the floor, never as a second cost", () => {
     const src = require("node:fs").readFileSync(
       require("node:path").join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
-    expect(src).toContain("l.transportCost < 0.001 && l.headroom > 0");
+    // The floor gate itself: headroom is a floor-only field, never a second cost.
+    expect(src).toContain("l.transportCost < 0.001");
     expect(src).toContain("costIsAtFloor: true");
+  });
+
+  test("a floored layer with NO headroom is reported, not suppressed", () => {
+    // The original gate was `transportCost < 0.001 && headroom > 0`, which hid the
+    // worse of the two floors. A layer at zero cost with capacity to spare was
+    // never challenged; one at zero cost with nothing left is exhausted, and both
+    // print `cost: 0`. Suppressing the second left the caller unable to tell them
+    // apart -- while the reading-model note in the same payload told them to read a
+    // headroom field that was not emitted. (BUG-28)
+    const src = require("node:fs").readFileSync(
+      require("node:path").join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    expect(src).not.toContain("l.transportCost < 0.001 && l.headroom > 0");
+    expect(src).toContain("floorMeaning");
+    expect(src).toContain("exhausted");
+    expect(src).toContain("unchallenged");
   });
 });
 

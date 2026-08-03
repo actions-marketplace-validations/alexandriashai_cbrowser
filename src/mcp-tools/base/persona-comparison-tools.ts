@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { resolveValuesForPersona } from "../../values/persona-values.js";
 import { writeArtifact } from "../../artifact-store.js";
+import { scopeProse } from "../../visual/scope-prose.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { comparePersonas } from "../../analysis/index.js";
 import { isApiKeyConfigured } from "../../cognitive/index.js";
@@ -896,6 +897,11 @@ Begin with the first persona: ${personas[0]}
       // Extract page metrics
       const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
       const measureScope = scope ?? "viewport";
+      // Every scope-dependent SENTENCE comes from here, so the strings a test can
+      // check are the strings a caller receives. They were three separate inline
+      // ternaries testing `=== "full_page"`, which is how `sequential` came to
+      // describe itself as viewport-only while reporting whole-document numbers.
+      const prose = scopeProse(measureScope);
       // Sequential scores each screen on its own content; the aggregate path
       // below still runs so every existing field keeps its meaning, measured at
       // full_page since that is the comparable whole-document number.
@@ -1188,8 +1194,25 @@ Begin with the first persona: ${personas[0]}
           // the layer has stopped discriminating and headroom is the remaining
           // signal. Above zero the cost carries it, and a second number would
           // just be noise. (BUG-18)
-          ...(l.transportCost < 0.001 && l.headroom > 0
-            ? { headroom: l.headroom, costIsAtFloor: true } : {}),
+          //
+          // The `headroom > 0` half of that test was wrong, and wrong in the
+          // direction that hides the worse state. A floored layer with LOTS of
+          // headroom was never challenged; a floored layer with NONE has nothing
+          // left to spend, and those are opposite readings that both print
+          // `cost: 0`. The condition suppressed the second one entirely, so the
+          // caller saw a bare zero and no way to tell which it was -- while the
+          // reading-model note in this same payload told them to "read headroom
+          // on the readability layer instead", naming a field that was not
+          // emitted. (BUG-28)
+          ...(l.transportCost < 0.001
+            ? {
+                headroom: l.headroom,
+                costIsAtFloor: true,
+                floorMeaning: l.headroom > 0.02
+                  ? "unchallenged: this layer had capacity to spare, and the page did not demand it"
+                  : "exhausted: capacity here is spent, so the zero is the absence of anything left to spend, not the absence of difficulty",
+              }
+            : {}),
         })),
         bottleneck: result.bottleneckLayer,
         deficitVsSurplus: {
@@ -1210,9 +1233,13 @@ Begin with the first persona: ${personas[0]}
         // "the fraction of visitors who leave", and it is not that at either
         // scope -- it is two different conditional quantities depending on
         // which scope produced it, and the output did not distinguish them.
-        abandonmentBasis: measureScope === "full_page"
-          ? "P(this persona's budget is exhausted | they process the ENTIRE document). A conditional upper bound, not a prediction of observed behaviour: almost nobody reads a whole page. Deficit is summed across the whole document and compared against this persona's blended patience and resilience. Independent of totalCTC, so the two can disagree without either being wrong."
-          : "P(this persona's budget is exhausted ON THE FIRST SCREEN). Real and interpretable, and it ignores everything below the fold. Deficit is summed across the viewport only and compared against this persona's blended patience and resilience. Independent of totalCTC, so the two can disagree without either being wrong.",
+        // THREE scopes, three conditionals. This was a BINARY test against
+        // "full_page", so `sequential` -- which extracts at full_page -- fell
+        // through to the viewport string and told the caller these numbers
+        // described the first screenful while they described the whole document.
+        // Same shape as the scope-echo defect one layer out: the enum value
+        // reached the computation and never reached the reporting.
+        abandonmentBasis: prose.abandonmentBasis,
         abandonmentNotModelled: "Neither figure is 'what fraction of visitors leave'. A page is consumed as a SEQUENCE of screens, each with its own chance of stopping, and this model evaluates one aggregate. Two consequences it cannot express: demand below the fold is not weighted by the probability of ever reaching it, and capacity depletes with scroll depth as well as across layers. A persona also has no variance here -- every trait is a scalar, so this is one hypothetical person's trajectory, not a population, and no fraction-of-visitors reading is available from it at all.",
         interactions: Object.fromEntries(
           Object.entries(result.interactions)
@@ -1313,11 +1340,18 @@ Begin with the first persona: ${personas[0]}
         // `subject` is what was actually measured, so the sentence stays true
         // at either scope instead of the scope being a footnote elsewhere.
         interpretation: (() => {
-          const subject = measureScope === "full_page" ? "this page" : "the top of this page";
-          const where = measureScope === "full_page" ? "" : " (viewport only";
+          // `sequential` extracts at full_page, so it describes the whole page.
+          // Testing `=== "full_page"` sent it down the viewport branch and made
+          // this sentence claim the opposite of what was measured.
+          const wholeDocument = prose.wholeDocument;
+          const subject = prose.subject;
+          const where = wholeDocument ? "" : " (viewport only";
+          const seqTail = measureScope === "sequential"
+            ? ` Scored as a sequence: see \`sequential.expectedDepthScreens\` for how far ${personaName} is likely to get, and \`sequential.dropOff\` for where they stop.`
+            : "";
           const screens = pageMetrics.pageScreens > 1.2
-            ? `${measureScope === "full_page" ? " Measured across" : `${where}; the page is`} ${pageMetrics.pageScreens} screens${measureScope === "full_page" ? "." : ", so most of it was not measured — pass scope='full_page' for the whole thing.)"}`
-            : where ? `${where}.)` : "";
+            ? `${wholeDocument ? " Measured across" : `${where}; the page is`} ${pageMetrics.pageScreens} screens${wholeDocument ? "." : ", so most of it was not measured — pass scope='full_page' for the whole thing.)"}${seqTail}`
+            : where ? `${where}.)` : seqTail;
           const verdict = result.totalCTC < 0.3
             ? `${personaName} should handle ${subject} comfortably.`
             : result.totalCTC < 0.6
@@ -1353,9 +1387,7 @@ Begin with the first persona: ${personas[0]}
         ...(sequentialResult ? { sequential: sequentialResult } : {}),
         scope: measureScope,
         pageScreens: pageMetrics.pageScreens,
-        scopeNote: measureScope === "full_page"
-          ? "Whole-page measurement: every laid-out element counted, densities normalised against document area, and the page scrolled first so lazy content exists. Not comparable with viewport-scoped numbers, including every CTC this tool published before 2026-08-02."
-          : "VIEWPORT ONLY: demand is computed from elements intersecting the first screenful. Content below the fold contributed nothing. This was the tool's undeclared behaviour until 2026-08-02 — measured on a 229-link, 8-screen page it saw 4 links and 47 words and reported LOWER cognitive load than a shorter homepage. Pass scope='full_page' to measure the whole page.",
+        scopeNote: prose.scopeNote,
         ...(familiarityWarning ? { familiarityWarning, siteFamiliarityAdjusted: true, originalFamiliarity: requestedFamiliarity, effectiveFamiliarity: traits.siteFamiliarity } : {}),
         // Reports what was USED, not what was passed.
         //
