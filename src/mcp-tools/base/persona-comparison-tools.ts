@@ -898,10 +898,33 @@ Begin with the first persona: ${personas[0]}
       // ternaries testing `=== "full_page"`, which is how `sequential` came to
       // describe itself as viewport-only while reporting whole-document numbers.
       const prose = scopeProse(measureScope);
+
+      // ONE geometry measurement for the whole call, taken here because the
+      // aggregate extraction below runs FIRST and the sequential pass after it.
+      //
+      // `pageScreens` (the caption) and `screenCount` (how many screens the
+      // sequential curve is scored over) were two independent derivations of one
+      // quantity, from two separate height reads at two different moments. That is
+      // the same class as a capacity bridge wired into one of two tools: one model,
+      // two consumers, separately wired -- and it is a defect whether or not the
+      // height is stable.
+      //
+      // Sharing the FUNCTION would not have been enough. Two calls at two moments
+      // agree on arithmetic and still read a page that moved in between: the caption
+      // could say 6.7 while the curve was scored over 6 screens, and nothing in the
+      // payload would show the disagreement, because a 6-screen curve is internally
+      // consistent and unmarked.
+      const { measurePageGeometry } = await import("../../visual/cognitive-transport.js");
+      const sharedGeometry = await measurePageGeometry(page);
+
       // Sequential scores each screen on its own content; the aggregate path
       // below still runs so every existing field keeps its meaning, measured at
       // full_page since that is the comparable whole-document number.
-      const pageMetrics = await extractPageMetrics(page, measureScope === "sequential" ? "full_page" : measureScope);
+      const pageMetrics = await extractPageMetrics(
+        page,
+        measureScope === "sequential" ? "full_page" : measureScope,
+        sharedGeometry,
+      );
 
       // Compute full COT
       const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
@@ -914,7 +937,9 @@ Begin with the first persona: ${personas[0]}
         try {
           const { extractPerScreenMetrics } = await import("../../visual/cognitive-transport.js");
           const { computeSequentialScrollCTC } = await import("../../visual/cognitive-transport-chain.js");
-          const perScreen = await extractPerScreenMetrics(page);
+          // The SAME measurement the caption came from, so the curve length and the
+          // caption cannot disagree.
+          const perScreen = await extractPerScreenMetrics(page, 20, sharedGeometry);
           const seqProfile = buildOTProfile(personaName, traits);
           const seq = computeSequentialScrollCTC(
             seqProfile,
@@ -923,6 +948,19 @@ Begin with the first persona: ${personas[0]}
           );
           sequentialResult = {
             screensMeasured: seq.screens.length,
+            // The INPUTS the screen count came from, published so a differing curve is
+            // diagnosable instead of guessable. An external client measured 5.8 screens
+            // on a session's first navigation and 6.7 on every later one; with only
+            // `screensMeasured: 7` in the payload a 6-screen curve is internally
+            // consistent and unmarked, which is the shape of every defect this tool has
+            // had. An invisible variance is indistinguishable from no variance.
+            geometry: {
+              documentHeight: sharedGeometry.documentHeight,
+              viewportHeight: sharedGeometry.viewportHeight,
+              pageScreens: sharedGeometry.pageScreens,
+              screenCount: sharedGeometry.screenCount,
+              note: "One measurement, shared by the curve length and by the pageScreens caption, so the two cannot disagree. Page height can change between navigations; if two runs of the same URL differ, compare documentHeight before anything else.",
+            },
             totalAbandonment: `${Math.round(seq.totalAbandonment * 100)}%`,
             expectedDepthScreens: seq.expectedDepthScreens,
             dropOff: seq.dropOff
