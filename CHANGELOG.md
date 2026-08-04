@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.81.3](https://github.com/alexandriashai/cbrowser/compare/v18.81.2...v18.81.3) (2026-08-04)
+
+### Fixed
+
+* one height measurement, shared by every derivation of it ([ffdd1d1](https://github.com/alexandriashai/cbrowser/commit/ffdd1d1a234db64c1760bdda7a0f91ee915258d4))
+
 ## [18.81.2](https://github.com/alexandriashai/cbrowser/compare/v18.81.1...v18.81.2) (2026-08-03)
 
 ### Fixed
