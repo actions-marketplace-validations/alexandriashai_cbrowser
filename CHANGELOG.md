@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.82.0](https://github.com/alexandriashai/cbrowser/compare/v18.81.4...v18.82.0) (2026-08-04)
+
+### Added
+
+* **attention:** calibrate the model against real eye-tracking ([2da2058](https://github.com/alexandriashai/cbrowser/commit/2da205888a7ba7ba12a8efb6cfca1adbb311f4ad))
+
+### Fixed
+
+* **agent-ready-audit:** stop grading pages that never loaded ([515484d](https://github.com/alexandriashai/cbrowser/commit/515484d187c9ea0b8c9758bcb72cc1aef4e0740d))
+
 ## [18.81.4](https://github.com/alexandriashai/cbrowser/compare/v18.81.3...v18.81.4) (2026-08-04)
 
 ## [18.81.3](https://github.com/alexandriashai/cbrowser/compare/v18.81.2...v18.81.3) (2026-08-04)
