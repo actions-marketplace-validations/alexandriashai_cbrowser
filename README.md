@@ -71,16 +71,22 @@ npx cbrowser config set-api-key <your-anthropic-key>
 
 ## Cognitive Transport Chain
 
-The 6-layer Sequential Transport Chain computes exactly how hard your page is for any persona — and predicts whether they'll abandon:
+The eight-layer Sequential Transport Chain computes exactly how hard your page is for any persona - and predicts whether they'll abandon. Each layer answers one question about the visitor:
 
-| Layer | What It Measures | Research Basis |
-|-------|-----------------|----------------|
-| **Saliency** | Visual attention capture | CIE-Lab W₂ perceptual model |
-| **Cognitive Load** | Information processing demand | Sweller (1988) CLT |
-| **Decision** | Choice complexity and fatigue | Hick-Hyman Law |
-| **Motor** | Physical interaction difficulty | Grossman & Balakrishnan (2005) |
-| **Frustration** | Emotional cost accumulation | Ceaparu et al. (2004) |
-| **Readability** | Text comprehension effort | Perry & Zorzi (2013) reading model |
+| Layer | The Question It Answers | Research Basis |
+|-------|------------------------|----------------|
+| **Saliency** | Can they find the thing they came for? | CIE-Lab W₂ perceptual model |
+| **Cognitive Load** | Is there more on this page than they can hold at once? | Sweller (1988) CLT |
+| **Decision** | Are there too many choices to pick between? | Hick-Hyman Law |
+| **Motor** | Can they physically hit the target? | Grossman & Balakrishnan (2005) |
+| **Motor Procedure** | Can they get through the whole sequence, not just one click? | Procedural fluency (split from Motor) |
+| **Frustration** | How close are they to giving up? | Ceaparu et al. (2004) |
+| **Readability** | Can they decode the words on the page? | Perry & Zorzi (2013) reading model |
+| **Reading Attention** | Can they hold the line long enough to finish? | Sustained attention (split from Readability) |
+
+The chain is *sequential* because attention is a budget, not a checklist. Each layer's cost is paid from whatever the layers before it left behind: a visitor who burned working memory just finding the button has less left for the form, and a persona who arrives at your pricing table already frustrated reads it differently than one who got there clean. That's why a page that exhausts people early scores differently from one that is uniformly hard, and why the bottleneck layer matters more than the average.
+
+Two layers were split out of their neighbors because they fail for different reasons. **Motor Procedure** is separate from **Motor** because hitting a target and completing a sequence are different failures - you can land every click and still lose your place halfway through a form. **Reading Attention** is separate from **Readability** because decoding text and holding your place in it are different abilities - an ADHD reader typically decodes fine and loses the thread, and a single "reading" score can't say that.
 
 ```bash
 npx cbrowser cognitive-effort --url "https://your-site.com" --persona first-timer
