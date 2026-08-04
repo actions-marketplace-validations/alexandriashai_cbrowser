@@ -80,6 +80,13 @@ export interface SequentialTransportResult {
   bottleneckLayer: string;
   /** Predicted abandonment probability (0-1) */
   abandonmentRisk: number;
+  /**
+   * Capacity remaining when the chain finished, per dimension.
+   *
+   * Feed it back in as `carriedCapacity` to score the next screen against the
+   * budget this one left behind.
+   */
+  remainingCapacity: Record<string, number>;
 }
 
 // ── Constants ──
@@ -145,8 +152,16 @@ export const DEMAND_DIMENSIONS = [
 /**
  * Layer definitions for the sequential transport chain.
  * Order reflects temporal processing: perception -> cognition -> decision -> action -> affect -> comprehension.
+ *
+ * Exported (2026-08-03) so that prose ABOUT the chain can be checked against the
+ * chain. Two served strings stated a layer count -- a tool description and the
+ * server's own instructions -- and they disagreed with each other and with this
+ * array, because nothing could compare them to it. The instructions still said
+ * "6-layer" two layers after the chain became eight, and an external client read it
+ * and reasoned about a six-layer model. A count in a served string is a claim about
+ * this list; a claim about a list should be checkable against the list.
  */
-const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
+export const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   {
     name: 'saliency',
     traits: ['changeBlindness', 'attentionPattern'],
@@ -170,11 +185,48 @@ const LAYER_DEFINITIONS: Array<{ name: string; traits: string[] }> = [
   },
   {
     name: 'motor',
-    // `patience` REMOVED: it is a disposition, it already drives the frustration
-    // layer, and here it made two personas with no motor traits differ 5.6x in
-    // motor cost. proceduralFluency stays -- multi-step flow execution is a real
-    // motor-adjacent capacity -- alongside the Fitts throughput bridge.
-    traits: ['proceduralFluency', 'motorCapacity'],
+    // POINTING ONLY, as of 2026-08-03 (D-9 resolution). This layer answers one
+    // question: how expensive is it for this person to ACQUIRE a target.
+    //
+    // It used to sum pointing capability and procedural execution at equal
+    // weight in one scalar, which is the same failure shape the readability
+    // layer had before it was split. Measured on identical demand:
+    //
+    //   motor-impairment-tremor  cost 0.072   hitProbability 48.4%
+    //   elderly-user             cost 0.107   hitProbability 81.9%
+    //
+    // Worse pointing, lower cost -- because the tremor persona's procedural
+    // fluency (0.60) outweighed its pointing deficit against elderly's 0.40.
+    // `motorAccessibility` is reported in the same response and tracks only
+    // pointing, so every ordering check against it read as broken.
+    //
+    // `proceduralFluency` moved to `motorProcedure` below. Nothing was weighted
+    // to achieve this: the two layers contribute additively like every other
+    // layer, which makes their relative contribution visible and inspectable
+    // rather than hidden inside a scalar. There is no empirical basis for a
+    // relative weighting between target acquisition and sequence execution, and
+    // a constant invented here would acquire false authority by ending up in a
+    // research instrument. The calibration slot is deliberately left empty --
+    // see MOTOR_LAYER_WEIGHTS.
+    traits: ['motorCapacity'],
+  },
+  {
+    name: 'motorProcedure',
+    // Executing an interaction SEQUENCE once a target has been acquired --
+    // multi-step flows, form progressions, anything where the cost is in the
+    // order of operations rather than in hitting the control.
+    //
+    // Separate from `motor` because the two genuinely move in opposite
+    // directions for the same persona, which is precisely what makes them
+    // separable rather than one number: a tremor persona can be a poor pointer
+    // and a competent sequence-follower, and an elderly persona the reverse.
+    //
+    // DEMAND IS ABSOLUTE, not area-normalised. The number of steps in a
+    // sequence does not shrink because the page is tall. Its demand derives
+    // from interactiveElementCount, which is a raw count -- so there is nothing
+    // to remove here today, and this is recorded for the D-12 layer
+    // classification table rather than decided silently in code.
+    traits: ['proceduralFluency'],
   },
   {
     name: 'frustration',
@@ -251,46 +303,157 @@ const WEIGHT_SURPLUS = 0.3;   // capacity > demand: low cost (surplus is cheap)
 /**
  * Dimensions where having MORE than the page asks for costs nothing at all.
  *
- * Surplus is cheap rather than free for most traits, which is defensible: a
- * maximiser on a trivial page really does spend effort the page did not need.
- * It is not defensible for site knowledge. Knowing a site better cannot make it
- * harder to use, and because familiarity is a parameter the caller sets
- * explicitly, the wrongness is directly visible rather than buried.
+ * THE RULE, decided 2026-08-03, and it is derivable rather than chosen: surplus
+ * is FREE where the dimension's own `highEnd` names an ABILITY, and BILLED
+ * where it names a TENDENCY, a BIAS, or a SUSCEPTIBILITY. Read the trait
+ * reference and the classification falls out; a new dimension is classified by
+ * its own definition, not by anyone's taste.
  *
- * Measured on cbrowser.ai, a shallow site, right after wiring the demand term:
- * familiarity 0 gave total 0.19 and familiarity 1 gave 0.268 — the daily user
- * charged more than the first-time visitor, because low navigation depth means
- * low demand and a familiarity of 1.0 is then almost entirely surplus. An
- * inverted knob is worse than an inert one: it produces a confident number
- * pointing the wrong way. (2026-08-02)
+ * Why the split is real. Billing surplus is defensible for a disposition: a
+ * maximiser on a trivial page genuinely over-deliberates, and a careful reader
+ * genuinely reads a page that did not need reading. That is effort spent. It is
+ * NOT defensible for an ability -- having more working memory, or recognising
+ * conventions faster, than a page requires cannot make that page harder. The
+ * capacity/disposition axis is the same one that moved readingTendency to the
+ * demand side and kept comprehension out of the readability layer.
  *
- * `sustainedAttention` joins it on the same argument: being able to concentrate
- * harder than a page requires cannot make that page harder to read. Billed as
- * surplus it charged `power-user` 0.027 of readability cost on a text-dense
- * page for having an attention capacity of 0.85 against a demand of 0.50 --
- * i.e. a penalty for concentrating well. Free, it charges nothing.
+ * What it was costing. Measured on a mid-density page before this change,
+ * SEVENTY PERCENT of `power-user`'s total cost was surplus, and 60% of
+ * `cognitive-adhd`'s. A uniform-capacity sweep produced a U:
  *
- * `readingCapacity` joined them on 2026-08-02, and unlike the other two it is
- * REQUIRED rather than merely defensible. `readability` is now decoding-only
- * and carries a stated contract -- lower `legibilityQuality` for someone means
- * higher readability cost for them. Both quantities derive from the same
- * reading profile, so the contract is monotonic exactly as long as cost falls
- * monotonically in capacity. Billed surplus breaks that at the top: above the
- * page's demand, cost starts RISING again at 0.3 per unit, so the strongest
- * readers re-enter the cost curve from the other side and a graph of
- * legibility against cost turns back on itself.
+ *   capacity  0.2    0.4    0.6    0.8    1.0
+ *   cost      0.549  0.081  0.076  0.179  0.516
  *
- * This was deferred one commit earlier as "a calibration decision on numbers
- * customers have already seen". Splitting the layer removed the choice: a
- * contract the tool prints in its own output has to hold.
+ * A maximally capable persona scored almost exactly as badly as a maximally
+ * impaired one, for opposite reasons, and the output could not tell you which.
+ * That is the same defect as every other one this campaign found: a number that
+ * does not mean what its name says.
+ *
+ * Four dimensions are billed BECAUSE THEIR SCALE IS INVERTED -- changeBlindness,
+ * trustCalibration, curiosity and attentionPattern name a deficit at their high
+ * end ("misses most changes", "accepts claims at face value", "easily
+ * distracted"). Surplus there is more of the deficit, and billing it is
+ * correct.
+ *
+ * `selfEfficacy` is the weakest call in the free set: over-confidence is a real
+ * hazard, but its cost surfaces through riskTolerance and trustCalibration
+ * rather than as effort spent, so it is treated as the ability its high end
+ * describes.
  */
-const SURPLUS_FREE_DIMENSIONS = new Set(['siteFamiliarity', 'sustainedAttention', 'readingCapacity']);
+const SURPLUS_FREE_DIMENSIONS = new Set([
+  // Derived capacity bridges -- pure abilities by construction.
+  'readingCapacity', 'motorCapacity', 'sustainedAttention', 'processingSpeed', 'textProcessing', 'motorPrecision',
+  // Experience. Knowing a site better cannot make it harder to use.
+  'siteFamiliarity',
+  // Abilities: every one of these has a highEnd naming something a person CAN
+  // do, not something they TEND to do.
+  'comprehension',           // "Instant recognition of all conventions"
+  'workingMemory',           // "Perfect recall of all attempts and context"
+  'resilience',              // "Instantly shrugs off errors, stays positive"
+  'selfEfficacy',            // "I can solve anything"
+  'proceduralFluency',       // "Follows procedures precisely and efficiently"
+  'transferLearning',        // "Instantly applies patterns across all interfaces"
+  'interruptRecovery',       // "Seamlessly resumes exactly where left off"
+  'mentalModelFlexibility',  // "Highly adaptive - quickly forms new mental models"
+  'informationForaging',     // "Follows information scent efficiently, abandons low-yield paths"
+]);
+
+/**
+ * Dimensions whose surplus IS billed, and why each one earns it.
+ *
+ * Stated explicitly rather than left as "everything else", so that a dimension
+ * added to DEMAND_DIMENSIONS cannot acquire a billing treatment by default. A
+ * test asserts every dimension appears in exactly one of the two sets.
+ */
+const SURPLUS_BILLED_DIMENSIONS = new Set([
+  'patience',                // "Waits indefinitely" -- waiting longer than needed is time spent
+  'riskTolerance',           // "Clicks anything that might work" -- a tendency, and a hazard
+  'persistence',             // "Keeps trying same approach repeatedly" -- repeating unnecessary work
+  'readingTendency',         // "Reads every word before acting" -- reading a page that did not need it
+  'emotionalContagion',      // susceptibility to the interface's tone
+  'satisficing',             // a decision STRATEGY, not an ability
+  'anchoringBias',           // a bias, by name
+  'fearOfMissingOut',        // susceptibility to urgency and scarcity
+  'socialProofSensitivity',  // susceptibility to what others chose
+  'metacognitivePlanning',   // "Careful planning before any action" -- planning a trivial page is waste
+  // Inverted scales: the HIGH end is the deficit, so surplus is more deficit.
+  'changeBlindness',         // "Misses most changes outside focus area"
+  'trustCalibration',        // "Highly trusting, accepts claims at face value"
+  'curiosity',               // "Easily distracted by interesting elements"
+  'attentionPattern',        // scanning-vs-thorough disposition
+]);
+
+/**
+ * Hill exponent on the abandonment curve. UNCALIBRATED.
+ *
+ * Same status as MOTOR_LAYER_WEIGHTS and flagged for the same reason: it is
+ * doing a great deal of work and nothing empirical set it. At 2 the curve is
+ * superlinear, which means the same total cost delivered in small increments
+ * barely registers -- splitting a fixed deficit of 0.607 across 14 steps takes
+ * cumulative abandonment from 22% to 2%.
+ *
+ * That matters beyond the scalar. Any future per-screen hazard model inherits
+ * this exponent, and at 2 it would make a long page SAFER than a short one with
+ * identical total demand purely from chunking. The exponent is not the fix for
+ * that -- per-screen demand measured on its own content is -- but a sequential
+ * model must not be built without knowing this constant is load-bearing.
+ *
+ * What would settle it: observed abandonment against measured task difficulty,
+ * or a dose-response fit on real session data. Until then it is a shape someone
+ * chose, not a shape anyone measured. (2026-08-03)
+ */
+export const ABANDONMENT_HILL_EXPONENT = 2;
+
+/**
+ * Relative weighting between the two motor layers. BOTH DEFAULT TO 1.0 AND ARE
+ * UNCALIBRATED.
+ *
+ * They exist as named constants so that if a weighting is ever introduced it is
+ * visible, greppable and dated, rather than baked into the cost function as a
+ * bare multiplier. Nothing reads them today; the layers contribute additively
+ * like every other layer.
+ *
+ * What would settle them: motor-control literature on tremor adaptation in
+ * target acquisition, or validation of chain output against measured
+ * task-completion times. Until one of those exists, a number here would be an
+ * invention wearing the authority of a research instrument. (2026-08-03)
+ */
+export const MOTOR_LAYER_WEIGHTS = {
+  /** UNCALIBRATED. Target acquisition. */
+  motor: 1.0,
+  /** UNCALIBRATED. Sequence execution. */
+  motorProcedure: 1.0,
+} as const;
 
 /** Capacity depletion rate per layer (alpha_i, Section 3.4) */
 const DEPLETION_RATE = 0.15;
 
 /** Minimum residual capacity floor (prevents total exhaustion) */
 const CAPACITY_FLOOR = 0.05;
+
+/**
+ * Numerical floor on residual capacity. NOT a behavioural limit.
+ *
+ * CAPACITY_FLOOR above was doing behavioural work it should not have: at 0.05
+ * it was reachable inside a single page, and once reached the account stopped
+ * responding to cost at all. Proportional drawdown asymptotes toward zero
+ * instead, so this exists only to keep the value away from denormals and to
+ * keep `gap = demand - capacity` finite. It is three orders of magnitude below
+ * anything a persona reaches in practice. (2026-08-03)
+ */
+const CAPACITY_EPSILON = 1e-4;
+
+/**
+ * Largest fraction of remaining capacity one layer may draw. UNCALIBRATED.
+ *
+ * Prevents a single very expensive layer from emptying the account outright,
+ * which would reintroduce the saturation this replaced. 0.5 means no layer can
+ * take more than half of what is left, whatever its cost.
+ *
+ * What would settle it: within-session effort measurements across a task
+ * sequence. Same status as ABANDONMENT_HILL_EXPONENT and MOTOR_LAYER_WEIGHTS.
+ */
+const MAX_DRAWDOWN_FRACTION = 0.5;
 
 // ── Sigmoid Helper ──
 
@@ -467,7 +630,30 @@ export function computeDemandDistribution(pageMetrics: PageMetrics): DemandDistr
   // measured: at a flat 1.0 base, ADHD outscored dyslexic on readability on a
   // page with animationLevel 0, which is the wrong answer.
   const distractorPressure = Math.min(1, animDemand * 0.7 + visDemand * 0.3);
-  const sustainDemand = Math.min(1, textDemand * 0.7 * (1 + distractorPressure * 0.7));
+  // `max(textDens, infoDensity)`, not `textDens` alone -- the same base
+  // readingCapacity uses below, and for the same reason.
+  //
+  // textDensity is AREA-NORMALISED: logScale(textLength / (viewportArea * 0.001)),
+  // and at full_page the divisor is the whole document height. So on a tall page
+  // it FALLS as the page grows -- measured on a 6.7-screen page, 0.698 -> 0.492 --
+  // and since it was the multiplicative base here, attentional reading cost fell
+  // with it, to zero for two of four personas. A longer page came out SAFER on
+  // this layer, which is the direction the whole scoring model forbids.
+  //
+  // Attentional reading cost is absolute: twice the prose is twice the
+  // line-holding, however it is spread. informationDensity is logScale(textLength,
+  // 5000) with no area term -- it RISES 0.587 -> 0.799 on the same measurement --
+  // which is exactly why readability moved correctly while its sibling inverted.
+  // Sharing the base makes the two halves of reading agree about how much there is
+  // to read; the 0.7 vs 0.9 coefficients still order them.
+  //
+  // NOT applied to saliency, whose fall has a different cause: its inputs
+  // (visualComplexity, animationLevel) are counts and RISE with page size. It falls
+  // because its traits are surplus-BILLED, so rising demand shrinks the surplus gap
+  // and the 0.3-weighted cost with it. Same symptom, unrelated mechanism, and it
+  // needs its own decision rather than this one applied twice.
+  const sustainBase = Math.max(textDemand, infoDensity);
+  const sustainDemand = Math.min(1, sustainBase * 0.7 * (1 + distractorPressure * 0.7));
   demands.sustainedAttention = Math.max(demands.sustainedAttention, sustainDemand);
   variance.sustainedAttention += textDens * 0.1 + animLevel * 0.08;
 
@@ -646,7 +832,18 @@ const VALUE_DEMAND_MODULATION: Array<{
 export function computeSequentialCTC(
   persona: OTCognitiveProfile,
   demand: DemandDistribution,
-  options?: { asymmetric?: boolean; interactions?: boolean; schwartzValues?: Record<string, number> },
+  options?: {
+    asymmetric?: boolean; interactions?: boolean; schwartzValues?: Record<string, number>;
+    /**
+     * Capacity carried in from a previous screen. Omit to start from the
+     * persona's full trait vector, which is what a single-page run does.
+     *
+     * This is the whole mechanism behind sequential scoring: a screen is not a
+     * fresh persona, it is the same account after everything above it has been
+     * spent. (2026-08-03)
+     */
+    carriedCapacity?: Record<string, number>;
+  },
 ): SequentialTransportResult {
   const useAsymmetric = options?.asymmetric !== false; // default true
   const useInteractions = options?.interactions !== false; // default true
@@ -718,7 +915,7 @@ export function computeSequentialCTC(
   // Initialize residual capacity from persona traits
   const residualCapacity: Record<string, number> = {};
   for (const dim of DEMAND_DIMENSIONS) {
-    residualCapacity[dim] = traitValue(persona.traits, dim);
+    residualCapacity[dim] = options?.carriedCapacity?.[dim] ?? traitValue(persona.traits, dim);
   }
 
   const layers: LayerResult[] = [];
@@ -787,18 +984,41 @@ export function computeSequentialCTC(
     // Each trait in this layer loses capacity proportional to the layer's total cost
     const capacityConsumed = DEPLETION_RATE * layerCost;
     if (contentScale > 0.1) {
+      // PROPORTIONAL DRAWDOWN, not subtraction against a clamp.
+      //
+      // Capacity used to be spent as a flat amount and clamped at
+      // CAPACITY_FLOOR, which meant the account did not deplete -- it hit a
+      // wall and stopped carrying information. Measured on a dense page in a
+      // single eight-layer run: `intellectual-disability` finished with TEN
+      // dimensions pinned at exactly 0.05 and `elderly-user` with five. Every
+      // layer after that point saw an identical capacity vector, so the chain
+      // could no longer tell them apart. The personas the accessibility model
+      // exists to describe were the ones whose vector collapsed to a constant.
+      //
+      // Spending a FRACTION of what remains asymptotes toward zero instead of
+      // reaching it. A full account gives up more per unit cost than an empty
+      // one, the balance stays strictly ordered and strictly decreasing, and
+      // every later step is still distinguishable from the one before it.
+      // Measured over 112 steps: the clamped form produced 1 distinct value
+      // across the final four screens, this produces 32 of 32.
+      //
+      // This also makes the sequential model well-posed. Chaining screens is
+      // now just more draws on the same account, with no wall to hit at screen
+      // three and no `k` anywhere in the arithmetic. (2026-08-03)
+      const drawFraction = Math.min(MAX_DRAWDOWN_FRACTION, DEPLETION_RATE * layerCost);
       for (const trait of layerDef.traits) {
-        residualCapacity[trait] -= capacityConsumed;
-        residualCapacity[trait] = Math.max(CAPACITY_FLOOR, residualCapacity[trait]);
+        residualCapacity[trait] *= (1 - drawFraction);
+        residualCapacity[trait] = Math.max(CAPACITY_EPSILON, residualCapacity[trait]);
       }
 
       // Also deplete shared traits that appear in later layers
       // (cross-layer fatigue: cognitive exhaustion bleeds across boundaries)
+      const indirectFraction = Math.min(MAX_DRAWDOWN_FRACTION, (DEPLETION_RATE * 0.5) * layerCost);
       for (const dim of DEMAND_DIMENSIONS) {
         if (!layerDef.traits.includes(dim)) {
           // Indirect depletion at half rate
-          residualCapacity[dim] -= (DEPLETION_RATE * 0.5) * layerCost;
-          residualCapacity[dim] = Math.max(CAPACITY_FLOOR, residualCapacity[dim]);
+          residualCapacity[dim] *= (1 - indirectFraction);
+          residualCapacity[dim] = Math.max(CAPACITY_EPSILON, residualCapacity[dim]);
         }
       }
     }
@@ -887,7 +1107,7 @@ export function computeSequentialCTC(
   // Floored so a persona with no patience at all does not divide by zero and
   // read as certain abandonment on a blank page.
   const tolerance = Math.max(0.05, effectivePatience * 1.5);
-  const ABANDONMENT_STEEPNESS = 2;
+  const ABANDONMENT_STEEPNESS = ABANDONMENT_HILL_EXPONENT;
   const abandonmentRisk = adjustedCost <= 0 ? 0 : Math.max(0, Math.min(1,
     Math.pow(adjustedCost, ABANDONMENT_STEEPNESS) /
     (Math.pow(adjustedCost, ABANDONMENT_STEEPNESS) + Math.pow(tolerance, ABANDONMENT_STEEPNESS))
@@ -908,6 +1128,7 @@ export function computeSequentialCTC(
     traitCosts,
     bottleneckLayer,
     abandonmentRisk,
+    remainingCapacity: { ...residualCapacity },
   };
 }
 
@@ -1035,4 +1256,124 @@ export function baselineCTC(persona: OTCognitiveProfile): SequentialTransportRes
     emptyDemand.variance[dim] = 0;
   }
   return computeSequentialCTC(persona, emptyDemand);
+}
+
+// ── Sequential (per-screen) scoring ──
+
+export interface ScreenResult {
+  /** 1-based screen index from the top of the document. */
+  screen: number;
+  /** Layer costs for this screen alone. */
+  layers: LayerResult[];
+  /** This screen's own transport cost. */
+  screenCTC: number;
+  /** P(this persona stops HERE, given they reached this screen). */
+  stopHazard: number;
+  /** P(they have stopped at or before this screen). */
+  cumulativeAbandonment: number;
+  /** P(they are still reading when this screen begins). */
+  reachProbability: number;
+  /** The costliest layer on this screen. */
+  bottleneckLayer: string;
+  /** Capacity left when this screen finished. */
+  remainingCapacity: Record<string, number>;
+}
+
+export interface SequentialScrollResult {
+  screens: ScreenResult[];
+  /** P(abandoned by the end of the document). */
+  totalAbandonment: number;
+  /** Expected number of screens reached, weighted by reach probability. */
+  expectedDepthScreens: number;
+  /** The screen where the most sessions end, and the layer that ends them. */
+  dropOff: { screen: number; layer: string; share: number } | null;
+  /** Demand each screen contributed, weighted by the chance of reaching it. */
+  reachWeightedCTC: number;
+}
+
+/**
+ * Score a page as a SEQUENCE of screens rather than one aggregate.
+ *
+ * The aggregate model answers "what would this cost if the whole document were
+ * processed at once", which is a counterfactual almost nobody performs. This
+ * answers the question customers actually have: where do people stop.
+ *
+ * Three things make it different from dividing the aggregate by k, which was
+ * the obvious wrong implementation:
+ *
+ * 1. EACH SCREEN'S DEMAND IS MEASURED ON ITS OWN CONTENT. Splitting a fixed
+ *    total across k screens makes long pages safer than short ones -- measured,
+ *    a deficit of 0.607 split fourteen ways drops cumulative abandonment from
+ *    22% to 2%, because the hazard is superlinear. A genuinely sparse long page
+ *    SHOULD be safer; a dense one must not become safe by being tall.
+ * 2. CAPACITY CARRIES FORWARD. Screen 7 is scored against the budget screens
+ *    1-6 left, not against a fresh persona. This is why depletion had to stop
+ *    saturating first: with the old clamp, every screen after the third saw an
+ *    identical capacity vector.
+ * 3. DEMAND IS WEIGHTED BY THE CHANCE OF EVER GETTING THERE. A cost on screen
+ *    twelve that 4% of sessions reach is not a cost of the same size as one on
+ *    screen one.
+ *
+ * The hazard is the same Hill function the aggregate uses, applied per screen
+ * against the capacity remaining at that point -- so ABANDONMENT_HILL_EXPONENT
+ * is load-bearing here too and remains uncalibrated.
+ */
+export function computeSequentialScrollCTC(
+  persona: OTCognitiveProfile,
+  screenDemands: DemandDistribution[],
+  options?: { asymmetric?: boolean; interactions?: boolean; schwartzValues?: Record<string, number> },
+): SequentialScrollResult {
+  const screens: ScreenResult[] = [];
+  let carried: Record<string, number> | undefined;
+  let survive = 1;
+
+  const patience = traitValue(persona.traits, 'patience');
+  const resilience = traitValue(persona.traits, 'resilience');
+  const tolerance = Math.max(0.05, (patience * 0.7 + resilience * 0.3) * 1.5);
+
+  for (let i = 0; i < screenDemands.length; i++) {
+    const r = computeSequentialCTC(persona, screenDemands[i], { ...options, carriedCapacity: carried });
+    carried = r.remainingCapacity;
+
+    // Hazard for THIS screen, from this screen's own unmet demand. Surplus
+    // relief applies as it does in the aggregate.
+    const screenCost = Math.max(0, r.deficitCost - r.surplusCost * 0.3);
+    const stopHazard = screenCost <= 0 ? 0 : Math.min(1,
+      Math.pow(screenCost, ABANDONMENT_HILL_EXPONENT) /
+      (Math.pow(screenCost, ABANDONMENT_HILL_EXPONENT) + Math.pow(tolerance, ABANDONMENT_HILL_EXPONENT)));
+
+    const reachProbability = survive;
+    survive = survive * (1 - stopHazard);
+
+    screens.push({
+      screen: i + 1,
+      layers: r.layers,
+      screenCTC: Math.round(r.totalCTC * 1000) / 1000,
+      stopHazard: Math.round(stopHazard * 1000) / 1000,
+      cumulativeAbandonment: Math.round((1 - survive) * 1000) / 1000,
+      reachProbability: Math.round(reachProbability * 1000) / 1000,
+      bottleneckLayer: r.bottleneckLayer,
+      remainingCapacity: r.remainingCapacity,
+    });
+  }
+
+  // Where the most sessions end. Mass lost on a screen is reach x hazard, so a
+  // brutal screen nobody reaches does not win.
+  let dropOff: SequentialScrollResult["dropOff"] = null;
+  for (const s of screens) {
+    const lost = s.reachProbability * s.stopHazard;
+    if (!dropOff || lost > dropOff.share) {
+      dropOff = { screen: s.screen, layer: s.bottleneckLayer, share: Math.round(lost * 1000) / 1000 };
+    }
+  }
+  if (dropOff && dropOff.share <= 0) dropOff = null;
+
+  return {
+    screens,
+    totalAbandonment: Math.round((1 - survive) * 1000) / 1000,
+    // Sum of reach probabilities: the expected count of screens actually seen.
+    expectedDepthScreens: Math.round(screens.reduce((a, s) => a + s.reachProbability, 0) * 100) / 100,
+    dropOff,
+    reachWeightedCTC: Math.round(screens.reduce((a, s) => a + s.reachProbability * s.screenCTC, 0) * 1000) / 1000,
+  };
 }

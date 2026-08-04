@@ -23,6 +23,8 @@
  * @since 2026-08-03
  */
 import { test, expect, describe } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { COGNITIVE_TRAITS, buildOTCognitiveProfile } from "../src/visual/cognitive-transport.js";
 import { computeDemandDistribution, computeSequentialCTC } from "../src/visual/cognitive-transport-chain.js";
 
@@ -123,7 +125,42 @@ describe("a layer at its cost floor still says something (BUG-18)", () => {
   test("the tool emits headroom only at the floor, never as a second cost", () => {
     const src = require("node:fs").readFileSync(
       require("node:path").join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
-    expect(src).toContain("l.transportCost < 0.001 && l.headroom > 0");
+    // The floor gate itself: headroom is a floor-only field, never a second cost.
+    expect(src).toContain("l.transportCost < 0.001");
     expect(src).toContain("costIsAtFloor: true");
+  });
+
+  test("a floored layer with NO headroom is reported, not suppressed", () => {
+    // The original gate was `transportCost < 0.001 && headroom > 0`, which hid the
+    // worse of the two floors. A layer at zero cost with capacity to spare was
+    // never challenged; one at zero cost with nothing left is exhausted, and both
+    // print `cost: 0`. Suppressing the second left the caller unable to tell them
+    // apart -- while the reading-model note in the same payload told them to read a
+    // headroom field that was not emitted. (BUG-28)
+    const src = require("node:fs").readFileSync(
+      require("node:path").join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    expect(src).not.toContain("l.transportCost < 0.001 && l.headroom > 0");
+    expect(src).toContain("floorMeaning");
+    expect(src).toContain("exhausted");
+    expect(src).toContain("unchallenged");
+  });
+});
+
+describe("the uncalibrated constants are named and flagged", () => {
+  test("the Hill exponent is exported, defaulted, and marked uncalibrated", async () => {
+    // It is doing most of the work in the k-split table -- 22% to 2% across 14
+    // steps on identical total demand -- and nothing empirical set it. Same
+    // status as MOTOR_LAYER_WEIGHTS, same treatment.
+    const { ABANDONMENT_HILL_EXPONENT } = await import("../src/visual/cognitive-transport-chain.js");
+    expect(ABANDONMENT_HILL_EXPONENT).toBe(2);
+    const src = readFileSync(join(import.meta.dir, "..", "src", "visual", "cognitive-transport-chain.ts"), "utf8");
+    const block = src.slice(src.indexOf("Hill exponent on the abandonment curve"), src.indexOf("export const ABANDONMENT_HILL_EXPONENT"));
+    expect(block).toContain("UNCALIBRATED");
+    expect(block).toContain("What would settle it");
+  });
+
+  test("the cost function reads the constant rather than a literal", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "src", "visual", "cognitive-transport-chain.ts"), "utf8");
+    expect(src).toContain("ABANDONMENT_STEEPNESS = ABANDONMENT_HILL_EXPONENT");
   });
 });

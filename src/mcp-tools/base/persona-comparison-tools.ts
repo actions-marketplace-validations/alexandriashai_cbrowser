@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { resolveValuesForPersona } from "../../values/persona-values.js";
 import { writeArtifact } from "../../artifact-store.js";
+import { scopeProse } from "../../visual/scope-prose.js";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { comparePersonas } from "../../analysis/index.js";
 import { isApiKeyConfigured } from "../../cognitive/index.js";
@@ -700,7 +701,7 @@ Begin with the first persona: ${personas[0]}
   server.registerTool("cognitive_effort", {
     _meta: { ui: { resourceUri: "ui://cbrowser/effort" } },
     title: "Cognitive Effort Analysis",
-    description: "Compute total cognitive effort for a persona to use a page. MEASURES THE VIEWPORT BY DEFAULT (above the fold); pass scope='full_page' to measure the whole page. Uses the 7-layer Sequential Transport Chain: saliency → cognitive load → decision → motor → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
+    description: "Compute total cognitive effort for a persona to use a page. MEASURES THE VIEWPORT BY DEFAULT (above the fold); pass scope='full_page' to measure the whole page. Uses the 8-layer Sequential Transport Chain: saliency → cognitive load → decision → motor (target acquisition) → motor procedure (executing a sequence) → frustration → readability (decoding) → reading attention (holding the line, re-reading). IMPORTANT: High-familiarity personas (power-user, confident-user) require site knowledge. If the user asks for these personas, first check if site knowledge exists by running site_model_status. If no site knowledge exists, either (1) ask the user if they want to build it first by navigating the site, or (2) warn them that results will treat the persona as a first-time visitor. The tool returns a familiarityWarning when site knowledge is missing.",
     inputSchema: {
       url: z.string().url().describe("URL to analyze"),
       // Per RUN, not per persona. A persona is familiar with one site and new
@@ -717,7 +718,7 @@ Begin with the first persona: ${personas[0]}
       useValues: z.boolean().optional().default(false).describe("Enable motivational value modulation (Schwartz values). When true, persona values modulate saliency maps, decision costs, and frustration costs. Default: false (trait-only mode)."),
       waitAfterLoad: z.number().optional().describe("Extra ms to wait after page loads (e.g., 3000 for sites with client-side translation)"),
       waitForSelector: z.string().optional().describe("CSS selector to wait for after load (e.g., '[data-translated]')"),
-      scope: z.enum(["viewport", "full_page"]).optional().default("viewport").describe("What to measure: 'viewport' (first impression, above-the-fold — default) or 'full_page' (scroll the whole page, count every element). Viewport is right for landing-page first impressions; full_page for 'how much does this page ask of someone'. Matches empathy_audit's parameter of the same name. NOTE: every published CTC number predates this parameter and is a viewport measurement."),
+      scope: z.enum(["viewport", "full_page", "sequential"]).optional().default("viewport").describe("What to measure: 'viewport' (first impression, above-the-fold — default), 'full_page' (scroll the whole page, count every element), or 'sequential' (score each screen on its own content, carrying capacity forward, and report where people stop). Viewport and full_page match empathy_audit's parameter. 'sequential' answers a different question from either: not 'what would the whole page cost' but 'how far do they get'. NOTE: every published CTC number predates this parameter and is a viewport measurement."),
     },
     annotations: {
       title: "Cognitive Effort Analysis",
@@ -866,18 +867,17 @@ Begin with the first persona: ${personas[0]}
       // Injected here rather than stored on the persona: these are derived from
       // the persona's profile, so storing them would create a second copy that
       // can drift from the model that produces it. (2026-08-02)
+      let pointingProfileForResponse: { sigmaX: number; sigmaY: number; rho: number; throughput: number } | undefined;
       try {
-        const { getReadingProfile, getPointingProfile, readingCapacityOf, motorCapacityOf, sustainedAttentionOf } =
-          await import("../../visual/cognitive-models.js");
+        const { bridgeCapacityTraits } = await import("../../visual/cognitive-models.js");
         // accessibilityTraits passed so an author's STATED reading capacity is
         // honoured; without it the name lookup wins and the fields are inert.
         const accTraits = (personaObj as unknown as { accessibilityTraits?: Record<string, number> }).accessibilityTraits;
-        traits.readingCapacity = readingCapacityOf(getReadingProfile({ name: personaName, traits, accessibilityTraits: accTraits }));
-        traits.motorCapacity = motorCapacityOf(getPointingProfile({ name: personaName, traits }));
-        // The attentional half of reading. Unlike the other two this one has no
-        // formal model behind it -- attentionSpan is stated directly, and the
-        // fallback is interruptRecovery -- so the resolver is the whole bridge.
-        traits.sustainedAttention = sustainedAttentionOf({ traits, accessibilityTraits: accTraits });
+        // One helper, shared with site_cognitive_assessment. This block used to be
+        // inline here and NOWHERE ELSE, which is why the two tools disagreed by
+        // 2.6x on the motor layer: the other path scored against the missing-trait
+        // fallback of 0.5 and called it a pointing ability.
+        pointingProfileForResponse = bridgeCapacityTraits(personaName, traits, accTraits);
       } catch (e) {
         // Left absent rather than defaulted: a missing capacity is visible as a
         // gap, a defaulted one silently reads as average.
@@ -893,11 +893,97 @@ Begin with the first persona: ${personas[0]}
       // Extract page metrics
       const { extractPageMetrics } = await import("../../visual/cognitive-transport.js");
       const measureScope = scope ?? "viewport";
-      const pageMetrics = await extractPageMetrics(page, measureScope);
+      // Every scope-dependent SENTENCE comes from here, so the strings a test can
+      // check are the strings a caller receives. They were three separate inline
+      // ternaries testing `=== "full_page"`, which is how `sequential` came to
+      // describe itself as viewport-only while reporting whole-document numbers.
+      const prose = scopeProse(measureScope);
+
+      // ONE geometry measurement for the whole call, taken here because the
+      // aggregate extraction below runs FIRST and the sequential pass after it.
+      //
+      // `pageScreens` (the caption) and `screenCount` (how many screens the
+      // sequential curve is scored over) were two independent derivations of one
+      // quantity, from two separate height reads at two different moments. That is
+      // the same class as a capacity bridge wired into one of two tools: one model,
+      // two consumers, separately wired -- and it is a defect whether or not the
+      // height is stable.
+      //
+      // Sharing the FUNCTION would not have been enough. Two calls at two moments
+      // agree on arithmetic and still read a page that moved in between: the caption
+      // could say 6.7 while the curve was scored over 6 screens, and nothing in the
+      // payload would show the disagreement, because a 6-screen curve is internally
+      // consistent and unmarked.
+      const { measurePageGeometry } = await import("../../visual/cognitive-transport.js");
+      const sharedGeometry = await measurePageGeometry(page);
+
+      // Sequential scores each screen on its own content; the aggregate path
+      // below still runs so every existing field keeps its meaning, measured at
+      // full_page since that is the comparable whole-document number.
+      const pageMetrics = await extractPageMetrics(
+        page,
+        measureScope === "sequential" ? "full_page" : measureScope,
+        sharedGeometry,
+      );
 
       // Compute full COT
       const { computeDemandDistribution, computeSequentialCTC } = await import("../../visual/cognitive-transport-chain.js");
       const demand = computeDemandDistribution(pageMetrics);
+
+      // SEQUENTIAL PASS. Runs before the aggregate so a failure here degrades to
+      // the normal answer rather than losing the whole call.
+      let sequentialResult: Record<string, unknown> | undefined;
+      if (measureScope === "sequential") {
+        try {
+          const { extractPerScreenMetrics } = await import("../../visual/cognitive-transport.js");
+          const { computeSequentialScrollCTC } = await import("../../visual/cognitive-transport-chain.js");
+          // The SAME measurement the caption came from, so the curve length and the
+          // caption cannot disagree.
+          const perScreen = await extractPerScreenMetrics(page, 20, sharedGeometry);
+          const seqProfile = buildOTProfile(personaName, traits);
+          const seq = computeSequentialScrollCTC(
+            seqProfile,
+            perScreen.map((m) => computeDemandDistribution(m)),
+            { asymmetric: true, interactions: true },
+          );
+          sequentialResult = {
+            screensMeasured: seq.screens.length,
+            // The INPUTS the screen count came from, published so a differing curve is
+            // diagnosable instead of guessable. An external client measured 5.8 screens
+            // on a session's first navigation and 6.7 on every later one; with only
+            // `screensMeasured: 7` in the payload a 6-screen curve is internally
+            // consistent and unmarked, which is the shape of every defect this tool has
+            // had. An invisible variance is indistinguishable from no variance.
+            geometry: {
+              documentHeight: sharedGeometry.documentHeight,
+              viewportHeight: sharedGeometry.viewportHeight,
+              pageScreens: sharedGeometry.pageScreens,
+              screenCount: sharedGeometry.screenCount,
+              note: "One measurement, shared by the curve length and by the pageScreens caption, so the two cannot disagree. Page height can change between navigations; if two runs of the same URL differ, compare documentHeight before anything else.",
+            },
+            totalAbandonment: `${Math.round(seq.totalAbandonment * 100)}%`,
+            expectedDepthScreens: seq.expectedDepthScreens,
+            dropOff: seq.dropOff
+              ? { screen: seq.dropOff.screen, layer: seq.dropOff.layer, shareOfSessions: `${Math.round(seq.dropOff.share * 100)}%` }
+              : null,
+            reachWeightedCTC: seq.reachWeightedCTC,
+            curve: seq.screens.map((x) => ({
+              screen: x.screen,
+              reach: `${Math.round(x.reachProbability * 100)}%`,
+              stopHere: `${Math.round(x.stopHazard * 100)}%`,
+              cumulativeAbandonment: `${Math.round(x.cumulativeAbandonment * 100)}%`,
+              screenCTC: x.screenCTC,
+              bottleneck: x.bottleneckLayer,
+            })),
+            note: "Each screen is measured on ITS OWN content, and capacity carries forward -- screen 7 is scored against what screens 1-6 left, not against a fresh persona. Count-based demands (interactive elements, choices) charge only elements not seen on an earlier screen, so a sticky nav is one decision rather than one per screen; text and visual density are NOT deduplicated, because re-encountering text is re-reading it.",
+            differsFrom: "The aggregate `abandonmentRisk` above asks what the whole document would cost if it were all processed. This asks how far they get. They are different questions and will not agree.",
+            uncalibrated: "The per-screen hazard uses the same ABANDONMENT_HILL_EXPONENT as the aggregate, which nothing empirical set. At 2 the curve is superlinear, so this model inherits a thumb on the scale.",
+            readThisFirst: "TRUST THE SHAPE, NOT THE TOTAL. `totalAbandonment` compounds a per-screen hazard across every screen, so on a long page it saturates toward 100% almost regardless of the page -- measured, elderly-user reached 100% on a 7-screen university homepage. That is the uncalibrated exponent compounding, not a finding about that page. `expectedDepthScreens` and `dropOff` are the numbers to act on: they say how far people get and what stops them, and both depend on the RANKING of per-screen hazards rather than their absolute level, which is the part the exponent least disturbs. `dropOff` is persona-dependent by design and that is not noise: an impatient reader drops on screen one, a patient one survives to whichever screen is genuinely hardest, and the two answers are both correct for their reader.",
+          };
+        } catch (e) {
+          sequentialResult = { error: `sequential pass failed: ${(e as Error).message}`, note: "The aggregate figures below are unaffected." };
+        }
+      }
 
       // Modulate demand by motivational values (opt-in, default off)
       if (useValues) try {
@@ -1130,7 +1216,7 @@ Begin with the first persona: ${personas[0]}
            * one, so this now carries the corrected value.
            */
           sequentialAmplification: Math.round((result.rawCTC / Math.max(0.001, result.additiveCTC)) * 1000) / 1000,
-          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Re-measured 1.003-1.054 across page densities x personas after the readability layer was split in two (2026-08-02); it was 1.002-1.019 at six layers, and the range widened because a seventh layer spends from a budget six others depleted. Real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
+          chainNote: "chainCoefficient = raw / additive, both in layer-cost units. Above 1 means interactions and sequential depletion added cost. Re-measured 1.002-1.036 at EIGHT layers, after `motor` was split into target acquisition and sequence execution (2026-08-03). It was 1.003-1.054 at seven and 1.002-1.019 at six. The range narrowed rather than widening this time: splitting one layer into two halves each layer's per-step cost, so the same total is reached through smaller increments and less of it compounds. Real, and small. Do NOT compute total/additive — total is a sigmoid of raw and the ratio compares different units.",
           interpretationBasis: "total",
           interpretationBands: "total < 0.3 comfortable, < 0.6 moderate, < 0.8 struggling, else likely abandon",
         },
@@ -1142,8 +1228,25 @@ Begin with the first persona: ${personas[0]}
           // the layer has stopped discriminating and headroom is the remaining
           // signal. Above zero the cost carries it, and a second number would
           // just be noise. (BUG-18)
-          ...(l.transportCost < 0.001 && l.headroom > 0
-            ? { headroom: l.headroom, costIsAtFloor: true } : {}),
+          //
+          // The `headroom > 0` half of that test was wrong, and wrong in the
+          // direction that hides the worse state. A floored layer with LOTS of
+          // headroom was never challenged; a floored layer with NONE has nothing
+          // left to spend, and those are opposite readings that both print
+          // `cost: 0`. The condition suppressed the second one entirely, so the
+          // caller saw a bare zero and no way to tell which it was -- while the
+          // reading-model note in this same payload told them to "read headroom
+          // on the readability layer instead", naming a field that was not
+          // emitted. (BUG-28)
+          ...(l.transportCost < 0.001
+            ? {
+                headroom: l.headroom,
+                costIsAtFloor: true,
+                floorMeaning: l.headroom > 0.02
+                  ? "unchallenged: this layer had capacity to spare, and the page did not demand it"
+                  : "exhausted: capacity here is spent, so the zero is the absence of anything left to spend, not the absence of difficulty",
+              }
+            : {}),
         })),
         bottleneck: result.bottleneckLayer,
         deficitVsSurplus: {
@@ -1160,14 +1263,55 @@ Begin with the first persona: ${personas[0]}
         // totalCTC. CTC asks how expensive the page is; abandonment asks
         // whether THIS persona's tolerance runs out first. A page can be cheap
         // in absolute terms and still exceed someone with little patience.
-        abandonmentBasis: "deficit vs this persona's patience and resilience — independent of totalCTC, so the two can disagree without either being wrong",
+        // WHAT THIS NUMBER IS CONDITIONAL ON. It was reported as though it were
+        // "the fraction of visitors who leave", and it is not that at either
+        // scope -- it is two different conditional quantities depending on
+        // which scope produced it, and the output did not distinguish them.
+        // THREE scopes, three conditionals. This was a BINARY test against
+        // "full_page", so `sequential` -- which extracts at full_page -- fell
+        // through to the viewport string and told the caller these numbers
+        // described the first screenful while they described the whole document.
+        // Same shape as the scope-echo defect one layer out: the enum value
+        // reached the computation and never reached the reporting.
+        abandonmentBasis: prose.abandonmentBasis,
+        abandonmentNotModelled: "Neither figure is 'what fraction of visitors leave'. A page is consumed as a SEQUENCE of screens, each with its own chance of stopping, and this model evaluates one aggregate. Two consequences it cannot express: demand below the fold is not weighted by the probability of ever reaching it, and capacity depletes with scroll depth as well as across layers. A persona also has no variance here -- every trait is a scalar, so this is one hypothetical person's trajectory, not a population, and no fraction-of-visitors reading is available from it at all.",
         interactions: Object.fromEntries(
           Object.entries(result.interactions)
             .filter(([, v]) => v > 0.001)
             .map(([k, v]) => [k, Math.round(v * 1000) / 1000])
         ),
         ...(motorResult ? {
-          motorAccessibility: {
+          // WHY the two motor layers can disagree, shown rather than left to be
+        // discovered. `motor` is target acquisition and `motorProcedure` is
+        // sequence execution, and a persona can be poor at one and competent at
+        // the other -- which is exactly what makes them separable and exactly
+        // what read as a contradiction while they shared a scalar.
+        //
+        // Pointing is decomposed further because `motorCapacity` and
+        // `hitProbability` are two different reductions of the same profile:
+        // capacity weights Fitts throughput at 0.75, hit probability uses
+        // endpoint dispersion alone. They therefore rank personas differently,
+        // and a reader comparing them needs to see that rather than infer it.
+        motorDecomposition: (() => {
+          try {
+            const pp = pointingProfileForResponse;
+            if (!pp) return undefined;
+            const L = result.layers as Array<{ name: string; transportCost: number }>;
+            const acquire = L.find((l) => l.name === "motor")?.transportCost ?? 0;
+            const sequence = L.find((l) => l.name === "motorProcedure")?.transportCost ?? 0;
+            return {
+              targetAcquisition: Math.round(acquire * 1000) / 1000,
+              sequenceExecution: Math.round(sequence * 1000) / 1000,
+              pointingInputs: {
+                fittsThroughput: Math.round(pp.throughput * 100) / 100,
+                endpointDispersionPx: Math.round(((pp.sigmaX + pp.sigmaY) / 2) * 10) / 10,
+                note: "throughput drives movementTimeMs; dispersion drives hitProbability. motorCapacity weights throughput at 0.75, so the `motor` layer and `hitProbability` legitimately rank personas differently.",
+              },
+              note: "These two are additive and unweighted against each other. There is no empirical basis for a relative weighting between acquiring a target and executing a sequence, so none is applied - see MOTOR_LAYER_WEIGHTS, both 1.0 and marked uncalibrated.",
+            };
+          } catch { return undefined; }
+        })(),
+        motorAccessibility: {
             score: Math.round(motorResult.score * 100) + "%",
             barriers: motorResult.barrierCount,
             elements: motorResult.elements.filter((e: { isBarrier: boolean }) => e.isBarrier).slice(0, 5).map((e: { selector: string; hitProbability: number; movementTime: number }) => ({
@@ -1204,6 +1348,22 @@ Begin with the first persona: ${personas[0]}
             hardestBlock: readabilityResult.blocks.length > 0
               ? (readabilityResult.blocks as Array<{ difficulty: number; penalties: string[] }>).reduce((worst, b) => b.difficulty > worst.difficulty ? b : worst).penalties
               : [],
+            // Every component of that block, including the zeroes.
+            //
+            // `hardestBlock` is a prose list and each entry is gated behind its
+            // own threshold, so a component evaluating to 0 is simply absent --
+            // and absent is indistinguishable from not modelled. That is how
+            // `crowdingSensitivity` came to look like a trait that does
+            // nothing: it is weighted 0.15 into readingCapacity AND priced per
+            // block, but Pelli's crowding effect only begins below 16px and
+            // every page tested sets body text at 16px or more. At 13px it
+            // discriminates cleanly -- adhd +6ms, dyslexic +17ms, low-vision
+            // +21ms, tracking sensitivities of 0.20 / 0.55 / 0.70. (BUG-12)
+            ...(readabilityResult.blocks.length > 0 ? {
+              hardestBlockPenaltyMs: (readabilityResult.blocks as Array<{ difficulty: number; penaltyBreakdown: Record<string, number> }>)
+                .reduce((worst, b) => b.difficulty > worst.difficulty ? b : worst).penaltyBreakdown,
+              penaltyNote: "hardestBlockPenaltyMs carries every component, including those that came to 0. A 0 means the component was evaluated and does not apply to this text -- crowding, for one, only begins below 16px (Pelli et al. 2004) -- not that it is unmodelled. crowdingSensitivity additionally carries a 0.15 weight into readingCapacity, which reaches the readability layer at every font size.",
+            } : {}),
           },
         } : {}),
         // The verdict names its own scope. Reading "should handle this page
@@ -1214,11 +1374,18 @@ Begin with the first persona: ${personas[0]}
         // `subject` is what was actually measured, so the sentence stays true
         // at either scope instead of the scope being a footnote elsewhere.
         interpretation: (() => {
-          const subject = measureScope === "full_page" ? "this page" : "the top of this page";
-          const where = measureScope === "full_page" ? "" : " (viewport only";
+          // `sequential` extracts at full_page, so it describes the whole page.
+          // Testing `=== "full_page"` sent it down the viewport branch and made
+          // this sentence claim the opposite of what was measured.
+          const wholeDocument = prose.wholeDocument;
+          const subject = prose.subject;
+          const where = wholeDocument ? "" : " (viewport only";
+          const seqTail = measureScope === "sequential"
+            ? ` Scored as a sequence: see \`sequential.expectedDepthScreens\` for how far ${personaName} is likely to get, and \`sequential.dropOff\` for where they stop.`
+            : "";
           const screens = pageMetrics.pageScreens > 1.2
-            ? `${measureScope === "full_page" ? " Measured across" : `${where}; the page is`} ${pageMetrics.pageScreens} screens${measureScope === "full_page" ? "." : ", so most of it was not measured — pass scope='full_page' for the whole thing.)"}`
-            : where ? `${where}.)` : "";
+            ? `${wholeDocument ? " Measured across" : `${where}; the page is`} ${pageMetrics.pageScreens} screens${wholeDocument ? "." : ", so most of it was not measured — pass scope='full_page' for the whole thing.)"}${seqTail}`
+            : where ? `${where}.)` : seqTail;
           const verdict = result.totalCTC < 0.3
             ? `${personaName} should handle ${subject} comfortably.`
             : result.totalCTC < 0.6
@@ -1228,11 +1395,33 @@ Begin with the first persona: ${personas[0]}
             : `${personaName} is likely to abandon ${subject}. Cognitive transport cost is ${Math.round(result.totalCTC * 100)}%. Immediate remediation needed on ${result.bottleneckLayer}.`;
           return verdict + screens;
         })(),
+        // ONE AUTHORITATIVE FIELD PER READING DIMENSION, stated rather than
+        // left to be inferred from which layer moved. Reading ability was
+        // encoded in two places -- five explicit fields in accessibility_traits
+        // AND `comprehension` plus `readingTendency` in the main vector -- with
+        // nothing saying which the model reads. That is the two-registry
+        // divergence shape, caught before the fields drifted. (BUG-13 / D-11)
+        readingModel: {
+          decoding: {
+            authoritative: "accessibility_traits.{orthographicFluency, phonologicalDecoding, visualSpan, vocabularyBreadth, crowdingSensitivity}",
+            reaches: "readability layer, via the derived readingCapacity dimension",
+          },
+          attention: {
+            authoritative: "accessibility_traits.attentionSpan, falling back to traits.interruptRecovery",
+            reaches: "readingAttention layer, via the derived sustainedAttention dimension",
+          },
+          engagement: {
+            authoritative: "traits.readingTendency",
+            reaches: "modulates readingAttention DEMAND only — a disposition, not an ability, and it does not touch decoding",
+          },
+          notConsumedForReading: {
+            "traits.comprehension": "grasp of UI conventions, not reading. Consumed by cognitiveLoad only. A persona's 0.5 here says nothing about how well they read.",
+          },
+        },
+        ...(sequentialResult ? { sequential: sequentialResult } : {}),
         scope: measureScope,
         pageScreens: pageMetrics.pageScreens,
-        scopeNote: measureScope === "full_page"
-          ? "Whole-page measurement: every laid-out element counted, densities normalised against document area, and the page scrolled first so lazy content exists. Not comparable with viewport-scoped numbers, including every CTC this tool published before 2026-08-02."
-          : "VIEWPORT ONLY: demand is computed from elements intersecting the first screenful. Content below the fold contributed nothing. This was the tool's undeclared behaviour until 2026-08-02 — measured on a 229-link, 8-screen page it saw 4 links and 47 words and reported LOWER cognitive load than a shorter homepage. Pass scope='full_page' to measure the whole page.",
+        scopeNote: prose.scopeNote,
         ...(familiarityWarning ? { familiarityWarning, siteFamiliarityAdjusted: true, originalFamiliarity: requestedFamiliarity, effectiveFamiliarity: traits.siteFamiliarity } : {}),
         // Reports what was USED, not what was passed.
         //
@@ -1395,6 +1584,8 @@ Begin with the first persona: ${personas[0]}
           reason: "decision cost is computed over the page as a whole, not per region" });
         layerOverlays.push({ layer: "frustration", available: false,
           reason: "frustration is a running state across the chain, not a place on the page" });
+        layerOverlays.push({ layer: "motorProcedure", available: false,
+          reason: "sequence execution is a property of a flow across pages, not a place on this one \u2014 the motor overlay above shows where TARGET ACQUISITION is hard" });
         layerOverlays.push({ layer: "readingAttention", available: false,
           reason: "attentional reading cost is a property of the reader against the whole page, not of any one region \u2014 the readability overlay above shows where DECODING is slow" });
 

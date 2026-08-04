@@ -104,7 +104,7 @@ Mapped to real `src/` modules (satisfying ISCs the owner should refine):
 
 | name | description | src evidence |
 |------|-------------|--------------|
-| Cognitive transport chain | 6-layer cognitive-effort scoring per persona | `cognitive/`, `cif-score.ts`, `trait-reference.ts` |
+| Cognitive transport chain | eight-layer cognitive-effort scoring per persona | `cognitive/`, `cif-score.ts`, `trait-reference.ts` |
 | User simulation / personas | 26 traits, 11 personas, questionnaire-built personas | `personas.ts`, `agent-personas.ts`, `persona-questionnaire.ts` |
 | AI friendliness | agent-ready / webmcp / llms.txt readiness | `analysis/`, `llms-txt/`, `mcp-tools/` |
 | Golden scoring harness | pins `computeCIFScore` in CI — score drift fails the build | `tests/golden/` (fixtures, pins, fast-check properties) |

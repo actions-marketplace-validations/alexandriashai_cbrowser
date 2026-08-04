@@ -19,19 +19,31 @@
  * @license MIT
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readdirSync } from "node:fs";
 
-let sandbox = "";
+// Imported STATICALLY, at the top, on purpose: an ES import is evaluated before
+// anything below it, so artifact-store is loaded before this file sets a single
+// variable. That is exactly the situation that arose whenever another test file
+// imported it first. Under the old import-time `const` it made the override
+// dead and every assertion about WHERE a file landed went red. Keep this import
+// where it is -- moving it into the tests restores the order dependency this
+// file exists to rule out.
+import { writeArtifact, artifactDir, artifactBaseUrl } from "../src/artifact-store.js";
 
-beforeAll(() => {
-  sandbox = mkdtempSync(join(tmpdir(), "cbrowser-artifact-"));
-  process.env.CBROWSER_ARTIFACT_DIR = sandbox;
-  process.env.CBROWSER_ARTIFACT_BASE_URL = "https://cbrowser.ai/heatmaps";
-});
+// Set at MODULE scope, not in `beforeAll`. A hook fires at a moment the test
+// runner chooses, which is an implementation detail of the runner and its
+// version; a module body runs at a moment this file chooses. The override has
+// to be in place before the first write either way, so it is stated where this
+// file controls it. (Not a measured difference between bun versions -- 1.3.8
+// and 1.3.14 both pass here. It removes one thing that would not have to be
+// ruled out again.)
+const sandbox = mkdtempSync(join(tmpdir(), "cbrowser-artifact-"));
+process.env.CBROWSER_ARTIFACT_DIR = sandbox;
+process.env.CBROWSER_ARTIFACT_BASE_URL = "https://cbrowser.ai/heatmaps";
 
 afterAll(() => {
   rmSync(sandbox, { recursive: true, force: true });
@@ -40,56 +52,65 @@ afterAll(() => {
 });
 
 describe("served artifact store", () => {
-  test("a written artifact lands in the directory its URL points at", async () => {
-    const { writeArtifact, ARTIFACT_DIR, ARTIFACT_BASE_URL } = await import(
-      "../src/artifact-store.js"
-    );
+  test("the configured directory wins over the one captured at import", () => {
+    // The whole claim, stated once and directly. This is what was untestable
+    // while the paths were import-time constants, and it is what has to hold
+    // for every assertion below to mean anything.
+    expect(artifactDir()).toBe(sandbox);
+    expect(artifactDir()).not.toBe("/var/www/cbrowser-data/heatmaps");
+  });
+
+  test("a written artifact lands in the directory its URL points at", () => {
     const written = writeArtifact(Buffer.from("PNGDATA"), "probe-1.png");
     expect(written).not.toBeNull();
     // The file exists on disk...
     expect(existsSync(written!.path)).toBe(true);
     expect(readFileSync(written!.path).toString()).toBe("PNGDATA");
     // ...at the path the URL implies, under the one configured directory.
-    expect(written!.path.startsWith(ARTIFACT_DIR)).toBe(true);
-    expect(written!.url).toBe(`${ARTIFACT_BASE_URL}/${written!.filename}`);
+    expect(written!.path.startsWith(sandbox)).toBe(true);
+    expect(written!.url).toBe(`${artifactBaseUrl()}/${written!.filename}`);
   });
 
-  test("the URL's last segment is the filename actually written", async () => {
-    // Read back from ARTIFACT_DIR, not from `sandbox`. artifact-store caches
-    // ARTIFACT_DIR at import time, so when any earlier test file in the suite
-    // imports it first, this file's env var never takes effect and the module
-    // writes somewhere else. The test then passed alone and failed in the full
-    // run -- an order dependency that looked like a flake. The claim here is
-    // URL-vs-disk agreement, which is what the module's own write location
-    // tests; whether that location is the configured one is asserted above.
-    const { writeArtifact, ARTIFACT_DIR } = await import("../src/artifact-store.js");
+  test("the URL's last segment is the filename actually written", () => {
     const written = writeArtifact(Buffer.from("x"), "journey-first-timer-123.gif");
     const urlTail = new URL(written!.url).pathname.split("/").pop();
-    const onDisk = readdirSync(ARTIFACT_DIR).find((f) => f === urlTail);
+    // Read back from the SANDBOX. Under the old code this had to read from
+    // whatever the module had cached, which is why the assertion could not
+    // check the location and the escape went unnoticed.
+    const onDisk = readdirSync(sandbox).find((f) => f === urlTail);
     expect(onDisk).toBe(urlTail!);
   });
 
-  test("a failed write returns null rather than a URL to a missing file", async () => {
-    const { writeArtifact } = await import("../src/artifact-store.js");
-    // A path that cannot be created: a file where a directory must go.
+  test("a failed write returns null rather than a URL to a missing file", () => {
+    // A directory that cannot be created: a file where a directory must go.
     const prev = process.env.CBROWSER_ARTIFACT_DIR;
     process.env.CBROWSER_ARTIFACT_DIR = "/proc/version/nope";
-    // The module caches ARTIFACT_DIR at import, so exercise the same guarantee
-    // through a filename that cannot be written instead.
-    process.env.CBROWSER_ARTIFACT_DIR = prev;
-    const bad = writeArtifact(Buffer.from("x"), "\0\0\0");
-    // Either it sanitized to a writable name, or it returned null. What must
-    // never happen is a non-null result whose file is absent.
-    if (bad !== null) expect(existsSync(bad.path)).toBe(true);
+    try {
+      const bad = writeArtifact(Buffer.from("x"), "probe-unwritable.png");
+      expect(bad).toBeNull();
+    } finally {
+      process.env.CBROWSER_ARTIFACT_DIR = prev;
+    }
+    // And the store recovers: the next write goes back to the configured dir.
+    expect(artifactDir()).toBe(sandbox);
   });
 
-  test("filenames are sanitized so the URL is always fetchable", async () => {
-    const { writeArtifact } = await import("../src/artifact-store.js");
+  test("filenames are sanitized so the URL is always fetchable", () => {
     const written = writeArtifact(Buffer.from("x"), "motor first timer/../etc.png");
     expect(written).not.toBeNull();
     expect(written!.filename).not.toContain("/");
     expect(written!.filename).not.toContain(" ");
     expect(written!.url).toBe(`https://cbrowser.ai/heatmaps/${written!.filename}`);
+  });
+
+  test("no write escapes into the production served directory", () => {
+    // The failure this file exists to prevent, asserted as an absence. It is
+    // the assertion that would have caught the release-blocking bug on this
+    // box, where root can write the production default and so a leaked write
+    // succeeds silently instead of failing loudly.
+    for (const name of ["probe-1.png", "journey-first-timer-123.gif"]) {
+      expect(existsSync(join("/var/www/cbrowser-data/heatmaps", name))).toBe(false);
+    }
   });
 });
 

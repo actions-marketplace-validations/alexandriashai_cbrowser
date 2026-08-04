@@ -8,6 +8,7 @@
 import { z } from "zod";
 import type { McpServer, ToolRegistrationContext } from "../types.js";
 import { buildContentWithScreenshots } from "../screenshot-utils.js";
+import { describeContentIntegrity } from "../../content-integrity.js";
 
 /**
  * Register navigation tools (1 tool: navigate)
@@ -73,16 +74,35 @@ export function registerNavigationTools(
         console.warn(`[site-model] Navigation hook error: ${(e as Error).message}`);
       }
 
+      // `result.success`, not `true`.
+      //
+      // This was hardcoded `success: true`, so a navigation the browser layer had
+      // already judged a FAILURE was reported to the caller as a success. Browser
+      // .navigate detects a landing on a different host and returns success:false
+      // with desyncDetected, an errors entry, and a warning naming both domains --
+      // and this handler forwarded the warning while dropping the verdict that
+      // explained it. An external report saw exactly that: `success: true` beside an
+      // orphaned "Expected domain ... Actual domain ..." string, on a Cloudflare
+      // interstitial that scored as a page.
+      //
+      // The cost is not cosmetic. Every cognitive tool downstream of navigate
+      // inherits the DOM navigate returned, so a challenge page gets measured and
+      // reported "comfortable". A wrong page silently analysed is worse than a
+      // refusal, because the numbers look ordinary.
+      const integrity = describeContentIntegrity(url, result);
       return {
         content: buildContentWithScreenshots(
           {
-            success: true,
+            success: result.success !== false,
             url: result.url,
             title: result.title,
             loadTime: result.loadTime,
             screenshot: result.screenshot,
             ...(result.waitSelectorTimedOut ? { waitSelectorTimedOut: true, waitWarning: `waitForSelector timed out — the expected element never appeared` } : {}),
             ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+            ...(result.errors && result.errors.length > 0 ? { errors: result.errors } : {}),
+            ...(result.desyncDetected ? { desyncDetected: true, expectedUrl: result.expectedUrl } : {}),
+            ...(integrity.ok ? {} : { contentIntegrity: integrity }),
             ...(token ? { _browserToken: token } : {}),
           },
           result.screenshot

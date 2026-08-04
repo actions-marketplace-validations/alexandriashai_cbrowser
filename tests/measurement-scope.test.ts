@@ -26,13 +26,21 @@ const knowledge = readFileSync(join(SRC, "mcp-tools", "base", "site-knowledge-to
 const audit = readFileSync(join(SRC, "mcp-tools", "base", "audit-tools.ts"), "utf8");
 
 describe("the scope parameter matches empathy_audit", () => {
-  test("cognitive_effort takes the same enum with the same default", () => {
-    // Same spelling, same values, same default. Consistency across the three
-    // tools matters more than any of them picking the better default.
+  test("cognitive_effort shares empathy_audit's values and default, and may add to them", () => {
+    // Was an equality assertion. cognitive_effort gained `sequential`, which
+    // empathy_audit has no analogue for -- it answers "how far do they get",
+    // and a barrier audit has no depth to report. The contract that matters is
+    // that the SHARED values are spelled and defaulted identically, so a caller
+    // moving between tools is never surprised; an additive third value does not
+    // violate that.
     const empathyEnum = audit.match(/scope: z\.enum\(\[([^\]]+)\]\)\.optional\(\)\.default\("viewport"\)/)![1];
     expect(empathyEnum).toContain('"viewport"');
     expect(empathyEnum).toContain('"full_page"');
-    expect(effort).toMatch(/scope: z\.enum\(\["viewport", "full_page"\]\)\.optional\(\)\.default\("viewport"\)/);
+    const effortEnum = effort.match(/scope: z\.enum\(\[([^\]]+)\]\)\.optional\(\)\.default\("viewport"\)/)![1];
+    expect(effortEnum).toContain('"viewport"');
+    expect(effortEnum).toContain('"full_page"');
+    // Both default to viewport, which is the part that preserves published numbers.
+    expect(effort).toMatch(/scope: z\.enum\(\[[^\]]+\]\)\.optional\(\)\.default\("viewport"\)/);
   });
 
   test("page_understand exposes its third mode rather than hiding it", () => {
@@ -88,7 +96,15 @@ describe("the output says which of the two it is", () => {
   test("the verdict names its own scope", () => {
     // "should handle this page comfortably" off the top 800px of a 6436px page
     // is the misleading claim; the sentence now says which it measured.
-    expect(effort).toContain('measureScope === "full_page" ? "this page" : "the top of this page"');
+    //
+    // Was a grep for the inline ternary `measureScope === "full_page" ? ...`.
+    // That ternary WAS the BUG-26 defect: binary against a three-valued enum, so
+    // `sequential` fell to the viewport arm and the sentence claimed the opposite
+    // of what was measured. The subject now comes from scopeProse, which is
+    // asserted per-scope in tests/scope-prose.test.ts. Checking the call rather
+    // than a copy of the string is the point of extracting it.
+    expect(effort).toContain("const subject = prose.subject");
+    expect(effort).toContain("scope-prose.js");
   });
 
   test("a tall page measured at viewport scope says what it missed", () => {
@@ -96,12 +112,18 @@ describe("the output says which of the two it is", () => {
     expect(effort).toContain("pageScreens");
   });
 
-  test("the response carries scope, page height and a note at both scopes", () => {
+  test("the response carries scope, page height and a note at every scope", () => {
     expect(effort).toContain("scope: measureScope,");
     expect(effort).toContain("pageScreens: pageMetrics.pageScreens,");
-    const note = effort.slice(effort.indexOf("scopeNote: measureScope"));
-    expect(note.slice(0, 1600)).toContain("VIEWPORT ONLY");
-    expect(note.slice(0, 1600)).toContain("Not comparable with viewport-scoped numbers");
+    expect(effort).toContain("scopeNote: prose.scopeNote,");
+    // "both scopes" was the assumption that dated this test: there are three.
+    // The per-scope content of the note is asserted in tests/scope-prose.test.ts,
+    // against every value of the enum rather than the two someone remembered.
+    const { scopeProse, SCOPE_PROSE_VALUES } = require("../src/visual/scope-prose.js");
+    expect(SCOPE_PROSE_VALUES.length).toBe(3);
+    expect(scopeProse("viewport").scopeNote).toContain("VIEWPORT ONLY");
+    expect(scopeProse("full_page").scopeNote).toContain("Not comparable with viewport-scoped numbers");
+    expect(scopeProse("sequential").scopeNote).toContain("SEQUENTIAL");
   });
 
   test("page_understand reports the mode that actually ran", () => {

@@ -770,7 +770,144 @@ export function selectMaxCoveragePersonas(
  */
 export type MetricScope = "viewport" | "full_page";
 
-export async function extractPageMetrics(page: any, scope: MetricScope = "viewport"): Promise<{
+/**
+ * The page's geometry, measured ONCE and shared by everything that derives from it.
+ *
+ * `pageScreens` (the caption) and `screenCount` (how many screens the sequential path
+ * scores) were two independent derivations of one quantity, computed from two separate
+ * height reads at two different moments. That is the same class as the capacity bridge
+ * that existed in one of two tools: one model, two consumers, separately wired.
+ *
+ * It is a defect whether or not the height is stable, and the instability is not
+ * hypothetical -- an external client measured 5.8 screens on the first navigation of a
+ * session and 6.7 on every later one. With two reads, the caption could say 6.7 while
+ * the curve was scored over 6 screens, and NOTHING in the payload would show the
+ * disagreement: a 6-screen curve is internally consistent and unmarked.
+ *
+ * Sharing the FUNCTION would not have been enough. Two calls at two moments agree on
+ * arithmetic and still read a page that moved in between, which fixes the formula and
+ * keeps the race. So this is one measurement, threaded to both consumers.
+ *
+ * The fields are published in the response for the same reason they are shared here:
+ * an invisible variance is indistinguishable from no variance, and every defect this
+ * campaign closed had that shape.
+ */
+export interface PageGeometry {
+  /** Viewport height in CSS pixels at the moment of measurement. */
+  viewportHeight: number;
+  /** Document height in CSS pixels, never less than the viewport. */
+  documentHeight: number;
+  /** documentHeight / viewportHeight, one decimal. The human-facing caption. */
+  pageScreens: number;
+  /** Screens the sequential path scores. Load-bearing: it sets the curve length. */
+  screenCount: number;
+}
+
+/**
+ * Measure the page's geometry in a single evaluate.
+ *
+ * One round trip on purpose: two reads of `innerHeight` and `scrollHeight` can
+ * straddle a layout change, and the whole point of this function is that they cannot.
+ */
+export async function measurePageGeometry(page: any, maxScreens = 20): Promise<PageGeometry> {
+  const { viewportHeight, documentHeight } = await page.evaluate(() => ({
+    viewportHeight: window.innerHeight,
+    documentHeight: Math.max(window.innerHeight, document.documentElement.scrollHeight),
+  }));
+  return {
+    viewportHeight,
+    documentHeight,
+    pageScreens: Math.round((documentHeight / viewportHeight) * 10) / 10,
+    screenCount: Math.max(1, Math.min(maxScreens, Math.ceil(documentHeight / viewportHeight))),
+  };
+}
+
+/**
+ * Measure the page one screen at a time, each on its own content.
+ *
+ * The unit of consumption is a screenful, not a document. Measuring per screen
+ * is what makes a sequential score possible, and it also removes the
+ * area-normalisation problem for the two layers that had it: the denominator
+ * becomes one viewport, constant, so a tall page cannot dilute its own density.
+ *
+ * NEWLY-ENCOUNTERED COUNTING. Count-based demands -- interactive elements,
+ * choices -- are charged only for elements not seen on an earlier screen. A
+ * sticky nav is present on every screen and is one decision, made once;
+ * charging it fourteen times would make persistent navigation the most
+ * expensive thing on any long page. Text and visual density are NOT deduped:
+ * re-encountering text is re-reading it, which is a real cost.
+ *
+ * Returns one metrics object per screen, in document order.
+ */
+export async function extractPerScreenMetrics(
+  page: any,
+  maxScreens = 20,
+  geometry?: PageGeometry,
+): Promise<Array<Awaited<ReturnType<typeof extractPageMetrics>>>> {
+  // The caller's geometry when it has one, so the curve length and the caption come
+  // from the SAME measurement rather than two reads of a page that can move between
+  // them. Measuring here is the fallback for direct callers, not the normal path.
+  const geo = geometry ?? (await measurePageGeometry(page, maxScreens));
+  const vh = geo.viewportHeight;
+  const docHeight = geo.documentHeight;
+  const screenCount = geo.screenCount;
+
+  // Identity is assigned once, before any scrolling, so an element keeps the
+  // same tag across screens even as rects change.
+  await page.evaluate(() => {
+    let n = 0;
+    for (const el of Array.from(document.querySelectorAll("*"))) {
+      if (!(el as HTMLElement).dataset) continue;
+      if (!(el as HTMLElement).dataset.cbSeqId) (el as HTMLElement).dataset.cbSeqId = String(n++);
+    }
+    (window as any).__cbSeqSeen = new Set<string>();
+  });
+
+  const out: Array<Awaited<ReturnType<typeof extractPageMetrics>>> = [];
+  for (let i = 0; i < screenCount; i++) {
+    await page.evaluate((y: number) => window.scrollTo(0, y), i * vh);
+    await page.waitForTimeout(250);
+    const metrics = await extractPageMetrics(page, "viewport");
+    // Re-charge only what this screen introduces.
+    const fresh = await page.evaluate(() => {
+      const seen: Set<string> = (window as any).__cbSeqSeen;
+      const vh2 = window.innerHeight;
+      const visible = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < vh2;
+      };
+      let newInteractive = 0, newChoices = 0;
+      for (const el of Array.from(document.querySelectorAll(
+        'a, button, input, select, textarea, [role="button"], [onclick], [tabindex]'))) {
+        if (!visible(el)) continue;
+        const id = (el as HTMLElement).dataset?.cbSeqId;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        newInteractive++;
+        if (el.tagName === "A") newChoices++;
+        if (el.tagName === "SELECT") newChoices += el.querySelectorAll("option").length;
+      }
+      return { newInteractive, newChoices };
+    });
+    out.push({
+      ...metrics,
+      interactiveElementCount: fresh.newInteractive,
+      choiceCount: Math.min(fresh.newChoices, 100),
+      choiceCountRaw: fresh.newChoices,
+      choiceCountCapped: fresh.newChoices > 100,
+    });
+  }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(200);
+  return out;
+}
+
+export async function extractPageMetrics(
+  page: any,
+  scope: MetricScope = "viewport",
+  /** Geometry already measured by the caller, so both derivations share one read. */
+  geometry?: PageGeometry,
+): Promise<{
   informationDensity: number;
   visualComplexity: number;
   interactiveElementCount: number;
@@ -798,21 +935,31 @@ export async function extractPageMetrics(page: any, scope: MetricScope = "viewpo
   // return to the top so later screenshots and geometry are taken from origin.
   if (scope === "full_page") {
     try {
-      const steps = await page.evaluate(() =>
-        Math.min(5, Math.ceil(document.documentElement.scrollHeight / window.innerHeight)));
+      // Step count and step size from the SHARED measurement. This computed its own
+      // scrollHeight/innerHeight -- a third independent derivation of the one quantity,
+      // found by the anti-test that says nothing may derive it independently. It is the
+      // least consequential of the three (it only decides how far to scroll to trigger
+      // lazy content) and it is exactly the kind that survives a fix aimed at the two
+      // obvious ones.
+      const walkGeo = geometry ?? (await measurePageGeometry(page));
+      const steps = Math.min(5, walkGeo.screenCount);
       for (let i = 1; i <= steps; i++) {
-        await page.evaluate((y: number) => window.scrollTo(0, y), i * (await page.evaluate(() => window.innerHeight)));
+        await page.evaluate((y: number) => window.scrollTo(0, y), i * walkGeo.viewportHeight);
         await page.waitForTimeout(300);
       }
       await page.evaluate(() => window.scrollTo(0, 0));
       await page.waitForTimeout(300);
     } catch { /* a page that will not scroll is still measurable */ }
   }
-  return page.evaluate((measureScope: MetricScope) => {
+  // The caller's geometry when it has one. `pageScreens` here and `screenCount` in
+  // the sequential path were two derivations of one quantity from two separate reads;
+  // passing it in makes them one measurement rather than two that agree by luck.
+  const geo = geometry ?? (await measurePageGeometry(page));
+  return page.evaluate(([measureScope, geoIn]: [MetricScope, PageGeometry]) => {
     const vw = window.innerWidth;
-    const vh = window.innerHeight;
+    const vh = geoIn.viewportHeight;
     const fullPage = measureScope === "full_page";
-    const docHeight = Math.max(vh, document.documentElement.scrollHeight);
+    const docHeight = geoIn.documentHeight;
 
     // Viewport check — only count elements whose bounding box intersects the
     // viewport. At full_page scope every laid-out element counts, so the filter
@@ -1115,9 +1262,11 @@ export async function extractPageMetrics(page: any, scope: MetricScope = "viewpo
       // Emitted so a caller can never again be unable to tell which of these
       // two very different measurements it is holding.
       scope: measureScope,
-      pageScreens: Math.round((docHeight / vh) * 10) / 10,
+      // From the shared measurement, so it can never disagree with the screenCount
+      // the sequential curve was scored over.
+      pageScreens: geoIn.pageScreens,
     };
-  }, scope);
+  }, [scope, geo]);
 }
 
 /**

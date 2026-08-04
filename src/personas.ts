@@ -1552,7 +1552,34 @@ export const BUILTIN_PERSONAS: Record<string, Persona> = {
       timeHorizon: 0.4,           // Medium - patient but unsure of value
       attributionStyle: 0.85,     // Very high - blames self for all errors
       metacognitivePlanning: 0.25, // Low - doesn't know what to plan for
-      proceduralFluency: 0.4,     // Low - struggles with multi-step processes
+      // 0.5, corrected 2026-08-03 from 0.4, and it is a REASONED MIDPOINT rather
+      // than an unfilled default -- the two forces genuinely cancel.
+      //
+      // The old value came from the doc's rationale, "slower development of
+      // procedural skills with new interfaces". That describes ACQUISITION
+      // RATE. This trait measures EXECUTION: its own scale runs from "struggles
+      // with sequences, skips steps, confuses order" to "follows procedures
+      // precisely and efficiently". Third instance of the same defect class on
+      // these pages, after timeHorizon and attributionStyle -- a number set for
+      // the construct the rationale describes rather than the one the trait
+      // measures.
+      //
+      // It scored 0.4, IDENTICAL to cognitive-adhd, while carrying higher
+      // working memory (0.40 vs 0.30) and four times the patience (0.80 vs
+      // 0.20). The low end of this scale is impulsive error, and this persona's
+      // own page says older users "make fewer impulsive errors".
+      //
+      // Precision is preserved or improved with age and efficiency is reduced
+      // -- the speed-accuracy tradeoff shifts toward accuracy (Fisk et al.
+      // 2009, Designing for Older Adults). Those net to the middle: the trait
+      // reference's own `medium` band reads "follows most procedures with
+      // occasional errors", which is the honest description.
+      //
+      // Stays BELOW motor-impairment-tremor (0.6), which is cognitively intact
+      // with working memory 0.70 and metacognitive planning 0.70 against this
+      // persona's 0.40 and 0.25. Stays ABOVE first-timer (0.2), which has no
+      // procedural schema at all.
+      proceduralFluency: 0.5,
       transferLearning: 0.2,      // Low - each new site is confusing
       authoritySensitivity: 0.7, // Very high - trusts official-looking things
       emotionalContagion: 0.6,    // Medium-high - affected by stern warnings

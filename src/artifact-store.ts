@@ -29,16 +29,38 @@
 import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 
-/**
- * The directory nginx serves at `/heatmaps/`. Overridable so tests never write
- * into the production served root.
- */
-export const ARTIFACT_DIR =
-  process.env.CBROWSER_ARTIFACT_DIR || "/var/www/cbrowser-data/heatmaps";
+/** The directory nginx serves at `/heatmaps/`, when nothing overrides it. */
+const DEFAULT_ARTIFACT_DIR = "/var/www/cbrowser-data/heatmaps";
 
-/** Public origin the artifact directory is exposed under. */
-export const ARTIFACT_BASE_URL =
-  process.env.CBROWSER_ARTIFACT_BASE_URL || "https://cbrowser.ai/heatmaps";
+/** Public origin that directory is exposed under, when nothing overrides it. */
+const DEFAULT_ARTIFACT_BASE_URL = "https://cbrowser.ai/heatmaps";
+
+/**
+ * Resolved per call, NOT captured at import.
+ *
+ * These were `export const`, read once when the module was first evaluated. The
+ * override then worked or not depending on whether anything else in the process
+ * had imported this file first -- which in a test run is decided by file order,
+ * something no test controls. tests/artifact-url.test.ts documented the hazard
+ * in a comment and worked around it rather than removing it.
+ *
+ * The workaround held only because this box runs the suite as root, so a write
+ * that escaped to the production default succeeded anyway. On a CI runner the
+ * same escape is EACCES, `writeArtifact` returns null, and three tests fail --
+ * which is what blocked 25 consecutive releases from 2026-08-03. A green suite
+ * that is green because of an ambient privilege is not evidence.
+ *
+ * Reading the variable at call time makes the override authoritative in every
+ * import order, and makes the tests hermetic instead of order-dependent.
+ */
+export function artifactDir(): string {
+  return process.env.CBROWSER_ARTIFACT_DIR || DEFAULT_ARTIFACT_DIR;
+}
+
+/** Public origin the artifact directory is exposed under. Resolved per call. */
+export function artifactBaseUrl(): string {
+  return process.env.CBROWSER_ARTIFACT_BASE_URL || DEFAULT_ARTIFACT_BASE_URL;
+}
 
 export interface WrittenArtifact {
   /** Absolute path on disk. */
@@ -62,18 +84,28 @@ export function writeArtifact(
   data: Buffer | string,
   filename: string,
 ): WrittenArtifact | null {
+  const dir = artifactDir();
   try {
-    if (!existsSync(ARTIFACT_DIR)) mkdirSync(ARTIFACT_DIR, { recursive: true });
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const safe = filename.replace(/[^a-zA-Z0-9._-]+/g, "-");
-    const path = join(ARTIFACT_DIR, safe);
+    const path = join(dir, safe);
     writeFileSync(path, typeof data === "string" ? Buffer.from(data, "base64") : data);
-    return { path, url: `${ARTIFACT_BASE_URL}/${safe}`, filename: safe };
-  } catch {
+    return { path, url: `${artifactBaseUrl()}/${safe}`, filename: safe };
+  } catch (err) {
+    // Say WHY, and say WHERE. Swallowing this is how the original defect
+    // survived ten days: every caller saw a bare null and reported "no
+    // artifact", which reads as "nothing to show" rather than "the write
+    // failed". A silent null is the same class of defect as a URL to a file
+    // that was never written -- both hide the failure from whoever could fix
+    // it. stderr, not the tool payload, so a customer response is unaffected.
+    console.error(
+      `[artifact-store] write failed: ${filename} -> ${dir}: ${(err as Error).message}`,
+    );
     return null;
   }
 }
 
 /** URL for a filename already known to live in the artifact directory. */
 export function artifactUrl(filename: string): string {
-  return `${ARTIFACT_BASE_URL}/${filename.replace(/[^a-zA-Z0-9._-]+/g, "-")}`;
+  return `${artifactBaseUrl()}/${filename.replace(/[^a-zA-Z0-9._-]+/g, "-")}`;
 }

@@ -1004,7 +1004,18 @@ export function registerValuesTools(server: McpServer): void {
         ...(rec.accessibility_traits ? { accessibility_traits: rec.accessibility_traits } : {}),
         ...(rec.accessibilityTraits ? { accessibility_traits: rec.accessibilityTraits } : {}),
         ...(profile?.attentionPattern ? { attentionPattern: profile.attentionPattern } : {}),
-        ...(profile?.decisionStyle ? { decisionStyle: profile.decisionStyle } : {}),
+        // NOT a truthiness guard. `decisionStyle` is null when the margin
+        // between the top two styles is below threshold, and a truthiness
+        // guard drops the key entirely on exactly that case -- so the payload
+        // shipped `decisionStyleSource: "suppressed"` describing a field it
+        // had omitted, and a consumer could not tell suppression from "never
+        // computed". Emit the null. (2026-08-03, BUG-08)
+        ...(profile && "decisionStyle" in profile ? { decisionStyle: profile.decisionStyle ?? null } : {}),
+        ...(profile?.decisionStyleSuppressed ? {
+          decisionStyleSuppressed: true,
+          decisionStyleThreshold: profile.decisionStyleThreshold,
+          decisionStyleNote: "The top two decision styles were separated by less than the threshold, so no label is claimed. decisionStyleMargin below is the gap that fell short.",
+        } : {}),
         // Where those two came from. "default" means no rule matched and no
         // value was declared -- it is the initial literal, not a reading of
         // this persona, and it should not be acted on as one.

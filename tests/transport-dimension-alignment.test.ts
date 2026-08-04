@@ -43,7 +43,7 @@ function traitsUsedByLayers(): Set<string> {
  * personas differing only in `curiosity` or `trustCalibration` produce the same
  * cognitive transport cost. It is pinned rather than fixed because the six-layer
  * weighting is a calibrated research instrument and re-partitioning it changes
- * every number the tool has ever produced — that is the principal's call, not a
+ * every number the tool has ever produced — that is the maintainer's call, not a
  * side effect of a bug fix.
  */
 const KNOWN_UNLAYERED = [
@@ -786,8 +786,25 @@ describe("attentional reading cost has a home (BUG-07)", () => {
   test("a page with no text demands none of it", () => {
     // Gated on text: however busy a page is, there is no line to lose your
     // place in if there is nothing to read.
-    const d = computeDemandDistribution({ ...BUSY, textDensity: 0 } as never);
+    //
+    // Zeroes BOTH text metrics, because both derive from the same textLength --
+    // textDensity is that length over area, informationDensity is that length on
+    // its own. A fixture setting one to 0 while the other stays high describes a
+    // page with no text that nonetheless has text, which extraction cannot
+    // produce. The old fixture did exactly that and passed only because the
+    // demand read the area-normalised half alone, which is the defect (BUG-27).
+    const d = computeDemandDistribution({ ...BUSY, textDensity: 0, informationDensity: 0 } as never);
     expect(d.demands.sustainedAttention).toBe(0);
+  });
+
+  test("attentional demand rises with absolute text, not text per unit area", () => {
+    // The BUG-27 claim, as a property. Spreading the same prose over a taller
+    // document lowers textDensity while informationDensity holds, and attentional
+    // reading cost must not fall: twice the page to hold your place across is not
+    // easier because the text is further apart.
+    const dense = computeDemandDistribution({ ...BUSY, textDensity: 0.7, informationDensity: 0.6 } as never);
+    const spread = computeDemandDistribution({ ...BUSY, textDensity: 0.49, informationDensity: 0.8 } as never);
+    expect(spread.demands.sustainedAttention).toBeGreaterThanOrEqual(dense.demands.sustainedAttention);
   });
 
   test("distractors raise the demand, and text alone does not max it", () => {
@@ -893,9 +910,25 @@ describe("sustainedAttention resolves from what the persona actually states", ()
   test("the tool bridges it, or the dimension is inert in production", async () => {
     // The failure this whole class of bug keeps taking: a dimension wired into
     // the model and never populated by the caller reads as 0.5 for everyone.
-    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
-    expect(tool).toContain("traits.sustainedAttention = sustainedAttentionOf(");
-    expect(tool).toMatch(/sustainedAttentionOf[\s\S]{0,200}await import\("\.\.\/\.\.\/visual\/cognitive-models\.js"\)|sustainedAttentionOf \}[\s\S]{0,120}cognitive-models\.js/);
+    // Was a grep for the inline bridge in one tool. That block existed in exactly
+    // ONE of the two tools that score this chain, which is how the motor layer came
+    // to disagree 2.6x between them: the unbridged path scored against traitValue's
+    // missing-trait fallback of 0.5. It is now a shared helper, so the assertion is
+    // that EVERY scoring path calls it -- stated over the files rather than one of
+    // them, since naming one is what let the other drift. (BUG-29)
+    const bridge = readFileSync(join(import.meta.dir, "..", "src", "visual", "cognitive-models.ts"), "utf8");
+    expect(bridge).toContain("export function bridgeCapacityTraits");
+    expect(bridge).toContain("traits.sustainedAttention = sustainedAttentionOf(");
+
+    for (const f of ["persona-comparison-tools.ts", "audit-tools.ts"]) {
+      const src = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", f), "utf8");
+      const scoringCalls = (src.match(/computeSequentialCTC\(/g) ?? []).length;
+      const bridgeCalls = (src.match(/bridgeCapacityTraits\(/g) ?? []).length;
+      expect(scoringCalls).toBeGreaterThan(0);
+      // One bridge per scoring call. Fewer means a path is scoring a persona
+      // whose derived capacities were never populated.
+      expect(bridgeCalls).toBeGreaterThanOrEqual(scoringCalls);
+    }
   });
 });
 
@@ -991,13 +1024,93 @@ describe("the legibilityQuality contract, restored and pinned (BUG-01 / D-3)", (
     expect(tool).toContain("read `headroom`");
   });
 
-  test("the chain is seven layers and every one is named in the overlay list", () => {
+  test("every layer in the chain is named in the overlay list", () => {
+    // The COUNT is deliberately not asserted here any more. It was seven when
+    // this was written and is eight since the motor split, and a bare number in
+    // a test is the same staleness the widget caption had. tests/motor-split
+    // owns the ordering; this owns the overlay coverage.
     const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
     const block = CHAIN_SRC.slice(CHAIN_SRC.indexOf("LAYER_DEFINITIONS"), CHAIN_SRC.indexOf("INTERACTION_PAIRS"));
     const names = Array.from(block.matchAll(/name: '([a-zA-Z]+)'/g), (m) => m[1]);
-    expect(names).toEqual(["saliency", "cognitiveLoad", "decision", "motor", "frustration", "readability", "readingAttention"]);
+    expect(names.length).toBeGreaterThanOrEqual(7);
     // A bar with no overlay entry renders as neither a button nor a no-overlay
     // tag -- it just looks broken next to its siblings.
     for (const n of names) expect(tool).toContain(`layer: "${n}"`);
+  });
+});
+
+describe("one authoritative field per reading dimension (BUG-13 / D-11)", () => {
+  /**
+   * Reading ability was encoded twice: five explicit fields in
+   * accessibility_traits, and `comprehension` + `readingTendency` in the main
+   * trait vector, with nothing stating which the model actually reads.
+   * `comprehension` was 0.5 for BOTH personas whose reading profiles differ
+   * sharply, so it was either unused or contradicting the new fields, and no
+   * consumer could tell which.
+   *
+   * That is the two-registry divergence shape, caught before the fields drifted
+   * apart. These tests pin the split rather than the prose describing it.
+   */
+  const CHAIN = CHAIN_SRC.slice(CHAIN_SRC.indexOf("LAYER_DEFINITIONS"), CHAIN_SRC.indexOf("INTERACTION_PAIRS"));
+  const layerTraits = (name: string): string => {
+    const block = CHAIN.slice(CHAIN.indexOf(`name: '${name}'`));
+    return block.slice(0, block.indexOf("]") + 1).match(/traits: \[([^\]]*)\]/)![1];
+  };
+
+  test("decoding reaches readability, and nothing else does", () => {
+    const readability = layerTraits("readability");
+    expect(readability).toContain("readingCapacity");
+    // The two main-vector reading-adjacent traits are absent by construction.
+    expect(readability).not.toContain("comprehension");
+    expect(readability).not.toContain("readingTendency");
+  });
+
+  test("comprehension is consumed, but only as UI-convention grasp", () => {
+    // Not orphaned -- that would be the other failure. It drives cognitiveLoad,
+    // which is what its own criteria describe.
+    expect(layerTraits("cognitiveLoad")).toContain("comprehension");
+    expect(traitsUsedByLayers().has("comprehension")).toBe(true);
+  });
+
+  test("its definition says what it is not, where an author will read it", () => {
+    const ref = readFileSync(join(import.meta.dir, "..", "src", "trait-reference.ts"), "utf8");
+    const entry = ref.slice(ref.indexOf("comprehension: {"));
+    const block = entry.slice(0, entry.indexOf("defaultValue"));
+    expect(block).toContain("NOT reading comprehension");
+    expect(block).toContain("accessibility_traits");
+  });
+
+  test("engagement modulates attention demand and never decoding demand", () => {
+    // readingTendency is a disposition. It reaches no layer as a capacity, and
+    // touches only the attentional half of demand.
+    for (const layer of ["readability", "readingAttention", "cognitiveLoad", "frustration"]) {
+      expect(layerTraits(layer)).not.toContain("readingTendency");
+    }
+    const mod = CHAIN_SRC.slice(CHAIN_SRC.indexOf("const readingTendency = persona.traits?.readingTendency"));
+    const body = mod.slice(0, 1800);
+    expect(body).toContain("modulatedDemand.demands.sustainedAttention");
+    expect(body).not.toContain("modulatedDemand.demands.readingCapacity =");
+  });
+
+  test("the tool states the split, so a consumer never has to infer it", () => {
+    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    const block = tool.slice(tool.indexOf("readingModel: {"), tool.indexOf("scope: measureScope,"));
+    for (const dimension of ["decoding", "attention", "engagement", "notConsumedForReading"]) {
+      expect(block).toContain(dimension);
+    }
+    // And names comprehension explicitly as the one that is NOT consumed for
+    // reading, because a field omitted from the map is indistinguishable from
+    // one nobody thought about.
+    expect(block).toContain("traits.comprehension");
+  });
+
+  test("no field is authoritative for two dimensions", () => {
+    const tool = readFileSync(join(import.meta.dir, "..", "src", "mcp-tools", "base", "persona-comparison-tools.ts"), "utf8");
+    const block = tool.slice(tool.indexOf("readingModel: {"), tool.indexOf("scope: measureScope,"));
+    const claims = Array.from(block.matchAll(/authoritative: "([^"]+)"/g), (m) => m[1]);
+    expect(claims.length).toBe(3);
+    // Crude but sufficient: the same field name must not head two claims.
+    const heads = claims.map((c) => c.split(".")[0] + "." + (c.split(".")[1] ?? "").replace(/[{,].*/, ""));
+    expect(new Set(heads).size).toBe(heads.length);
   });
 });

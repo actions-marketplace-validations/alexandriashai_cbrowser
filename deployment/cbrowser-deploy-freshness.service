@@ -1,0 +1,42 @@
+[Unit]
+Description=CBrowser deploy-freshness check (is the running server the code on disk?)
+# Node loads its modules once at process start, and the hosted servers resolve
+# `cbrowser` through a symlink into this working tree. So a git pull plus a tsc
+# changes nothing about a running server, and there is no artifact whose absence
+# would reveal that. The only honest signal is the version string the process is
+# serving, compared against the version on disk.
+#
+# This existed as scripts/check-deploy-freshness.mjs from 2026-07-26 with no caller
+# of any kind. On 2026-08-03 the drift it was written for happened again: 18.79.0
+# served against 18.80.0 on disk, for fifty minutes, reported to nobody. A guard
+# nothing runs is not distinguishable from a guard that does not exist. This unit is
+# the caller.
+After=network-online.target
+Wants=network-online.target
+OnFailure=cbrowser-deploy-freshness-failed.service
+
+[Service]
+Type=oneshot
+User=wyld-web
+Group=wyld
+WorkingDirectory=/home/wyld-web/static/cbrowser-public
+# Exit 1 = at least one endpoint is stale. Exit 2 = an endpoint could not be reached,
+# which the probe deliberately does NOT treat as success. Either one trips OnFailure,
+# and that is correct: "the server is behind" and "I could not tell whether it is
+# behind" both need a human, and only one of them is safe to infer from silence.
+ExecStart=/usr/bin/node scripts/check-deploy-freshness.mjs
+TimeoutStartSec=60
+
+# Deliberately NOT restarting anything. Detecting drift and acting on it are separate
+# decisions: pro.cbrowser.ai and demo.cbrowser.ai share one upstream, so a restart is
+# customer-visible on both, and an automatic one during a session would look to a
+# paying customer exactly like an outage. This reports; a person restarts.
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/log/cbrowser
+
+[Install]
+WantedBy=multi-user.target
