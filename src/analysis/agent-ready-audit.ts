@@ -88,8 +88,62 @@ const CATEGORY_WEIGHTS: Record<AgentReadyIssueCategory, number> = {
   semantics: 0.15,
 };
 
+/**
+ * Refuse to grade a page the audit never actually saw.
+ *
+ * ## The bug this closes
+ *
+ * `calculateAgentReadyScore` starts every category at 100 and SUBTRACTS a
+ * penalty per issue found. An empty DOM yields no issues, so no penalties, so
+ * 100. The audit therefore awarded its BEST grade to pages it had entirely
+ * failed to load.
+ *
+ * Measured 2026-08-04. `espn.com` returned `grade: "A"`, `overall: 94`,
+ * `findability: 97`, `stability: 100` -- with `summary.totalElements === 0`.
+ * Three different ESPN URLs (homepage, /nfl/scoreboard, /nba/standings) returned
+ * byte-identical scores AND byte-identical issue lists, because the auditor was
+ * looking at the same nothing each time. `curl` of the same URL returns HTTP
+ * 403: ESPN blocks automated clients, the headless browser got a challenge page,
+ * and the scorer read that as a flawless site. It also reported "Missing
+ * semantic landmarks: main, nav" and "No OpenGraph meta tags" for a site that
+ * has all three -- the tell that should have been caught, since those findings
+ * describe the challenge page, not ESPN.
+ *
+ * ## Why it inverted the product's central claim
+ *
+ * Sites with the most aggressive bot protection are the sites AI agents struggle
+ * with most. Those are exactly the sites that blocked the auditor and collected
+ * an A for it. Against WebVoyager's published per-site agent success rates, the
+ * April grades correlated at **r = -0.27** -- the wrong sign -- with ESPN the
+ * worst site in that benchmark for agents (38.6%) while holding the top grade
+ * here. An A had become a marker of bot-blocking.
+ *
+ * ## Why this throws rather than returning a low score
+ *
+ * A blocked page is not a bad page; it is an ABSENT measurement, and the two
+ * must not be reported in the same units. Scoring it 0 would be as false as
+ * scoring it 94: it would tell a customer their site is hostile to agents when
+ * what happened is that our crawler could not get in. The honest output is no
+ * grade at all, loudly.
+ */
+export function assertPageWasAudited(totalElements: number, url: string): void {
+  if (totalElements > 0) return;
+  throw new Error(
+    `Agent-ready audit found 0 interactive elements at ${url}, so there is nothing to grade.\n\n` +
+    `This almost always means the page did not load for the auditor -- bot detection, a CAPTCHA ` +
+    `or consent interstitial, a login wall, or a navigation that resolved to about:blank.\n\n` +
+    `No grade is returned on purpose. The scorer starts at 100 and deducts per issue found, so an ` +
+    `empty page scores as a perfect one; returning that number reports a blocked crawl as an A.\n\n` +
+    `Try: --lightpanda, a different geo region, or an interior URL not behind the interstitial.`,
+  );
+}
+
 function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
-  // Start with perfect scores
+  // Start with perfect scores.
+  //
+  // Deduct-from-100 is why `assertPageWasAudited` above must run BEFORE this: on
+  // an empty page there is nothing to deduct for, and silence scores as
+  // perfection. Never call this without that guard.
   const scores: Record<AgentReadyIssueCategory, number> = {
     findability: 100,
     stability: 100,
@@ -1043,15 +1097,43 @@ async function detectLlmsTxt(ctx: DetectionContext): Promise<void> {
 
   try {
     const pageUrl = new URL(page.url());
+    // Bail unless we have a real http(s) origin.
+    //
+    // When navigation is blocked the page sits at `about:blank`, whose origin is
+    // not a fetchable base -- so this template produced the bare string
+    // "/llms.txt", `fetch` threw `TypeError: "/llms.txt" cannot be parsed as a
+    // URL`, and the ENTIRE audit died with a stack trace instead of a report.
+    // Reproduced 2026-08-04 on amazon.com, allrecipes.com and booking.com: three
+    // of eight sites in a benchmark sample returned nothing at all for this.
+    //
+    // Same root cause as the espn.com false-A (see assertPageWasAudited): the
+    // audit did not check that the page loaded. That guard is the real fix and
+    // now runs; this one keeps an optional signal from taking the report down
+    // with it if anything else ever leaves the page unnavigated.
+    if (pageUrl.protocol !== "http:" && pageUrl.protocol !== "https:") return;
     const llmsTxtUrl = `${pageUrl.origin}/llms.txt`;
 
-    // Use page context to fetch (same cookies/auth)
-    const response = await page.context().request.get(llmsTxtUrl, {
-      timeout: 5000,
-      failOnStatusCode: false,
+    // Plain fetch, NOT `page.context().request.get()`.
+    //
+    // The Playwright request API runs every response through
+    // `_parseSetCookieHeader`, and on amazon.com that throws
+    // `TypeError: "/llms.txt" cannot be parsed as a URL` from inside
+    // playwright-core (fetch.js:158). The throw originates in an HTTP event
+    // handler, NOT in the awaited promise, so the `try` wrapped around this
+    // block never catches it and the whole audit dies with a stack trace instead
+    // of returning a report. Reproduced 2026-08-04 on amazon.com, allrecipes.com
+    // and booking.com -- three of eight sites in a benchmark sample produced no
+    // output at all, and it read to the customer as a cbrowser failure.
+    //
+    // What this gives up: the page's cookies and auth. `/llms.txt` is a public
+    // file by definition, so that costs nothing real, and an OPTIONAL signal
+    // must never be able to take the whole report down with it.
+    const response = await fetch(llmsTxtUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(5000),
     });
 
-    const status = response.status();
+    const status = response.status;
     summary.hasLlmsTxt = status === 200;
 
     if (status === 200) {
@@ -2000,6 +2082,10 @@ export async function runAgentReadyAudit(
       return document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex], img, [aria-label]').length;
     }).catch(() => 0);
     summary.problematicElements = Math.min(issues.length, summary.totalElements);
+
+    // Nothing on the page means nothing was measured. Throws rather than
+    // grading -- see assertPageWasAudited for the espn.com case that motivated it.
+    assertPageWasAudited(summary.totalElements, url);
 
     // Calculate scores
     const score = calculateAgentReadyScore(issues);
