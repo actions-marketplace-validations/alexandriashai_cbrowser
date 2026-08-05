@@ -603,6 +603,23 @@ export function registerVisualTestingTools(server: McpServer): void {
           console.debug(`[attention_analysis] Attention quality failed: ${(e as Error).message}`);
         }
 
+        // The narrative and the metrics could contradict each other inside one
+        // payload with nothing saying so: ctaCaptureRate 0 shipping beside
+        // "CTAs like 'Try Free' stand out as safe next steps". The narrative
+        // cannot simply be handed the metrics — it is generated FIRST and its
+        // scores are an input to the map those metrics are computed from, so
+        // feeding them back is a cycle. Reconciled after the fact instead, and
+        // only ever annotated, never rewritten: the narrative carries the "why"
+        // the metrics don't.
+        let narrativeReconciliation: import("../../visual/narrative-reconcile.js").NarrativeReconciliation | undefined;
+        try {
+          const { reconcileAttentionNarrative } = await import("../../visual/narrative-reconcile.js");
+          narrativeReconciliation = reconcileAttentionNarrative(
+            relevanceReasoning,
+            attentionQuality as { ctaCaptureRate?: number } | null,
+          );
+        } catch { /* annotation only; never block the result on it */ }
+
         const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [{
           type: "text" as const,
           text: JSON.stringify({
@@ -626,6 +643,16 @@ export function registerVisualTestingTools(server: McpServer): void {
             // with no stated reason is one the caller cannot argue with, which
             // was the point of leaving keyword matching.
             ...(relevanceReasoning ? { attentionReasoning: relevanceReasoning } : {}),
+            // Only present when a checkable claim in the narrative actually
+            // contradicts a computed metric. Silent otherwise — a spurious
+            // "these disagree" on a narrative that was fine is its own defect.
+            ...(narrativeReconciliation?.contradictsMetrics ? {
+              narrativeReconciliation: {
+                contradictsMetrics: true,
+                contradictingClaims: narrativeReconciliation.contradictingClaims,
+                note: narrativeReconciliation.reconciliationNote,
+              },
+            } : {}),
             ...(relevanceSource ? { relevanceMethod: relevanceSource } : {}),
             // These two lines used to read as a contradiction — "Scattered
             // attention (overwhelmed)" printed directly above "Attention
