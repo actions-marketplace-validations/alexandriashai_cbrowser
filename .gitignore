@@ -64,7 +64,36 @@ HN-RESPONSE-PREP.md
 .test-fixtures/
 
 # Research data — not for public distribution
-research/
+# research/ — scripts and method are TRACKED; data and outputs are not.
+#
+# This was a blanket `research/` ignore until 2026-08-05, which meant the
+# provenance of constants that ship in the product lived outside version
+# control. GAZE_CALIBRATION in src/visual/attention-transport.ts cites a sweep
+# in research/study1/run-optimize.ts; that citation pointed at a file nobody
+# else could see, so the shipped number was unreproducible from the repo.
+#
+# Excluded below: the UEyes corpus (26 GB), result JSON/CSV, caches, venvs.
+# A reader can re-derive every result by downloading the corpus and running the
+# scripts, which is the point.
+research/study1/UEyes_dataset/
+research/study1/__MACOSX/
+research/study1/venv/
+research/study1/results/
+research/study1/.cache-features.json
+research/study1/features.json
+research/benchmark/results/
+research/benchmark/.tmp-audits/
+research/**/*.zip
+research/**/*.tar.gz
+research/**/__pycache__/
+research/study1/features.csv
+
+# ...but the results README is documentation, not data. It is the file that says
+# which number in that directory is true and which was retracted, so it is the
+# one thing in results/ a reader most needs.
+!research/study1/results/
+research/study1/results/*
+!research/study1/results/README.md
 
 # PAI / oh-my-claudecode artifacts (personal AI infrastructure)
 skills/
