@@ -25,7 +25,35 @@
 # the guard below fails loudly rather than quietly skipping.
 set -euo pipefail
 
-ISOLATED="tests/cli-evaluate-keyboard.test.ts"
+# 2026-08-04: the threshold moved, so the isolation list grew.
+#
+# Adding three small, pure test files to pass 1 (attention calibration, blend
+# weight, agent-ready blocked-page) turned CI red -- not because those files are
+# slow, but because pass 1 was already sitting just under whatever the
+# exhausting resource is. The recording files went first: fifteen "timed out
+# after 60000ms" failures at exactly 60-second intervals, which is ONE hung
+# browser launch reported fifteen times, not fifteen broken tests.
+#
+# Evidence this is the same accumulation the script was written for, and NOT the
+# new code:
+#
+#   recording-engine alone ....................... 45 pass / 0 fail
+#   recording-change-tiers alone ................. 12 pass / 0 fail
+#   the two together ............................. hangs, every run
+#   the two together at the commit BEFORE the new
+#     files existed (worktree at b83c996) ........ hangs, every run
+#
+# The last line is the one that matters: the union already hung before any of
+# this release's changes. The new files did not introduce the bug, they consumed
+# the remaining headroom.
+#
+# Still bounding a symptom, still not naming a cause. Every file listed here
+# launches real browsers per test. If the real cause is ever found, delete this.
+ISOLATED_FILES=(
+  "tests/cli-evaluate-keyboard.test.ts"
+  "tests/recording-engine.test.ts"
+  "tests/recording-change-tiers.test.ts"
+)
 
 # Match what `bun test` itself discovers, not a narrower guess. A first version
 # looked only for *.test.ts and silently dropped dist/security/audit-wrapper.test.js
@@ -44,19 +72,36 @@ if [ "${#ALL[@]}" -eq 0 ]; then
   exit 1
 fi
 
-found=0
+# Every isolated file must be discovered. The guard is per-file and still fails
+# loudly: silently skipping one is how a suite goes green while a file stops
+# being tested, and that risk grows with the size of this list.
 REST=()
 for f in "${ALL[@]}"; do
-  if [ "$f" = "$ISOLATED" ]; then found=1; else REST+=("$f"); fi
+  keep=1
+  for iso in "${ISOLATED_FILES[@]}"; do
+    if [ "$f" = "$iso" ]; then keep=0; break; fi
+  done
+  if [ "$keep" -eq 1 ]; then REST+=("$f"); fi
 done
 
-if [ "$found" -ne 1 ]; then
-  echo "test-split: '$ISOLATED' was not discovered — it moved or was renamed." >&2
-  echo "            Refusing to run, because silently skipping it is how a suite" >&2
-  echo "            goes green while a file stops being tested." >&2
-  exit 1
-fi
+for iso in "${ISOLATED_FILES[@]}"; do
+  found=0
+  for f in "${ALL[@]}"; do
+    if [ "$f" = "$iso" ]; then found=1; break; fi
+  done
+  if [ "$found" -ne 1 ]; then
+    echo "test-split: '$iso' was not discovered — it moved or was renamed." >&2
+    echo "            Refusing to run, because silently skipping it is how a suite" >&2
+    echo "            goes green while a file stops being tested." >&2
+    exit 1
+  fi
+done
 
-echo "test-split: ${#ALL[@]} test files discovered — ${#REST[@]} in pass 1, 1 isolated"
+echo "test-split: ${#ALL[@]} test files discovered — ${#REST[@]} in pass 1, ${#ISOLATED_FILES[@]} isolated"
 bun test "${REST[@]}"
-bun test "$ISOLATED"
+# Each isolated file gets its OWN process. Running them as one `bun test` with
+# several arguments would recreate the union that hangs.
+for iso in "${ISOLATED_FILES[@]}"; do
+  echo "test-split: isolated run — $iso"
+  bun test "$iso"
+done

@@ -61,7 +61,30 @@ const scoresArb = fc.array(
 async function capture(name: string, html: string, holdMs: number, drive?: (page: never) => Promise<void>) {
   const file = join(workDir, `${name}.html`);
   writeFileSync(file, html);
-  const browser = new CBrowser({ headless: true, viewportWidth: 1280, viewportHeight: 800 });
+  // ISOLATED dataDir. Without one, CBrowser falls back to the shared
+  // `~/.cbrowser` profile and opens a PERSISTENT context against it.
+  //
+  // That wedges the suite. `launchPersistentContext` blocks indefinitely while
+  // anything else holds that profile's `SingletonLock`, and
+  // `clearStaleSingletonLock` only clears a lock whose pid is dead -- a live
+  // holder is never touched, which is correct. So when this file runs alongside
+  // `recording-engine.test.ts`, which holds its own raw Playwright chromium,
+  // the launch here never returns and every test after it burns the full 60s
+  // timeout.
+  //
+  // CI symptom on 2026-08-04: fifteen "timed out after 60000ms" failures at
+  // exactly 60-second intervals. That reads as fifteen broken tests; it is ONE
+  // hung launch reported fifteen times. Each file passes alone (45 and 12),
+  // which is why running them separately reported everything fine.
+  //
+  // Isolating also stops a test run from touching the developer's real browser
+  // profile, sessions and cookies.
+  const browser = new CBrowser({
+    headless: true,
+    viewportWidth: 1280,
+    viewportHeight: 800,
+    dataDir: join(workDir, "browser-data", name),
+  });
   await browser.launch();
   try {
     await browser.navigate(`file://${file}`);
