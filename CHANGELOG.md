@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [18.82.2](https://github.com/alexandriashai/cbrowser/compare/v18.82.1...v18.82.2) (2026-08-06)
+
+### Fixed
+
+* **attention,goals:** isolate siteFamiliarity from attention, wire GoalDecomposer ([c807153](https://github.com/alexandriashai/cbrowser/commit/c8071533ac45958fa5bf88bb39bf16f5402ac9c2))
+* **attention:** anchor semantic patterns, widen ratio window, reconcile narrative ([2cca3e8](https://github.com/alexandriashai/cbrowser/commit/2cca3e8f15fdecf61e362ad77a93db36b58a5a01))
+* **attention:** size the hotspot pool to the grid, not a hard 10 ([26e80b4](https://github.com/alexandriashai/cbrowser/commit/26e80b40aaa11e761918b96b32c9cb017af02c4c))
+* **widget-kit:** two chip/tab foregrounds that failed WCAG AA ([66818cd](https://github.com/alexandriashai/cbrowser/commit/66818cd40ce731eb4c873f5e38b4ef9ac1728d65)), closes [#fff](https://github.com/alexandriashai/cbrowser/issues/fff)
+
 ## [18.82.1](https://github.com/alexandriashai/cbrowser/compare/v18.82.0...v18.82.1) (2026-08-05)
 
 ## [18.82.0](https://github.com/alexandriashai/cbrowser/compare/v18.81.4...v18.82.0) (2026-08-04)
