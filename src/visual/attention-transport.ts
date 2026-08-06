@@ -526,8 +526,26 @@ function computeTraitModifiers(traits: Record<string, number>): Record<string, n
     // High curiosity → explore headings, images, more elements
     heading: 0.8 + t("curiosity") * 0.4,
     image: 0.5 + t("curiosity") * 0.5,
-    // Low siteFamiliarity → navigation, headings are important
-    navigation: 0.4 + (1.0 - t("siteFamiliarity")) * 0.6,
+    // Navigation weight is deliberately FAMILIARITY-INDEPENDENT.
+    //
+    // This read `0.4 + (1.0 - t("siteFamiliarity")) * 0.6`, which made the
+    // attention map depend on a trait the attention tools do not expose. The
+    // incoherence that produced: `cognitive_effort` takes `siteFamiliarity` as
+    // an explicit per-call parameter, while `attention_analysis` has no such
+    // parameter and yet silently read whatever value happened to be baked into
+    // the persona's static trait vector. So the same persona's attention could
+    // not be steered first-timer vs returning by any caller, but WAS being
+    // steered by an invisible default.
+    //
+    // Alexa's design call, 2026-08-05: "attention familiarity is independent now
+    // by design so it is only used on tool call. the first timer vs returning
+    // user case." siteFamiliarity stays in the cognitive-transport chain, where
+    // the tool call supplies it and the first-timer/returning distinction is the
+    // whole point. It does not belong in the saliency map.
+    //
+    // 0.7 is the previous formula evaluated at familiarity 0.5, so a persona
+    // with a neutral (or absent) value sees no change at all.
+    navigation: 0.7,
     // High readingTendency → content draws attention
     // (overrides patience for reading-heavy personas)
     ...(t("readingTendency") > 0.6 ? { content: 0.4 + t("readingTendency") * 0.4 } : {}),
