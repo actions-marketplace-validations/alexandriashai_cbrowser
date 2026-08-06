@@ -1635,9 +1635,12 @@ export async function runAIReadinessBenchmark(
         }
 
         // Add issue-based weaknesses
-        const issueDescriptions = audit.issues.slice(0, 3).map(
-          (issue) => issue.description
-        );
+        const topThree = audit.issues.slice(0, 3);
+        const issueDescriptions = topThree.map((issue) => issue.description);
+        // Carried alongside the descriptions because reconciliation needs the
+        // CATEGORY, and mapping to description strings threw it away — which is
+        // why a strength and its contradiction could not be matched up.
+        const issueCategories = topThree.map((issue) => String(issue.category));
 
         return {
           url,
@@ -1646,7 +1649,10 @@ export async function runAIReadinessBenchmark(
           score: audit.score.overall,
           scoreBreakdown: audit.score,
           topIssues: issueDescriptions,
-          strengths: strengths.length > 0 ? strengths : ["No major strengths detected"],
+          topIssueCategories: issueCategories,
+          strengths: strengths.length > 0
+            ? reconcileStrengths(strengths, issueCategories, audit.score)
+            : ["No major strengths detected"],
           weaknesses: weaknesses.length > 0 ? weaknesses : issueDescriptions,
           duration: audit.duration,
           auditStatus: "complete" as AuditStatus,
@@ -1751,18 +1757,97 @@ function generateAIComparison(results: AIBenchmarkSiteResult[]): AIBenchmarkComp
     // Add strength-based advantages
     advantages.push(...result.strengths.filter(s => s !== "No major strengths detected"));
 
-    siteAdvantages[result.siteName] = advantages;
+    siteAdvantages[result.siteName] = dedupeAdvantagesByAxis(advantages);
   }
 
   return {
     bestOverall: byScore[0]?.siteName || "N/A",
     bestFindability: byFindability[0]?.siteName || "N/A",
     bestStability: byStability[0]?.siteName || "N/A",
+    // Renamed to match the axis. Missed by the 2026-08-05 sweep, which reached
+    // agent-ready-audit and not this file — a sibling instance the class-sweep
+    // should have caught then.
+    bestAgentPerceivability: byAccessibility[0]?.siteName || "N/A",
+    /** @deprecated Renamed to bestAgentPerceivability. Removed at the next major. */
     bestAccessibility: byAccessibility[0]?.siteName || "N/A",
     bestSemantics: bySemantics[0]?.siteName || "N/A",
     commonIssues,
     siteAdvantages,
   };
+}
+
+/**
+ * Which scoring axis a strength phrase is a claim about.
+ *
+ * The phrases are generated from axis thresholds a few lines below, so this map
+ * is their inverse. Kept beside them deliberately: a new strength added without
+ * an entry here is silently exempt from reconciliation, which is how a claim and
+ * its contradiction came to ship side by side.
+ */
+const STRENGTH_AXIS: Record<string, "findability" | "stability" | "agentPerceivability" | "semantics"> = {
+  "Easy for agents to locate elements": "findability",
+  "Stable selectors that won't break": "stability",
+  "Good ARIA labels for identification": "agentPerceivability",
+  "Clear semantic HTML structure": "semantics",
+};
+
+/** Superlatives and plain strengths make the same claim at different scopes. */
+const ADVANTAGE_AXIS: Record<string, "findability" | "stability" | "agentPerceivability" | "semantics"> = {
+  "Best element findability": "findability",
+  "Most stable selectors": "stability",
+  "Best ARIA/accessibility labels": "agentPerceivability",
+  "Best semantic structure": "semantics",
+};
+
+/**
+ * Qualify a strength that the site's own top issues contradict.
+ *
+ * `/pricing` shipped `strengths: ["Stable selectors that won't break"]` beside
+ * `topIssues: ["Element lacks stable selectors (score: 0/10)"]`. Both are
+ * arithmetically correct -- the first is an AXIS score at 92, the second is an
+ * ELEMENT scoring 0 -- and they are not publishable together unreconciled.
+ *
+ * Qualified rather than suppressed. Stability 92 is real and useful; deleting
+ * the strength would lose it to hide an inconsistency that is actually
+ * information. The exception count is what a reader needs, and it is what the
+ * old output withheld.
+ */
+export function reconcileStrengths(
+  strengths: string[],
+  issueCategories: string[],
+  breakdown: { findability: number; stability: number; agentPerceivability?: number; accessibility: number; semantics: number },
+): string[] {
+  return strengths.map((strength) => {
+    const axis = STRENGTH_AXIS[strength];
+    if (!axis) return strength;
+    const exceptions = issueCategories.filter((c) => c === axis
+      || (axis === "agentPerceivability" && c === "accessibility")).length;
+    if (exceptions === 0) return strength;
+    const score = axis === "agentPerceivability"
+      ? (breakdown.agentPerceivability ?? breakdown.accessibility)
+      : breakdown[axis];
+    return `${strength} overall (${axis} ${score}), with ${exceptions} element(s) excepted`;
+  });
+}
+
+/**
+ * Drop a plain strength when the superlative for the same axis is already
+ * present. "Most stable selectors" and "Stable selectors that won't break" are
+ * one claim written twice, and the list shipped both.
+ */
+export function dedupeAdvantagesByAxis(advantages: string[]): string[] {
+  const superlativeAxes = new Set(
+    advantages.map((a) => ADVANTAGE_AXIS[a]).filter(Boolean));
+  const seen = new Set<string>();
+  return advantages.filter((a) => {
+    if (seen.has(a)) return false;
+    seen.add(a);
+    // A qualified strength keeps its exception count, so match on the stem.
+    const stem = a.split(" overall (")[0];
+    const axis = STRENGTH_AXIS[stem];
+    if (axis && superlativeAxes.has(axis)) return false;
+    return true;
+  });
 }
 
 /**

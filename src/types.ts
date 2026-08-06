@@ -5034,6 +5034,16 @@ export interface AIBenchmarkSiteResult {
   scoreBreakdown: AgentReadyScore | null;
   /** Top issues found */
   topIssues: string[];
+  /**
+   * Scoring axis of each entry in `topIssues`, positionally aligned.
+   *
+   * `topIssues` is built by mapping issues to their description strings, which
+   * discards the category — and without the category a strength cannot be
+   * matched against the issue that contradicts it. That is how
+   * `strengths: ["Stable selectors that won't break"]` came to ship beside
+   * `topIssues: ["Element lacks stable selectors (score: 0/10)"]`.
+   */
+  topIssueCategories?: string[];
   /** Strengths for AI agents */
   strengths: string[];
   /** Weaknesses for AI agents */
@@ -5063,6 +5073,9 @@ export interface AIBenchmarkComparison {
   /** Best site for stability */
   bestStability: string;
   /** Best site for accessibility */
+  /** Site with the best agent-perceivability axis. */
+  bestAgentPerceivability: string;
+  /** @deprecated Renamed to `bestAgentPerceivability`. Removed at the next major. */
   bestAccessibility: string;
   /** Best site for semantics */
   bestSemantics: string;
