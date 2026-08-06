@@ -61,6 +61,7 @@ ISOLATED_FILES=(
   #
   # Any new test file calling chromium.launch() belongs in this list.
   "tests/sticky-overlay-threshold.test.ts"
+  "tests/freeze-animations.test.ts"
 )
 
 # Match what `bun test` itself discovers, not a narrower guess. A first version
