@@ -53,6 +53,14 @@ ISOLATED_FILES=(
   "tests/cli-evaluate-keyboard.test.ts"
   "tests/recording-engine.test.ts"
   "tests/recording-change-tiers.test.ts"
+  # Launches its own chromium. Added 2026-08-05 after it landed in the shared
+  # pass and pushed tests/svg-classname.test.ts -- which also launches one --
+  # into five 5001ms timeouts. Both pass alone in under a second, so the
+  # failure was contention between them, not a defect in either. Same headroom
+  # story as the note above: one more browser was one too many.
+  #
+  # Any new test file calling chromium.launch() belongs in this list.
+  "tests/sticky-overlay-threshold.test.ts"
 )
 
 # Match what `bun test` itself discovers, not a narrower guess. A first version

@@ -404,17 +404,54 @@ async function detectHiddenInputs(ctx: DetectionContext): Promise<void> {
 }
 
 /**
- * Detect sticky/fixed elements that may intercept clicks
+ * Ignore slivers: tracking pixels, 1px rules, zero-size wrappers. Anything a
+ * pointer could plausibly land on is counted.
  */
-async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
+const STICKY_MIN_DIMENSION_PX = 8;
+/** A sticky element spanning at least this share of the viewport width is a bar. */
+const STICKY_BAR_WIDTH_RATIO = 0.5;
+/** Height at which a sticky element can hide a scroll target behind itself. */
+const STICKY_OCCLUDING_HEIGHT_PX = 56;
+
+/**
+ * Detect sticky/fixed elements that may intercept clicks.
+ *
+ * `summary.stickyOverlays` COUNTS WHAT IS THERE. It used to count only the
+ * subset large enough to raise an issue, which is a different question wearing
+ * the same name, and on a real page the two answers were 0 and 4.
+ *
+ * Measured on cbrowser.ai, 1280x800: a sticky `<header>` 57px tall and three
+ * fixed control buttons at 44, 44 and 40px. The old code filtered to
+ * `height > 40` and then flagged `height > 60`, so every one of them fell into
+ * the 40-60 gap and was discarded TWICE. The audit reported `stickyOverlays: 0`
+ * on a page with a sticky header and three floating buttons, and the 40px button
+ * never even survived the first filter -- a boundary that excludes an element of
+ * exactly the boundary size.
+ *
+ * The two questions are now separated, because they have different right
+ * answers:
+ *
+ *   summary.stickyOverlays  -- how many sticky/fixed elements exist (a FACT)
+ *   issues[]                -- which of them can obstruct an agent (a JUDGEMENT)
+ *
+ * The judgement is no longer height alone. What makes a sticky element an
+ * obstruction is covering something: a full-width bar occludes a whole band of
+ * the page whatever its height (the 57px header is the case in point, and
+ * `scroll-margin-top` exists precisely for it), while a 44px corner button
+ * occludes 44px of corner. Height alone flagged the second and missed the first.
+ * (2026-08-05)
+ */
+export async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
   const { page, issues, summary } = ctx;
 
-  const stickyElements = await page.$$eval('*', (elements) => {
+  const stickyElements = await page.$$eval('*', (elements, minPx: number) => {
     const results: Array<{
       selector: string;
       position: string;
       zIndex: number;
       height: number;
+      width: number;
+      viewportWidth: number;
       isHeader: boolean;
       isFooter: boolean;
     }> = [];
@@ -425,7 +462,11 @@ async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
 
       if (position === 'fixed' || position === 'sticky') {
         const rect = el.getBoundingClientRect();
+        // Invisible elements cannot intercept a click and are not overlays.
+        if (styles.visibility === 'hidden' || styles.display === 'none' || styles.opacity === '0') continue;
+        if (rect.width < minPx || rect.height < minPx) continue;
         const zIndex = parseInt(styles.zIndex) || 0;
+        if (zIndex < 0) continue; // painted behind content
         const tag = el.tagName.toLowerCase();
         const id = el.id ? `#${el.id}` : '';
         const className = el.className && typeof el.className === 'string'
@@ -437,31 +478,39 @@ async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
           position,
           zIndex,
           height: rect.height,
+          width: rect.width,
+          viewportWidth: window.innerWidth,
           isHeader: rect.top < 100,
           isFooter: rect.bottom > window.innerHeight - 100,
         });
       }
     }
 
-    return results.filter(el => el.height > 40 && el.zIndex >= 0);
-  });
+    return results;
+  }, STICKY_MIN_DIMENSION_PX);
+
+  // The count is every sticky/fixed element found, not the flagged subset.
+  summary.stickyOverlays = stickyElements.length;
 
   for (const sticky of stickyElements) {
-    // Only flag non-trivial sticky elements
-    if (sticky.height > 60) {
-      issues.push({
-        category: "stability",
-        severity: sticky.zIndex > 100 ? "high" : "medium",
-        element: sticky.selector,
-        description: `${sticky.position} element may intercept clicks (z-index: ${sticky.zIndex}, height: ${sticky.height}px)`,
-        detectionMethod: "sticky-element-check",
-        recommendation: "Add scroll-margin-top to target elements, or ensure proper z-index layering",
-        codeExample: sticky.isHeader
-          ? `/* Add to elements that sticky header might cover */\n.target-element {\n  scroll-margin-top: ${sticky.height + 20}px;\n}`
-          : `/* Ensure modal/overlay has backdrop to prevent accidental clicks */`,
-      });
-      summary.stickyOverlays++;
-    }
+    const isBar = sticky.viewportWidth > 0
+      && sticky.width >= sticky.viewportWidth * STICKY_BAR_WIDTH_RATIO;
+    const isTall = sticky.height >= STICKY_OCCLUDING_HEIGHT_PX;
+    if (!isBar && !isTall) continue;
+
+    issues.push({
+      category: "stability",
+      severity: sticky.zIndex > 100 ? "high" : "medium",
+      element: sticky.selector,
+      description: `${sticky.position} element may intercept clicks `
+        + `(z-index: ${sticky.zIndex}, ${Math.round(sticky.width)}x${Math.round(sticky.height)}px`
+        + `${isBar ? ", spans the viewport width" : ""})`,
+      detectionMethod: "sticky-element-check",
+      recommendation: "Add scroll-margin-top to target elements, or ensure proper z-index layering",
+      codeExample: sticky.isHeader
+        ? `/* Add to elements that sticky header might cover */\n.target-element {\n  scroll-margin-top: ${Math.round(sticky.height) + 20}px;\n}`
+        : `/* Ensure modal/overlay has backdrop to prevent accidental clicks */`,
+    });
   }
 }
 
