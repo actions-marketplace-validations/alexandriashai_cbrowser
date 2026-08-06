@@ -140,6 +140,38 @@ export interface AttentionQualityResult {
   sampledElements?: number;
   /** Present only when the sample is too thin for the ratios to discriminate. */
   sampleNote?: string;
+  /**
+   * The saliency mass each ratio was computed from, before division.
+   *
+   * The ratios are rounded to three decimals, and three decimals is enough
+   * precision to look like identity when it is not. Two personas returned
+   * `ctaCaptureRate: 0.343` from 122.531/357.183 and 118.899/346.169 -- values
+   * that differ in the fourth decimal -- and a reader diffing the two runs
+   * reasonably concluded the metric was persona-invariant and filed it as a P0.
+   * It was a rounding collision.
+   *
+   * Publishing more decimals would be the wrong fix: the ratio genuinely does
+   * not carry four-decimal precision, since it is computed over three or four
+   * coarse buckets, and `sampleNote` already says to read it as indicative.
+   * Rounding to TWO decimals, the other obvious move, collides more often, not
+   * less.
+   *
+   * So the ratio keeps the precision it deserves and the basis ships beside it.
+   * A diff can now distinguish "the same measurement" from "two different
+   * measurements that round alike", which is the actual question a reader
+   * comparing runs is asking.
+   */
+  basis?: {
+    /** Saliency summed over the sampled window, per bucket. */
+    cta: number;
+    heading: number;
+    navigation: number;
+    decorative: number;
+    content: number;
+    unaccounted: number;
+    /** The denominator every ratio above divides by. */
+    total: number;
+  };
   /** What the top attention zones are hitting */
   topAttentionTargets: Array<{
     type: "cta" | "heading" | "navigation" | "content" | "decorative" | "unknown";
@@ -192,6 +224,11 @@ interface ElementBounds {
  * documented scale, and `saliencySum` is the total mass the ranking uses.
  * (2026-07-29)
  */
+/** Six decimals — fine enough that the basis cannot collide the way the ratio did. */
+function round6(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
+}
+
 /** Element bounds a hotspot falls inside, or null. */
 type AttentionElement = {
   text: string; type: string; x: number; y: number; width: number; height: number;
@@ -468,7 +505,7 @@ export function computeAttentionQuality(
     distractorRatio: Math.round(distractorRatio * 1000) / 1000,
     contentRatio: Math.round(contentRatio * 1000) / 1000,
     unaccountedRatio: Math.round(unaccountedRatio * 1000) / 1000,
-    ratioNote: "ctaCaptureRate + headingShare + distractorRatio + contentRatio sum to 1. contentRatio is the classifier's default bucket: attention on elements it did not recognise as CTA, heading, nav or decorative. A high contentRatio next to distractorRatio 0 means the distractor classifier is not recognising the distractors, not that there are none.",
+    ratioNote: "Ratios are rounded to 3dp, which is enough to look like identity when it is not — compare `basis` before concluding two runs match. ctaCaptureRate + headingShare + distractorRatio + contentRatio sum to 1. contentRatio is the classifier's default bucket: attention on elements it did not recognise as CTA, heading, nav or decorative. A high contentRatio next to distractorRatio 0 means the distractor classifier is not recognising the distractors, not that there are none.",
     qualityScore,
     valueRelevanceScore,
     // Deduplicated by element. The loop above walks HOTSPOTS — grid cells — and
@@ -484,6 +521,17 @@ export function computeAttentionQuality(
     // them apart from the ratio alone — 1.0 looks equally confident either way.
     sampledHotspots,
     sampledElements,
+    // Six decimals: enough that two genuinely different measurements cannot
+    // collide here as well, which is the whole point of publishing it.
+    basis: {
+      cta: round6(ctaSaliency),
+      heading: round6(headingSaliency),
+      navigation: round6(navSaliency),
+      decorative: round6(decorativeSaliency),
+      content: round6(contentSaliency),
+      unaccounted: round6(unknownSaliency),
+      total: round6(totalTopSaliency),
+    },
     ...(sampledElements < MIN_DISTINCT_ELEMENTS ? {
       sampleNote: `Ratios computed over ${sampledElements} distinct element(s). `
         + "Below ~8 the buckets are coarse and a single element can dominate; "
