@@ -4649,7 +4649,32 @@ export interface DismissOverlayResult {
 // ============================================================================
 
 /** Issue category for agent-ready audit */
-export type AgentReadyIssueCategory = "findability" | "stability" | "accessibility" | "semantics";
+/**
+ * Issue categories, which are also the four scoring axes.
+ *
+ * `agentPerceivability` was called `accessibility`, and the rename is not
+ * cosmetic. The axis measures whether a MACHINE can perceive an element -- does
+ * it carry an ARIA label, does it have text -- and it scored 100/100 on a page
+ * where `empathy_audit` found two WCAG violations. Both numbers were right and
+ * the pairing was indefensible: "accessibility: 100" on a page that is not
+ * accessible is a claim this product cannot afford to make, given that its
+ * commercial thesis is precisely that accessibility work and agent-navigability
+ * work are the same work.
+ *
+ * Two axes that correlate is a stronger claim than one axis that ambiguously
+ * means both, so the rename makes the argument better rather than hedging it.
+ *
+ * `"accessibility"` is retained as a DEPRECATED alias so existing consumers
+ * filtering on it keep compiling. Emitted issues now carry the new name; the
+ * alias is removed at the next major. (2026-08-05)
+ */
+export type AgentReadyIssueCategory =
+  | "findability"
+  | "stability"
+  | "agentPerceivability"
+  /** @deprecated Renamed to `agentPerceivability`. Removed at the next major. */
+  | "accessibility"
+  | "semantics";
 
 /** Severity level for agent-ready issues */
 export type AgentReadyIssueSeverity = "low" | "medium" | "high" | "critical";
@@ -4736,7 +4761,18 @@ export interface AgentReadyScore {
   findability: number;
   /** Will selectors break? */
   stability: number;
-  /** ARIA/semantic HTML quality */
+  /**
+   * Can a MACHINE perceive these elements — ARIA labels present, elements carry
+   * text. NOT a WCAG conformance score; `empathy_audit` answers that, and the
+   * two can legitimately disagree on the same page.
+   */
+  agentPerceivability: number;
+  /**
+   * @deprecated Renamed to `agentPerceivability`, which is what it measures.
+   * Emitted with the identical value so nothing breaks; removed at the next
+   * major. It scored 100 on a page with two WCAG violations, which is defensible
+   * arithmetic and an indefensible thing to call "accessibility".
+   */
   accessibility: number;
   /** Meaningful labels/text */
   semantics: number;
@@ -4768,6 +4804,20 @@ export interface AgentReadySummary {
   /** API endpoints detected in page */
   apiEndpointsCount?: number;
   /** Dynamic content patterns detected */
+  /**
+   * How many DISTINCT deferred-loading patterns were detected (0-4): loading
+   * indicators, infinite-scroll hints, more than five lazy images, load-more
+   * buttons. It is a count of pattern KINDS, not of elements.
+   *
+   * Renamed from `dynamicContentCount`, which read as "does this page move" and
+   * meant "does this page load content late". On cbrowser.ai it reported 0 --
+   * correctly, the page defers nothing -- while 122 CSS animations were running,
+   * 119 of them infinite. A reader comparing it against `empathy_audit`'s
+   * animation barrier concluded, reasonably, that one of the two tools was
+   * broken. Neither was; the name was.
+   */
+  deferredLoadingPatterns?: number;
+  /** @deprecated Renamed to `deferredLoadingPatterns`. Removed at the next major. */
   dynamicContentCount?: number;
 }
 

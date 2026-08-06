@@ -78,14 +78,19 @@ const SEVERITY_PENALTY: Record<AgentReadyIssueSeverity, number> = {
  * Category weights based on typical AI agent interaction priorities:
  * - Findability (35%): Can the agent locate elements? Most critical for automation
  * - Stability (30%): Will selectors remain stable across page loads?
- * - Accessibility (20%): ARIA labels provide semantic meaning for agents
+ * - AgentPerceivability (20%): ARIA labels provide semantic meaning for agents
+ *   (renamed from Accessibility -- it measures machine-perceivability, not WCAG)
  * - Semantics (15%): Proper HTML structure aids understanding
  */
 const CATEGORY_WEIGHTS: Record<AgentReadyIssueCategory, number> = {
   findability: 0.35,
   stability: 0.30,
-  accessibility: 0.20,
+  agentPerceivability: 0.20,
   semantics: 0.15,
+  // The deprecated alias keeps its weight so an issue emitted by older code, or
+  // by a caller constructing one by hand, still scores instead of silently
+  // weighing nothing.
+  accessibility: 0.20,
 };
 
 /**
@@ -138,7 +143,7 @@ export function assertPageWasAudited(totalElements: number, url: string): void {
   );
 }
 
-function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
+export function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
   // Start with perfect scores.
   //
   // Deduct-from-100 is why `assertPageWasAudited` above must run BEFORE this: on
@@ -147,8 +152,13 @@ function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
   const scores: Record<AgentReadyIssueCategory, number> = {
     findability: 100,
     stability: 100,
-    accessibility: 100,
+    agentPerceivability: 100,
     semantics: 100,
+    // An issue constructed by older code still carries `category:
+    // "accessibility"`. Without a bucket for it, `scores[issue.category]` is
+    // undefined, `undefined - penalty` is NaN, and NaN propagates silently into
+    // the overall score. It is folded into agentPerceivability below.
+    accessibility: 100,
   };
 
   // Deduct based on issues
@@ -161,7 +171,10 @@ function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
   const overall = Math.round(
     scores.findability * CATEGORY_WEIGHTS.findability +
     scores.stability * CATEGORY_WEIGHTS.stability +
-    scores.accessibility * CATEGORY_WEIGHTS.accessibility +
+    // Deprecated-alias deductions fold in here: whichever bucket took the hit,
+    // the axis reflects it. min() because both start at 100 and only one is
+    // normally touched.
+    Math.min(scores.agentPerceivability, scores.accessibility) * CATEGORY_WEIGHTS.agentPerceivability +
     scores.semantics * CATEGORY_WEIGHTS.semantics
   );
 
@@ -169,7 +182,10 @@ function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
     overall,
     findability: Math.round(scores.findability),
     stability: Math.round(scores.stability),
-    accessibility: Math.round(scores.accessibility),
+    agentPerceivability: Math.round(Math.min(scores.agentPerceivability, scores.accessibility)),
+    // The identical number under the old key, so nothing consuming it breaks
+    // mid-major. Both are emitted until the next major removes this one.
+    accessibility: Math.round(Math.min(scores.agentPerceivability, scores.accessibility)),
     semantics: Math.round(scores.semantics),
   };
 }
@@ -321,7 +337,7 @@ async function detectUnlabeledElements(ctx: DetectionContext): Promise<void> {
 
   for (const input of unlabeledInputs) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       element: input.selector,
       description: `Input field without label or aria-label`,
@@ -562,7 +578,7 @@ async function detectMissingAltText(ctx: DetectionContext): Promise<void> {
 
   for (const img of imagesWithoutAlt) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       element: img.selector,
       description: "Image without alt text",
@@ -805,7 +821,7 @@ async function detectMachineMetadata(ctx: DetectionContext): Promise<void> {
 
   if (missingLandmarks.length > 0) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       subcategory: "machine-metadata",
       element: "body",
@@ -927,7 +943,7 @@ async function detectNavigationPatterns(ctx: DetectionContext): Promise<void> {
   // Report missing skip link
   if (!navPatterns.skipLink) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       subcategory: "navigation-patterns",
       element: "body",
@@ -1322,7 +1338,9 @@ async function detectDynamicContent(ctx: DetectionContext): Promise<void> {
     (dynamicInfo.lazyImages > 5 ? 1 : 0) +
     (dynamicInfo.loadMoreButtons > 0 ? 1 : 0);
 
-  summary.dynamicContentCount = dynamicCount;
+  summary.deferredLoadingPatterns = dynamicCount;
+  summary.dynamicContentCount = dynamicCount; // deprecated alias
+
 
   // Report infinite scroll as a potential challenge for agents
   if (dynamicInfo.infiniteScrollHints > 0 || dynamicInfo.loadMoreButtons > 0) {
@@ -1470,7 +1488,7 @@ Duration: ${(result.duration / 1000).toFixed(1)}s
 │                                                                            │
 │  Findability    ${result.score.findability}/100  ${'█'.repeat(Math.floor(result.score.findability / 10))}${'░'.repeat(10 - Math.floor(result.score.findability / 10))}                │
 │  Stability      ${result.score.stability}/100  ${'█'.repeat(Math.floor(result.score.stability / 10))}${'░'.repeat(10 - Math.floor(result.score.stability / 10))}                │
-│  Accessibility  ${result.score.accessibility}/100  ${'█'.repeat(Math.floor(result.score.accessibility / 10))}${'░'.repeat(10 - Math.floor(result.score.accessibility / 10))}                │
+│  AgentPerceive ${result.score.agentPerceivability}/100  ${'█'.repeat(Math.floor(result.score.agentPerceivability / 10))}${'░'.repeat(10 - Math.floor(result.score.agentPerceivability / 10))}                │
 │  Semantics      ${result.score.semantics}/100  ${'█'.repeat(Math.floor(result.score.semantics / 10))}${'░'.repeat(10 - Math.floor(result.score.semantics / 10))}                │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -1504,7 +1522,7 @@ ISSUES BY CATEGORY
 ──────────────────
   Findability: ${result.issues.filter(i => i.category === 'findability').length} issues
   Stability: ${result.issues.filter(i => i.category === 'stability').length} issues
-  Accessibility: ${result.issues.filter(i => i.category === 'accessibility').length} issues
+  Agent-perceivability: ${result.issues.filter(i => i.category === 'agentPerceivability' || i.category === 'accessibility').length} issues
   Semantics: ${result.issues.filter(i => i.category === 'semantics').length} issues
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -1671,6 +1689,9 @@ export function generateAgentReadyHtmlReport(result: AgentReadyAuditResult): str
     }
     .badge-findability { background: #3b82f633; color: #60a5fa; }
     .badge-stability { background: #f59e0b33; color: #fbbf24; }
+    .badge-agentPerceivability { background: #10b98133; color: #34d399; }
+    /* Retained so an issue still carrying the deprecated category renders with
+       a colour rather than an unstyled badge. */
     .badge-accessibility { background: #10b98133; color: #34d399; }
     .badge-semantics { background: #8b5cf633; color: #a78bfa; }
     .badge-critical { background: #7f1d1d; color: #fca5a5; }
@@ -1790,9 +1811,9 @@ export function generateAgentReadyHtmlReport(result: AgentReadyAuditResult): str
         <div class="progress-bar"><div class="progress-fill" style="width: ${result.score.stability}%"></div></div>
       </div>
       <div class="score-bar">
-        <div class="value">${result.score.accessibility}</div>
-        <div class="label">Accessibility</div>
-        <div class="progress-bar"><div class="progress-fill" style="width: ${result.score.accessibility}%"></div></div>
+        <div class="value">${result.score.agentPerceivability}</div>
+        <div class="label" title="Whether a machine can perceive these elements — not WCAG conformance">Agent perceivability</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: ${result.score.agentPerceivability}%"></div></div>
       </div>
       <div class="score-bar">
         <div class="value">${result.score.semantics}</div>
@@ -2100,6 +2121,7 @@ export async function runAgentReadyAudit(
       navigationAidsCount: 0,
       hasLlmsTxt: false,
       apiEndpointsCount: 0,
+      deferredLoadingPatterns: 0,
       dynamicContentCount: 0,
     };
 
