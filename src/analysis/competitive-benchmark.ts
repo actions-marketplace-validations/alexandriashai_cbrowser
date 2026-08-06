@@ -1766,6 +1766,53 @@ function generateAIComparison(results: AIBenchmarkSiteResult[]): AIBenchmarkComp
 }
 
 /**
+ * Everything a site is known to be bad at.
+ *
+ * `weaknesses` alone is not that set. It is `weaknesses.length > 0 ? weaknesses
+ * : issueDescriptions` -- so a site with a low AXIS score gets only its axis
+ * weaknesses, and its element-level issues never appear there at all. That is
+ * the gap the reference check fell through: cbrowser.ai/pricing carried a sticky
+ * -element issue in `topIssues` and not in `weaknesses`, so a check reading only
+ * `weaknesses` concluded it was clean and recommended it as the example to
+ * follow -- for the identical issue.
+ */
+function issueSurface(r: AIBenchmarkSiteResult): Set<string> {
+  return new Set<string>([...(r.weaknesses ?? []), ...(r.topIssues ?? [])]);
+}
+
+/**
+ * A site worth holding up as an example for THIS issue, or nothing.
+ *
+ * Three conditions, and the tool previously enforced none of them:
+ *
+ *  1. It must not share the issue. Checked against the full issue surface above,
+ *     not just `weaknesses`.
+ *  2. It must actually score BETTER than the site being advised. The old code
+ *     took the first array match, so cbrowser.ai/pricing (83) was told that
+ *     cbrowser.ai/docs/home (80) "handles this better" -- advice to copy a page
+ *     that is worse.
+ *  3. Among those that qualify, the best one, not the first one encountered.
+ *
+ * Returns undefined rather than degrading to a rank-based guess. ai_benchmark is
+ * a competitive-intelligence tool whose output is aimed at customers comparing
+ * themselves to rivals; telling one to copy a competitor with the same flaw is
+ * the failure most likely to be screenshotted. No reference is strictly better
+ * than a wrong one.
+ */
+export function pickBetterReference(
+  candidates: AIBenchmarkSiteResult[],
+  subject: { siteName: string; score: number | null },
+  issue: string,
+): AIBenchmarkSiteResult | undefined {
+  if (subject.score === null) return undefined;
+  return candidates
+    .filter((r) => r.siteName !== subject.siteName)
+    .filter((r) => r.score !== null && r.score > (subject.score as number))
+    .filter((r) => !issueSurface(r).has(issue))
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+}
+
+/**
  * Generate prioritized recommendations for each site
  */
 function generateAIRecommendations(
@@ -1804,18 +1851,17 @@ function generateAIRecommendations(
 
     // Add weakness-based recommendations
     for (const weakness of result.weaknesses) {
-      const betterSite = successfulResults.find(
-        (r) =>
-          r.siteName !== result.siteName &&
-          !r.weaknesses.includes(weakness)
-      );
+      const betterSite = pickBetterReference(
+        successfulResults, { siteName: result.siteName, score: result.score }, weakness);
 
       recommendations.push({
         site: result.siteName,
         priority: priority++,
         improvement: weakness,
+        // Named with its score, so the claim is checkable in the same line
+        // rather than asserted. Omitted entirely when nothing qualifies.
         competitorReference: betterSite
-          ? `${betterSite.siteName} handles this better`
+          ? `${betterSite.siteName} (${betterSite.score}) does not have this issue`
           : undefined,
       });
     }
@@ -1862,8 +1908,12 @@ function generateAIRecommendations(
             }
           };
 
+          // Must beat the site being advised. Sorting alone still names a
+          // reference when every site is bad at this category, which is advice
+          // to copy someone equally weak.
           const bestInCat = successfulResults
             .filter((r) => r.siteName !== result.siteName)
+            .filter((r) => getScore(r) > cat.score)
             .sort((a, b) => getScore(b) - getScore(a))[0];
 
           recommendations.push({
