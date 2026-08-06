@@ -5218,6 +5218,21 @@ export interface AccessibilityBarrier {
   severityIsGroupMax?: boolean;
   /** Number of distinct elements grouped under this barrier type. */
   affectedElementCount?: number;
+  /**
+   * Where the barrier is, in DOCUMENT coordinates.
+   *
+   * Written by the detectors and read by the overlay layer, and declared in
+   * neither place until now — a field with a producer and a consumer and no
+   * contract between them, which is how a viewport filter came to be applied in
+   * one detector out of eleven without anything noticing.
+   *
+   * Absent on page-level findings (navigation item count, animation presence,
+   * reading level), which are properties of the page rather than of a location
+   * on it. That absence is meaningful: `filterBarriersToViewport` KEEPS a
+   * barrier with no rect, because an unlocatable finding is not an off-screen
+   * one.
+   */
+  rect?: { x: number; y: number; width: number; height: number };
   /** How to remediate */
   remediation: string;
 }
@@ -5272,6 +5287,15 @@ export interface EmpathyScoreContext {
 
 /** Result of accessibility empathy audit for a single persona */
 export interface AccessibilityEmpathyResult {
+  /**
+   * Barriers removed by the viewport filter on a `scope: "viewport"` audit.
+   *
+   * Reported rather than kept internal, because a filter whose effect is
+   * invisible is indistinguishable from a filter that did not run — and the
+   * defect this closes was precisely a scope flag that existed, was threaded
+   * into one detector out of eleven, and said nothing about the ten it missed.
+   */
+  outOfViewportBarriersDropped?: number;
   /** URL tested */
   url: string;
   /** Persona used */

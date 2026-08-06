@@ -186,6 +186,8 @@ interface BarrierContext {
   stepCount: number;
   /** When true, barrier detectors only count elements in the initial viewport */
   viewportOnly: boolean;
+  /** How many barriers the viewport filter removed, for the response to report. */
+  outOfViewportDropped?: number;
   /** WCAG conformance level for this audit */
   wcagLevel: "A" | "AA" | "AAA";
   /**
@@ -196,6 +198,51 @@ interface BarrierContext {
    * a false negative. This is the third option.
    */
   unverifiableMedia: Array<{ element: string; reason: string; checkAt: string }>;
+}
+
+/**
+ * Drop barriers outside the viewport when the audit is viewport-scoped.
+ *
+ * `viewportOnly` existed and had exactly ONE consumer:
+ * `detectSmallTouchTargets`. The other ten detectors scanned the whole document
+ * regardless of scope, so `scope: "viewport"` filtered touch targets and nothing
+ * else.
+ *
+ * Measured on /docs/home at 1280x800: six `sensory` barriers at y=5638, seven
+ * screens below the fold, with x up to 2029 -- 749px past the right edge. All
+ * six were counted in `affectedElements`, charged as `missing_alt: -2.2`, and
+ * folded into `barrierOnlyScore`. The response even stamped each one
+ * `outsideScreenshot: true`: the geometry was computed, published, and not
+ * acted on.
+ *
+ * So every viewport-scoped empathy score published to date may carry demand
+ * from content the persona never saw. It is the mirror of the bug
+ * `cognitive_effort`'s scopeNote documents -- that one measured too little and
+ * said so; this one measured too much and said nothing.
+ *
+ * Filtered HERE, once, after every detector and before scoring, rather than in
+ * each detector. Eleven copies of a rule is how it came to be applied in one
+ * place, and adding a twelfth detector must not be able to reintroduce this.
+ *
+ * A barrier with no rect is KEPT. Page-level findings -- navigation item count,
+ * animation presence, reading level -- have no coordinates and are properties of
+ * the page rather than of a location on it. Dropping the unlocatable would trade
+ * this bug for its opposite. (2026-08-05)
+ */
+export function filterBarriersToViewport<T extends { rect?: { x: number; y: number; width: number; height: number } }>(
+  barriers: T[],
+  viewport: { width: number; height: number },
+): { kept: T[]; dropped: number } {
+  const kept = barriers.filter((b) => {
+    if (!b.rect) return true; // page-level finding, not a located one
+    const { x, y, width, height } = b.rect;
+    // Document coordinates, and a viewport-scoped audit never scrolls, so the
+    // visible band is y 0..height and x 0..width.
+    const intersectsY = y < viewport.height && y + height > 0;
+    const intersectsX = x < viewport.width && x + width > 0;
+    return intersectsY && intersectsX;
+  });
+  return { kept, dropped: barriers.length - kept.length };
 }
 
 /**
@@ -1597,6 +1644,21 @@ async function simulateAccessibilityJourney(
         break;
     }
 
+    // Scope is enforced HERE, once, rather than in each detector -- see
+    // filterBarriersToViewport. Ten of the eleven detectors above never honoured
+    // it, so a viewport audit was scoring content seven screens below the fold.
+    if (ctx.viewportOnly) {
+      const vp = await page.evaluate(() => ({
+        width: window.innerWidth, height: window.innerHeight,
+      })).catch(() => ({ width: 1280, height: 800 }));
+      const { kept, dropped } = filterBarriersToViewport(ctx.barriers, vp);
+      if (dropped > 0) {
+        ctx.barriers.length = 0;
+        ctx.barriers.push(...kept);
+        ctx.outOfViewportDropped = dropped;
+      }
+    }
+
     // Use cognitive journey for realistic step tracking if API key available
     // v18.35.0: Add hard timeout to prevent MCP proxy disconnection (~60s limit on claude.ai)
     const journeyTimeoutMs = Math.min(maxTime * 1000, 45000); // Hard cap at 45s to leave margin
@@ -1925,6 +1987,10 @@ async function simulateAccessibilityJourney(
     // Deprecated alias, one release only. See EmpathyPersonaResult.
     goalAchieved: noBlockingBarriers,
     barriers: ctx.barriers,
+    // Surfaced, not kept internal: a filter whose effect is invisible cannot be
+    // told apart from a filter that never ran, and that is exactly the defect
+    // this closes.
+    ...(ctx.outOfViewportDropped ? { outOfViewportBarriersDropped: ctx.outOfViewportDropped } : {}),
     frictionPoints: ctx.frictionPoints,
     // Filtered to the audit's conformance level, exactly as the top-level
     // allWcagViolations is (see the filter near the end of runEmpathyAudit).
@@ -3153,6 +3219,11 @@ export async function runEmpathyAudit(
     topBarriers: deduplicatedBarriers, // v11.11.0: Deduplicated barriers grouped by type
     combinedRemediation,
     overallScore,
+    // Summed from the per-persona audits: a filter whose effect is invisible is
+    // indistinguishable from one that did not run.
+    ...(results.reduce((n, r) => n + ((r as { outOfViewportBarriersDropped?: number }).outOfViewportBarriersDropped ?? 0), 0) > 0
+      ? { outOfViewportBarriersDropped: results.reduce((n, r) => n + ((r as { outOfViewportBarriersDropped?: number }).outOfViewportBarriersDropped ?? 0), 0) }
+      : {}),
     duration: Date.now() - startTime,
   };
 }

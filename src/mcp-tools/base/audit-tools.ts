@@ -1281,6 +1281,16 @@ export function registerEmpathyAuditTool(server: McpServer): void {
           scopeNote: scope === "full_page"
             ? "Full-page audit: scrolled through entire page before barrier detection. Scores reflect all content including below-the-fold."
             : "Viewport-only audit: scored first impression (above-the-fold). Use scope='full_page' for complete barrier inventory, or cognitive_journey for path-dependent experience.",
+          // How many barriers the viewport filter removed. Until 2026-08-05 the
+          // scope flag reached exactly one of eleven detectors, so a viewport
+          // audit scored content seven screens below the fold and said nothing.
+          // Reported so a silent filter cannot be mistaken for no filter.
+          ...((result as { outOfViewportBarriersDropped?: number }).outOfViewportBarriersDropped
+            ? {
+                outOfViewportBarriersDropped: (result as { outOfViewportBarriersDropped?: number }).outOfViewportBarriersDropped,
+                scopeFilterNote: `${(result as { outOfViewportBarriersDropped?: number }).outOfViewportBarriersDropped} barrier(s) outside the viewport were excluded from scoring. Use scope='full_page' to include them.`,
+              }
+            : {}),
           resultsSummary: result.results.map((r) => {
             const uniqueTypes = new Set(r.barriers.map(b => b.type));
             return {
