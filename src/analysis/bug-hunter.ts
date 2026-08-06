@@ -82,7 +82,10 @@ export async function huntBugs(
     // Check for broken images
     document.querySelectorAll("img").forEach((img, i) => {
       if (!img.complete || img.naturalWidth === 0) {
-        const hasAlt = !!img.getAttribute("alt");
+        // getAttribute returns null when ABSENT and "" when alt="" is present,
+        // and both are falsy — so `!!` conflates a WCAG failure with a valid
+        // declaration that the image is decorative. Compare against null.
+        const hasAlt = img.getAttribute("alt") !== null;
         issues.push({
           type: "missing-image",
           description: `Broken image: ${img.src || img.alt || "unknown"}`,
@@ -92,13 +95,33 @@ export async function huntBugs(
             : "Fix the image source URL and add an alt attribute for accessibility",
         });
       }
-      // Check images without alt text
-      if (!img.getAttribute("alt") && img.complete && img.naturalWidth > 0) {
+      // alt ABSENT and alt="" are different defects, and `!img.getAttribute("alt")`
+      // treated them as one: null and "" are both falsy.
+      //
+      // A missing alt is an unambiguous WCAG 1.1.1 failure. An empty alt is a
+      // VALID declaration that the image is decorative — possibly wrong, but
+      // already a decision someone made. Grading the second as high severity and
+      // prescribing "add alt attribute" prescribes a fix that is already applied,
+      // and contradicted empathy_audit, which grades the same six images as minor
+      // and asks the reader to VERIFY the decorative intent. (2026-08-06)
+      const altAttr = img.getAttribute("alt");
+      const rendered = img.complete && img.naturalWidth > 0;
+      // Matches empathy_audit's threshold so the two tools agree on which images
+      // are too small to be worth asking about.
+      const isTiny = img.width < 20 || img.height < 20;
+      if (altAttr === null && rendered) {
         issues.push({
           type: "a11y-violation",
-          description: `Image missing alt attribute: ${img.src?.slice(-50) || "unknown"}`,
+          description: `Image has no alt attribute: ${img.src?.slice(-50) || "unknown"}`,
           selector: `img:nth-of-type(${i + 1})`,
           recommendation: "Add alt=\"descriptive text\" for screen readers, or alt=\"\" if decorative",
+        });
+      } else if (altAttr === "" && rendered && !isTiny) {
+        issues.push({
+          type: "a11y-verify",
+          description: `Image (${Math.round(img.width)}x${Math.round(img.height)}px) declares alt="" (decorative): ${img.src?.slice(-50) || "unknown"}`,
+          selector: `img:nth-of-type(${i + 1})`,
+          recommendation: "Verify this image is purely decorative. If it conveys meaning, replace alt=\"\" with descriptive text",
         });
       }
     });
@@ -340,6 +363,11 @@ export async function huntBugs(
       severity = "medium"; // Affects AT users
     } else if (issue.type === "a11y-violation") {
       severity = "high";
+    } else if (issue.type === "a11y-verify") {
+      // A prompt to confirm an existing decision, not a violation. Grading it
+      // high is what made hunt_bugs contradict empathy_audit on the same six
+      // images — one calling it critical, the other minor.
+      severity = "low";
     }
 
     bugs.push({
@@ -412,8 +440,15 @@ export async function huntBugs(
             if (!img.complete || img.naturalWidth === 0) {
               issues.push({ type: "missing-image", description: `Broken image: ${img.src || "unknown"}`, selector: `img:nth-of-type(${i + 1})` });
             }
-            if (!img.getAttribute("alt") && img.complete && img.naturalWidth > 0) {
-              issues.push({ type: "a11y-violation", description: "Image missing alt attribute", selector: `img:nth-of-type(${i + 1})`, recommendation: "Add alt attribute" });
+            // Same null-vs-empty distinction as the first-page check above. This
+            // condensed copy is why the class needed sweeping rather than the one
+            // reported line fixing.
+            const altAttr = img.getAttribute("alt");
+            const rendered = img.complete && img.naturalWidth > 0;
+            if (altAttr === null && rendered) {
+              issues.push({ type: "a11y-violation", description: "Image has no alt attribute", selector: `img:nth-of-type(${i + 1})`, recommendation: "Add alt=\"descriptive text\", or alt=\"\" if decorative" });
+            } else if (altAttr === "" && rendered && img.width >= 20 && img.height >= 20) {
+              issues.push({ type: "a11y-verify", description: `Image (${Math.round(img.width)}x${Math.round(img.height)}px) declares alt="" (decorative)`, selector: `img:nth-of-type(${i + 1})`, recommendation: "Verify this image is purely decorative" });
             }
           });
           document.querySelectorAll("a").forEach((a, i) => {
