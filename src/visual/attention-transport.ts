@@ -512,6 +512,31 @@ export interface DOMAttentionElement {
 }
 
 /**
+ * How many ranked cells to keep as the hotspot pool.
+ *
+ * This was a hard `slice(0, 10)`, and 10 cells is not a sample of a page. At the
+ * default 4px grid a 1280x800 viewport is 64,000 cells and a single H1 spans
+ * over a thousand of them, so all ten routinely landed on ONE element -- which
+ * is why `computeAttentionQuality` could only ever return ratios of 0 or 1.
+ *
+ * Fixing the quality window to stop on distinct ELEMENTS (attention-quality.ts)
+ * was necessary but not sufficient: a window cannot widen past the cells it is
+ * given. Measured live on cbrowser.ai after that fix shipped, the payload read
+ * `sampledHotspots: 10, sampledElements: 1` -- honest, and still saturated.
+ *
+ * The pool is proportional rather than a new magic constant, because the right
+ * number depends on grid resolution: at 4px there are 16x more cells than at
+ * 16px, and a fixed count would sample proportionally less of the finer grid.
+ * 5% is bounded (a few thousand small objects at most), costs nothing to build
+ * since the array is already sorted, and is not published -- the pool feeds
+ * analysis only. `topAttentionAreas` in the MCP response comes from
+ * `attentionCompetitors`, a different field, so response size is unchanged.
+ */
+function hotspotPoolSize(totalCells: number): number {
+  return Math.min(4000, Math.max(200, Math.round(totalCells * 0.05)));
+}
+
+/**
  * Compute trait-driven element modifiers from cognitive traits.
  * Generalizes the static PERSONA_ELEMENT_MODIFIERS table to work with
  * ANY persona's trait values, not just the 11 hardcoded ones.
@@ -1022,7 +1047,7 @@ export async function analyzeAttentionFromDOM(
   // Hotspots, entropy, concentration — same shape as analyzeAttention
   const indexed = Array.from(filtered).map((s, i) => ({ s, i }));
   indexed.sort((a, b) => b.s - a.s);
-  const hotspots = indexed.slice(0, 10).map(({ s, i }) => ({
+  const hotspots = indexed.slice(0, hotspotPoolSize(indexed.length)).map(({ s, i }) => ({
     row: Math.floor(i / cols),
     col: i % cols,
     x: (i % cols) * cellSize,
@@ -1167,7 +1192,7 @@ export async function analyzeAttention(
   // Build saliency map with hotspots
   const indexed = Array.from(filtered).map((s, i) => ({ s, i }));
   indexed.sort((a, b) => b.s - a.s);
-  const hotspots = indexed.slice(0, 10).map(({ s, i }) => ({
+  const hotspots = indexed.slice(0, hotspotPoolSize(indexed.length)).map(({ s, i }) => ({
     row: Math.floor(i / baseSaliency.cols),
     col: i % baseSaliency.cols,
     x: (i % baseSaliency.cols) * cellSize * 2, // Scale back to original

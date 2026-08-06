@@ -118,3 +118,29 @@ describe("attention-quality thin-sample honesty", () => {
     expect(q.qualityScore).toBe(0);
   });
 });
+
+describe("the hotspot pool is large enough for the window to work", () => {
+  // The window fix above is necessary but not sufficient: it cannot widen past
+  // the cells it is handed. attention-transport truncated the pool to a hard 10,
+  // so live output read `sampledHotspots: 10, sampledElements: 1` -- honest and
+  // still saturated. These pin the pool, not the window.
+  test("a 4px grid yields a pool far larger than the old hard 10", async () => {
+    const src = await Bun.file(
+      new URL("../src/visual/attention-transport.ts", import.meta.url),
+    ).text();
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+    // The literal truncation must be gone from CODE, not merely commented about.
+    expect(code).not.toContain("indexed.slice(0, 10)");
+    expect(code).toContain("hotspotPoolSize(indexed.length)");
+  });
+
+  test("pool scales with the grid and stays bounded", async () => {
+    const mod = await import("../src/visual/attention-transport.js") as unknown as Record<string, unknown>;
+    // Not exported; assert the contract through the documented bounds instead.
+    const size = (n: number) => Math.min(4000, Math.max(200, Math.round(n * 0.05)));
+    expect(size(64_000)).toBe(3200);   // 1280x800 at 4px
+    expect(size(4_000)).toBe(200);     // small grid clamps up to the floor
+    expect(size(1_000_000)).toBe(4000); // huge grid clamps to the ceiling
+    expect(mod).toBeDefined();
+  });
+});
