@@ -128,7 +128,7 @@ Five tools to make your site ready for the AI agent era:
 
 | Tool | What It Does |
 |------|-------------|
-| `agent_ready_audit` | Score site on findability, stability, accessibility, semantics (A-F grade) |
+| `agent_ready_audit` | Score site on findability, stability, agent-perceivability, semantics (A-F grade) |
 | `ai_benchmark` | Compare AI-friendliness across competitor URLs |
 | `webmcp_ready_audit` | Audit MCP server for WebMCP compatibility |
 | `remediation_patches` | Generate actionable code fixes for audit findings |
@@ -299,9 +299,36 @@ npx cbrowser competitive-benchmark \
 
 ---
 
+## Upgrading to 19.0.0
+
+One breaking change: the agent-ready **accessibility** axis is now
+**agentPerceivability**, and three deprecated aliases are removed.
+
+| removed | use instead |
+|---|---|
+| `score.accessibility` | `score.agentPerceivability` |
+| `summary.dynamicContentCount` | `summary.deferredLoadingPatterns` |
+| `comparison.bestAccessibility` | `comparison.bestAgentPerceivability` |
+| issue `category: "accessibility"` | `category: "agentPerceivability"` |
+
+All three replacements have carried identical values since 18.82.0, so if you
+upgraded within that range you can switch keys before upgrading and take this
+release with no further change.
+
+The rename is not cosmetic. That axis measures whether a *machine* can perceive
+your elements — ARIA present, elements carry text. It is **not** a WCAG
+conformance score, and it returned 100 on a page where `empathy_audit` found two
+WCAG violations. Both numbers were right; calling one of them "accessibility" was
+not. Run `empathy_audit` for conformance, and expect the two to differ.
+
+On input, `category: "accessibility"` is still accepted and scores identically, so
+tools that *send* issues need not change immediately. Tools that *read* scores do.
+
+---
+
 ## Geo Proxy
 
-Test from 12 global regions via residential proxies:
+Test from 10 global regions via residential proxies:
 
 ```bash
 npx cbrowser cognitive-journey \
@@ -311,7 +338,19 @@ npx cbrowser cognitive-journey \
   --geo-region uk
 ```
 
-**Regions:** `us-west`, `us-east`, `us-central`, `uk`, `germany`, `france`, `japan`, `australia`, `brazil`, `india`, `canada`, `singapore`
+**Regions:** `us-west`, `us-east`, `us-central`, `uk`, `germany`, `france`, `japan`, `australia`, `canada`, `brazil`
+
+Geo routing needs your own residential-proxy credentials — the package ships the
+mechanism and no keys. Set `IPROYAL_USERNAME` / `IPROYAL_PASSWORD`, or place a
+`geo-proxy.json` at `~/.cbrowser/`. Without either, `--geo-region` fails loudly
+rather than silently running from your own IP.
+
+A `geo-proxy.json` may define additional regions; they merge over the ten above.
+
+> **Corrected 2026-08-11.** This section previously advertised 12 regions
+> including `india` and `singapore`. Those are not in the shipped defaults and
+> resolve to nothing on a clean install — they existed only in a local config
+> file on one machine. Advertising them was a claim the package could not keep.
 
 ---
 
