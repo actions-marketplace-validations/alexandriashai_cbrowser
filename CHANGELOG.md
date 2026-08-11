@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.0.0](https://github.com/alexandriashai/cbrowser/compare/v18.82.2...v19.0.0) (2026-08-11)
+
+### ⚠ BREAKING CHANGES
+
+* **agent-ready:** `score.accessibility`, `summary.dynamicContentCount` and
+`comparison.bestAccessibility` are removed. Use `score.agentPerceivability`,
+`summary.deferredLoadingPatterns` and `comparison.bestAgentPerceivability`, which
+have carried identical values since 18.82.0. Issues now carry
+`category: "agentPerceivability"`; the old value is still accepted on input and
+scores identically, so senders need not change immediately — readers do.
+
+suite 1252 -> 1258 pass / 0 fail   tsc exit 0
+
+### Added
+
+* **agent-ready:** remove the deprecated accessibility axis and its aliases ([cc5a064](https://github.com/alexandriashai/cbrowser/commit/cc5a0647ad202c87f299075cbdfdf382fcb35a8e))
+* **attention:** freezeAnimations flag, and say what actually ran ([6fbec2e](https://github.com/alexandriashai/cbrowser/commit/6fbec2e9eec19b2f1feecd3c3b419e5c6b9d0024))
+* **attention:** publish the basis behind each attentionQuality ratio ([a5ff68e](https://github.com/alexandriashai/cbrowser/commit/a5ff68ef8bc047560dbd7974ec06877680e53777))
+
+### Fixed
+
+* **agent-ready:** count sticky overlays, stop hiding them in a 40-60px gap ([6a0d860](https://github.com/alexandriashai/cbrowser/commit/6a0d86028ed684d3da550764fe75328d8fd65bb1))
+* **benchmark:** reconcile strengths against issues, dedupe advantages ([db4dbe3](https://github.com/alexandriashai/cbrowser/commit/db4dbe3760c266772c759c3218239de2c79559f7))
+* **benchmark:** stop recommending reference sites that share the defect ([e4df3e2](https://github.com/alexandriashai/cbrowser/commit/e4df3e20f678d347f4eaafaa838c0f706636aefa))
+* **bug-hunter:** a missing alt and alt="" are different defects ([971bcd0](https://github.com/alexandriashai/cbrowser/commit/971bcd09272dfff400c913f7bdc7e926ec5fdada))
+* **empathy:** make scope:"viewport" actually scope ([5eaf073](https://github.com/alexandriashai/cbrowser/commit/5eaf0737d056195d69790196c7dcada4d99110e9))
+* **relevance:** pass accessibility traits to the LLM relevance judge ([b1d3f16](https://github.com/alexandriashai/cbrowser/commit/b1d3f16e3612a5c9c3af83cacf026c6781000af3))
+* **test:** remove a machine-dependent persona fixture that broke CI ([8dc1a0e](https://github.com/alexandriashai/cbrowser/commit/8dc1a0ee89307e1c920e59c7ad8091c4429d15aa))
+
+### Changed
+
+* **agent-ready:** rename the accessibility axis and dynamicContentCount ([0232888](https://github.com/alexandriashai/cbrowser/commit/0232888bff3695ba2bddd651754ccd61c91ef730))
+
 ## [18.82.2](https://github.com/alexandriashai/cbrowser/compare/v18.82.1...v18.82.2) (2026-08-06)
 
 ### Fixed
