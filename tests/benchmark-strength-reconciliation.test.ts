@@ -130,27 +130,31 @@ describe("siteAdvantages does not say the same thing twice", () => {
   });
 });
 
-describe("the rename reaches the response, not just the analysis result", () => {
-  test("the MCP layer forwards bestAgentPerceivability", async () => {
-    // It was added to the analysis result and to the type and STILL shipped
-    // absent, because this response object is assembled field by field. A field
-    // with a producer and no consumer — one layer above the ones this audit
-    // keeps finding.
-    const src = await Bun.file(
-      new URL("../src/mcp-tools/base/analysis-tools.ts", import.meta.url),
-    ).text();
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+describe("the deprecated comparison key is gone from every layer", () => {
+  const read = async (rel: string) =>
+    (await Bun.file(new URL(rel, import.meta.url)).text())
+      .replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+
+  test("the MCP response layer forwards only the new name", async () => {
+    // This layer assembles its response field by field, so a rename reaches it
+    // only when someone remembers the list — that is how bestAgentPerceivability
+    // shipped absent for a whole deploy. Both directions are pinned now.
+    const code = await read("../src/mcp-tools/base/analysis-tools.ts");
     expect(code).toContain("bestAgentPerceivability: result.comparison.bestAgentPerceivability");
-    // The alias stays until the next major.
-    expect(code).toContain("bestAccessibility: result.comparison.bestAccessibility");
+    expect(code).not.toContain("bestAccessibility");
   });
 
-  test("the analysis result emits both keys from one source value", async () => {
-    const src = await Bun.file(
-      new URL("../src/analysis/competitive-benchmark.ts", import.meta.url),
-    ).text();
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
-    expect(code).toContain("bestAgentPerceivability: byAccessibility[0]?.siteName");
-    expect(code).toContain("bestAccessibility: byAccessibility[0]?.siteName");
+  test("the analysis result emits only the new name", async () => {
+    const code = await read("../src/analysis/competitive-benchmark.ts");
+    expect(code).toContain("bestAgentPerceivability: byAgentPerceivability[0]?.siteName");
+    expect(code).not.toContain("bestAccessibility");
+  });
+
+  test("nothing in src reads scoreBreakdown.accessibility any more", async () => {
+    for (const f of ["../src/analysis/competitive-benchmark.ts", "../src/cli.ts"]) {
+      const code = await read(f);
+      expect(code).not.toContain("scoreBreakdown.accessibility");
+      expect(code).not.toContain("scoreBreakdown?.accessibility");
+    }
   });
 });

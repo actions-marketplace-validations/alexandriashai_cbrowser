@@ -269,8 +269,8 @@ function createDefaultPatch(issue: AgentReadyIssue): RemediationPatch {
   // Classify effort based on issue category — single-attribute additions are trivial
   const effort: RemediationPatch["effort"] =
     issue.category === "findability" ? "trivial" :
-    issue.category === "accessibility" && issue.detectionMethod?.includes("alt-text") ? "trivial" :
-    issue.category === "accessibility" && issue.detectionMethod?.includes("aria") ? "trivial" :
+    issue.category === "agentPerceivability" && issue.detectionMethod?.includes("alt-text") ? "trivial" :
+    issue.category === "agentPerceivability" && issue.detectionMethod?.includes("aria") ? "trivial" :
     "medium";
 
   // Use the audit's codeExample if it's contextual (contains actual text, not just boilerplate).

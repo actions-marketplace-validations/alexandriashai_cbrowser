@@ -132,3 +132,33 @@ describe("the old truthiness check is gone from every site", () => {
     expect(code.slice(idx, idx + 160)).toContain('severity = "low"');
   });
 });
+
+describe("the emitted type is declared", () => {
+  test("a11y-verify is in the BugReport union", async () => {
+    // It was emitted for a day before it was declared. The issues are built as
+    // untyped object literals inside page.evaluate and pushed through a loosely
+    // typed path, so tsc never saw the gap — a value with a producer and a
+    // consumer and no type between them.
+    const src = await Bun.file(
+      new URL("../src/analysis/bug-hunter.ts", import.meta.url),
+    ).text();
+    const union = src.slice(src.indexOf("export interface BugReport"),
+                            src.indexOf("severity: \"critical\""));
+    expect(union).toContain('"a11y-verify"');
+    expect(union).toContain('"a11y-violation"');
+  });
+
+  test("every type emitted at runtime appears in the union", async () => {
+    // The general form, so the next added type cannot repeat this.
+    const src = await Bun.file(
+      new URL("../src/analysis/bug-hunter.ts", import.meta.url),
+    ).text();
+    const union = src.slice(src.indexOf("export interface BugReport"),
+                            src.indexOf("severity: \"critical\""));
+    const emitted = [...src.matchAll(/type:\s*"([a-z0-9-]+)"/g)].map((m) => m[1]);
+    expect(emitted.length).toBeGreaterThan(5);
+    for (const t of new Set(emitted)) {
+      expect(union).toContain(`"${t}"`);
+    }
+  });
+});

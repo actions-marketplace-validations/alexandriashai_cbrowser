@@ -246,8 +246,6 @@ export function registerAnalysisTools(
                   bestFindability: result.comparison.bestFindability,
                   bestStability: result.comparison.bestStability,
                   bestAgentPerceivability: result.comparison.bestAgentPerceivability,
-                  // Deprecated alias, same value; removed at the next major.
-                  bestAccessibility: result.comparison.bestAccessibility,
                   bestSemantics: result.comparison.bestSemantics,
                   commonIssues: result.comparison.commonIssues.slice(0, 3),
                 },

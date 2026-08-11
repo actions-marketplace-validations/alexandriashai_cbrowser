@@ -1612,7 +1612,7 @@ export async function runAIReadinessBenchmark(
         if (audit.score.stability >= 80) {
           strengths.push("Stable selectors that won't break");
         }
-        if (audit.score.accessibility >= 80) {
+        if (audit.score.agentPerceivability >= 80) {
           strengths.push("Good ARIA labels for identification");
         }
         if (audit.score.semantics >= 80) {
@@ -1627,7 +1627,7 @@ export async function runAIReadinessBenchmark(
         if (audit.score.stability < 60) {
           weaknesses.push("Dynamic selectors break automation");
         }
-        if (audit.score.accessibility < 60) {
+        if (audit.score.agentPerceivability < 60) {
           weaknesses.push("Missing labels for element identification");
         }
         if (audit.score.semantics < 60) {
@@ -1714,8 +1714,8 @@ function generateAIComparison(results: AIBenchmarkSiteResult[]): AIBenchmarkComp
   const byStability = [...successfulResults].sort(
     (a, b) => b.scoreBreakdown.stability - a.scoreBreakdown.stability
   );
-  const byAccessibility = [...successfulResults].sort(
-    (a, b) => b.scoreBreakdown.accessibility - a.scoreBreakdown.accessibility
+  const byAgentPerceivability = [...successfulResults].sort(
+    (a, b) => b.scoreBreakdown.agentPerceivability - a.scoreBreakdown.agentPerceivability
   );
   const bySemantics = [...successfulResults].sort(
     (a, b) => b.scoreBreakdown.semantics - a.scoreBreakdown.semantics
@@ -1747,7 +1747,7 @@ function generateAIComparison(results: AIBenchmarkSiteResult[]): AIBenchmarkComp
     if (result.siteName === byStability[0]?.siteName && result.siteName !== byScore[0]?.siteName) {
       advantages.push("Most stable selectors");
     }
-    if (result.siteName === byAccessibility[0]?.siteName && result.siteName !== byScore[0]?.siteName) {
+    if (result.siteName === byAgentPerceivability[0]?.siteName && result.siteName !== byScore[0]?.siteName) {
       advantages.push("Best ARIA/accessibility labels");
     }
     if (result.siteName === bySemantics[0]?.siteName && result.siteName !== byScore[0]?.siteName) {
@@ -1764,12 +1764,7 @@ function generateAIComparison(results: AIBenchmarkSiteResult[]): AIBenchmarkComp
     bestOverall: byScore[0]?.siteName || "N/A",
     bestFindability: byFindability[0]?.siteName || "N/A",
     bestStability: byStability[0]?.siteName || "N/A",
-    // Renamed to match the axis. Missed by the 2026-08-05 sweep, which reached
-    // agent-ready-audit and not this file — a sibling instance the class-sweep
-    // should have caught then.
-    bestAgentPerceivability: byAccessibility[0]?.siteName || "N/A",
-    /** @deprecated Renamed to bestAgentPerceivability. Removed at the next major. */
-    bestAccessibility: byAccessibility[0]?.siteName || "N/A",
+    bestAgentPerceivability: byAgentPerceivability[0]?.siteName || "N/A",
     bestSemantics: bySemantics[0]?.siteName || "N/A",
     commonIssues,
     siteAdvantages,
@@ -1815,17 +1810,17 @@ const ADVANTAGE_AXIS: Record<string, "findability" | "stability" | "agentPerceiv
 export function reconcileStrengths(
   strengths: string[],
   issueCategories: string[],
-  breakdown: { findability: number; stability: number; agentPerceivability?: number; accessibility: number; semantics: number },
+  breakdown: { findability: number; stability: number; agentPerceivability: number; semantics: number },
 ): string[] {
   return strengths.map((strength) => {
     const axis = STRENGTH_AXIS[strength];
     if (!axis) return strength;
+    // The deprecated "accessibility" category is out of the type but can still
+    // arrive at runtime from an older caller across a JSON boundary.
     const exceptions = issueCategories.filter((c) => c === axis
       || (axis === "agentPerceivability" && c === "accessibility")).length;
     if (exceptions === 0) return strength;
-    const score = axis === "agentPerceivability"
-      ? (breakdown.agentPerceivability ?? breakdown.accessibility)
-      : breakdown[axis];
+    const score = breakdown[axis];
     return `${strength} overall (${axis} ${score}), with ${exceptions} element(s) excepted`;
   });
 }
@@ -1969,8 +1964,8 @@ function generateAIRecommendations(
           fix: "Use data-testid attributes and semantic selectors",
         },
         {
-          name: "accessibility",
-          score: result.scoreBreakdown.accessibility,
+          name: "agentPerceivability",
+          score: result.scoreBreakdown.agentPerceivability,
           fix: "Ensure all form inputs have associated labels",
         },
         {
@@ -1987,7 +1982,7 @@ function generateAIRecommendations(
             switch (cat.name) {
               case "findability": return r.scoreBreakdown.findability;
               case "stability": return r.scoreBreakdown.stability;
-              case "accessibility": return r.scoreBreakdown.accessibility;
+              case "agentPerceivability": return r.scoreBreakdown.agentPerceivability;
               case "semantics": return r.scoreBreakdown.semantics;
               default: return 0;
             }

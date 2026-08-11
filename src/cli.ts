@@ -7167,7 +7167,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           const grade = site.grade || "-";
           const find = site.scoreBreakdown?.findability?.toString().padStart(3) || "-";
           const stab = site.scoreBreakdown?.stability?.toString().padStart(3) || "-";
-          const a11y = site.scoreBreakdown?.accessibility?.toString().padStart(3) || "-";
+          const a11y = site.scoreBreakdown?.agentPerceivability?.toString().padStart(3) || "-";
           const sem = site.scoreBreakdown?.semantics?.toString().padStart(3) || "-";
           const siteName = site.siteName.substring(0, 32).padEnd(32);
           console.log(`║  ${String(rank).padStart(2)}    ${siteName}  ${score}     ${grade.padEnd(2)}      ${find}   ${stab}   ${a11y}   ${sem}  ║`);
@@ -7186,8 +7186,8 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         if (result.comparison.bestStability) {
           console.log(`🔒 Best Stability: ${result.comparison.bestStability}`);
         }
-        if (result.comparison.bestAccessibility) {
-          console.log(`♿ Best Accessibility: ${result.comparison.bestAccessibility}`);
+        if (result.comparison.bestAgentPerceivability) {
+          console.log(`♿ Best Accessibility: ${result.comparison.bestAgentPerceivability}`);
         }
         if (result.comparison.bestSemantics) {
           console.log(`📋 Best Semantics: ${result.comparison.bestSemantics}`);
@@ -7254,7 +7254,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           <td class="grade-${site.grade || 'F'}">${site.grade || '-'}</td>
           <td>${site.scoreBreakdown?.findability ?? '-'}</td>
           <td>${site.scoreBreakdown?.stability ?? '-'}</td>
-          <td>${site.scoreBreakdown?.accessibility ?? '-'}</td>
+          <td>${site.scoreBreakdown?.agentPerceivability ?? '-'}</td>
           <td>${site.scoreBreakdown?.semantics ?? '-'}</td>
         </tr>`;
       }).join('')}
@@ -7266,7 +7266,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
     ${result.comparison.bestOverall ? `<li>🏆 Overall: <strong>${result.comparison.bestOverall}</strong></li>` : ''}
     ${result.comparison.bestFindability ? `<li>🔍 Findability: <strong>${result.comparison.bestFindability}</strong></li>` : ''}
     ${result.comparison.bestStability ? `<li>🔒 Stability: <strong>${result.comparison.bestStability}</strong></li>` : ''}
-    ${result.comparison.bestAccessibility ? `<li>♿ Accessibility: <strong>${result.comparison.bestAccessibility}</strong></li>` : ''}
+    ${result.comparison.bestAgentPerceivability ? `<li>♿ Accessibility: <strong>${result.comparison.bestAgentPerceivability}</strong></li>` : ''}
     ${result.comparison.bestSemantics ? `<li>📋 Semantics: <strong>${result.comparison.bestSemantics}</strong></li>` : ''}
   </ul>
 

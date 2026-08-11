@@ -87,10 +87,6 @@ const CATEGORY_WEIGHTS: Record<AgentReadyIssueCategory, number> = {
   stability: 0.30,
   agentPerceivability: 0.20,
   semantics: 0.15,
-  // The deprecated alias keeps its weight so an issue emitted by older code, or
-  // by a caller constructing one by hand, still scores instead of silently
-  // weighing nothing.
-  accessibility: 0.20,
 };
 
 /**
@@ -154,27 +150,29 @@ export function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyS
     stability: 100,
     agentPerceivability: 100,
     semantics: 100,
-    // An issue constructed by older code still carries `category:
-    // "accessibility"`. Without a bucket for it, `scores[issue.category]` is
-    // undefined, `undefined - penalty` is NaN, and NaN propagates silently into
-    // the overall score. It is folded into agentPerceivability below.
-    accessibility: 100,
   };
 
-  // Deduct based on issues
+  // Deduct based on issues.
+  //
+  // The deprecated "accessibility" category is gone from the union, but an issue
+  // constructed by an older caller can still arrive carrying it at runtime —
+  // types do not survive a JSON boundary. Mapped rather than dropped: an unknown
+  // category would index nothing, `undefined - penalty` is NaN, and NaN
+  // propagates into `overall` as a broken score with nothing saying why.
   for (const issue of issues) {
     const penalty = SEVERITY_PENALTY[issue.severity];
-    scores[issue.category] = Math.max(0, scores[issue.category] - penalty);
+    const cat = (issue.category as string) === "accessibility"
+      ? "agentPerceivability" as const
+      : issue.category;
+    if (scores[cat] === undefined) continue; // unrecognised category scores nothing, silently is fine here
+    scores[cat] = Math.max(0, scores[cat] - penalty);
   }
 
   // Calculate overall weighted score
   const overall = Math.round(
     scores.findability * CATEGORY_WEIGHTS.findability +
     scores.stability * CATEGORY_WEIGHTS.stability +
-    // Deprecated-alias deductions fold in here: whichever bucket took the hit,
-    // the axis reflects it. min() because both start at 100 and only one is
-    // normally touched.
-    Math.min(scores.agentPerceivability, scores.accessibility) * CATEGORY_WEIGHTS.agentPerceivability +
+    scores.agentPerceivability * CATEGORY_WEIGHTS.agentPerceivability +
     scores.semantics * CATEGORY_WEIGHTS.semantics
   );
 
@@ -182,10 +180,7 @@ export function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyS
     overall,
     findability: Math.round(scores.findability),
     stability: Math.round(scores.stability),
-    agentPerceivability: Math.round(Math.min(scores.agentPerceivability, scores.accessibility)),
-    // The identical number under the old key, so nothing consuming it breaks
-    // mid-major. Both are emitted until the next major removes this one.
-    accessibility: Math.round(Math.min(scores.agentPerceivability, scores.accessibility)),
+    agentPerceivability: Math.round(scores.agentPerceivability),
     semantics: Math.round(scores.semantics),
   };
 }
@@ -1339,7 +1334,6 @@ async function detectDynamicContent(ctx: DetectionContext): Promise<void> {
     (dynamicInfo.loadMoreButtons > 0 ? 1 : 0);
 
   summary.deferredLoadingPatterns = dynamicCount;
-  summary.dynamicContentCount = dynamicCount; // deprecated alias
 
 
   // Report infinite scroll as a potential challenge for agents
@@ -1522,7 +1516,7 @@ ISSUES BY CATEGORY
 ──────────────────
   Findability: ${result.issues.filter(i => i.category === 'findability').length} issues
   Stability: ${result.issues.filter(i => i.category === 'stability').length} issues
-  Agent-perceivability: ${result.issues.filter(i => i.category === 'agentPerceivability' || i.category === 'accessibility').length} issues
+  Agent-perceivability: ${result.issues.filter(i => i.category === 'agentPerceivability').length} issues
   Semantics: ${result.issues.filter(i => i.category === 'semantics').length} issues
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -1690,9 +1684,6 @@ export function generateAgentReadyHtmlReport(result: AgentReadyAuditResult): str
     .badge-findability { background: #3b82f633; color: #60a5fa; }
     .badge-stability { background: #f59e0b33; color: #fbbf24; }
     .badge-agentPerceivability { background: #10b98133; color: #34d399; }
-    /* Retained so an issue still carrying the deprecated category renders with
-       a colour rather than an unstyled badge. */
-    .badge-accessibility { background: #10b98133; color: #34d399; }
     .badge-semantics { background: #8b5cf633; color: #a78bfa; }
     .badge-critical { background: #7f1d1d; color: #fca5a5; }
     .badge-high { background: #7f1d1d80; color: #f87171; }
@@ -2122,7 +2113,6 @@ export async function runAgentReadyAudit(
       hasLlmsTxt: false,
       apiEndpointsCount: 0,
       deferredLoadingPatterns: 0,
-      dynamicContentCount: 0,
     };
 
     const ctx: DetectionContext = { page, issues, summary };

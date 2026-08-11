@@ -62,47 +62,85 @@ describe("the new names are canonical", () => {
   });
 });
 
-describe("the deprecated aliases still work", () => {
-  test("both score keys are emitted, from the same value", () => {
+describe("the deprecated aliases are GONE", () => {
+  // Shipped as expand-contract: both keys emitted from 2026-08-05, the old ones
+  // removed here. This block was the mirror of itself a week ago — it asserted
+  // both keys were present. Inverted rather than deleted, so a re-added alias
+  // fails loudly instead of drifting back in unnoticed.
+  test("the score block carries only agentPerceivability", () => {
     const c = code(SRC);
-    // Same expression on both sides — not two computations that could drift.
-    expect(c).toContain("agentPerceivability: Math.round(Math.min(scores.agentPerceivability, scores.accessibility))");
-    expect(c).toContain("accessibility: Math.round(Math.min(scores.agentPerceivability, scores.accessibility))");
+    expect(c).toContain("agentPerceivability: Math.round(scores.agentPerceivability)");
+    expect(c).not.toContain("accessibility: Math.round(");
+    expect(code(TYPES)).not.toContain("  accessibility: number;");
   });
 
-  test("both summary keys are emitted", () => {
+  test("the summary carries only deferredLoadingPatterns", () => {
     const c = code(SRC);
     expect(c).toContain("summary.deferredLoadingPatterns = dynamicCount;");
-    expect(c).toContain("summary.dynamicContentCount = dynamicCount;");
+    expect(c).not.toContain("summary.dynamicContentCount");
+    expect(code(TYPES)).not.toContain("dynamicContentCount?: number;");
   });
 
-  test("the old category is still an accepted type member", () => {
-    expect(code(TYPES)).toContain('| "accessibility"');
+  test("the category union no longer offers the old name", () => {
+    const t = code(TYPES);
+    const union = t.slice(t.indexOf("export type AgentReadyIssueCategory"),
+                          t.indexOf("export type AgentReadyIssueSeverity"));
+    expect(union).not.toContain('"accessibility"');
+    expect(union).toContain('"agentPerceivability"');
   });
 
-  test("the old category has a scoring bucket, or its deductions become NaN", () => {
-    // scores[issue.category] with no bucket is undefined; undefined minus a
-    // penalty is NaN; NaN propagates into `overall` and prints as a broken
-    // score with nothing indicating why.
-    const scoresBlock = code(SRC).slice(
-      code(SRC).indexOf("const scores: Record<AgentReadyIssueCategory, number>"),
-      code(SRC).indexOf("// Deduct based on issues"),
-    );
-    expect(scoresBlock).toContain("accessibility: 100");
-    expect(scoresBlock).toContain("agentPerceivability: 100");
+  test("the comparison carries only bestAgentPerceivability", () => {
+    expect(code(TYPES)).not.toContain("bestAccessibility: string;");
+  });
+});
+
+describe("an old category arriving at RUNTIME still scores", () => {
+  // The union no longer allows it, but types do not survive a JSON boundary —
+  // an older client can still POST `category: "accessibility"`. Mapped rather
+  // than dropped, because an unrecognised category would index nothing,
+  // `undefined - penalty` is NaN, and NaN propagates into `overall` as a broken
+  // number with nothing saying why. This is the half of the alias that had to
+  // survive its removal.
+  const issue = (category: string, severity = "medium") => ({
+    category, severity, element: "x", description: "d",
+    detectionMethod: "t", recommendation: "r",
+  }) as unknown as Parameters<typeof calculateAgentReadyScore>[0][number];
+
+  test("a legacy \"accessibility\" issue still deducts from the axis", async () => {
+    const { calculateAgentReadyScore } = await import("../src/analysis/agent-ready-audit.js");
+    const s = calculateAgentReadyScore([issue("accessibility")]);
+    expect(s.agentPerceivability).toBeLessThan(100);
   });
 
-  test("the old category still carries its weight", () => {
-    expect(code(SRC)).toContain("accessibility: 0.20");
+  test("it deducts the SAME amount as the new name", async () => {
+    const { calculateAgentReadyScore } = await import("../src/analysis/agent-ready-audit.js");
+    const legacy = calculateAgentReadyScore([issue("accessibility", "high")]);
+    const modern = calculateAgentReadyScore([issue("agentPerceivability", "high")]);
+    expect(legacy.agentPerceivability).toBe(modern.agentPerceivability);
+    expect(legacy.overall).toBe(modern.overall);
+  });
+
+  test("no score is NaN — the failure mode a missing bucket produces", async () => {
+    const { calculateAgentReadyScore } = await import("../src/analysis/agent-ready-audit.js");
+    const s = calculateAgentReadyScore([issue("accessibility"), issue("agentPerceivability")]);
+    for (const v of Object.values(s)) {
+      expect(Number.isNaN(v as number)).toBe(false);
+    }
+  });
+
+  test("a wholly unknown category scores nothing rather than NaN", async () => {
+    const { calculateAgentReadyScore } = await import("../src/analysis/agent-ready-audit.js");
+    const s = calculateAgentReadyScore([issue("not-a-category")]);
+    expect(Number.isNaN(s.overall)).toBe(false);
+    expect(s.overall).toBe(100);
   });
 });
 
 describe("the renderers followed the rename", () => {
-  test("the issue counter matches BOTH categories", () => {
-    // Renaming the emitted category without widening this filter would silently
-    // zero the line — the exact failure shape being fixed elsewhere in this file.
+  test("the issue counter matches the single surviving category", () => {
     const c = code(SRC);
-    expect(c).toContain("i.category === 'agentPerceivability' || i.category === 'accessibility'");
+    expect(c).toContain("i.category === 'agentPerceivability'");
+    expect(c).not.toContain("|| i.category === 'accessibility'");
   });
 
   test("no customer-facing surface still reads plain 'Accessibility'", () => {
@@ -115,10 +153,8 @@ describe("the renderers followed the rename", () => {
     expect(code(SRC)).toContain("not WCAG conformance");
   });
 
-  test("a badge style exists for both category names", () => {
-    const c = code(SRC);
-    expect(c).toContain(".badge-agentPerceivability");
-    expect(c).toContain(".badge-accessibility");
+  test("a badge style exists for the surviving category", () => {
+    expect(code(SRC)).toContain(".badge-agentPerceivability");
   });
 });
 
@@ -142,12 +178,13 @@ describe("scoring behaviour, not just source text", () => {
     expect(s.agentPerceivability).toBeLessThan(100);
   });
 
-  test("both keys always report the identical number", async () => {
+  test("the removed key is genuinely absent from the emitted object", async () => {
+    // Not just absent from the type — absent from the runtime object, which is
+    // what a consumer actually receives across the JSON boundary.
     const { calculateAgentReadyScore } = await import("../src/analysis/agent-ready-audit.js");
-    for (const cat of ["agentPerceivability", "accessibility"]) {
-      const s = calculateAgentReadyScore([issue(cat, "high")]);
-      expect(s.accessibility).toBe(s.agentPerceivability);
-    }
+    const s = calculateAgentReadyScore([issue("agentPerceivability", "high")]);
+    expect(Object.keys(s)).not.toContain("accessibility");
+    expect(Object.keys(s)).toContain("agentPerceivability");
   });
 
   test("no score is NaN — a missing bucket propagates silently otherwise", async () => {

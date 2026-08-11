@@ -4672,8 +4672,6 @@ export type AgentReadyIssueCategory =
   | "findability"
   | "stability"
   | "agentPerceivability"
-  /** @deprecated Renamed to `agentPerceivability`. Removed at the next major. */
-  | "accessibility"
   | "semantics";
 
 /** Severity level for agent-ready issues */
@@ -4767,13 +4765,6 @@ export interface AgentReadyScore {
    * two can legitimately disagree on the same page.
    */
   agentPerceivability: number;
-  /**
-   * @deprecated Renamed to `agentPerceivability`, which is what it measures.
-   * Emitted with the identical value so nothing breaks; removed at the next
-   * major. It scored 100 on a page with two WCAG violations, which is defensible
-   * arithmetic and an indefensible thing to call "accessibility".
-   */
-  accessibility: number;
   /** Meaningful labels/text */
   semantics: number;
 }
@@ -4817,8 +4808,6 @@ export interface AgentReadySummary {
    * broken. Neither was; the name was.
    */
   deferredLoadingPatterns?: number;
-  /** @deprecated Renamed to `deferredLoadingPatterns`. Removed at the next major. */
-  dynamicContentCount?: number;
 }
 
 /** Letter grade for agent-ready audit */
@@ -5075,8 +5064,6 @@ export interface AIBenchmarkComparison {
   /** Best site for accessibility */
   /** Site with the best agent-perceivability axis. */
   bestAgentPerceivability: string;
-  /** @deprecated Renamed to `bestAgentPerceivability`. Removed at the next major. */
-  bestAccessibility: string;
   /** Best site for semantics */
   bestSemantics: string;
   /** Common issues across all sites */

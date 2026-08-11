@@ -23,6 +23,16 @@ export interface BugReport {
     | "broken-link"
     | "console-error"
     | "a11y-violation"
+    /**
+     * A declared-decorative image worth confirming, not a violation.
+     *
+     * Added to the union 2026-08-11, a day after it started being emitted. The
+     * issues are built as untyped object literals inside `page.evaluate` and
+     * pushed through a loosely-typed path, so tsc never saw the mismatch — a
+     * value with a producer and a consumer and no type between them, which is
+     * the third instance of that shape found in this repo this week.
+     */
+    | "a11y-verify"
     | "slow-resource"
     | "missing-image"
     | "form-error"
