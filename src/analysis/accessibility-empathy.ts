@@ -183,6 +183,11 @@ interface BarrierContext {
   barriers: AccessibilityBarrier[];
   frictionPoints: AccessibilityFrictionPoint[];
   wcagViolations: Set<string>;
+  /**
+   * Every criterion that was on a barrier before viewport filtering. Lets the
+   * derivation distinguish a page-level finding from a filtered-away orphan.
+   */
+  criteriaEverOnABarrier: Set<string>;
   stepCount: number;
   /** When true, barrier detectors only count elements in the initial viewport */
   viewportOnly: boolean;
@@ -611,6 +616,14 @@ async function detectCognitiveLoad(ctx: BarrierContext): Promise<void> {
       description: issue.description + (mapping.criteria.length === 0 ? ' (UX recommendation, not a WCAG violation)' : ''),
       affectedPersonas: ["cognitive-adhd", "dyslexic-user"],
       wcagCriteria: mapping.criteria,
+      // `violation: null` with a non-empty `criteria` means "relates to, does
+      // not violate" -- a text-wall is a readability recommendation under 1.3.1,
+      // not a 1.3.1 failure. Recording that on the barrier is what lets the
+      // published list be DERIVED from barriers without promoting
+      // recommendations into violations. (2026-08-11)
+      ...(mapping.violation === null && mapping.criteria.length > 0
+        ? { wcagAdvisoryCriteria: mapping.criteria }
+        : {}),
       severity: issue.type === "long-form" ? "major" : "minor",
       remediation: issue.type === "long-form"
         ? "Break form into multiple steps or sections"
@@ -1552,6 +1565,7 @@ async function simulateAccessibilityJourney(
     barriers: [],
     frictionPoints: [],
     wcagViolations: new Set(),
+    criteriaEverOnABarrier: new Set(),
     stepCount: 0,
     viewportOnly: scope === "viewport",
     wcagLevel,
@@ -1647,6 +1661,14 @@ async function simulateAccessibilityJourney(
     // Scope is enforced HERE, once, rather than in each detector -- see
     // filterBarriersToViewport. Ten of the eleven detectors above never honoured
     // it, so a viewport audit was scoring content seven screens below the fold.
+    // Snapshotted BEFORE the filter runs, so the derivation below can tell a
+    // criterion that no barrier ever claimed (a genuine page-level finding,
+    // keep it) from one whose barriers were all filtered away (an orphan, drop
+    // it). Without the distinction the two are indistinguishable afterwards.
+    for (const b of ctx.barriers) {
+      for (const c of b.wcagCriteria ?? []) ctx.criteriaEverOnABarrier.add(c);
+    }
+
     if (ctx.viewportOnly) {
       const vp = await page.evaluate(() => ({
         width: window.innerWidth, height: window.innerHeight,
@@ -1998,11 +2020,9 @@ async function simulateAccessibilityJourney(
     // had dropped at AA, so wcagViolationCount read 2 beside an
     // allWcagViolations of ["2.2.2"] — the same finding counted under two
     // different rules. (2026-07-29)
-    wcagViolations: Array.from(ctx.wcagViolations).filter((v) => {
-      const criteria = WCAG_CRITERIA[v];
-      const order: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
-      return !criteria || order[criteria.level] <= order[wcagLevel];
-    }),
+    wcagViolations: deriveWcagViolations(
+      ctx.barriers, ctx.wcagViolations, ctx.criteriaEverOnABarrier, wcagLevel,
+    ),
     remediationPriority,
     empathyScore,
     scoreContext, // v18.22.0: Added score breakdown
@@ -2806,6 +2826,52 @@ function inferGoalType(goal: string): import("../site-model/types.js").GoalType 
   if (/\b(extract|scrape|collect|gather)\b/.test(g)) return "extract_data";
   if (/\b(go to|navigate|reach|open)\b/.test(g)) return "navigate_to";
   return "complete_action";
+}
+
+/**
+ * The published WCAG list, DERIVED from the barriers rather than accumulated
+ * alongside them.
+ *
+ * It used to be a Set that each detector appended to by hand, in parallel with
+ * the barrier it was pushing. Two lists maintained by hand drift, and this pair
+ * drifted in the direction that matters: a barrier declared criteria that the
+ * adjacent `.add()` line did not repeat, so the audit DETECTED a violation,
+ * displayed it on the barrier, and left it out of the conformance list.
+ * Measured on one fixture page: 1.3.1, 2.5.5, 2.5.7 and 3.3.4 all shown as
+ * barriers, none listed. 1.3.1 there was an unlabelled form input -- Level A,
+ * and among the most common real failures there is.
+ *
+ * Deriving also fixes the reported inverse (a criterion listed with no barrier
+ * explaining it), because barriers dropped by the viewport filter now take
+ * their criteria with them instead of leaving the string behind.
+ *
+ * Criteria no barrier ever claimed are still honoured -- see
+ * `criteriaEverOnABarrier`. The rule is "mirrors are derived", not "throw away
+ * anything the barriers do not know about". (2026-08-11)
+ */
+export function deriveWcagViolations(
+  barriers: Array<{ wcagCriteria?: string[]; wcagAdvisoryCriteria?: string[] }>,
+  recordedByDetectors: Set<string>,
+  criteriaEverOnABarrier: Set<string>,
+  wcagLevel: "A" | "AA" | "AAA",
+): string[] {
+  const violated = new Set<string>();
+  for (const b of barriers) {
+    const advisory = new Set(b.wcagAdvisoryCriteria ?? []);
+    for (const c of b.wcagCriteria ?? []) {
+      if (!advisory.has(c)) violated.add(c);
+    }
+  }
+  // Page-level findings: recorded by a detector, never attached to any barrier.
+  // Kept. A criterion whose barriers existed and were filtered away is NOT kept.
+  for (const c of recordedByDetectors) {
+    if (!criteriaEverOnABarrier.has(c)) violated.add(c);
+  }
+  const order: Record<string, number> = { A: 1, AA: 2, AAA: 3 };
+  return Array.from(violated).filter((v) => {
+    const criteria = WCAG_CRITERIA[v];
+    return !criteria || order[criteria.level] <= order[wcagLevel];
+  });
 }
 
 export async function runEmpathyAudit(

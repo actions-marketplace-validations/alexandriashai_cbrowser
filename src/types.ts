@@ -5207,6 +5207,19 @@ export interface AccessibilityBarrier {
   affectedPersonas: string[];
   /** WCAG criteria violated */
   wcagCriteria: string[];
+  /**
+   * The subset of `wcagCriteria` this barrier RELATES to without violating.
+   *
+   * Advisory-ness is a property of the BARRIER, not of the criterion: 1.3.1 is
+   * advisory on a text-wall (a readability recommendation) and a genuine Level A
+   * violation on an unlabelled form input. A per-criterion allow-list would have
+   * to pick one and be wrong about the other, which is why this lives here.
+   *
+   * Read by the aggregation that derives the published WCAG list, so a criterion
+   * listed here is reported on the barrier and excluded from the violation
+   * totals. (2026-08-11)
+   */
+  wcagAdvisoryCriteria?: string[];
   /** Severity of the barrier */
   severity: AccessibilityBarrierSeverity;
   /**
