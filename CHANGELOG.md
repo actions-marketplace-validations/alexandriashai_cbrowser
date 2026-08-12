@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.1.3](https://github.com/alexandriashai/cbrowser/compare/v19.1.2...v19.1.3) (2026-08-12)
+
+### Fixed
+
+* **ci:** quarantine the change-tiers file on CI only, and say so on every run ([6b10d25](https://github.com/alexandriashai/cbrowser/commit/6b10d2505f4b0efc7b801f1acd192a5565702b15))
+
 ## [19.1.2](https://github.com/alexandriashai/cbrowser/compare/v19.1.1...v19.1.2) (2026-08-12)
 
 ### Fixed
