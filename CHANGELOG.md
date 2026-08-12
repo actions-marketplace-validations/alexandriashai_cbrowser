@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.1.2](https://github.com/alexandriashai/cbrowser/compare/v19.1.1...v19.1.2) (2026-08-12)
+
+### Fixed
+
+* bound the capture stop in the change-tiers helper, and share the bound ([c53b365](https://github.com/alexandriashai/cbrowser/commit/c53b36561287d1304691e4e9d4bb4b69a6b31ff7))
+
 ## [19.1.1](https://github.com/alexandriashai/cbrowser/compare/v19.1.0...v19.1.1) (2026-08-12)
 
 ### Fixed
