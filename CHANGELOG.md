@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.0.2](https://github.com/alexandriashai/cbrowser/compare/v19.0.1...v19.0.2) (2026-08-12)
+
+### Fixed
+
+* **ci:** isolate every file the release gate quarantines, not just three of them ([3589335](https://github.com/alexandriashai/cbrowser/commit/35893351758a5416507727a8592cc9d91bccec6c))
+
 ## [19.0.1](https://github.com/alexandriashai/cbrowser/compare/v19.0.0...v19.0.1) (2026-08-12)
 
 ### Fixed
