@@ -100,10 +100,11 @@ const WCAG_CRITERIA: Record<string, { level: "A" | "AA" | "AAA"; description: st
   "2.1.2": { level: "A", description: "No Keyboard Trap" },
   "2.2.1": { level: "A", description: "Timing Adjustable" },
   "2.2.2": { level: "A", description: "Pause, Stop, Hide" },
-  "2.3.1": { level: "A", description: "Three Flashes or Below" },
+  "2.3.1": { level: "A", description: "Three Flashes or Below Threshold" },
   "2.4.1": { level: "A", description: "Bypass Blocks" },
   "2.4.3": { level: "A", description: "Focus Order" },
-  "2.4.4": { level: "A", description: "Link Purpose" },
+  // "(In Context)" is load-bearing: 2.4.9 is Link Purpose (Link Only), AAA.
+  "2.4.4": { level: "A", description: "Link Purpose (In Context)" },
   "2.4.6": { level: "AA", description: "Headings and Labels" },
   "2.4.7": { level: "AA", description: "Focus Visible" },
   "2.5.1": { level: "A", description: "Pointer Gestures" },
@@ -116,7 +117,11 @@ const WCAG_CRITERIA: Record<string, { level: "A" | "AA" | "AAA"; description: st
   "3.3.1": { level: "A", description: "Error Identification" },
   "3.3.2": { level: "A", description: "Labels or Instructions" },
   "3.3.4": { level: "AA", description: "Error Prevention (Legal, Financial, Data)" },
-  "4.1.1": { level: "A", description: "Parsing" },
+  // Removed in WCAG 2.2 — the spec titles it "Parsing (Obsolete and removed)".
+  // Kept so a stored report that references it still resolves to a level and
+  // renders, rather than falling through to the unknown-criterion path. No
+  // detector emits it (verified 2026-08-12), so this reports nothing new.
+  "4.1.1": { level: "A", description: "Parsing (Obsolete and removed)" },
   "4.1.2": { level: "A", description: "Name, Role, Value" },
 };
 
