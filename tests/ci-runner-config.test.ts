@@ -100,3 +100,47 @@ describe("the split runner and the release gate agree about the hanging files", 
     }
   });
 });
+
+describe("the runner never executes build output", () => {
+  const read = async (rel: string) =>
+    await Bun.file(new URL(rel, import.meta.url)).text();
+
+  test("test discovery excludes dist/", async () => {
+    // dist/ is gitignored, so anything found there runs HERE and not on CI.
+    // That divergence is not theoretical: dist/security/audit-wrapper.test.js
+    // was the whole 1298-vs-1284 gap between this box and the runner, and it
+    // was a stale compiled duplicate of tests/audit-wrapper.test.ts built from
+    // src/security/audit-wrapper.test.ts, a path that no longer exists.
+    //
+    // A test suite whose membership depends on whether someone has run a build
+    // is not a suite, it is a coincidence.
+    const split = await read("../scripts/test-split.sh");
+    expect(split).toContain("-not -path './dist/*'");
+  });
+
+  test("the release gate searches source directories, not the repo root", async () => {
+    // The gate never had the dist problem because it searches `tests src`.
+    // Pinned so a future edit does not "helpfully" widen it to `.`.
+    const gate = await read("../scripts/test-gate.sh");
+    expect(gate).toMatch(/find\s+tests\s+src\b/);
+  });
+
+  test("the discovery command, as written, returns nothing from dist/", async () => {
+    // End-to-end rather than by inspection: pull the actual find(1) invocation
+    // out of the script and run it. A previous version of this test asserted
+    // expect(true).toBe(true) after a console.warn -- decorative, could not
+    // fail, and would have reported success while dist crept back in.
+    const split = await read("../scripts/test-split.sh");
+    const find = split.match(/find \. \\\([\s\S]*?\| sort\)/)?.[0];
+    expect(find, "the find command must be locatable in the script").toBeTruthy();
+
+    const cmd = find!.replace(/^mapfile[^<]*< <\(/, "").replace(/\)$/, "");
+    const proc = Bun.spawnSync(["bash", "-c", cmd], {
+      cwd: new URL("..", import.meta.url).pathname,
+    });
+    const files = new TextDecoder().decode(proc.stdout).trim().split("\n").filter(Boolean);
+
+    expect(files.length).toBeGreaterThan(50);          // it really discovered a suite
+    expect(files.filter((f) => f.startsWith("dist/"))).toEqual([]);
+  });
+});

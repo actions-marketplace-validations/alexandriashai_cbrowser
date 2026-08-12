@@ -81,17 +81,30 @@ ISOLATED_FILES=(
   "tests/recording-pure.test.ts"
 )
 
-# Match what `bun test` itself discovers, not a narrower guess. A first version
-# looked only for *.test.ts and silently dropped dist/security/audit-wrapper.test.js
-# — 14 tests, 609 -> 595, a coverage loss that reported "0 fail" and looked like a
-# clean pass. Preserving the exact prior set keeps this change to ONE thing: the
-# process split.
+# Match what `bun test` itself discovers, MINUS build output.
 #
-# (Those 14 tests are ORPHANED — dist/ is gitignored build output and no
-# corresponding source file exists, so they would vanish on `rm -rf dist` and are
-# not in version control. That is worth fixing separately; it is not this
-# script's business to decide.)
-mapfile -t ALL < <(find . \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.spec.ts' \) -not -path './node_modules/*' | sed 's|^\./||' | sort)
+# The note that used to sit here said dist/security/audit-wrapper.test.js was
+# orphaned and worth fixing separately. Measured 2026-08-11, it is worse than
+# orphaned -- it is a STALE DUPLICATE:
+#
+#   - its 14 test names are identical to tests/audit-wrapper.test.ts
+#   - it is the compiled output of src/security/audit-wrapper.test.ts, a path
+#     that no longer exists; the test moved to tests/ and the build output was
+#     never cleaned up
+#   - tsconfig now excludes src/**/*.test.ts, so no current build regenerates
+#     it. It cannot be refreshed, only re-run stale.
+#   - dist/ is gitignored, so it runs here and does NOT exist on CI. That is
+#     the entire 1298-vs-1284 gap between this box and the runner.
+#
+# So the suite was running 14 assertions twice, one copy compiled from a source
+# file that is gone, and reporting the doubled number as coverage. Excluding
+# build output loses nothing: tests/audit-wrapper.test.ts is still discovered
+# and still runs all 14.
+#
+# test-gate.sh never had this problem -- it searches `tests src` rather than
+# `.`. The gate was right and this script was wrong, the same way the two
+# disagreed about the quarantine list.
+mapfile -t ALL < <(find . \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.spec.ts' \) -not -path './node_modules/*' -not -path './dist/*' | sed 's|^\./||' | sort)
 
 if [ "${#ALL[@]}" -eq 0 ]; then
   echo "test-split: discovered NO test files — refusing to report success" >&2
