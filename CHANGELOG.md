@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.0.1](https://github.com/alexandriashai/cbrowser/compare/v19.0.0...v19.0.1) (2026-08-12)
+
+### Fixed
+
+* complete the WCAG criteria table so the level filter can evaluate every criterion ([808a817](https://github.com/alexandriashai/cbrowser/commit/808a817ade8f4089a7c9b1e6fa35dc17d18cf730))
+* default demographics on JSON personas instead of crashing the judge ([a609c6f](https://github.com/alexandriashai/cbrowser/commit/a609c6f0a5cbb2761db093e3acf778e983771a1e))
+* derive the WCAG list from barriers so detected violations stop vanishing ([1000cca](https://github.com/alexandriashai/cbrowser/commit/1000ccacfbe5f99916dc1169695806a7755010ee))
+
 ## [19.0.0](https://github.com/alexandriashai/cbrowser/compare/v18.82.2...v19.0.0) (2026-08-11)
 
 ### ⚠ BREAKING CHANGES
