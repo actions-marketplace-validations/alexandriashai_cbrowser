@@ -135,13 +135,20 @@ const STOP_TIMED_OUT = Symbol("capture-stop-timeout");
 /**
  * Await `session.stop()` under a hard deadline.
  *
+ * Exported (2026-08-12) so callers that stop a capture directly get the same
+ * bound instead of reimplementing it. tests/recording-change-tiers.test.ts was
+ * calling `session.stop()` raw and burning its full 180s ceiling on CI when the
+ * stop wedged -- in a suite that already contains a test asserting a wedged
+ * stop must fail fast. A second copy of this logic in a test would be worse
+ * than the bug.
+ *
  * On timeout the stop promise is abandoned, not cancelled — the engine has no
  * cancellation and may still be mid-encode. It is left with a catch handler
  * attached so a later rejection cannot surface as an unhandled rejection and
  * take down the host process, and the timer is unref'd so a pending deadline
  * never holds the event loop open.
  */
-async function stopWithinTimeout(
+export async function stopWithinTimeout(
   session: VideoCaptureSession,
   timeoutMs: number,
 ): Promise<Awaited<ReturnType<VideoCaptureSession["stop"]>>> {

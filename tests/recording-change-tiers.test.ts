@@ -34,6 +34,7 @@ import sharp from "sharp";
 import { CBrowser } from "../src/browser.js";
 import { VideoCaptureSession } from "../src/recording/engine.js";
 import { detectChangePoints, changeScore, frameSignature, ssim } from "../src/recording/ssim.js";
+import { stopWithinTimeout } from "../src/recording/auto-capture.js";
 import {
   changeSignal,
   changeSignalIssues,
@@ -93,7 +94,16 @@ async function capture(name: string, html: string, holdMs: number, drive?: (page
     await session.start({ fps: 10, slug: name, outDir: join(workDir, name), format: [] });
     if (drive) await drive(page as never);
     await new Promise((r) => setTimeout(r, holdMs));
-    return (await session.stop()).manifest;
+    // BOUNDED. This was a raw `session.stop()`, so a stop that never settles
+    // burned this test's entire 180000ms ceiling and reported only "timed out"
+    // -- no state, no frame count, no slug, nothing to act on. On CI that is
+    // exactly what happened, twice in a row with identical timings.
+    //
+    // The suite already contains a test asserting that a wedged stop must fail
+    // fast and loudly (recording-autocapture, "a wedged stop fails fast"), and
+    // this helper was the one caller ignoring it. Reuses the product's own
+    // bound rather than a second copy of the logic living in a test.
+    return (await stopWithinTimeout(session, 45_000)).manifest;
   } finally {
     await browser.close();
   }
