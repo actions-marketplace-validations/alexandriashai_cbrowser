@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.1.1](https://github.com/alexandriashai/cbrowser/compare/v19.1.0...v19.1.1) (2026-08-12)
+
+### Fixed
+
+* **ci:** retry the isolated browser runs once, and say so when it happens ([17679d1](https://github.com/alexandriashai/cbrowser/commit/17679d1c4f7aa91ae584370151eb6bf5e07edd76))
+
 ## [19.1.0](https://github.com/alexandriashai/cbrowser/compare/v19.0.2...v19.1.0) (2026-08-12)
 
 ### Added
