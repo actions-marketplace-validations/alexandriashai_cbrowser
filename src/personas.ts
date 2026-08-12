@@ -99,7 +99,27 @@ export function loadCustomPersonas(): Record<string, Persona> {
           // Deprecated trait keys resolved here, at the read boundary, so a
           // persona saved before a rename keeps contributing instead of
           // silently dropping the renamed trait.
-          persona = normalizePersonaOnRead({ ...parsed, behaviors: parsed.behaviors ?? {} }) as Persona;
+          // Same floor as the YAML branch below, not just `behaviors`.
+          //
+          // The comment above this line already noted that the YAML branch
+          // defaults `behaviors` and gave the JSON branch the same floor — for
+          // that ONE field. The YAML branch also defaults `demographics`,
+          // `humanBehavior` and `context`, and the JSON branch did not, so a
+          // hand-written or CMS-exported persona.json missing `demographics`
+          // loaded fine and then crashed downstream at
+          // `persona.demographics.device` inside getCognitiveProfile.
+          //
+          // That crash was invisible: resolvePersonaContext catches it and
+          // returns {}, so the persona reached the LLM relevance judge with no
+          // traits, no values, no description and no error. A malformed persona
+          // scored as a blank one. (2026-08-11)
+          persona = normalizePersonaOnRead({
+            ...parsed,
+            behaviors: parsed.behaviors ?? {},
+            demographics: parsed.demographics ?? { age_range: "any", tech_level: "intermediate", device: "desktop" },
+            humanBehavior: parsed.humanBehavior ?? BUILTIN_PERSONAS["first-timer"].humanBehavior,
+            context: parsed.context ?? { viewport: [1280, 800] },
+          }) as Persona;
         } else {
           // Simple YAML parsing for persona files
           const nameMatch = content.match(/^name:\s*(.+)$/m);
@@ -983,7 +1003,10 @@ export function getCognitiveProfile(persona: Persona | AccessibilityPersona): Co
     ];
     // Only reachable on a touch device, where it describes the input mode
     // rather than the disposition.
-    if (persona.demographics.device === "mobile") {
+    // Optional-chained: this reads a persona the CALLER may have built in
+    // memory rather than loaded through the read boundary above, and a missing
+    // demographics block should not decide the decision style by throwing.
+    if (persona.demographics?.device === "mobile") {
       // Weighted to win on mobile unless the trait evidence clearly says
       // otherwise. Device was previously a terminal branch, so every mobile
       // persona was quick-tap; letting it compete unweighted relabelled all of

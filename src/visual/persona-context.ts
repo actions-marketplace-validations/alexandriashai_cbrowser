@@ -66,7 +66,21 @@ export async function resolvePersonaContext(name: string): Promise<ResolvedPerso
         benevolence: v.benevolence, universalism: v.universalism,
       } } : {}),
     };
-  } catch {
+  } catch (err) {
+    // LOUD, because this catch is what hid a real crash for as long as it
+    // existed. `getCognitiveProfile` threw on a persona with no `demographics`,
+    // this swallowed it, and the judge received an empty context — no traits, no
+    // values, no description. A malformed persona scored exactly like a blank
+    // one, and nothing anywhere said so.
+    //
+    // Still returns {} rather than rethrowing: the keyword path inside
+    // buildSemanticMap is a real floor and an audit should degrade rather than
+    // fail. Degrading silently is the part that was wrong. (2026-08-11)
+    console.warn(
+      `[CBrowser] persona "${name}" could not be resolved for the relevance layer ` +
+      `(${(err as Error)?.message ?? err}). Judging will fall back to name and goal ` +
+      `alone, which is materially worse — check the persona file is complete.`,
+    );
     return {};
   }
 }

@@ -3943,7 +3943,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             for (const [name, persona] of Object.entries(BUILTIN_PERSONAS)) {
               console.log(`    ${name}`);
               console.log(`      ${persona.description}`);
-              console.log(`      Tech: ${persona.demographics.tech_level} | Device: ${persona.demographics.device}`);
+              console.log(`      Tech: ${persona.demographics?.tech_level ?? "unknown"} | Device: ${persona.demographics?.device ?? "unknown"}`);
               console.log("");
             }
 
@@ -3955,7 +3955,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
               for (const [name, persona] of Object.entries(customPersonas)) {
                 console.log(`    ${name}`);
                 console.log(`      ${persona.description}`);
-                console.log(`      Tech: ${persona.demographics.tech_level} | Device: ${persona.demographics.device}`);
+                console.log(`      Tech: ${persona.demographics?.tech_level ?? "unknown"} | Device: ${persona.demographics?.device ?? "unknown"}`);
                 console.log("");
               }
             }
@@ -4001,9 +4001,9 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             console.log(`━━━ Generated Persona: ${persona.name} ━━━\n`);
             console.log(`Description: ${persona.description}`);
             console.log(`\nDemographics:`);
-            console.log(`  Age Range: ${persona.demographics.age_range}`);
-            console.log(`  Tech Level: ${persona.demographics.tech_level}`);
-            console.log(`  Device: ${persona.demographics.device}`);
+            console.log(`  Age Range: ${persona.demographics?.age_range ?? "unknown"}`);
+            console.log(`  Tech Level: ${persona.demographics?.tech_level ?? "unknown"}`);
+            console.log(`  Device: ${persona.demographics?.device ?? "unknown"}`);
 
             console.log(`\nTiming:`);
             console.log(`  Reaction Time: ${persona.humanBehavior?.timing.reactionTime.min}-${persona.humanBehavior?.timing.reactionTime.max}ms`);
