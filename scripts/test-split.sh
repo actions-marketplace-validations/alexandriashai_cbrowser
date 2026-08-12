@@ -137,10 +137,70 @@ for iso in "${ISOLATED_FILES[@]}"; do
 done
 
 echo "test-split: ${#ALL[@]} test files discovered — ${#REST[@]} in pass 1, ${#ISOLATED_FILES[@]} isolated"
+
+# Pass 1 gets NO retry. These are ordinary deterministic tests; a retry here
+# would hide a real regression.
 bun test "${REST[@]}"
+
 # Each isolated file gets its OWN process. Running them as one `bun test` with
 # several arguments would recreate the union that hangs.
+#
+# RETRY ONCE, and loudly (2026-08-12, Alexa's call).
+#
+# Why these and not pass 1: every file in this list drives a real browser on
+# wall-clock timing, and the failure they exhibit is a capture that never
+# completes, reported at exactly the test's declared ceiling (180000.96ms,
+# 60000.95ms -- the ceiling, to the millisecond, because nothing else bounds
+# it). The root cause is NOT known. Eleven hypotheses have been refuted:
+# shared data dir, orphaned Chrome, a console.log patch, AbortSignal timeouts,
+# bun concurrency, file position, glob discovery, an fd leak, fast-check run
+# count, CPU starvation (passes pinned to one core), and missing
+# anti-throttling launch args.
+#
+# What IS known, and what makes a retry the honest response rather than a
+# cover-up: the failure is intermittent in ISOLATION, not only in the union.
+# CI failed recording-change-tiers in its own process at 194s having passed the
+# same file in its own process at 18.7s earlier the same day. So isolation
+# alone does not make these deterministic, and a single flake was failing the
+# whole job.
+#
+# A retry that hid the flake rate would be the same silent-degradation defect
+# this suite keeps finding in its own product code. So:
+#   - the retry is announced when it happens, not after the fact
+#   - a file that only passes on retry is listed again in a summary at the end
+#   - a file that fails TWICE fails the run
+#   - the exit code still reflects reality
+RETRIED=()
+FAILED=()
 for iso in "${ISOLATED_FILES[@]}"; do
   echo "test-split: isolated run — $iso"
-  bun test "$iso"
+  if bun test "$iso"; then
+    continue
+  fi
+
+  echo "test-split: FLAKE? '$iso' failed. Retrying ONCE." >&2
+  echo "            A pass on retry is recorded below, not swallowed." >&2
+  if bun test "$iso"; then
+    echo "test-split: '$iso' passed on retry — recorded as flaky, not as green." >&2
+    RETRIED+=("$iso")
+  else
+    echo "test-split: '$iso' failed TWICE — this is a real failure, not a flake." >&2
+    FAILED+=("$iso")
+  fi
 done
+
+# The summary exists so "green" and "green after a retry" are never the same
+# report. A flake rate you cannot see is a flake rate nobody fixes.
+if [ "${#RETRIED[@]}" -gt 0 ]; then
+  echo ""
+  echo "test-split: ${#RETRIED[@]} file(s) PASSED ONLY ON RETRY:"
+  for f in "${RETRIED[@]}"; do echo "              $f"; done
+  echo "            The run is green. These are still flaky and still unexplained."
+fi
+
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  echo ""
+  echo "test-split: ${#FAILED[@]} file(s) failed twice:" >&2
+  for f in "${FAILED[@]}"; do echo "              $f" >&2; done
+  exit 1
+fi

@@ -144,3 +144,46 @@ describe("the runner never executes build output", () => {
     expect(files.filter((f) => f.startsWith("dist/"))).toEqual([]);
   });
 });
+
+describe("the isolated runs retry once, loudly", () => {
+  const split = async () =>
+    await Bun.file(new URL("../scripts/test-split.sh", import.meta.url)).text();
+
+  test("a failed isolated run is retried", async () => {
+    expect(await split()).toContain("Retrying ONCE");
+  });
+
+  test("a file that fails twice still fails the run", async () => {
+    // The point of a retry is to absorb a flake, not to make red impossible.
+    const src = await split();
+    expect(src).toContain("failed TWICE");
+    expect(src).toMatch(/FAILED\+=/);
+    expect(src).toMatch(/exit 1/);
+  });
+
+  test("a pass-on-retry is REPORTED, not swallowed", async () => {
+    // A retry that hides the flake rate is the same silent-degradation defect
+    // this suite keeps finding in the product. "Green" and "green after a
+    // retry" must never render as the same report.
+    const src = await split();
+    expect(src).toContain("PASSED ONLY ON RETRY");
+    expect(src).toMatch(/RETRIED\+=/);
+  });
+
+  test("pass 1 is NOT retried", async () => {
+    // Ordinary deterministic tests. A retry there would hide a real
+    // regression, which is the opposite of what this buys.
+    const src = await split();
+    const passOne = src.slice(src.indexOf("bun test \"${REST[@]}\""));
+    const beforeIsolated = passOne.slice(0, passOne.indexOf("for iso in"));
+    expect(beforeIsolated).not.toContain("Retrying");
+  });
+
+  test("the retry is scoped to the isolated list only", async () => {
+    // Every retried file must be one the release gate also quarantines, so the
+    // set of "allowed to be flaky" files cannot quietly grow.
+    const src = await split();
+    const retryBlock = src.slice(src.indexOf("for iso in"));
+    expect(retryBlock).toContain("${ISOLATED_FILES[@]}");
+  });
+});
