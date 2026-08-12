@@ -22,8 +22,33 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Run tests with coverage
-        run: bun test --coverage
+      # `bun run test` is scripts/test-split.sh, NOT `bun test`.
+      #
+      # This step used to run `bun test --coverage`: the whole suite in ONE
+      # process. That is precisely the configuration test-split.sh was written to
+      # avoid — browser-launching files accumulate something across a long-lived
+      # `bun test` process until a launch hangs, and WHICH test times out is
+      # random. release.yml's own comments call this out ("the exact
+      # configuration scripts/test-split.sh exists to avoid") while this workflow
+      # kept doing it.
+      #
+      # The split runs MORE than the release gate, not less: test-gate.sh
+      # excludes the quarantined browser files, test-split.sh runs every file and
+      # merely isolates the browser-heavy ones into their own processes. So this
+      # is both the most complete run and the most stable one.
+      #
+      # Coverage is dropped rather than moved to its own step. Nothing consumed
+      # it — no upload, no threshold, no gate — and release.yml records the
+      # lesson that an "advisory" step which HANGS still blocks the job, so a
+      # second full test invocation is a cost with no reader. `bun run
+      # test:coverage` still exists for local use.
+      - name: Run tests
+        run: bun run test
+        # This workflow had no timeout at all. release.yml learned that a hang
+        # must fail by name rather than eat the runner ceiling and be cancelled;
+        # the same applies here. ~9 minutes locally, so 25 leaves headroom for a
+        # slower runner without inviting an unbounded hang.
+        timeout-minutes: 25
 
       - name: Type check
         run: bun run build
