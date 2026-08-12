@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.1.0](https://github.com/alexandriashai/cbrowser/compare/v19.0.2...v19.1.0) (2026-08-12)
+
+### Added
+
+* add `cbrowser uninstall` — npm leaves the credentials behind ([5b1de6a](https://github.com/alexandriashai/cbrowser/commit/5b1de6ae15a9ef122facc9de1b453fac71419e63))
+
+### Fixed
+
+* **ci:** stop discovering test files inside build output ([25f213f](https://github.com/alexandriashai/cbrowser/commit/25f213f1f945abd1550460349ee92b9a51798ad3))
+* **security:** write the API key owner-only, and warn on loose credential files ([b12de92](https://github.com/alexandriashai/cbrowser/commit/b12de924020dbfa3aa9849a07b9e6ce8e04a1907))
+
 ## [19.0.2](https://github.com/alexandriashai/cbrowser/compare/v19.0.1...v19.0.2) (2026-08-12)
 
 ### Fixed
