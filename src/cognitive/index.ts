@@ -73,6 +73,7 @@ import {
   classifyUIPattern,
 } from "../types.js";
 import { loadConfigFile, getDataDir } from "../config.js";
+import { writeSecretFile } from "../secure-file.js";
 import type { DecisionProvider } from "./journey-trace.js";
 import {
   JourneyTraceWriter,
@@ -130,7 +131,11 @@ export function setAnthropicApiKey(apiKey: string): void {
   }
 
   config.anthropicApiKey = apiKey;
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  // Owner-only. This used to be a bare writeFileSync, so the key's permissions
+  // were whatever the umask allowed -- 0644, world-readable, by default.
+  // writeSecretFile also chmods, because the `mode` option applies only when
+  // the file is created and every existing install already has this file.
+  writeSecretFile(configPath, JSON.stringify(config, null, 2));
 }
 
 /**
@@ -143,7 +148,9 @@ export function removeAnthropicApiKey(): void {
   try {
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
     delete config.anthropicApiKey;
-    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    // Same treatment on removal: the file still holds the rest of the config,
+    // and rewriting it at 0644 would undo the tightening done on save.
+    writeSecretFile(configPath, JSON.stringify(config, null, 2));
   } catch (e) {
     console.debug(`[CBrowser] Failed to remove API key from config: ${(e as Error).message}`);
   }

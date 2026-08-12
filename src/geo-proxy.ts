@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { describeLoosePermissions } from "./secure-file.js";
 
 export interface ProxyConfig {
   server: string;
@@ -72,6 +73,15 @@ function loadConfig(): GeoProxyConfig | null {
   for (const configPath of configPaths) {
     if (existsSync(configPath)) {
       try {
+        // This file holds basePassword and is written by hand, so there is no
+        // write site to harden -- load time is the only place its permissions
+        // can be noticed. Warn rather than refuse: the credential still works,
+        // and breaking a working setup over a permission bit would be a worse
+        // trade than telling the user about it. Measured on a real install:
+        // mode 0664, i.e. every account on the box could read the password.
+        const loose = describeLoosePermissions(configPath);
+        if (loose) console.warn(`[CBrowser] ${loose}`);
+
         const raw = readFileSync(configPath, "utf-8");
         const config = JSON.parse(raw) as GeoProxyConfig;
         return { ...config, regions: { ...DEFAULT_REGIONS, ...config.regions } };
