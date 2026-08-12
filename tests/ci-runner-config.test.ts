@@ -57,3 +57,46 @@ describe("the package script still points at the split", () => {
     expect(pkg.scripts["test:single"]).toBe("bun test");
   });
 });
+
+describe("the split runner and the release gate agree about the hanging files", () => {
+  const read = async (rel: string) =>
+    await Bun.file(new URL(rel, import.meta.url)).text();
+
+  /** Files test-gate.sh excludes from the release gate. */
+  const quarantined = (src: string) =>
+    new Set((src.match(/QUARANTINED='([^']+)'/)?.[1] ?? "").split("|").filter(Boolean));
+
+  /** Files test-split.sh runs in their own process. */
+  const isolated = (src: string) =>
+    new Set([...(src.match(/ISOLATED_FILES=\(([\s\S]*?)\n\)/)?.[1] ?? "")
+      .matchAll(/"(tests\/[^"]+)"/g)].map((m) => m[1]));
+
+  test("every gate-quarantined file is isolated by the split", async () => {
+    // The gate's list IS the curated "does real browser work and hangs in a
+    // shared process" set. The split may run more files than the gate, but it
+    // must never run one of THOSE in the shared pass.
+    //
+    // They disagreed on four files, and CI proved it the first time the split
+    // ran there: recording-autocapture timed out at exactly 180000.96ms in
+    // pass 1. It passes on a fast dev box, which is why the disagreement
+    // survived a full green local run.
+    const splitSet = isolated(await read("../scripts/test-split.sh"));
+    const missing = [...quarantined(await read("../scripts/test-gate.sh"))]
+      .filter((f) => !splitSet.has(f));
+    expect(missing).toEqual([]);
+  });
+
+  test("both lists are non-empty — this cannot pass by parsing nothing", async () => {
+    expect(quarantined(await read("../scripts/test-gate.sh")).size).toBeGreaterThan(5);
+    expect(isolated(await read("../scripts/test-split.sh")).size).toBeGreaterThan(9);
+  });
+
+  test("the split still runs MORE than the gate excludes", async () => {
+    // Isolation is not exclusion. Every quarantined file must still appear as
+    // something the split executes, just in its own process.
+    const split = await read("../scripts/test-split.sh");
+    for (const f of quarantined(await read("../scripts/test-gate.sh"))) {
+      expect(split, `${f} must still be run by the split`).toContain(f);
+    }
+  });
+});

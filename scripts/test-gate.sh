@@ -7,7 +7,8 @@
 # are excluded from the GATE, not from the suite. Deleting coverage to make a
 # gate green would be the dishonest version of this.
 #
-# WHY THESE TWO ARE QUARANTINED (2026-07-27)
+# WHY THESE ARE QUARANTINED (2026-07-27; list grew since, header corrected
+# 2026-08-11 -- it said "THESE TWO" while QUARANTINED below listed seven)
 #
 # Both do real wall-clock browser work and both hit their declared ceilings
 # EXACTLY (180000.84ms, 60004.93ms) when the full set runs — a hang, not

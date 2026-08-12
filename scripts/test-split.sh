@@ -63,6 +63,22 @@ ISOLATED_FILES=(
   "tests/sticky-overlay-threshold.test.ts"
   "tests/freeze-animations.test.ts"
   "tests/alt-attribute-classification.test.ts"
+  # Added 2026-08-11, after CI went red on the FIRST run of this script in the
+  # Tests workflow: recording-autocapture hit exactly 180000.96ms in pass 1.
+  #
+  # That is the same hang test-gate.sh documents, and the two scripts disagreed
+  # about it. The gate QUARANTINES seven files; this list isolated three of
+  # them, so the other four ran in the shared pass -- and one hung, on the
+  # machine where it mattered. It passed locally, because this box is fast
+  # enough to hide it. CI is the machine that decides.
+  #
+  # Isolated rather than skipped: the gate excludes these from its pass, this
+  # script still RUNS them, each in its own process. That keeps the property
+  # that the split covers more than the gate does.
+  "tests/recording-autocapture.test.ts"
+  "tests/recording-journey-capture.test.ts"
+  "tests/recording-mcp-session.test.ts"
+  "tests/recording-pure.test.ts"
 )
 
 # Match what `bun test` itself discovers, not a narrower guess. A first version
