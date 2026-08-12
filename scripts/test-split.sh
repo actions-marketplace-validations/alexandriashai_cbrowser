@@ -81,6 +81,35 @@ ISOLATED_FILES=(
   "tests/recording-pure.test.ts"
 )
 
+# QUARANTINED ON CI ONLY (2026-08-12, Alexa's call).
+#
+# These still run here, on a developer machine. They are not run in CI.
+#
+# Why, specifically: `a continuously animating page is flagged saturated` fails
+# DETERMINISTICALLY on CI and passes 4 of 4 locally in 18s. Two CI attempts
+# under the retry failed the same assertion at 180001.06ms and 180000.40ms with
+# file durations of 194.66s and 194.67s -- identical, so no retry policy can
+# help it. The release gate already excludes this file; the Tests workflow was
+# the only thing still running it, and it had been red since 2026-08-06.
+#
+# The bar for adding to this list is high, and this file clears it only because
+# a permanently red CI is worse than a missing check: it trains everyone,
+# including the next agent, to skim past the signal. That is a real cost being
+# paid to avoid a larger one, not a cleanup.
+#
+# UNRESOLVED. Twelve hypotheses refuted -- the eight in test-gate.sh, plus
+# fast-check run count, CPU starvation (passes pinned to one core),
+# missing anti-throttling launch args, and a wedged session.stop() (bounded at
+# 45s; the bound never fired, which proves the hang is UPSTREAM of the stop, in
+# launch / navigate / session.start / the hold).
+#
+# Next step when someone picks this up: instrument the capture helper stage by
+# stage and read which stage never returns on CI. Do not re-run the refuted
+# twelve.
+QUARANTINED_ON_CI=(
+  "tests/recording-change-tiers.test.ts"
+)
+
 # Match what `bun test` itself discovers, MINUS build output.
 #
 # The note that used to sit here said dist/security/audit-wrapper.test.js was
@@ -172,7 +201,23 @@ bun test "${REST[@]}"
 #   - the exit code still reflects reality
 RETRIED=()
 FAILED=()
+SKIPPED=()
 for iso in "${ISOLATED_FILES[@]}"; do
+  # CI-only quarantine. Announced every time, because a skip nobody sees is how
+  # a suite goes green while a file stops being tested -- this script's own
+  # discovery guard exists for exactly that reason.
+  if [ -n "${CI:-}" ]; then
+    skip=0
+    for q in "${QUARANTINED_ON_CI[@]}"; do
+      if [ "$iso" = "$q" ]; then skip=1; break; fi
+    done
+    if [ "$skip" = "1" ]; then
+      echo "test-split: SKIPPED ON CI — $iso (quarantined; runs locally, see QUARANTINED_ON_CI)"
+      SKIPPED+=("$iso")
+      continue
+    fi
+  fi
+
   echo "test-split: isolated run — $iso"
   if bun test "$iso"; then
     continue
@@ -191,6 +236,13 @@ done
 
 # The summary exists so "green" and "green after a retry" are never the same
 # report. A flake rate you cannot see is a flake rate nobody fixes.
+if [ "${#SKIPPED[@]}" -gt 0 ]; then
+  echo ""
+  echo "test-split: ${#SKIPPED[@]} file(s) NOT RUN on CI (quarantined):"
+  for f in "${SKIPPED[@]}"; do echo "              $f"; done
+  echo "            This run is green WITHOUT them. They still run locally."
+fi
+
 if [ "${#RETRIED[@]}" -gt 0 ]; then
   echo ""
   echo "test-split: ${#RETRIED[@]} file(s) PASSED ONLY ON RETRY:"

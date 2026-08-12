@@ -187,3 +187,55 @@ describe("the isolated runs retry once, loudly", () => {
     expect(retryBlock).toContain("${ISOLATED_FILES[@]}");
   });
 });
+
+describe("the CI-only quarantine", () => {
+  const split = async () =>
+    await Bun.file(new URL("../scripts/test-split.sh", import.meta.url)).text();
+
+  test("the quarantine applies ONLY when CI is set", async () => {
+    // The file still runs on a developer machine. A quarantine that also
+    // stopped local runs would delete the coverage rather than relocate it.
+    const src = await split();
+    const block = src.slice(src.indexOf("for iso in"));
+    expect(block).toContain('if [ -n "${CI:-}" ]');
+    expect(block).toContain("QUARANTINED_ON_CI");
+  });
+
+  test("a skip is announced, not silent", async () => {
+    // This script's own discovery guard exists because "silently skipping it is
+    // how a suite goes green while a file stops being tested". A quarantine is
+    // a deliberate skip and gets held to the same standard.
+    const src = await split();
+    expect(src).toContain("SKIPPED ON CI");
+    expect(src).toContain("NOT RUN on CI");
+  });
+
+  test("the quarantine list is small and explicitly enumerated", async () => {
+    // Not a pattern, not a directory: a list someone has to type into, so
+    // growing it is a visible act.
+    const src = await split();
+    const block = src.slice(src.indexOf("QUARANTINED_ON_CI=("));
+    const files = [...block.slice(0, block.indexOf(")")).matchAll(/"(tests\/[^"]+)"/g)];
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.length).toBeLessThanOrEqual(2);
+  });
+
+  test("everything quarantined on CI is also in the isolated list", async () => {
+    // So a file cannot be quarantined without first having been isolated —
+    // i.e. without having earned it.
+    const src = await split();
+    const q = src.slice(src.indexOf("QUARANTINED_ON_CI=("));
+    const quarantined = [...q.slice(0, q.indexOf(")")).matchAll(/"(tests\/[^"]+)"/g)].map((m) => m[1]);
+    const iso = src.slice(src.indexOf("ISOLATED_FILES=("));
+    const isolated = iso.slice(0, iso.indexOf("\n)"));
+    for (const f of quarantined) expect(isolated, `${f} must be isolated too`).toContain(f);
+  });
+
+  test("the reason is recorded in the file, not just in a commit message", async () => {
+    // A quarantine whose justification lives only in git history is one nobody
+    // will ever revisit.
+    const src = await split();
+    expect(src).toMatch(/DETERMINISTIC|deterministic/);
+    expect(src).toContain("hypotheses refuted");
+  });
+});
