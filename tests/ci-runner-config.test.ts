@@ -30,8 +30,26 @@ describe("the Tests workflow uses the split runner", () => {
   test("it does NOT invoke the single-process union", async () => {
     // `bun test` and `bun run test` are different commands. The first is the
     // union; the second is the package script, which is the split.
+    //
+    // The forbidden thing is the ARGUMENT-LESS union -- `bun test` with no
+    // paths, which discovers and runs everything in one process. `bun test
+    // <one file>` is a different command and a legitimate one; the diagnostic
+    // step uses it deliberately.
+    //
+    // The first version of this test banned the substring, so adding a
+    // single-file diagnostic tripped it. The assertion was broader than the
+    // invariant it stood for, which made it wrong in the safe-looking
+    // direction: it would have blocked a correct change while still permitting
+    // `bun test --coverage=false` or similar. Narrowed to the real rule.
     const c = cmds(await wf("test.yml"));
-    expect(c).not.toMatch(/run:\s*bun test(\s|$)/);
+    for (const line of c.split("\n")) {
+      const m = line.match(/run:\s*bun test(.*)$/);
+      if (!m) continue;
+      const rest = m[1].trim();
+      const paths = rest.split(/\s+/).filter((t) => t && !t.startsWith("-"));
+      expect(paths.length, `"${line.trim()}" runs the whole suite in one process`)
+        .toBeGreaterThan(0);
+    }
     expect(c).not.toContain("bun test --coverage");
   });
 

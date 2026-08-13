@@ -59,6 +59,44 @@ const scoresArb = fc.array(
   { minLength: 1, maxLength: 120 },
 );
 
+/**
+ * Run one stage of the capture helper, announcing it BEFORE it starts.
+ *
+ * The announcement order is the whole point. `bun test` kills a test at its
+ * ceiling, so anything logged after the fact is lost with it -- which is why
+ * two CI runs reported nothing but "timed out after 180000ms". A marker
+ * printed before the await survives the kill, so the last marker in the log
+ * names the stage that never returned.
+ *
+ * Each stage is also bounded, so on CI the failure names the stage instead of
+ * the file. The bounds are deliberately generous: this is here to locate a
+ * hang, not to impose new timing requirements on healthy runs. Locally every
+ * stage completes in well under a second.
+ */
+async function stage<T>(label: string, budgetMs: number, run: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  console.log(`      [capture] -> ${label}`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const bounded = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(
+          `capture stage "${label}" did not return within ${budgetMs}ms. ` +
+          `This is the stage that hangs; every earlier stage completed.`)),
+        budgetMs);
+      timer.unref?.();
+    });
+    const out = await Promise.race([run(), bounded]);
+    console.log(`      [capture] OK ${label} (${Date.now() - started}ms)`);
+    return out;
+  } catch (e) {
+    console.log(`      [capture] FAILED ${label} (${Date.now() - started}ms): ${(e as Error).message}`);
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function capture(name: string, html: string, holdMs: number, drive?: (page: never) => Promise<void>) {
   const file = join(workDir, `${name}.html`);
   writeFileSync(file, html);
@@ -86,14 +124,18 @@ async function capture(name: string, html: string, holdMs: number, drive?: (page
     viewportHeight: 800,
     dataDir: join(workDir, "browser-data", name),
   });
-  await browser.launch();
+  await stage(`launch[${name}]`, 60_000, () => browser.launch());
   try {
-    await browser.navigate(`file://${file}`);
-    const page = await browser.getPage();
+    await stage(`navigate[${name}]`, 60_000, () => browser.navigate(`file://${file}`));
+    const page = await stage(`getPage[${name}]`, 15_000, () => browser.getPage());
     const session = new VideoCaptureSession(page, "chromium", workDir);
-    await session.start({ fps: 10, slug: name, outDir: join(workDir, name), format: [] });
-    if (drive) await drive(page as never);
-    await new Promise((r) => setTimeout(r, holdMs));
+    await stage(`session.start[${name}]`, 60_000, () =>
+      session.start({ fps: 10, slug: name, outDir: join(workDir, name), format: [] }));
+    if (drive) await stage(`drive[${name}]`, 60_000, () => drive(page as never));
+    // Bounded too, though a setTimeout can only overrun if timers themselves
+    // are starved -- which would itself be the finding.
+    await stage(`hold[${name}] ${holdMs}ms`, holdMs + 30_000, () =>
+      new Promise<void>((r) => setTimeout(r, holdMs)));
     // BOUNDED. This was a raw `session.stop()`, so a stop that never settles
     // burned this test's entire 180000ms ceiling and reported only "timed out"
     // -- no state, no frame count, no slug, nothing to act on. On CI that is
@@ -103,7 +145,8 @@ async function capture(name: string, html: string, holdMs: number, drive?: (page
     // fast and loudly (recording-autocapture, "a wedged stop fails fast"), and
     // this helper was the one caller ignoring it. Reuses the product's own
     // bound rather than a second copy of the logic living in a test.
-    return (await stopWithinTimeout(session, 45_000)).manifest;
+    return (await stage(`stop[${name}]`, 60_000, () =>
+      stopWithinTimeout(session, 45_000))).manifest;
   } finally {
     await browser.close();
   }

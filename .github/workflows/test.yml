@@ -42,6 +42,31 @@ jobs:
       # lesson that an "advisory" step which HANGS still blocks the job, so a
       # second full test invocation is a cost with no reader. `bun run
       # test:coverage` still exists for local use.
+      # DIAGNOSTIC, non-blocking. Runs the one file quarantined from the split
+      # (see QUARANTINED_ON_CI in scripts/test-split.sh), purely to capture WHERE
+      # it hangs on CI. Invoked directly rather than through the split runner, so
+      # the quarantine does not apply here.
+      #
+      # Runs BEFORE the gating step, on a cold runner, so the reading is not
+      # contaminated by whatever the full suite leaves behind.
+      #
+      # The capture helper announces each stage BEFORE awaiting it, so the last
+      # `[capture] ->` line without a matching `OK` names the stage that never
+      # returned. Two prior CI runs reported nothing but "timed out after
+      # 180000ms" because everything was logged after the fact and died with the
+      # test.
+      #
+      # continue-on-error alone is not enough — release.yml records that an
+      # advisory step which HANGS still blocks the job — so it is bounded by
+      # timeout-minutes as well. Per-stage bounds cap this at roughly 4 minutes.
+      #
+      # DELETE THIS STEP once the hang is understood. It is an investigation,
+      # not a permanent part of the pipeline.
+      - name: Diagnostic — locate the capture hang (non-blocking)
+        run: bun test tests/recording-change-tiers.test.ts
+        continue-on-error: true
+        timeout-minutes: 10
+
       - name: Run tests
         run: bun run test
         # This workflow had no timeout at all. release.yml learned that a hang
