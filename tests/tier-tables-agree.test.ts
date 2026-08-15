@@ -12,21 +12,21 @@
  * functional sibling was, so `agent_ready_audit` inherited "pro" from the
  * category it shares with genuinely-Pro analysis tools.
  *
- * The CMS side has the matching half of this test.
+ * WHERE THE CROSS-REPO CHECK LIVES, and why not here: this file used to read
+ * the CMS's list from an absolute path (/home/wyld-web/static/cbrowser-web/...).
+ * That path exists only on the deployment box, so on a CI runner the read threw
+ * and took down both the Tests workflow and the RELEASE GATE — which is why
+ * npm sat at 19.1.3 while this very fix was unpublished. A public package's
+ * tests must not reach into a private repo's filesystem.
+ *
+ * So the comparison lives on the CMS side, which legitimately knows about both.
+ * This file asserts only what the package can prove about itself.
  *
  * @copyright 2026 Alexandria Eden alexandria.shai.eden@gmail.com https://cbrowser.ai
  * @license MIT
  */
 import { describe, test, expect } from "bun:test";
 import { FREE_TIER_TOOLS, getToolPricingTier, TOOL_CATEGORIES } from "../src/mcp-tools/tool-categories.js";
-
-/** The CMS's list, read from its source so drift is detected rather than assumed. */
-async function cmsFreeTools(): Promise<Set<string>> {
-  const path = "/home/wyld-web/static/cbrowser-web/cms/lib/credit-config.ts";
-  const src = await Bun.file(path).text();
-  const block = src.match(/FREE_TIER_TOOLS\s*=\s*new Set\(\[([\s\S]*?)\]\)/)?.[1] ?? "";
-  return new Set([...block.matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]));
-}
 
 const allTools = new Set(TOOL_CATEGORIES.flatMap((c) => c.tools));
 
@@ -78,19 +78,33 @@ describe("genuinely paid tools stay paid", () => {
   });
 });
 
-describe("the two tables agree", () => {
-  test("no tool the CMS calls free is refused here", () => {
-    // The user-visible failure: permitted by billing, denied by the server.
-    return cmsFreeTools().then((cms) => {
-      const refused = [...cms].filter((t) => allTools.has(t) && getToolPricingTier(t) !== "free");
-      expect(refused).toEqual([]);
-    });
+describe("the suite does not depend on this machine", () => {
+  test("no test file reads an absolute path outside the repo", async () => {
+    // The defect this whole file learned the hard way: a test that reads
+    // /home/wyld-web/... passes on the deployment box and throws on a CI
+    // runner. It broke the Tests workflow AND the release gate, so npm stayed
+    // at 19.1.3 while the fix it was gating sat unpublished.
+    //
+    // Checked mechanically rather than by review, because "don't hardcode a
+    // path" is exactly the kind of rule that holds until someone is in a hurry.
+    const dir = new URL("./", import.meta.url).pathname;
+    const proc = Bun.spawnSync(["bash", "-c",
+      `grep -rnE '(Bun\\.file|readFileSync|readFile)\\([^)]*"/(home|var|etc|root|Users)/' ${dir} || true`]);
+    const hits = new TextDecoder().decode(proc.stdout).trim();
+    expect(hits, `tests must not read machine-specific paths:\n${hits}`).toBe("");
   });
 
-  test("both lists parsed — this cannot pass by reading nothing", () => {
-    return cmsFreeTools().then((cms) => {
-      expect(cms.size).toBeGreaterThan(40);
-      expect(FREE_TIER_TOOLS.size).toBeGreaterThan(40);
-    });
+  test("the grep would actually catch one — verified against a known pattern", async () => {
+    // Guards the guard: if the pattern stops matching, the test above passes
+    // forever while proving nothing.
+    //
+    // The sample is ASSEMBLED at runtime rather than written as a literal,
+    // because a literal bad path in this file would be found by the scan above
+    // and fail it. Excluding this file from the scan would have been the easy
+    // fix and the wrong one — it would blind the guard to a real bad path here.
+    const sample = 'const x = Bun.' + 'file("' + "/home" + '/someone/thing.ts");';
+    const proc = Bun.spawnSync(["bash", "-c",
+      `printf '%s' ${JSON.stringify(sample)} | grep -cE '(Bun\\.file|readFileSync)\\([^)]*"/(home|var|etc|root|Users)/'`]);
+    expect(new TextDecoder().decode(proc.stdout).trim()).toBe("1");
   });
 });
