@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.1.4](https://github.com/alexandriashai/cbrowser/compare/v19.1.3...v19.1.4) (2026-08-15)
+
+### Fixed
+
+* price tools by name, not by functional category — 18 free tools were refused ([50a682b](https://github.com/alexandriashai/cbrowser/commit/50a682b05b2c26b2216f674c25e1da75e99f66cc))
+* **test:** stop reading the private repo's absolute path from the package suite ([7604769](https://github.com/alexandriashai/cbrowser/commit/76047691603dce0825e0f448975effb4c3b197c3))
+
 ## [19.1.3](https://github.com/alexandriashai/cbrowser/compare/v19.1.2...v19.1.3) (2026-08-12)
 
 ### Fixed
