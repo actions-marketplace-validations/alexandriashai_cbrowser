@@ -241,6 +241,75 @@ interface PendingFrame {
  * One recording run. Not reusable: `start()` may be called once, and `stop()`
  * is idempotent, returning the same result on every subsequent call.
  */
+/**
+ * Poll `holds` until it returns true or `timeoutMs` elapses.
+ *
+ * Each probe is bounded by the REMAINING time, and that is the whole point.
+ * This loop used to read:
+ *
+ *   while (Date.now() < deadline) {
+ *     if (await holds().catch(() => false)) return true;
+ *     await new Promise((r) => setTimeout(r, intervalMs));
+ *   }
+ *
+ * which checks the deadline only BETWEEN iterations. `holds` queries the page
+ * over CDP, so a single probe that never settles skips every further deadline
+ * check and the timeout is bypassed completely — the function advertises a
+ * bound it cannot enforce.
+ *
+ * Measured 2026-08-14: running tests/recording-engine.test.ts alongside
+ * tests/recording-change-tiers.test.ts hung five tests at exactly 60000.94ms,
+ * one of them literally named "a start trigger that never fires reports the
+ * timeout instead of hanging". Each ran alone without incident (45 pass and 12
+ * pass), because an uncontended CDP probe always returns. The bug needed a slow
+ * page query to become visible, which is why it read as flakiness for weeks and
+ * survived twelve refuted hypotheses.
+ *
+ * Exported so it can be tested without a browser: the failure mode is "a probe
+ * that never settles", which is trivial to construct directly and near
+ * impossible to stage reliably through a real page.
+ */
+/** A stalled probe costs at most this before the loop retries. */
+const PROBE_BUDGET_FLOOR_MS = 500;
+
+export async function pollUntil(
+  holds: () => Promise<boolean>,
+  timeoutMs: number,
+  intervalMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    // Each probe gets its OWN budget, not the whole remaining window.
+    //
+    // Bounding by the remaining time was the first fix and it was not enough:
+    // one hung probe then swallowed the entire budget, so a condition that
+    // became true a moment later was never seen. A stalled CDP query should
+    // cost one probe, not the whole wait. The floor keeps a merely-slow page
+    // from being abandoned every round.
+    const remaining = deadline - Date.now();
+    const probeBudget = Math.min(remaining, Math.max(intervalMs, PROBE_BUDGET_FLOOR_MS));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), probeBudget);
+    });
+    try {
+      // NOT unref'd: this timer is the only thing enforcing the bound, so it
+      // must be able to wake the loop. It is always cleared below, and its
+      // lifetime is capped by the caller's deadline.
+      //
+      // An abandoned probe may still settle later; its result is ignored.
+      // Polling is idempotent by construction, so that is safe.
+      if (await Promise.race([holds().catch(() => false), bound])) return true;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((r) => setTimeout(r, Math.min(intervalMs, deadline - Date.now())));
+  }
+  return false;
+}
+
 export class VideoCaptureSession {
   private opts!: Required<Omit<VideoCaptureOptions, "target" | "durationMs" | "outDir" | "slug" | "resolveElement" | "startTrigger" | "startDelayMs" | "stopTrigger">> &
     Pick<VideoCaptureOptions, "durationMs">;
@@ -674,14 +743,8 @@ export class VideoCaptureSession {
     holds: () => Promise<boolean>,
     timeoutMs: number,
   ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
     const intervalMs = Math.min(100, Math.max(20, 1000 / this.opts.fps));
-
-    while (Date.now() < deadline) {
-      if (await holds().catch(() => false)) return true;
-      await new Promise((r) => setTimeout(r, intervalMs));
-    }
-    return false;
+    return pollUntil(holds, timeoutMs, intervalMs);
   }
 
   /**
