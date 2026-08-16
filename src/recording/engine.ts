@@ -237,10 +237,9 @@ interface PendingFrame {
   tracking: "ok" | "stale" | null;
 }
 
-/**
- * One recording run. Not reusable: `start()` may be called once, and `stop()`
- * is idempotent, returning the same result on every subsequent call.
- */
+/** A stalled probe costs at most this before the loop retries. */
+const PROBE_BUDGET_FLOOR_MS = 500;
+
 /**
  * Poll `holds` until it returns true or `timeoutMs` elapses.
  *
@@ -269,9 +268,6 @@ interface PendingFrame {
  * that never settles", which is trivial to construct directly and near
  * impossible to stage reliably through a real page.
  */
-/** A stalled probe costs at most this before the loop retries. */
-const PROBE_BUDGET_FLOOR_MS = 500;
-
 export async function pollUntil(
   holds: () => Promise<boolean>,
   timeoutMs: number,
@@ -310,6 +306,10 @@ export async function pollUntil(
   return false;
 }
 
+/**
+ * One recording run. Not reusable: `start()` may be called once, and `stop()`
+ * is idempotent, returning the same result on every subsequent call.
+ */
 export class VideoCaptureSession {
   private opts!: Required<Omit<VideoCaptureOptions, "target" | "durationMs" | "outDir" | "slug" | "resolveElement" | "startTrigger" | "startDelayMs" | "stopTrigger">> &
     Pick<VideoCaptureOptions, "durationMs">;
