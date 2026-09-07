@@ -235,11 +235,17 @@ export function registerAnalysisTools(
                   score: r.score,
                   auditStatus: r.auditStatus,
                 })),
+                // Hand-picked field by field, so a field added to
+                // AIBenchmarkComparison does NOT appear here until someone
+                // remembers this list. `bestAgentPerceivability` was added to
+                // the analysis result AND to the type, and still shipped absent
+                // for exactly that reason — the producer-with-no-consumer shape
+                // this audit keeps finding in its own output, one layer up.
                 comparison: {
                   bestOverall: result.comparison.bestOverall,
                   bestFindability: result.comparison.bestFindability,
                   bestStability: result.comparison.bestStability,
-                  bestAccessibility: result.comparison.bestAccessibility,
+                  bestAgentPerceivability: result.comparison.bestAgentPerceivability,
                   bestSemantics: result.comparison.bestSemantics,
                   commonIssues: result.comparison.commonIssues.slice(0, 3),
                 },

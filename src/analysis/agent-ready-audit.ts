@@ -78,36 +78,101 @@ const SEVERITY_PENALTY: Record<AgentReadyIssueSeverity, number> = {
  * Category weights based on typical AI agent interaction priorities:
  * - Findability (35%): Can the agent locate elements? Most critical for automation
  * - Stability (30%): Will selectors remain stable across page loads?
- * - Accessibility (20%): ARIA labels provide semantic meaning for agents
+ * - AgentPerceivability (20%): ARIA labels provide semantic meaning for agents
+ *   (renamed from Accessibility -- it measures machine-perceivability, not WCAG)
  * - Semantics (15%): Proper HTML structure aids understanding
  */
 const CATEGORY_WEIGHTS: Record<AgentReadyIssueCategory, number> = {
   findability: 0.35,
   stability: 0.30,
-  accessibility: 0.20,
+  agentPerceivability: 0.20,
   semantics: 0.15,
 };
 
-function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
-  // Start with perfect scores
+/**
+ * Refuse to grade a page the audit never actually saw.
+ *
+ * ## The bug this closes
+ *
+ * `calculateAgentReadyScore` starts every category at 100 and SUBTRACTS a
+ * penalty per issue found. An empty DOM yields no issues, so no penalties, so
+ * 100. The audit therefore awarded its BEST grade to pages it had entirely
+ * failed to load.
+ *
+ * Measured 2026-08-04. `espn.com` returned `grade: "A"`, `overall: 94`,
+ * `findability: 97`, `stability: 100` -- with `summary.totalElements === 0`.
+ * Three different ESPN URLs (homepage, /nfl/scoreboard, /nba/standings) returned
+ * byte-identical scores AND byte-identical issue lists, because the auditor was
+ * looking at the same nothing each time. `curl` of the same URL returns HTTP
+ * 403: ESPN blocks automated clients, the headless browser got a challenge page,
+ * and the scorer read that as a flawless site. It also reported "Missing
+ * semantic landmarks: main, nav" and "No OpenGraph meta tags" for a site that
+ * has all three -- the tell that should have been caught, since those findings
+ * describe the challenge page, not ESPN.
+ *
+ * ## Why it inverted the product's central claim
+ *
+ * Sites with the most aggressive bot protection are the sites AI agents struggle
+ * with most. Those are exactly the sites that blocked the auditor and collected
+ * an A for it. Against WebVoyager's published per-site agent success rates, the
+ * April grades correlated at **r = -0.27** -- the wrong sign -- with ESPN the
+ * worst site in that benchmark for agents (38.6%) while holding the top grade
+ * here. An A had become a marker of bot-blocking.
+ *
+ * ## Why this throws rather than returning a low score
+ *
+ * A blocked page is not a bad page; it is an ABSENT measurement, and the two
+ * must not be reported in the same units. Scoring it 0 would be as false as
+ * scoring it 94: it would tell a customer their site is hostile to agents when
+ * what happened is that our crawler could not get in. The honest output is no
+ * grade at all, loudly.
+ */
+export function assertPageWasAudited(totalElements: number, url: string): void {
+  if (totalElements > 0) return;
+  throw new Error(
+    `Agent-ready audit found 0 interactive elements at ${url}, so there is nothing to grade.\n\n` +
+    `This almost always means the page did not load for the auditor -- bot detection, a CAPTCHA ` +
+    `or consent interstitial, a login wall, or a navigation that resolved to about:blank.\n\n` +
+    `No grade is returned on purpose. The scorer starts at 100 and deducts per issue found, so an ` +
+    `empty page scores as a perfect one; returning that number reports a blocked crawl as an A.\n\n` +
+    `Try: --lightpanda, a different geo region, or an interior URL not behind the interstitial.`,
+  );
+}
+
+export function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
+  // Start with perfect scores.
+  //
+  // Deduct-from-100 is why `assertPageWasAudited` above must run BEFORE this: on
+  // an empty page there is nothing to deduct for, and silence scores as
+  // perfection. Never call this without that guard.
   const scores: Record<AgentReadyIssueCategory, number> = {
     findability: 100,
     stability: 100,
-    accessibility: 100,
+    agentPerceivability: 100,
     semantics: 100,
   };
 
-  // Deduct based on issues
+  // Deduct based on issues.
+  //
+  // The deprecated "accessibility" category is gone from the union, but an issue
+  // constructed by an older caller can still arrive carrying it at runtime —
+  // types do not survive a JSON boundary. Mapped rather than dropped: an unknown
+  // category would index nothing, `undefined - penalty` is NaN, and NaN
+  // propagates into `overall` as a broken score with nothing saying why.
   for (const issue of issues) {
     const penalty = SEVERITY_PENALTY[issue.severity];
-    scores[issue.category] = Math.max(0, scores[issue.category] - penalty);
+    const cat = (issue.category as string) === "accessibility"
+      ? "agentPerceivability" as const
+      : issue.category;
+    if (scores[cat] === undefined) continue; // unrecognised category scores nothing, silently is fine here
+    scores[cat] = Math.max(0, scores[cat] - penalty);
   }
 
   // Calculate overall weighted score
   const overall = Math.round(
     scores.findability * CATEGORY_WEIGHTS.findability +
     scores.stability * CATEGORY_WEIGHTS.stability +
-    scores.accessibility * CATEGORY_WEIGHTS.accessibility +
+    scores.agentPerceivability * CATEGORY_WEIGHTS.agentPerceivability +
     scores.semantics * CATEGORY_WEIGHTS.semantics
   );
 
@@ -115,7 +180,7 @@ function calculateAgentReadyScore(issues: AgentReadyIssue[]): AgentReadyScore {
     overall,
     findability: Math.round(scores.findability),
     stability: Math.round(scores.stability),
-    accessibility: Math.round(scores.accessibility),
+    agentPerceivability: Math.round(scores.agentPerceivability),
     semantics: Math.round(scores.semantics),
   };
 }
@@ -267,7 +332,7 @@ async function detectUnlabeledElements(ctx: DetectionContext): Promise<void> {
 
   for (const input of unlabeledInputs) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       element: input.selector,
       description: `Input field without label or aria-label`,
@@ -350,17 +415,54 @@ async function detectHiddenInputs(ctx: DetectionContext): Promise<void> {
 }
 
 /**
- * Detect sticky/fixed elements that may intercept clicks
+ * Ignore slivers: tracking pixels, 1px rules, zero-size wrappers. Anything a
+ * pointer could plausibly land on is counted.
  */
-async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
+const STICKY_MIN_DIMENSION_PX = 8;
+/** A sticky element spanning at least this share of the viewport width is a bar. */
+const STICKY_BAR_WIDTH_RATIO = 0.5;
+/** Height at which a sticky element can hide a scroll target behind itself. */
+const STICKY_OCCLUDING_HEIGHT_PX = 56;
+
+/**
+ * Detect sticky/fixed elements that may intercept clicks.
+ *
+ * `summary.stickyOverlays` COUNTS WHAT IS THERE. It used to count only the
+ * subset large enough to raise an issue, which is a different question wearing
+ * the same name, and on a real page the two answers were 0 and 4.
+ *
+ * Measured on cbrowser.ai, 1280x800: a sticky `<header>` 57px tall and three
+ * fixed control buttons at 44, 44 and 40px. The old code filtered to
+ * `height > 40` and then flagged `height > 60`, so every one of them fell into
+ * the 40-60 gap and was discarded TWICE. The audit reported `stickyOverlays: 0`
+ * on a page with a sticky header and three floating buttons, and the 40px button
+ * never even survived the first filter -- a boundary that excludes an element of
+ * exactly the boundary size.
+ *
+ * The two questions are now separated, because they have different right
+ * answers:
+ *
+ *   summary.stickyOverlays  -- how many sticky/fixed elements exist (a FACT)
+ *   issues[]                -- which of them can obstruct an agent (a JUDGEMENT)
+ *
+ * The judgement is no longer height alone. What makes a sticky element an
+ * obstruction is covering something: a full-width bar occludes a whole band of
+ * the page whatever its height (the 57px header is the case in point, and
+ * `scroll-margin-top` exists precisely for it), while a 44px corner button
+ * occludes 44px of corner. Height alone flagged the second and missed the first.
+ * (2026-08-05)
+ */
+export async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
   const { page, issues, summary } = ctx;
 
-  const stickyElements = await page.$$eval('*', (elements) => {
+  const stickyElements = await page.$$eval('*', (elements, minPx: number) => {
     const results: Array<{
       selector: string;
       position: string;
       zIndex: number;
       height: number;
+      width: number;
+      viewportWidth: number;
       isHeader: boolean;
       isFooter: boolean;
     }> = [];
@@ -371,7 +473,11 @@ async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
 
       if (position === 'fixed' || position === 'sticky') {
         const rect = el.getBoundingClientRect();
+        // Invisible elements cannot intercept a click and are not overlays.
+        if (styles.visibility === 'hidden' || styles.display === 'none' || styles.opacity === '0') continue;
+        if (rect.width < minPx || rect.height < minPx) continue;
         const zIndex = parseInt(styles.zIndex) || 0;
+        if (zIndex < 0) continue; // painted behind content
         const tag = el.tagName.toLowerCase();
         const id = el.id ? `#${el.id}` : '';
         const className = el.className && typeof el.className === 'string'
@@ -383,31 +489,39 @@ async function detectStickyOverlays(ctx: DetectionContext): Promise<void> {
           position,
           zIndex,
           height: rect.height,
+          width: rect.width,
+          viewportWidth: window.innerWidth,
           isHeader: rect.top < 100,
           isFooter: rect.bottom > window.innerHeight - 100,
         });
       }
     }
 
-    return results.filter(el => el.height > 40 && el.zIndex >= 0);
-  });
+    return results;
+  }, STICKY_MIN_DIMENSION_PX);
+
+  // The count is every sticky/fixed element found, not the flagged subset.
+  summary.stickyOverlays = stickyElements.length;
 
   for (const sticky of stickyElements) {
-    // Only flag non-trivial sticky elements
-    if (sticky.height > 60) {
-      issues.push({
-        category: "stability",
-        severity: sticky.zIndex > 100 ? "high" : "medium",
-        element: sticky.selector,
-        description: `${sticky.position} element may intercept clicks (z-index: ${sticky.zIndex}, height: ${sticky.height}px)`,
-        detectionMethod: "sticky-element-check",
-        recommendation: "Add scroll-margin-top to target elements, or ensure proper z-index layering",
-        codeExample: sticky.isHeader
-          ? `/* Add to elements that sticky header might cover */\n.target-element {\n  scroll-margin-top: ${sticky.height + 20}px;\n}`
-          : `/* Ensure modal/overlay has backdrop to prevent accidental clicks */`,
-      });
-      summary.stickyOverlays++;
-    }
+    const isBar = sticky.viewportWidth > 0
+      && sticky.width >= sticky.viewportWidth * STICKY_BAR_WIDTH_RATIO;
+    const isTall = sticky.height >= STICKY_OCCLUDING_HEIGHT_PX;
+    if (!isBar && !isTall) continue;
+
+    issues.push({
+      category: "stability",
+      severity: sticky.zIndex > 100 ? "high" : "medium",
+      element: sticky.selector,
+      description: `${sticky.position} element may intercept clicks `
+        + `(z-index: ${sticky.zIndex}, ${Math.round(sticky.width)}x${Math.round(sticky.height)}px`
+        + `${isBar ? ", spans the viewport width" : ""})`,
+      detectionMethod: "sticky-element-check",
+      recommendation: "Add scroll-margin-top to target elements, or ensure proper z-index layering",
+      codeExample: sticky.isHeader
+        ? `/* Add to elements that sticky header might cover */\n.target-element {\n  scroll-margin-top: ${Math.round(sticky.height) + 20}px;\n}`
+        : `/* Ensure modal/overlay has backdrop to prevent accidental clicks */`,
+    });
   }
 }
 
@@ -459,7 +573,7 @@ async function detectMissingAltText(ctx: DetectionContext): Promise<void> {
 
   for (const img of imagesWithoutAlt) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       element: img.selector,
       description: "Image without alt text",
@@ -702,7 +816,7 @@ async function detectMachineMetadata(ctx: DetectionContext): Promise<void> {
 
   if (missingLandmarks.length > 0) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       subcategory: "machine-metadata",
       element: "body",
@@ -824,7 +938,7 @@ async function detectNavigationPatterns(ctx: DetectionContext): Promise<void> {
   // Report missing skip link
   if (!navPatterns.skipLink) {
     issues.push({
-      category: "accessibility",
+      category: "agentPerceivability",
       severity: "medium",
       subcategory: "navigation-patterns",
       element: "body",
@@ -1043,15 +1157,43 @@ async function detectLlmsTxt(ctx: DetectionContext): Promise<void> {
 
   try {
     const pageUrl = new URL(page.url());
+    // Bail unless we have a real http(s) origin.
+    //
+    // When navigation is blocked the page sits at `about:blank`, whose origin is
+    // not a fetchable base -- so this template produced the bare string
+    // "/llms.txt", `fetch` threw `TypeError: "/llms.txt" cannot be parsed as a
+    // URL`, and the ENTIRE audit died with a stack trace instead of a report.
+    // Reproduced 2026-08-04 on amazon.com, allrecipes.com and booking.com: three
+    // of eight sites in a benchmark sample returned nothing at all for this.
+    //
+    // Same root cause as the espn.com false-A (see assertPageWasAudited): the
+    // audit did not check that the page loaded. That guard is the real fix and
+    // now runs; this one keeps an optional signal from taking the report down
+    // with it if anything else ever leaves the page unnavigated.
+    if (pageUrl.protocol !== "http:" && pageUrl.protocol !== "https:") return;
     const llmsTxtUrl = `${pageUrl.origin}/llms.txt`;
 
-    // Use page context to fetch (same cookies/auth)
-    const response = await page.context().request.get(llmsTxtUrl, {
-      timeout: 5000,
-      failOnStatusCode: false,
+    // Plain fetch, NOT `page.context().request.get()`.
+    //
+    // The Playwright request API runs every response through
+    // `_parseSetCookieHeader`, and on amazon.com that throws
+    // `TypeError: "/llms.txt" cannot be parsed as a URL` from inside
+    // playwright-core (fetch.js:158). The throw originates in an HTTP event
+    // handler, NOT in the awaited promise, so the `try` wrapped around this
+    // block never catches it and the whole audit dies with a stack trace instead
+    // of returning a report. Reproduced 2026-08-04 on amazon.com, allrecipes.com
+    // and booking.com -- three of eight sites in a benchmark sample produced no
+    // output at all, and it read to the customer as a cbrowser failure.
+    //
+    // What this gives up: the page's cookies and auth. `/llms.txt` is a public
+    // file by definition, so that costs nothing real, and an OPTIONAL signal
+    // must never be able to take the whole report down with it.
+    const response = await fetch(llmsTxtUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(5000),
     });
 
-    const status = response.status();
+    const status = response.status;
     summary.hasLlmsTxt = status === 200;
 
     if (status === 200) {
@@ -1191,7 +1333,8 @@ async function detectDynamicContent(ctx: DetectionContext): Promise<void> {
     (dynamicInfo.lazyImages > 5 ? 1 : 0) +
     (dynamicInfo.loadMoreButtons > 0 ? 1 : 0);
 
-  summary.dynamicContentCount = dynamicCount;
+  summary.deferredLoadingPatterns = dynamicCount;
+
 
   // Report infinite scroll as a potential challenge for agents
   if (dynamicInfo.infiniteScrollHints > 0 || dynamicInfo.loadMoreButtons > 0) {
@@ -1339,7 +1482,7 @@ Duration: ${(result.duration / 1000).toFixed(1)}s
 │                                                                            │
 │  Findability    ${result.score.findability}/100  ${'█'.repeat(Math.floor(result.score.findability / 10))}${'░'.repeat(10 - Math.floor(result.score.findability / 10))}                │
 │  Stability      ${result.score.stability}/100  ${'█'.repeat(Math.floor(result.score.stability / 10))}${'░'.repeat(10 - Math.floor(result.score.stability / 10))}                │
-│  Accessibility  ${result.score.accessibility}/100  ${'█'.repeat(Math.floor(result.score.accessibility / 10))}${'░'.repeat(10 - Math.floor(result.score.accessibility / 10))}                │
+│  AgentPerceive ${result.score.agentPerceivability}/100  ${'█'.repeat(Math.floor(result.score.agentPerceivability / 10))}${'░'.repeat(10 - Math.floor(result.score.agentPerceivability / 10))}                │
 │  Semantics      ${result.score.semantics}/100  ${'█'.repeat(Math.floor(result.score.semantics / 10))}${'░'.repeat(10 - Math.floor(result.score.semantics / 10))}                │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -1373,7 +1516,7 @@ ISSUES BY CATEGORY
 ──────────────────
   Findability: ${result.issues.filter(i => i.category === 'findability').length} issues
   Stability: ${result.issues.filter(i => i.category === 'stability').length} issues
-  Accessibility: ${result.issues.filter(i => i.category === 'accessibility').length} issues
+  Agent-perceivability: ${result.issues.filter(i => i.category === 'agentPerceivability').length} issues
   Semantics: ${result.issues.filter(i => i.category === 'semantics').length} issues
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -1540,7 +1683,7 @@ export function generateAgentReadyHtmlReport(result: AgentReadyAuditResult): str
     }
     .badge-findability { background: #3b82f633; color: #60a5fa; }
     .badge-stability { background: #f59e0b33; color: #fbbf24; }
-    .badge-accessibility { background: #10b98133; color: #34d399; }
+    .badge-agentPerceivability { background: #10b98133; color: #34d399; }
     .badge-semantics { background: #8b5cf633; color: #a78bfa; }
     .badge-critical { background: #7f1d1d; color: #fca5a5; }
     .badge-high { background: #7f1d1d80; color: #f87171; }
@@ -1659,9 +1802,9 @@ export function generateAgentReadyHtmlReport(result: AgentReadyAuditResult): str
         <div class="progress-bar"><div class="progress-fill" style="width: ${result.score.stability}%"></div></div>
       </div>
       <div class="score-bar">
-        <div class="value">${result.score.accessibility}</div>
-        <div class="label">Accessibility</div>
-        <div class="progress-bar"><div class="progress-fill" style="width: ${result.score.accessibility}%"></div></div>
+        <div class="value">${result.score.agentPerceivability}</div>
+        <div class="label" title="Whether a machine can perceive these elements — not WCAG conformance">Agent perceivability</div>
+        <div class="progress-bar"><div class="progress-fill" style="width: ${result.score.agentPerceivability}%"></div></div>
       </div>
       <div class="score-bar">
         <div class="value">${result.score.semantics}</div>
@@ -1969,7 +2112,7 @@ export async function runAgentReadyAudit(
       navigationAidsCount: 0,
       hasLlmsTxt: false,
       apiEndpointsCount: 0,
-      dynamicContentCount: 0,
+      deferredLoadingPatterns: 0,
     };
 
     const ctx: DetectionContext = { page, issues, summary };
@@ -2000,6 +2143,10 @@ export async function runAgentReadyAudit(
       return document.querySelectorAll('a, button, input, select, textarea, [role="button"], [onclick], [tabindex], img, [aria-label]').length;
     }).catch(() => 0);
     summary.problematicElements = Math.min(issues.length, summary.totalElements);
+
+    // Nothing on the page means nothing was measured. Throws rather than
+    // grading -- see assertPageWasAudited for the espn.com case that motivated it.
+    assertPageWasAudited(summary.totalElements, url);
 
     // Calculate scores
     const score = calculateAgentReadyScore(issues);

@@ -27,13 +27,50 @@ export type SemanticType =
   | "authority"       // Expert endorsements, "Fortune 500", logos, awards
   | "none";
 
-const TRUST_PATTERNS = /secur|trust|verif|certif|guarant|money.?back|refund|privacy|encrypt|ssl|badge|shield|lock|safe|protect|complian/i;
-const SOCIAL_PROOF_PATTERNS = /review|rating|star|trusted.?by|users|customers|clients|testimonial|recommend|\d+[kKmM]?\+?\s*(users|customers|downloads|installs|companies)|4\.\d|5\.0/i;
-const NOVELTY_PATTERNS = /\bnew\b|beta|launch|updat|just.?added|fresh|latest|coming.?soon|early.?access|preview/i;
-const METRICS_PATTERNS = /\d+%|\d+x\s|roi|\bsave\b.*\d|faster|reduc|improv|increase|decrease|performance|benchmark|\$\d/i;
-const URGENCY_PATTERNS = /limited|only\s*\d|hurry|expire|countdown|last.?chance|ending|left.?in.?stock|act.?now|don.?t.?miss/i;
-const COMMUNITY_PATTERNS = /community|join|forum|together|team|family|fellow|member|belong|contrib|open.?source/i;
-const AUTHORITY_PATTERNS = /fortune|forbes|techcrunch|award|winner|leader|expert|partner|enterprise|government|university/i;
+// Every alternative below is left-anchored with \b, and whole words are anchored
+// on both sides. Without that these are SUBSTRING matches, and the failure is
+// not theoretical: measured 2026-08-05, 17 of 18 sampled UI strings misclassified.
+//
+//   "Get started"          -> social-proof   (`star` inside "started")
+//   "Operating system"     -> social-proof   (`rating` inside "Operating")
+//   "Preview your report"  -> social-proof   (`review` inside "Preview")
+//   "Unlock advanced mode" -> trust-signal   (`lock` inside "Unlock")
+//   "Remember my choice"   -> community      (`member` inside "Remember")
+//   "Pending invitations"  -> urgency        (`ending` inside "Pending")
+//   "Leaderboard"          -> authority      (`leader` inside "Leaderboard")
+//
+// "Get started" is the worst of these and the reason this is a correctness bug
+// rather than a tidy-up: it is the most common CTA string on the web, and
+// semanticType feeds computeValueRelevance, which weights social-proof by the
+// persona's `conformity` value. So every persona deliberately set LOW on social
+// proof -- several custom ones sit in the 0.3-0.45 band -- had its attention to
+// the primary CTA *suppressed* by a trait that should never have been in that
+// path at all. A persona configured to ignore testimonials was quietly
+// configured to ignore "Get started".
+//
+// Stems keep their right side open on purpose (`\bverif` -> verify/verified/
+// verification); only whole words get a closing \b.
+const TRUST_PATTERNS = /\bsecur|\btrust|\bverif|\bcertif|\bguarant|\bmoney.?back|\brefund|\bprivacy\b|\bencrypt|\bssl\b|\bbadge|\bshield|\block(?:ed|s|ing)?\b|\bsafe(?:ty)?\b|\bprotect|\bcomplian/i;
+// Bare `users`/`customers`/`clients` were their own alternatives here, which is
+// why the numeral in "Test like 17 users, not like you" was a red herring —
+// removing it still classified social-proof. A bare noun carries no social-proof
+// semantics; a COUNT of them does, and the cardinality alternative already
+// covers that ("400 customers"), as does `trusted by`.
+// The count alternative additionally requires a BOASTABLE count: 3+ digits, a
+// k/M suffix, or a trailing "+". Nobody cites 17 users as evidence that other
+// people trust them, which is why "Test like 17 users, not like you" — a
+// differentiation claim about personas, not a customer count — was being read as
+// social proof. Explicit framing ("trusted by 17 companies") still counts, via
+// the `trusted.?by` alternative; it is the framing that makes it a claim about
+// other people, and a bare mid-sentence count that carries none.
+const SOCIAL_PROOF_PATTERNS = /\breview|\brating|\bstars?\b|\btrusted.?by|\btestimonial|\brecommend|(?:\d{3,}|\d+[kKmM]|\d+\+)\s*(?:users|customers|downloads|installs|companies)|\b4\.\d|\b5\.0\b/i;
+const NOVELTY_PATTERNS = /\bnew\b|\bbeta\b|\blaunch|\bupdat|\bjust.?added|\bfresh|\blatest\b|\bcoming.?soon|\bearly.?access|\bpreview/i;
+const METRICS_PATTERNS = /\d+%|\d+x\s|\broi\b|\bsave\b.*\d|\bfaster\b|\breduc|\bimprov(?:e|ing)|\bincrease|\bdecrease|\bperformance\b|\bbenchmark|\$\d/i;
+// \blimited\b, not `limited`: "unlimited" is the OPPOSITE of scarcity and was
+// being scored as urgency.
+const URGENCY_PATTERNS = /\blimited\b|\bonly\s*\d|\bhurry\b|\bexpir|\bcountdown\b|\blast.?chance|\bending\b|\bleft.?in.?stock|\bact.?now|\bdon.?t.?miss/i;
+const COMMUNITY_PATTERNS = /\bcommunity\b|\bjoin\b|\bforum|\btogether\b|\bteams?\b|\bfamily\b|\bfellow|\bmember|\bbelong|\bcontrib|\bopen.?source/i;
+const AUTHORITY_PATTERNS = /\bfortune\b|\bforbes\b|\btechcrunch\b|\baward|\bwinner|\bleaders?\b|\bexpert|\bpartner|\benterprise\b|\bgovernment\b|\buniversit/i;
 
 /** Classify an element's semantic type from its text content */
 export function classifySemanticType(text: string, classList?: string): SemanticType {
@@ -97,6 +134,44 @@ export interface AttentionQualityResult {
   qualityScore: number;
   /** Value relevance score: how much attention hits elements this persona's values care about (0-1). Only present when values provided. */
   valueRelevanceScore?: number;
+  /** Hotspot cells the ratios were computed over. */
+  sampledHotspots?: number;
+  /** DISTINCT elements those cells landed on — the real sample size. */
+  sampledElements?: number;
+  /** Present only when the sample is too thin for the ratios to discriminate. */
+  sampleNote?: string;
+  /**
+   * The saliency mass each ratio was computed from, before division.
+   *
+   * The ratios are rounded to three decimals, and three decimals is enough
+   * precision to look like identity when it is not. Two personas returned
+   * `ctaCaptureRate: 0.343` from 122.531/357.183 and 118.899/346.169 -- values
+   * that differ in the fourth decimal -- and a reader diffing the two runs
+   * reasonably concluded the metric was persona-invariant and filed it as a P0.
+   * It was a rounding collision.
+   *
+   * Publishing more decimals would be the wrong fix: the ratio genuinely does
+   * not carry four-decimal precision, since it is computed over three or four
+   * coarse buckets, and `sampleNote` already says to read it as indicative.
+   * Rounding to TWO decimals, the other obvious move, collides more often, not
+   * less.
+   *
+   * So the ratio keeps the precision it deserves and the basis ships beside it.
+   * A diff can now distinguish "the same measurement" from "two different
+   * measurements that round alike", which is the actual question a reader
+   * comparing runs is asking.
+   */
+  basis?: {
+    /** Saliency summed over the sampled window, per bucket. */
+    cta: number;
+    heading: number;
+    navigation: number;
+    decorative: number;
+    content: number;
+    unaccounted: number;
+    /** The denominator every ratio above divides by. */
+    total: number;
+  };
   /** What the top attention zones are hitting */
   topAttentionTargets: Array<{
     type: "cta" | "heading" | "navigation" | "content" | "decorative" | "unknown";
@@ -149,6 +224,37 @@ interface ElementBounds {
  * documented scale, and `saliencySum` is the total mass the ranking uses.
  * (2026-07-29)
  */
+/** Six decimals — fine enough that the basis cannot collide the way the ratio did. */
+function round6(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
+}
+
+/** Element bounds a hotspot falls inside, or null. */
+type AttentionElement = {
+  text: string; type: string; x: number; y: number; width: number; height: number;
+  isHeading?: boolean; isCTA?: boolean; isNav?: boolean; isDecorative?: boolean;
+  semanticType?: SemanticType; selector?: string;
+};
+
+/**
+ * Which element a hotspot lands on, or null.
+ *
+ * Extracted so the WINDOW and the RATIOS attribute hotspots identically. When
+ * the window was chosen by a bare `slice(0, 20)` and attribution lived inline in
+ * the ratio loop, the two could not disagree only because the window did no
+ * attribution at all — which was the bug. Now they share one definition.
+ */
+function elementAtPoint(
+  hx: number, hy: number, pageElements: AttentionElement[],
+): AttentionElement | null {
+  const pad = 20; // pixels of tolerance
+  for (const el of pageElements) {
+    if (hx >= el.x - pad && hx <= el.x + el.width + pad
+      && hy >= el.y - pad && hy <= el.y + el.height + pad) return el;
+  }
+  return null;
+}
+
 function dedupeTargetsByElement(
   targets: AttentionQualityResult["topAttentionTargets"],
 ): AttentionQualityResult["topAttentionTargets"] {
@@ -200,8 +306,47 @@ export function computeAttentionQuality(
   cellSize: number = 4,
   personaValues?: Partial<Record<string, number>>,
 ): AttentionQualityResult {
-  const topN = Math.min(20, hotspots.length);
-  const topHotspots = hotspots.slice(0, topN);
+  // The window is chosen over ELEMENTS, not over raw cells.
+  //
+  // `hotspots` are grid cells (4px by default), so a single H1 spans dozens of
+  // them. Taking a flat top-20 CELLS therefore did not sample the page — on a
+  // page with one dominant headline it sampled ONE ELEMENT twenty times, and
+  // every ratio below then had to come out 0 or 1:
+  //
+  //   ctaCaptureRate 0 · valuePropSalience 1 · headingShare 1
+  //   distractorRatio 0 · contentRatio 0 · topAttentionTargets: [1 entry]
+  //
+  // Those are not measurements. A metric computed over a sample of one cannot
+  // discriminate between pages or between personas, which is exactly the
+  // complaint the July report logged as "attention quality saturates and fails
+  // to separate personas".
+  //
+  // Note this is the SAME defect the 2026-07-29 dedupe fixed — one element
+  // filling all ten display slots — fixed there only for `topAttentionTargets`
+  // and left standing in the ratio math right beside it. Fixing the visible
+  // instance of a class and not sweeping the class is how it survived a month.
+  //
+  // So: walk hotspots in rank order and keep going until the window covers a
+  // usable number of DISTINCT elements. Cell-level weighting is preserved on
+  // purpose — an element covering ten hot cells genuinely draws more attention
+  // than one covering a single cell of the same intensity — only the window
+  // stopping rule changes.
+  const MIN_HOTSPOTS = 20;
+  const MIN_DISTINCT_ELEMENTS = 8;
+  const seenKeys = new Set<string>();
+  let windowEnd = 0;
+  for (let i = 0; i < hotspots.length; i++) {
+    const el = elementAtPoint(hotspots[i].x, hotspots[i].y, pageElements);
+    if (el) seenKeys.add(`${el.x},${el.y},${el.width},${el.height}`);
+    windowEnd = i + 1;
+    if (windowEnd >= MIN_HOTSPOTS && seenKeys.size >= MIN_DISTINCT_ELEMENTS) break;
+  }
+  const topHotspots = hotspots.slice(0, windowEnd);
+  // Published, not assumed. When a page genuinely has fewer than
+  // MIN_DISTINCT_ELEMENTS competing for attention the ratios are still thin, and
+  // a reader has to be able to see that rather than read 1.0 as confidence.
+  const sampledHotspots = topHotspots.length;
+  const sampledElements = seenKeys.size;
 
   if (topHotspots.length === 0) {
     return {
@@ -228,52 +373,45 @@ export function computeAttentionQuality(
   for (const hotspot of topHotspots) {
     const hx = hotspot.x;
     const hy = hotspot.y;
-    const halfCell = cellSize;
 
-    // Find which element this hotspot overlaps with
-    let matched = false;
-    for (const el of pageElements) {
-      // Check if hotspot center is within element bounds (with padding)
-      const pad = 20; // pixels of tolerance
-      if (
-        hx >= el.x - pad && hx <= el.x + el.width + pad &&
-        hy >= el.y - pad && hy <= el.y + el.height + pad
-      ) {
-        let type: "cta" | "heading" | "navigation" | "content" | "decorative" = "content";
+    const el = elementAtPoint(hx, hy, pageElements);
+    if (el) {
+      let type: "cta" | "heading" | "navigation" | "content" | "decorative" = "content";
 
-        if (el.isCTA) {
-          type = "cta";
-          ctaSaliency += hotspot.saliency;
-        } else if (el.isHeading) {
-          type = "heading";
-          headingSaliency += hotspot.saliency;
-        } else if (el.isNav) {
-          type = "navigation";
-          navSaliency += hotspot.saliency;
-        } else if (el.isDecorative) {
-          type = "decorative";
-          decorativeSaliency += hotspot.saliency;
-        } else {
-          contentSaliency += hotspot.saliency;
-        }
-
-        // Semantic classification + value relevance
-        const semType = el.semanticType || classifySemanticType(el.text || "", el.selector);
-        const valRel = personaValues ? computeValueRelevance(semType, personaValues) : undefined;
-
-        targets.push({
-          type,
-          element: el.text?.slice(0, 50) || el.selector,
-          saliency: Math.round(hotspot.saliency * 1000) / 1000,
-          semanticType: semType !== "none" ? semType : undefined,
-          valueRelevance: valRel !== undefined ? Math.round(valRel * 1000) / 1000 : undefined,
-        });
-        matched = true;
-        break;
+      if (el.isCTA) {
+        type = "cta";
+        ctaSaliency += hotspot.saliency;
+      } else if (el.isHeading) {
+        type = "heading";
+        headingSaliency += hotspot.saliency;
+      } else if (el.isNav) {
+        type = "navigation";
+        navSaliency += hotspot.saliency;
+      } else if (el.isDecorative) {
+        type = "decorative";
+        decorativeSaliency += hotspot.saliency;
+      } else {
+        contentSaliency += hotspot.saliency;
       }
+
+      // Semantic classification + value relevance
+      const semType = el.semanticType || classifySemanticType(el.text || "", el.selector);
+      const valRel = personaValues ? computeValueRelevance(semType, personaValues) : undefined;
+
+      targets.push({
+        type,
+        // `selector` is optional on the element shape, so it cannot be the last
+        // fallback — an element with neither text nor selector would put
+        // `undefined` into a field typed string. Falls through to the type name,
+        // which always exists.
+        element: el.text?.slice(0, 50) || el.selector || el.type,
+        saliency: Math.round(hotspot.saliency * 1000) / 1000,
+        semanticType: semType !== "none" ? semType : undefined,
+        valueRelevance: valRel !== undefined ? Math.round(valRel * 1000) / 1000 : undefined,
+      });
     }
 
-    if (!matched) {
+    if (!el) {
       unknownSaliency += hotspot.saliency;
       targets.push({
         type: "unknown",
@@ -367,7 +505,7 @@ export function computeAttentionQuality(
     distractorRatio: Math.round(distractorRatio * 1000) / 1000,
     contentRatio: Math.round(contentRatio * 1000) / 1000,
     unaccountedRatio: Math.round(unaccountedRatio * 1000) / 1000,
-    ratioNote: "ctaCaptureRate + headingShare + distractorRatio + contentRatio sum to 1. contentRatio is the classifier's default bucket: attention on elements it did not recognise as CTA, heading, nav or decorative. A high contentRatio next to distractorRatio 0 means the distractor classifier is not recognising the distractors, not that there are none.",
+    ratioNote: "Ratios are rounded to 3dp, which is enough to look like identity when it is not — compare `basis` before concluding two runs match. ctaCaptureRate + headingShare + distractorRatio + contentRatio sum to 1. contentRatio is the classifier's default bucket: attention on elements it did not recognise as CTA, heading, nav or decorative. A high contentRatio next to distractorRatio 0 means the distractor classifier is not recognising the distractors, not that there are none.",
     qualityScore,
     valueRelevanceScore,
     // Deduplicated by element. The loop above walks HOTSPOTS — grid cells — and
@@ -378,6 +516,27 @@ export function computeAttentionQuality(
     // else competing for attention. Saliency is SUMMED per element, which is the
     // meaningful figure: total attention the element drew across its cells.
     // (2026-07-29)
+    // How wide the sample actually was. A ratio computed over two elements is
+    // not the same claim as one computed over twenty, and the reader cannot tell
+    // them apart from the ratio alone — 1.0 looks equally confident either way.
+    sampledHotspots,
+    sampledElements,
+    // Six decimals: enough that two genuinely different measurements cannot
+    // collide here as well, which is the whole point of publishing it.
+    basis: {
+      cta: round6(ctaSaliency),
+      heading: round6(headingSaliency),
+      navigation: round6(navSaliency),
+      decorative: round6(decorativeSaliency),
+      content: round6(contentSaliency),
+      unaccounted: round6(unknownSaliency),
+      total: round6(totalTopSaliency),
+    },
+    ...(sampledElements < MIN_DISTINCT_ELEMENTS ? {
+      sampleNote: `Ratios computed over ${sampledElements} distinct element(s). `
+        + "Below ~8 the buckets are coarse and a single element can dominate; "
+        + "read the ratios as indicative, not as measurements.",
+    } : {}),
     topAttentionTargets: dedupeTargetsByElement(targets).slice(0, 10),
     interpretation,
   };

@@ -1,0 +1,902 @@
+[
+ {
+  "site": "Target",
+  "url": "target.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Bestbuy",
+  "url": "bestbuy.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Wayfair",
+  "url": "wayfair.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Ikea",
+  "url": "ikea.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Homedepot",
+  "url": "homedepot.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Lowes",
+  "url": "lowes.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Macys",
+  "url": "macys.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Kohls",
+  "url": "kohls.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Overstock",
+  "url": "overstock.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Chewy",
+  "url": "chewy.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Zappos",
+  "url": "zappos.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Newegg",
+  "url": "newegg.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Aliexpress",
+  "url": "aliexpress.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Temu",
+  "url": "temu.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Wish",
+  "url": "wish.com",
+  "industry": "Retail"
+ },
+ {
+  "site": "Atlassian",
+  "url": "atlassian.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Hubspot",
+  "url": "hubspot.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Salesforce",
+  "url": "salesforce.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Zendesk",
+  "url": "zendesk.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Intercom",
+  "url": "intercom.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Airtable",
+  "url": "airtable.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Clickup",
+  "url": "clickup.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Basecamp",
+  "url": "basecamp.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Miro",
+  "url": "miro.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Loom",
+  "url": "loom.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Calendly",
+  "url": "calendly.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Typeform",
+  "url": "typeform.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Webflow",
+  "url": "webflow.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Squarespace",
+  "url": "squarespace.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Wix",
+  "url": "wix.com",
+  "industry": "SaaS"
+ },
+ {
+  "site": "Paypal",
+  "url": "paypal.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Wise",
+  "url": "wise.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Revolut",
+  "url": "revolut.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Chime",
+  "url": "chime.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Robinhood",
+  "url": "robinhood.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Coinbase",
+  "url": "coinbase.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Plaid",
+  "url": "plaid.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Brex",
+  "url": "brex.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Ramp",
+  "url": "ramp.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Mercury",
+  "url": "mercury.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Sofi",
+  "url": "sofi.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Affirm",
+  "url": "affirm.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Klarna",
+  "url": "klarna.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Square",
+  "url": "square.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Adyen",
+  "url": "adyen.com",
+  "industry": "Fintech"
+ },
+ {
+  "site": "Nytimes",
+  "url": "nytimes.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Theguardian",
+  "url": "theguardian.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Reuters",
+  "url": "reuters.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Apnews",
+  "url": "apnews.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Npr",
+  "url": "npr.org",
+  "industry": "Media"
+ },
+ {
+  "site": "Wsj",
+  "url": "wsj.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Ft",
+  "url": "ft.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Economist",
+  "url": "economist.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Wired",
+  "url": "wired.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Theverge",
+  "url": "theverge.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Arstechnica",
+  "url": "arstechnica.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Techcrunch",
+  "url": "techcrunch.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Vox",
+  "url": "vox.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Axios",
+  "url": "axios.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Politico",
+  "url": "politico.com",
+  "industry": "Media"
+ },
+ {
+  "site": "Airbnb",
+  "url": "airbnb.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Expedia",
+  "url": "expedia.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Kayak",
+  "url": "kayak.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Tripadvisor",
+  "url": "tripadvisor.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Marriott",
+  "url": "marriott.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Hilton",
+  "url": "hilton.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "United",
+  "url": "united.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Southwest",
+  "url": "southwest.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Jetblue",
+  "url": "jetblue.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Alaskaair",
+  "url": "alaskaair.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Hertz",
+  "url": "hertz.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Vrbo",
+  "url": "vrbo.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Skyscanner",
+  "url": "skyscanner.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Priceline",
+  "url": "priceline.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Trivago",
+  "url": "trivago.com",
+  "industry": "Travel"
+ },
+ {
+  "site": "Reddit",
+  "url": "reddit.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Linkedin",
+  "url": "linkedin.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Pinterest",
+  "url": "pinterest.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Tumblr",
+  "url": "tumblr.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Medium",
+  "url": "medium.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Substack",
+  "url": "substack.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Discord",
+  "url": "discord.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Twitch",
+  "url": "twitch.tv",
+  "industry": "Social"
+ },
+ {
+  "site": "Vimeo",
+  "url": "vimeo.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Flickr",
+  "url": "flickr.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Quora",
+  "url": "quora.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Mastodon",
+  "url": "mastodon.social",
+  "industry": "Social"
+ },
+ {
+  "site": "Bsky",
+  "url": "bsky.app",
+  "industry": "Social"
+ },
+ {
+  "site": "Threads",
+  "url": "threads.net",
+  "industry": "Social"
+ },
+ {
+  "site": "Snapchat",
+  "url": "snapchat.com",
+  "industry": "Social"
+ },
+ {
+  "site": "Gitlab",
+  "url": "gitlab.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Bitbucket",
+  "url": "bitbucket.org",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Vercel",
+  "url": "vercel.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Netlify",
+  "url": "netlify.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Heroku",
+  "url": "heroku.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Digitalocean",
+  "url": "digitalocean.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Render",
+  "url": "render.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Railway",
+  "url": "railway.app",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Supabase",
+  "url": "supabase.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Planetscale",
+  "url": "planetscale.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Sentry",
+  "url": "sentry.io",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Datadoghq",
+  "url": "datadoghq.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Circleci",
+  "url": "circleci.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Docker",
+  "url": "docker.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Npmjs",
+  "url": "npmjs.com",
+  "industry": "DevTools"
+ },
+ {
+  "site": "Mayoclinic",
+  "url": "mayoclinic.org",
+  "industry": "Health"
+ },
+ {
+  "site": "Webmd",
+  "url": "webmd.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Healthline",
+  "url": "healthline.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Cvs",
+  "url": "cvs.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Goodrx",
+  "url": "goodrx.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Zocdoc",
+  "url": "zocdoc.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Teladoc",
+  "url": "teladoc.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Oscar",
+  "url": "oscar.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Onemedical",
+  "url": "onemedical.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Hims",
+  "url": "hims.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Ro",
+  "url": "ro.co",
+  "industry": "Health"
+ },
+ {
+  "site": "Calm",
+  "url": "calm.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Headspace",
+  "url": "headspace.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Myfitnesspal",
+  "url": "myfitnesspal.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Peloton",
+  "url": "peloton.com",
+  "industry": "Health"
+ },
+ {
+  "site": "Khanacademy",
+  "url": "khanacademy.org",
+  "industry": "Education"
+ },
+ {
+  "site": "Edx",
+  "url": "edx.org",
+  "industry": "Education"
+ },
+ {
+  "site": "Udemy",
+  "url": "udemy.com",
+  "industry": "Education"
+ },
+ {
+  "site": "Duolingo",
+  "url": "duolingo.com",
+  "industry": "Education"
+ },
+ {
+  "site": "Brilliant",
+  "url": "brilliant.org",
+  "industry": "Education"
+ },
+ {
+  "site": "Codecademy",
+  "url": "codecademy.com",
+  "industry": "Education"
+ },
+ {
+  "site": "Pluralsight",
+  "url": "pluralsight.com",
+  "industry": "Education"
+ },
+ {
+  "site": "Skillshare",
+  "url": "skillshare.com",
+  "industry": "Education"
+ },
+ {
+  "site": "Masterclass",
+  "url": "masterclass.com",
+  "industry": "Education"
+ },
+ {
+  "site": "Mit",
+  "url": "mit.edu",
+  "industry": "Education"
+ },
+ {
+  "site": "Stanford",
+  "url": "stanford.edu",
+  "industry": "Education"
+ },
+ {
+  "site": "Harvard",
+  "url": "harvard.edu",
+  "industry": "Education"
+ },
+ {
+  "site": "Jstor",
+  "url": "jstor.org",
+  "industry": "Education"
+ },
+ {
+  "site": "Scholar",
+  "url": "scholar.archive.org",
+  "industry": "Education"
+ },
+ {
+  "site": "Openstax",
+  "url": "openstax.org",
+  "industry": "Education"
+ },
+ {
+  "site": "Wikipedia",
+  "url": "wikipedia.org",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Archive",
+  "url": "archive.org",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Usa",
+  "url": "usa.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Irs",
+  "url": "irs.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Cdc",
+  "url": "cdc.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Nih",
+  "url": "nih.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Nasa",
+  "url": "nasa.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Weather",
+  "url": "weather.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Census",
+  "url": "census.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Who",
+  "url": "who.int",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Europa",
+  "url": "europa.eu",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Gov",
+  "url": "gov.uk",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Canada",
+  "url": "canada.ca",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Data",
+  "url": "data.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Loc",
+  "url": "loc.gov",
+  "industry": "Gov/Ref"
+ },
+ {
+  "site": "Doordash",
+  "url": "doordash.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Ubereats",
+  "url": "ubereats.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Grubhub",
+  "url": "grubhub.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Instacart",
+  "url": "instacart.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Yelp",
+  "url": "yelp.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Opentable",
+  "url": "opentable.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Seriouseats",
+  "url": "seriouseats.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Bonappetit",
+  "url": "bonappetit.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Epicurious",
+  "url": "epicurious.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Foodnetwork",
+  "url": "foodnetwork.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Hellofresh",
+  "url": "hellofresh.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Blueapron",
+  "url": "blueapron.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Starbucks",
+  "url": "starbucks.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Dominos",
+  "url": "dominos.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Chipotle",
+  "url": "chipotle.com",
+  "industry": "Food"
+ },
+ {
+  "site": "Netflix",
+  "url": "netflix.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Hulu",
+  "url": "hulu.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Spotify",
+  "url": "spotify.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Soundcloud",
+  "url": "soundcloud.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Bandcamp",
+  "url": "bandcamp.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Imdb",
+  "url": "imdb.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Rottentomatoes",
+  "url": "rottentomatoes.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Letterboxd",
+  "url": "letterboxd.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Goodreads",
+  "url": "goodreads.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Audible",
+  "url": "audible.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Steampowered",
+  "url": "steampowered.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Itch",
+  "url": "itch.io",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Ign",
+  "url": "ign.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Polygon",
+  "url": "polygon.com",
+  "industry": "Entertainment"
+ },
+ {
+  "site": "Metacritic",
+  "url": "metacritic.com",
+  "industry": "Entertainment"
+ }
+]

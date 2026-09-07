@@ -763,6 +763,13 @@ MCP SERVER (v5.0.0)
     --port <port>             Port to listen on (default: 3000)
     --host <host>             Host to bind to (default: 0.0.0.0)
 
+UNINSTALL
+  uninstall                   Remove CBrowser data: credentials, sessions, captures
+                              Dry run by default — shows what would go, removes nothing
+    --yes                     Actually remove
+    --keep-config             Keep API key and proxy config (for reinstalling)
+                              'npm uninstall -g cbrowser' does NOT remove any of this
+
 CLAUDE SKILL INSTALLATION & SYNC
   install-skill               Install CBrowser as a Claude skill to ~/.claude/skills/
   sync-skill                  Sync local skill to match npm version (same as install-skill)
@@ -1059,6 +1066,10 @@ const COMMAND_FLAGS: Record<string, string[]> = {
     "after", "after-element", "after-delay",
     "until-element", "until-element-gone", "until-idle", "timeout",
   ],
+  // Declared so a mistyped flag errors instead of being silently ignored --
+  // this command deletes credentials, so "--kep-config did nothing" is a bad
+  // way to find out.
+  uninstall: ["yes", "keep-config"],
   evaluate: ["file", "arg", "json", "raw", "wait-for", "timeout", "expect-truthy"],
   eval: ["file", "arg", "json", "raw", "wait-for", "timeout", "expect-truthy"],
   keyboard: ["delay", "selector", "hold", "repeat", "text"],
@@ -2965,6 +2976,39 @@ async function main(): Promise<void> {
     }
   }
 
+  // Remove everything this tool wrote outside its own npm package.
+  //
+  // Dry run by default. The targets include the user's captured work, and
+  // deleting it because someone typed a command to find out what it does is not
+  // something they can undo.
+  if (command === "uninstall") {
+    const { planUninstall, executeUninstall, renderPlan } = await import("./uninstall.js");
+
+    const confirmed = Boolean(options["yes"]);
+    const plan = planUninstall({ keepConfig: Boolean(options["keep-config"]) });
+
+    console.log(renderPlan(plan, !confirmed));
+
+    if (!confirmed || plan.targets.length === 0) {
+      return;
+    }
+
+    const result = executeUninstall(plan);
+    console.log("");
+    console.log(`Removed ${result.removed.length} items, freed ${formatBytes(result.bytesFreed)}.`);
+    for (const f of result.failed) {
+      console.error(`  FAILED: ${f.path} — ${f.error}`);
+    }
+    console.log("");
+    console.log("The npm package itself is still installed. To finish:");
+    console.log("  npm uninstall -g cbrowser");
+
+    // A credential reported as removed but still on disk is the one outcome
+    // that must not exit 0.
+    if (result.failed.length > 0) process.exit(1);
+    return;
+  }
+
   // Install/Sync Claude skill (both commands do the same thing)
   if (command === "install-skill" || command === "sync-skill") {
     const path = await import("path");
@@ -3943,7 +3987,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             for (const [name, persona] of Object.entries(BUILTIN_PERSONAS)) {
               console.log(`    ${name}`);
               console.log(`      ${persona.description}`);
-              console.log(`      Tech: ${persona.demographics.tech_level} | Device: ${persona.demographics.device}`);
+              console.log(`      Tech: ${persona.demographics?.tech_level ?? "unknown"} | Device: ${persona.demographics?.device ?? "unknown"}`);
               console.log("");
             }
 
@@ -3955,7 +3999,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
               for (const [name, persona] of Object.entries(customPersonas)) {
                 console.log(`    ${name}`);
                 console.log(`      ${persona.description}`);
-                console.log(`      Tech: ${persona.demographics.tech_level} | Device: ${persona.demographics.device}`);
+                console.log(`      Tech: ${persona.demographics?.tech_level ?? "unknown"} | Device: ${persona.demographics?.device ?? "unknown"}`);
                 console.log("");
               }
             }
@@ -4001,9 +4045,9 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
             console.log(`━━━ Generated Persona: ${persona.name} ━━━\n`);
             console.log(`Description: ${persona.description}`);
             console.log(`\nDemographics:`);
-            console.log(`  Age Range: ${persona.demographics.age_range}`);
-            console.log(`  Tech Level: ${persona.demographics.tech_level}`);
-            console.log(`  Device: ${persona.demographics.device}`);
+            console.log(`  Age Range: ${persona.demographics?.age_range ?? "unknown"}`);
+            console.log(`  Tech Level: ${persona.demographics?.tech_level ?? "unknown"}`);
+            console.log(`  Device: ${persona.demographics?.device ?? "unknown"}`);
 
             console.log(`\nTiming:`);
             console.log(`  Reaction Time: ${persona.humanBehavior?.timing.reactionTime.min}-${persona.humanBehavior?.timing.reactionTime.max}ms`);
@@ -7167,7 +7211,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           const grade = site.grade || "-";
           const find = site.scoreBreakdown?.findability?.toString().padStart(3) || "-";
           const stab = site.scoreBreakdown?.stability?.toString().padStart(3) || "-";
-          const a11y = site.scoreBreakdown?.accessibility?.toString().padStart(3) || "-";
+          const a11y = site.scoreBreakdown?.agentPerceivability?.toString().padStart(3) || "-";
           const sem = site.scoreBreakdown?.semantics?.toString().padStart(3) || "-";
           const siteName = site.siteName.substring(0, 32).padEnd(32);
           console.log(`║  ${String(rank).padStart(2)}    ${siteName}  ${score}     ${grade.padEnd(2)}      ${find}   ${stab}   ${a11y}   ${sem}  ║`);
@@ -7186,8 +7230,8 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
         if (result.comparison.bestStability) {
           console.log(`🔒 Best Stability: ${result.comparison.bestStability}`);
         }
-        if (result.comparison.bestAccessibility) {
-          console.log(`♿ Best Accessibility: ${result.comparison.bestAccessibility}`);
+        if (result.comparison.bestAgentPerceivability) {
+          console.log(`♿ Best Accessibility: ${result.comparison.bestAgentPerceivability}`);
         }
         if (result.comparison.bestSemantics) {
           console.log(`📋 Best Semantics: ${result.comparison.bestSemantics}`);
@@ -7254,7 +7298,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
           <td class="grade-${site.grade || 'F'}">${site.grade || '-'}</td>
           <td>${site.scoreBreakdown?.findability ?? '-'}</td>
           <td>${site.scoreBreakdown?.stability ?? '-'}</td>
-          <td>${site.scoreBreakdown?.accessibility ?? '-'}</td>
+          <td>${site.scoreBreakdown?.agentPerceivability ?? '-'}</td>
           <td>${site.scoreBreakdown?.semantics ?? '-'}</td>
         </tr>`;
       }).join('')}
@@ -7266,7 +7310,7 @@ Documentation: https://github.com/alexandriashai/cbrowser/wiki
     ${result.comparison.bestOverall ? `<li>🏆 Overall: <strong>${result.comparison.bestOverall}</strong></li>` : ''}
     ${result.comparison.bestFindability ? `<li>🔍 Findability: <strong>${result.comparison.bestFindability}</strong></li>` : ''}
     ${result.comparison.bestStability ? `<li>🔒 Stability: <strong>${result.comparison.bestStability}</strong></li>` : ''}
-    ${result.comparison.bestAccessibility ? `<li>♿ Accessibility: <strong>${result.comparison.bestAccessibility}</strong></li>` : ''}
+    ${result.comparison.bestAgentPerceivability ? `<li>♿ Accessibility: <strong>${result.comparison.bestAgentPerceivability}</strong></li>` : ''}
     ${result.comparison.bestSemantics ? `<li>📋 Semantics: <strong>${result.comparison.bestSemantics}</strong></li>` : ''}
   </ul>
 

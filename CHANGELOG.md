@@ -6,6 +6,110 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.1.4](https://github.com/alexandriashai/cbrowser/compare/v19.1.3...v19.1.4) (2026-08-15)
+
+### Fixed
+
+* price tools by name, not by functional category — 18 free tools were refused ([50a682b](https://github.com/alexandriashai/cbrowser/commit/50a682b05b2c26b2216f674c25e1da75e99f66cc))
+* **test:** stop reading the private repo's absolute path from the package suite ([7604769](https://github.com/alexandriashai/cbrowser/commit/76047691603dce0825e0f448975effb4c3b197c3))
+
+## [19.1.3](https://github.com/alexandriashai/cbrowser/compare/v19.1.2...v19.1.3) (2026-08-12)
+
+### Fixed
+
+* **ci:** quarantine the change-tiers file on CI only, and say so on every run ([6b10d25](https://github.com/alexandriashai/cbrowser/commit/6b10d2505f4b0efc7b801f1acd192a5565702b15))
+
+## [19.1.2](https://github.com/alexandriashai/cbrowser/compare/v19.1.1...v19.1.2) (2026-08-12)
+
+### Fixed
+
+* bound the capture stop in the change-tiers helper, and share the bound ([c53b365](https://github.com/alexandriashai/cbrowser/commit/c53b36561287d1304691e4e9d4bb4b69a6b31ff7))
+
+## [19.1.1](https://github.com/alexandriashai/cbrowser/compare/v19.1.0...v19.1.1) (2026-08-12)
+
+### Fixed
+
+* **ci:** retry the isolated browser runs once, and say so when it happens ([17679d1](https://github.com/alexandriashai/cbrowser/commit/17679d1c4f7aa91ae584370151eb6bf5e07edd76))
+
+## [19.1.0](https://github.com/alexandriashai/cbrowser/compare/v19.0.2...v19.1.0) (2026-08-12)
+
+### Added
+
+* add `cbrowser uninstall` — npm leaves the credentials behind ([5b1de6a](https://github.com/alexandriashai/cbrowser/commit/5b1de6ae15a9ef122facc9de1b453fac71419e63))
+
+### Fixed
+
+* **ci:** stop discovering test files inside build output ([25f213f](https://github.com/alexandriashai/cbrowser/commit/25f213f1f945abd1550460349ee92b9a51798ad3))
+* **security:** write the API key owner-only, and warn on loose credential files ([b12de92](https://github.com/alexandriashai/cbrowser/commit/b12de924020dbfa3aa9849a07b9e6ce8e04a1907))
+
+## [19.0.2](https://github.com/alexandriashai/cbrowser/compare/v19.0.1...v19.0.2) (2026-08-12)
+
+### Fixed
+
+* **ci:** isolate every file the release gate quarantines, not just three of them ([3589335](https://github.com/alexandriashai/cbrowser/commit/35893351758a5416507727a8592cc9d91bccec6c))
+
+## [19.0.1](https://github.com/alexandriashai/cbrowser/compare/v19.0.0...v19.0.1) (2026-08-12)
+
+### Fixed
+
+* complete the WCAG criteria table so the level filter can evaluate every criterion ([808a817](https://github.com/alexandriashai/cbrowser/commit/808a817ade8f4089a7c9b1e6fa35dc17d18cf730))
+* default demographics on JSON personas instead of crashing the judge ([a609c6f](https://github.com/alexandriashai/cbrowser/commit/a609c6f0a5cbb2761db093e3acf778e983771a1e))
+* derive the WCAG list from barriers so detected violations stop vanishing ([1000cca](https://github.com/alexandriashai/cbrowser/commit/1000ccacfbe5f99916dc1169695806a7755010ee))
+
+## [19.0.0](https://github.com/alexandriashai/cbrowser/compare/v18.82.2...v19.0.0) (2026-08-11)
+
+### ⚠ BREAKING CHANGES
+
+* **agent-ready:** `score.accessibility`, `summary.dynamicContentCount` and
+`comparison.bestAccessibility` are removed. Use `score.agentPerceivability`,
+`summary.deferredLoadingPatterns` and `comparison.bestAgentPerceivability`, which
+have carried identical values since 18.82.0. Issues now carry
+`category: "agentPerceivability"`; the old value is still accepted on input and
+scores identically, so senders need not change immediately — readers do.
+
+suite 1252 -> 1258 pass / 0 fail   tsc exit 0
+
+### Added
+
+* **agent-ready:** remove the deprecated accessibility axis and its aliases ([cc5a064](https://github.com/alexandriashai/cbrowser/commit/cc5a0647ad202c87f299075cbdfdf382fcb35a8e))
+* **attention:** freezeAnimations flag, and say what actually ran ([6fbec2e](https://github.com/alexandriashai/cbrowser/commit/6fbec2e9eec19b2f1feecd3c3b419e5c6b9d0024))
+* **attention:** publish the basis behind each attentionQuality ratio ([a5ff68e](https://github.com/alexandriashai/cbrowser/commit/a5ff68ef8bc047560dbd7974ec06877680e53777))
+
+### Fixed
+
+* **agent-ready:** count sticky overlays, stop hiding them in a 40-60px gap ([6a0d860](https://github.com/alexandriashai/cbrowser/commit/6a0d86028ed684d3da550764fe75328d8fd65bb1))
+* **benchmark:** reconcile strengths against issues, dedupe advantages ([db4dbe3](https://github.com/alexandriashai/cbrowser/commit/db4dbe3760c266772c759c3218239de2c79559f7))
+* **benchmark:** stop recommending reference sites that share the defect ([e4df3e2](https://github.com/alexandriashai/cbrowser/commit/e4df3e20f678d347f4eaafaa838c0f706636aefa))
+* **bug-hunter:** a missing alt and alt="" are different defects ([971bcd0](https://github.com/alexandriashai/cbrowser/commit/971bcd09272dfff400c913f7bdc7e926ec5fdada))
+* **empathy:** make scope:"viewport" actually scope ([5eaf073](https://github.com/alexandriashai/cbrowser/commit/5eaf0737d056195d69790196c7dcada4d99110e9))
+* **relevance:** pass accessibility traits to the LLM relevance judge ([b1d3f16](https://github.com/alexandriashai/cbrowser/commit/b1d3f16e3612a5c9c3af83cacf026c6781000af3))
+* **test:** remove a machine-dependent persona fixture that broke CI ([8dc1a0e](https://github.com/alexandriashai/cbrowser/commit/8dc1a0ee89307e1c920e59c7ad8091c4429d15aa))
+
+### Changed
+
+* **agent-ready:** rename the accessibility axis and dynamicContentCount ([0232888](https://github.com/alexandriashai/cbrowser/commit/0232888bff3695ba2bddd651754ccd61c91ef730))
+
+## [18.82.2](https://github.com/alexandriashai/cbrowser/compare/v18.82.1...v18.82.2) (2026-08-06)
+
+### Fixed
+
+* **attention,goals:** isolate siteFamiliarity from attention, wire GoalDecomposer ([c807153](https://github.com/alexandriashai/cbrowser/commit/c8071533ac45958fa5bf88bb39bf16f5402ac9c2))
+* **attention:** anchor semantic patterns, widen ratio window, reconcile narrative ([2cca3e8](https://github.com/alexandriashai/cbrowser/commit/2cca3e8f15fdecf61e362ad77a93db36b58a5a01))
+* **attention:** size the hotspot pool to the grid, not a hard 10 ([26e80b4](https://github.com/alexandriashai/cbrowser/commit/26e80b40aaa11e761918b96b32c9cb017af02c4c))
+* **widget-kit:** two chip/tab foregrounds that failed WCAG AA ([66818cd](https://github.com/alexandriashai/cbrowser/commit/66818cd40ce731eb4c873f5e38b4ef9ac1728d65)), closes [#fff](https://github.com/alexandriashai/cbrowser/issues/fff)
+
+## [18.82.1](https://github.com/alexandriashai/cbrowser/compare/v18.82.0...v18.82.1) (2026-08-05)
+
+## [18.82.0](https://github.com/alexandriashai/cbrowser/compare/v18.81.4...v18.82.0) (2026-08-04)
+
+### Added
+
+* **attention:** calibrate the model against real eye-tracking ([2da2058](https://github.com/alexandriashai/cbrowser/commit/2da205888a7ba7ba12a8efb6cfca1adbb311f4ad))
+
+### Fixed
+
+* **agent-ready-audit:** stop grading pages that never loaded ([515484d](https://github.com/alexandriashai/cbrowser/commit/515484d187c9ea0b8c9758bcb72cc1aef4e0740d))
+
 ## [18.81.4](https://github.com/alexandriashai/cbrowser/compare/v18.81.3...v18.81.4) (2026-08-04)
 
 ## [18.81.3](https://github.com/alexandriashai/cbrowser/compare/v18.81.2...v18.81.3) (2026-08-04)

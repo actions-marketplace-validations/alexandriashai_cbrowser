@@ -6208,11 +6208,14 @@ For more help: https://playwright.dev/docs/browsers
 
       // Check images without alt
       document.querySelectorAll("img").forEach(img => {
-        if (!img.alt && !img.getAttribute("aria-label")) {
+        // `img.alt` is "" for BOTH a missing attribute and alt="", so this
+        // reported a valid decorative declaration as a serious violation.
+        // getAttribute distinguishes them: null means absent.
+        if (img.getAttribute("alt") === null && !img.getAttribute("aria-label")) {
           violations.push({
             id: "img-alt",
             impact: "serious",
-            description: "Image missing alt text",
+            description: "Image has no alt attribute",
             helpUrl: "https://dequeuniversity.com/rules/axe/4.4/image-alt",
           });
         }

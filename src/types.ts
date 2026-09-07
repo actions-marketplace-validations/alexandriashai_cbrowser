@@ -4649,7 +4649,30 @@ export interface DismissOverlayResult {
 // ============================================================================
 
 /** Issue category for agent-ready audit */
-export type AgentReadyIssueCategory = "findability" | "stability" | "accessibility" | "semantics";
+/**
+ * Issue categories, which are also the four scoring axes.
+ *
+ * `agentPerceivability` was called `accessibility`, and the rename is not
+ * cosmetic. The axis measures whether a MACHINE can perceive an element -- does
+ * it carry an ARIA label, does it have text -- and it scored 100/100 on a page
+ * where `empathy_audit` found two WCAG violations. Both numbers were right and
+ * the pairing was indefensible: "accessibility: 100" on a page that is not
+ * accessible is a claim this product cannot afford to make, given that its
+ * commercial thesis is precisely that accessibility work and agent-navigability
+ * work are the same work.
+ *
+ * Two axes that correlate is a stronger claim than one axis that ambiguously
+ * means both, so the rename makes the argument better rather than hedging it.
+ *
+ * `"accessibility"` is retained as a DEPRECATED alias so existing consumers
+ * filtering on it keep compiling. Emitted issues now carry the new name; the
+ * alias is removed at the next major. (2026-08-05)
+ */
+export type AgentReadyIssueCategory =
+  | "findability"
+  | "stability"
+  | "agentPerceivability"
+  | "semantics";
 
 /** Severity level for agent-ready issues */
 export type AgentReadyIssueSeverity = "low" | "medium" | "high" | "critical";
@@ -4736,8 +4759,12 @@ export interface AgentReadyScore {
   findability: number;
   /** Will selectors break? */
   stability: number;
-  /** ARIA/semantic HTML quality */
-  accessibility: number;
+  /**
+   * Can a MACHINE perceive these elements — ARIA labels present, elements carry
+   * text. NOT a WCAG conformance score; `empathy_audit` answers that, and the
+   * two can legitimately disagree on the same page.
+   */
+  agentPerceivability: number;
   /** Meaningful labels/text */
   semantics: number;
 }
@@ -4768,7 +4795,19 @@ export interface AgentReadySummary {
   /** API endpoints detected in page */
   apiEndpointsCount?: number;
   /** Dynamic content patterns detected */
-  dynamicContentCount?: number;
+  /**
+   * How many DISTINCT deferred-loading patterns were detected (0-4): loading
+   * indicators, infinite-scroll hints, more than five lazy images, load-more
+   * buttons. It is a count of pattern KINDS, not of elements.
+   *
+   * Renamed from `dynamicContentCount`, which read as "does this page move" and
+   * meant "does this page load content late". On cbrowser.ai it reported 0 --
+   * correctly, the page defers nothing -- while 122 CSS animations were running,
+   * 119 of them infinite. A reader comparing it against `empathy_audit`'s
+   * animation barrier concluded, reasonably, that one of the two tools was
+   * broken. Neither was; the name was.
+   */
+  deferredLoadingPatterns?: number;
 }
 
 /** Letter grade for agent-ready audit */
@@ -4984,6 +5023,16 @@ export interface AIBenchmarkSiteResult {
   scoreBreakdown: AgentReadyScore | null;
   /** Top issues found */
   topIssues: string[];
+  /**
+   * Scoring axis of each entry in `topIssues`, positionally aligned.
+   *
+   * `topIssues` is built by mapping issues to their description strings, which
+   * discards the category — and without the category a strength cannot be
+   * matched against the issue that contradicts it. That is how
+   * `strengths: ["Stable selectors that won't break"]` came to ship beside
+   * `topIssues: ["Element lacks stable selectors (score: 0/10)"]`.
+   */
+  topIssueCategories?: string[];
   /** Strengths for AI agents */
   strengths: string[];
   /** Weaknesses for AI agents */
@@ -5013,7 +5062,8 @@ export interface AIBenchmarkComparison {
   /** Best site for stability */
   bestStability: string;
   /** Best site for accessibility */
-  bestAccessibility: string;
+  /** Site with the best agent-perceivability axis. */
+  bestAgentPerceivability: string;
   /** Best site for semantics */
   bestSemantics: string;
   /** Common issues across all sites */
@@ -5157,6 +5207,19 @@ export interface AccessibilityBarrier {
   affectedPersonas: string[];
   /** WCAG criteria violated */
   wcagCriteria: string[];
+  /**
+   * The subset of `wcagCriteria` this barrier RELATES to without violating.
+   *
+   * Advisory-ness is a property of the BARRIER, not of the criterion: 1.3.1 is
+   * advisory on a text-wall (a readability recommendation) and a genuine Level A
+   * violation on an unlabelled form input. A per-criterion allow-list would have
+   * to pick one and be wrong about the other, which is why this lives here.
+   *
+   * Read by the aggregation that derives the published WCAG list, so a criterion
+   * listed here is reported on the barrier and excluded from the violation
+   * totals. (2026-08-11)
+   */
+  wcagAdvisoryCriteria?: string[];
   /** Severity of the barrier */
   severity: AccessibilityBarrierSeverity;
   /**
@@ -5168,6 +5231,21 @@ export interface AccessibilityBarrier {
   severityIsGroupMax?: boolean;
   /** Number of distinct elements grouped under this barrier type. */
   affectedElementCount?: number;
+  /**
+   * Where the barrier is, in DOCUMENT coordinates.
+   *
+   * Written by the detectors and read by the overlay layer, and declared in
+   * neither place until now — a field with a producer and a consumer and no
+   * contract between them, which is how a viewport filter came to be applied in
+   * one detector out of eleven without anything noticing.
+   *
+   * Absent on page-level findings (navigation item count, animation presence,
+   * reading level), which are properties of the page rather than of a location
+   * on it. That absence is meaningful: `filterBarriersToViewport` KEEPS a
+   * barrier with no rect, because an unlocatable finding is not an off-screen
+   * one.
+   */
+  rect?: { x: number; y: number; width: number; height: number };
   /** How to remediate */
   remediation: string;
 }
@@ -5222,6 +5300,15 @@ export interface EmpathyScoreContext {
 
 /** Result of accessibility empathy audit for a single persona */
 export interface AccessibilityEmpathyResult {
+  /**
+   * Barriers removed by the viewport filter on a `scope: "viewport"` audit.
+   *
+   * Reported rather than kept internal, because a filter whose effect is
+   * invisible is indistinguishable from a filter that did not run — and the
+   * defect this closes was precisely a scope flag that existed, was threaded
+   * into one detector out of eleven, and said nothing about the ten it missed.
+   */
+  outOfViewportBarriersDropped?: number;
   /** URL tested */
   url: string;
   /** Persona used */

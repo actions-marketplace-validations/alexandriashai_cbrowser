@@ -30,27 +30,73 @@ import { getAnthropicApiKey, isApiKeyConfigured } from "./index.js";
 // ============================================================================
 
 /**
+ * The site model's failure vocabulary. Mirrored here rather than imported, for
+ * the same circular-import reason the rest of this interface exists. Note this
+ * is NOT the identically-named `FailureType` in src/testing — that one has
+ * `selector_not_found` where this has `element_not_found`.
+ */
+export type SiteModelFailureType =
+  | "element_not_found"
+  | "timeout"
+  | "navigation_error"
+  | "blocked_by_overlay"
+  | "auth_required"
+  | "captcha"
+  | "rate_limited";
+
+/**
+ * The action shape the site model actually stores. Narrower than
+ * `PlannedAction`: no "extract" (the model records browser interactions, not
+ * data reads) and no `timeout` (an execution detail, not a learned fact).
+ */
+export interface RecordableAction {
+  type: "navigate" | "click" | "fill" | "select" | "scroll" | "wait";
+  target: string;
+  value?: string;
+  expectedOutcome: string;
+}
+
+/**
  * Minimal interface for the SiteModelManager dependency.
  * Defined here to avoid circular imports -- the concrete class lives in
- * src/site-model/manager.ts (not yet implemented). When the real manager
- * ships, it must satisfy this contract.
+ * src/site-model/manager.ts.
+ *
+ * This header used to read "(not yet implemented). When the real manager ships,
+ * it must satisfy this contract." The manager shipped and did NOT satisfy it:
+ * `recordGoalPath` grew `success` and `steps` parameters and narrowed its action
+ * type, and nothing caught it, because `GoalDecomposer` was never constructed
+ * anywhere in src/ -- so the two sides were never type-checked against each
+ * other. The drift surfaced the instant the class was wired to a tool.
+ *
+ * Which is the argument for wiring it rather than deleting it: an interface with
+ * no implementor is not a contract, it is a comment. (2026-08-05)
  */
 export interface SiteModelManagerLike {
   /** Query for the best known path matching a goal type on a domain */
   queryBestPath(domain: string, goalType: GoalType): GoalPath | null;
-  /** Record a successful goal execution path */
+  /** Record a goal execution path. Failures count too -- successRate needs both. */
   recordGoalPath(
     domain: string,
     goalDescription: string,
     goalType: GoalType,
-    actions: PlannedAction[],
+    actions: RecordableAction[],
+    success: boolean,
+    steps: number,
     persona?: string,
   ): void;
-  /** Record a failure pattern for future avoidance */
+  /**
+   * Record a failure pattern for future avoidance.
+   *
+   * `selector` sits THIRD. The stale version of this interface omitted it, so
+   * the only call site passed its failure type into the selector slot and its
+   * conditions array into the failure-type slot — silently, because nothing
+   * type-checked the two sides against each other. See the note above.
+   */
   recordFailure(
     domain: string,
     pageUrl: string,
-    failureType: string,
+    selector: string | undefined,
+    failureType: SiteModelFailureType,
     conditions: string[],
   ): void;
 }
@@ -214,7 +260,18 @@ export class GoalDecomposer {
         domain,
         result.plan.goal.originalText,
         result.plan.goal.type,
-        successfulActions,
+        // "extract" is a data read, not a browser interaction the model can
+        // replay, so it is dropped rather than coerced into a type the store
+        // does not have. `timeout` is an execution detail, not a learned fact.
+        successfulActions
+          .filter((a): a is PlannedAction & { type: RecordableAction["type"] } => a.type !== "extract")
+          .map(({ type, target, value, expectedOutcome }) => ({ type, target, value, expectedOutcome })),
+        // These two were simply missing. The manager needs them to maintain
+        // successRate and averageSteps; omitting them left both undefined at the
+        // call site, which TypeScript never flagged because the interface this
+        // call checked against was itself stale.
+        true,
+        result.stepsExecuted,
       );
     } else {
       // Record failure patterns so future plans can avoid them
@@ -232,8 +289,16 @@ export class GoalDecomposer {
       this.siteModelManager.recordFailure(
         domain,
         domain, // page URL defaults to domain root for goal-level failures
-        "goal_execution_failed",
-        failureConditions,
+        // No selector: this is a goal-level failure, not an element-level one.
+        // Previously "goal_execution_failed" was passed here, into the SELECTOR
+        // slot, and the conditions array landed in failureType.
+        undefined,
+        // "goal_execution_failed" is not a member of the site model's failure
+        // vocabulary, so it moves into `conditions` where free-form detail
+        // belongs. navigation_error is the honest closest fit: the persona could
+        // not traverse to the goal.
+        "navigation_error",
+        ["reason:goal_execution_failed", ...failureConditions],
       );
     }
   }

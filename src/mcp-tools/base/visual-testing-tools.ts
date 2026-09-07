@@ -445,6 +445,7 @@ export function registerVisualTestingTools(server: McpServer): void {
       heatmap: z.boolean().optional().default(true).describe("Generate visual heatmap overlay (default: true)"),
       device: z.string().optional().describe("Device emulation: 'mobile', 'tablet', 'desktop', or specific device name"),
       useValues: z.boolean().optional().default(false).describe("Enable motivational value influence on saliency map generation and attention scoring. Default: false."),
+      freezeAnimations: z.boolean().optional().default(false).describe("Pause CSS and Web-Animations before the screenshot, so two runs of an animated page are comparable. An infinite animation has no canonical frame, so sampling one at random reports where attention goes during a fraction of a loop as where attention goes. Default false: every published attention number was measured with animation live. Check `animationState` in the response for what actually ran."),
     },
     annotations: {
       title: "Attention Saliency Analysis",
@@ -456,7 +457,7 @@ export function registerVisualTestingTools(server: McpServer): void {
     // Declares the attention view. The heatmap is the finding here, and a JSON
     // list of scores is a lossy description of where a persona actually looks.
     _meta: { ui: { resourceUri: "ui://cbrowser/attention" } },
-  }, async ({ url, persona, goal, cellSize, heatmap, device, useValues }) => {
+  }, async ({ url, persona, goal, cellSize, heatmap, device, useValues, freezeAnimations: doFreeze }) => {
       const { CBrowser } = await import("../../browser.js");
       const browser = new CBrowser({
         headless: true,
@@ -484,6 +485,24 @@ export function registerVisualTestingTools(server: McpServer): void {
         await new Promise(r => setTimeout(r, 2000));
 
         const page = await browser.getPage();
+
+        // Freeze BEFORE the screenshot, which is the only moment that matters:
+        // the saliency layer reads the image, so anything still moving when the
+        // shutter opens is in the measurement.
+        const { freezeAnimations: doFreezeAnimations, countRunningAnimations } =
+          await import("../../visual/freeze-animations.js");
+        let animationState: "frozen" | "live" = "live";
+        let animationsStillRunning = -1;
+        if (doFreeze) {
+          try {
+            animationState = await doFreezeAnimations(page as never);
+          } catch { /* a failed freeze is reported below, never fatal */ }
+        }
+        // Measured either way. On a live run it says how much motion the number
+        // was taken through; on a frozen run a non-zero value means the freeze
+        // did not take, which must not be silent.
+        animationsStillRunning = await countRunningAnimations(page as never);
+
         const screenshotPath = join(tmpdir(), `attn-${Date.now()}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: false });
 
@@ -603,6 +622,23 @@ export function registerVisualTestingTools(server: McpServer): void {
           console.debug(`[attention_analysis] Attention quality failed: ${(e as Error).message}`);
         }
 
+        // The narrative and the metrics could contradict each other inside one
+        // payload with nothing saying so: ctaCaptureRate 0 shipping beside
+        // "CTAs like 'Try Free' stand out as safe next steps". The narrative
+        // cannot simply be handed the metrics — it is generated FIRST and its
+        // scores are an input to the map those metrics are computed from, so
+        // feeding them back is a cycle. Reconciled after the fact instead, and
+        // only ever annotated, never rewritten: the narrative carries the "why"
+        // the metrics don't.
+        let narrativeReconciliation: import("../../visual/narrative-reconcile.js").NarrativeReconciliation | undefined;
+        try {
+          const { reconcileAttentionNarrative } = await import("../../visual/narrative-reconcile.js");
+          narrativeReconciliation = reconcileAttentionNarrative(
+            relevanceReasoning,
+            attentionQuality as { ctaCaptureRate?: number } | null,
+          );
+        } catch { /* annotation only; never block the result on it */ }
+
         const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [{
           type: "text" as const,
           text: JSON.stringify({
@@ -614,6 +650,17 @@ export function registerVisualTestingTools(server: McpServer): void {
               ? `device: ${device.toLowerCase()}`
               : `${getDefaultConfig().viewportWidth}x${getDefaultConfig().viewportHeight}`,
             coordinateSpace: "CSS pixels in the rendered viewport above — compare only against runs reporting the same renderedViewport",
+            // What actually ran, not what was asked for. A freeze that silently
+            // failed would produce exactly the variance it was asked to remove,
+            // under a label saying it had been removed.
+            animationState,
+            ...(animationsStillRunning >= 0 ? { animationsRunning: animationsStillRunning } : {}),
+            ...(animationState === "frozen" && animationsStillRunning > 0 ? {
+              animationWarning: `freezeAnimations was requested but ${animationsStillRunning} animation(s) are still running; this run is NOT reproducible.`,
+            } : {}),
+            ...(animationState === "live" && animationsStillRunning > 0 ? {
+              animationNote: `${animationsStillRunning} animation(s) were running during capture, so saliency will vary slightly between runs. Pass freezeAnimations:true to compare runs.`,
+            } : {}),
             alignmentScore: result.alignmentScore,
             entropy: result.entropy,
             concentration: result.concentration,
@@ -626,6 +673,16 @@ export function registerVisualTestingTools(server: McpServer): void {
             // with no stated reason is one the caller cannot argue with, which
             // was the point of leaving keyword matching.
             ...(relevanceReasoning ? { attentionReasoning: relevanceReasoning } : {}),
+            // Only present when a checkable claim in the narrative actually
+            // contradicts a computed metric. Silent otherwise — a spurious
+            // "these disagree" on a narrative that was fine is its own defect.
+            ...(narrativeReconciliation?.contradictsMetrics ? {
+              narrativeReconciliation: {
+                contradictsMetrics: true,
+                contradictingClaims: narrativeReconciliation.contradictingClaims,
+                note: narrativeReconciliation.reconciliationNote,
+              },
+            } : {}),
             ...(relevanceSource ? { relevanceMethod: relevanceSource } : {}),
             // These two lines used to read as a contradiction — "Scattered
             // attention (overwhelmed)" printed directly above "Attention

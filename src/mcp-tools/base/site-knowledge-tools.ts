@@ -263,9 +263,15 @@ export function registerSiteKnowledgeTools(
 
   server.registerTool("site_model_query", {
     title: "Query Site Model",
-    description: "Query the site model for the best known path to achieve a goal type on a domain. Returns the most successful action sequence if one exists.",
+    description: "Query the site model for the best known path to achieve a goal on a domain. Pass a natural-language `goal` (preferred) and it is classified and planned for you; pass `goalType` if you already know the category. Returns the most successful action sequence if one exists, plus a plan when a goal is given.",
     inputSchema: {
       domain: z.string().describe("Domain to query (e.g., 'example.com')"),
+      // Natural language is the shape a caller actually has. Requiring the enum
+      // meant the caller had to do the classification the planner exists to do,
+      // which is why GoalDecomposer -- the component that does it -- had no
+      // route onto the tool surface at all.
+      goal: z.string().optional()
+        .describe("Natural-language goal, e.g. 'sign up for an account'. Classified into a goalType and planned against learned paths. Preferred over goalType."),
       goalType: z.enum([
         "find_information",
         "complete_action",
@@ -274,7 +280,7 @@ export function registerSiteKnowledgeTools(
         "compare",
         "explore",
         "extract_data",
-      ]).describe("Type of goal to find the best path for"),
+      ]).optional().describe("Goal category, when you already know it. Ignored if `goal` is given."),
     },
     annotations: {
       title: "Query Site Model",
@@ -283,12 +289,53 @@ export function registerSiteKnowledgeTools(
       idempotentHint: true,
       openWorldHint: false,
     },
-  }, async ({ domain, goalType }) => {
+  }, async ({ domain, goal, goalType }) => {
+      // Declared outside the try so the catch block can report which goal type
+      // was actually resolved, not just the raw input.
+      let resolvedType = goalType;
       try {
         const { SiteModelManager } = await import("../../site-model/manager.js");
         const manager = SiteModelManager.getInstance();
         await manager.loadModel(domain);
-        const bestPath = manager.queryBestPath(domain, goalType);
+
+        // GoalDecomposer was exported and never constructed anywhere in src/,
+        // so `decompose()` -- the half that READS learned paths and reuses any
+        // above SITE_MODEL_MIN_SUCCESS_RATE -- could not run. goalPaths were
+        // therefore write-only: recorded by the autonomous-journey path, never
+        // consulted by anything. A learning loop with no reader is a log.
+        //
+        // This is the read side wired onto the tool surface. `goal` also removes
+        // the enum requirement that made the tool unusable without the
+        // classification it exists to perform. (2026-08-05)
+        let plan: unknown;
+        let parsedGoal: unknown;
+        if (goal) {
+          const { GoalDecomposer } = await import("../../cognitive/goal-decomposer.js");
+          const decomposer = new GoalDecomposer(manager);
+          const parsed = decomposer.parseGoal(goal);
+          parsedGoal = parsed;
+          resolvedType = parsed.type;
+          const decomposed = await decomposer.decompose(goal, domain);
+          plan = {
+            // `source: "site-model"` is the whole point — it means this plan
+            // reused a path the model LEARNED rather than a keyword heuristic.
+            source: decomposed.source,
+            confidence: decomposed.confidence,
+            estimatedSteps: decomposed.estimatedSteps,
+            subGoals: decomposed.subGoals.map((sg) => ({
+              description: sg.description,
+              strategyCount: sg.strategies?.length ?? 0,
+              topStrategy: sg.strategies?.[0],
+            })),
+          };
+        }
+        if (!resolvedType) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({
+            error: "goal_or_goalType_required",
+            message: "Pass `goal` (natural language, preferred) or `goalType` (enum).",
+          }, null, 2) }] };
+        }
+        const bestPath = manager.queryBestPath(domain, resolvedType);
 
         if (!bestPath) {
           return {
@@ -298,9 +345,16 @@ export function registerSiteKnowledgeTools(
                 text: JSON.stringify(
                   {
                     domain,
-                    goalType,
+                    goalType: resolvedType,
+                    ...(parsedGoal ? { parsedGoal } : {}),
                     found: false,
-                    message: `No known path for goal type '${goalType}' on ${domain}. The site model will learn paths as you interact with the site.`,
+                    // A plan is still useful with no learned path — that is the
+                    // heuristic branch, and saying so distinguishes "we have
+                    // nothing" from "we have nothing LEARNED".
+                    ...(plan ? { plan } : {}),
+                    message: `No learned path for goal type '${resolvedType}' on ${domain}.`
+                      + (plan ? " A heuristic plan is included; the site model learns paths as you interact with the site."
+                             : " The site model will learn paths as you interact with the site."),
                   },
                   null,
                   2
@@ -317,7 +371,11 @@ export function registerSiteKnowledgeTools(
               text: JSON.stringify(
                 {
                   domain,
-                  goalType,
+                  goalType: resolvedType,
+                  ...(parsedGoal ? { parsedGoal } : {}),
+                  // The plan is what makes a learned path actionable rather
+                  // than merely visible.
+                  ...(plan ? { plan } : {}),
                   found: true,
                   path: {
                     goalDescription: bestPath.goalDescription,
@@ -344,7 +402,7 @@ export function registerSiteKnowledgeTools(
                 {
                   success: false,
                   domain,
-                  goalType,
+                  goalType: resolvedType ?? goalType,
                   error: err instanceof Error ? err.message : String(err),
                 },
                 null,

@@ -337,26 +337,42 @@ const HERO_ART = (() => {
  * inside the arc.
  */
 const CSS = `
+  /* Neutrals mirror the site's shadcn palette (cbrowser-web src/app/globals.css)
+     so a widget and the dashboard read as one product. The HOST variable still
+     wins in every case -- these are only the fallback for a host that supplies
+     nothing. A widget should look native to the surface it is embedded in
+     first, and like cbrowser second.
+     Measured against a white ground: ink 19.80:1, sub 5.49:1 (WCAG AA is 4.5). */
   :root{
-    --ink:var(--color-text-primary,#14161a);
-    --sub:var(--color-text-secondary,#606770);
-    --line:var(--color-border-default,#e0e3e8);
+    --ink:var(--color-text-primary,oklch(0.145 0 0));
+    --sub:var(--color-text-secondary,oklch(0.520 0 0));
+    --line:var(--color-border-default,oklch(0.922 0 0));
     --brand:oklch(0.55 0.18 250);
     --brand-2:oklch(0.6 0.18 180);
     --hero-a:oklch(0.415 0.19 258);
     --hero-b:oklch(0.45 0.13 202);
     --accent:var(--color-accent-primary,oklch(0.55 0.18 250));
+    --on-accent:#fff;
     --warn:oklch(0.55 0.16 45);
     --ok:oklch(0.62 0.16 150);
     --bad:oklch(0.52 0.19 25);
     --raise:color-mix(in srgb, var(--ink) 4%, transparent);
-    --r:var(--border-radius-md,8px);
+    --r:var(--border-radius-md,0.625rem);
     --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
   }
-  :root.dark{--ink:#e9ebee;--sub:#98a0aa;--line:#333840;
+  /* Dark mode reads host variables too. It did not until 2026-08-05 -- these
+     three were hardcoded, so a host that themed the light widget was ignored
+     the moment the user switched to dark, and the widget stopped matching the
+     surface it sits on. Same fallback discipline as :root above.
+     Measured on an oklch(0.145) ground: ink 18.97:1, sub 7.66:1. */
+  :root.dark{
+    --ink:var(--color-text-primary,oklch(0.985 0 0));
+    --sub:var(--color-text-secondary,oklch(0.708 0 0));
+    --line:var(--color-border-default,oklch(1 0 0 / 12%));
     --brand:oklch(0.65 0.18 250);--brand-2:oklch(0.7 0.15 180);
     --hero-a:oklch(0.385 0.18 258);--hero-b:oklch(0.42 0.12 202);
-    --accent:oklch(0.65 0.18 250);--warn:oklch(0.72 0.14 55);--ok:oklch(0.72 0.15 150);
+    --accent:oklch(0.65 0.18 250);--on-accent:oklch(0.145 0 0);
+    --warn:oklch(0.72 0.14 55);--ok:oklch(0.72 0.15 150);
     --bad:oklch(0.68 0.17 25);
     --raise:color-mix(in srgb, #fff 6%, transparent)}
   *{box-sizing:border-box}
@@ -463,7 +479,7 @@ const CSS = `
   .num{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:.79rem}
   .path{font-family:var(--mono);font-size:.77rem;color:var(--sub);word-break:break-all}
   .chip{display:inline-block;font:.67rem/1 var(--mono);padding:.15rem .36rem;border-radius:3px;
-    background:color-mix(in srgb,var(--ok) 18%,transparent);color:color-mix(in srgb,var(--ok) 80%,var(--ink))}
+    background:color-mix(in srgb,var(--ok) 18%,transparent);color:color-mix(in srgb,var(--ok) 65%,var(--ink))}
   .chip.no{background:color-mix(in srgb,var(--warn) 18%,transparent);color:color-mix(in srgb,var(--warn) 82%,var(--ink))}
 
   /* Findings: severity is encoded as a leading bar and a chip, so the ranking
@@ -519,7 +535,12 @@ const CSS = `
   .modetabs{display:flex;gap:.3rem;flex-wrap:wrap;margin:.4rem 0 .5rem}
   .modetab{font:inherit;font-size:.78rem;padding:.3rem .6rem;border-radius:999px;
     border:1px solid var(--line);background:none;color:var(--sub);cursor:pointer}
-  .modetab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  /* Foreground is a token, not #fff. White clears AA on the light accent
+     (4.79:1) and fails on the dark one (3.24:1), because --accent lightens in
+     dark mode while the text stayed fixed. A fill that changes between themes
+     needs a foreground that changes with it. Near-black on the dark accent is
+     6.11:1. */
+  .modetab.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
   .modetab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .tin{width:100%;box-sizing:border-box;font:inherit;font-size:.85rem;
     padding:.4rem .5rem;border-radius:.375rem;border:1px solid var(--line);

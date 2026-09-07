@@ -345,8 +345,53 @@ export function getToolsByTier(tier: 1 | 2 | 3): string[] {
     .flatMap(cat => cat.tools);
 }
 
+/**
+ * Tools available on the free tier, by NAME.
+ *
+ * Pricing is not a function of category. TOOL_CATEGORIES groups tools by what
+ * they DO (visual_testing, bug_hunting, performance...), and pricing was being
+ * read off that grouping — so a tool could not be free unless every sibling in
+ * its functional category was too. That is why 18 free-tier tools were being
+ * refused: agent_ready_audit and hunt_bugs sit in "pro" categories beside tools
+ * that genuinely are Pro.
+ *
+ * Measured 2026-08-13: the CMS (cbrowser-web/cms/lib/credit-config.ts) and this
+ * file disagreed about 18 tools. The CMS permitted them and this gate refused
+ * them, so a free user was told they had the tool and then got "Upgrade
+ * Required" — including on the two the public homepage demo runs, which is how
+ * this surfaced.
+ *
+ * This set is the UNION of both former lists: every tool either side considered
+ * free stays free, so no user loses access that they have today.
+ *
+ * KEEP IN SYNC with FREE_TIER_TOOLS in cbrowser-web/cms/lib/credit-config.ts.
+ * Both sides have a test that fails when they drift.
+ */
+export const FREE_TIER_TOOLS = new Set([
+  "ab_comparison", "agent_ready_audit", "ai_benchmark", "analyze_page",
+  "assert", "browser_health", "browser_recover", "capture_start",
+  "capture_status", "capture_stop", "click", "cognitive_effort",
+  "cognitive_load_estimate", "coverage_map", "cross_browser_diff",
+  "cross_browser_test", "delete_session", "detect_flaky_tests",
+  "dismiss_overlay", "drag", "evaluate_script", "extract", "fill",
+  "find_element_by_intent", "generate_tests", "get_console_messages",
+  "get_network_requests", "handle_dialog", "heal_stats", "hover", "hunt_bugs",
+  "list_baselines", "list_cognitive_personas", "list_sessions",
+  "llms_txt_generate", "load_session", "manage_cookies", "manage_storage",
+  "manage_tabs", "navigate", "nl_test_file", "nl_test_inline",
+  "page_understand", "perf_baseline", "perf_regression",
+  "persona_create_from_description", "press_key", "repair_test",
+  "reset_browser", "responsive_test", "save_session", "screenshot", "scroll",
+  "smart_click", "status", "type_text", "upload_file", "visual_baseline",
+  "visual_regression"
+]);
+
 /** Get pricing tier required for a tool */
 export function getToolPricingTier(toolName: string): PricingTier {
+  // Name first, category second. A tool's price is a product decision; its
+  // category is a functional one, and reading the first off the second is what
+  // put 18 free tools behind an upgrade prompt.
+  if (FREE_TIER_TOOLS.has(toolName)) return 'free';
   for (const cat of TOOL_CATEGORIES) {
     if (cat.tools.includes(toolName)) return cat.pricingTier;
   }

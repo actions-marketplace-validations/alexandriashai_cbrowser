@@ -34,6 +34,7 @@ import sharp from "sharp";
 import { CBrowser } from "../src/browser.js";
 import { VideoCaptureSession } from "../src/recording/engine.js";
 import { detectChangePoints, changeScore, frameSignature, ssim } from "../src/recording/ssim.js";
+import { stopWithinTimeout } from "../src/recording/auto-capture.js";
 import {
   changeSignal,
   changeSignalIssues,
@@ -58,19 +59,94 @@ const scoresArb = fc.array(
   { minLength: 1, maxLength: 120 },
 );
 
+/**
+ * Run one stage of the capture helper, announcing it BEFORE it starts.
+ *
+ * The announcement order is the whole point. `bun test` kills a test at its
+ * ceiling, so anything logged after the fact is lost with it -- which is why
+ * two CI runs reported nothing but "timed out after 180000ms". A marker
+ * printed before the await survives the kill, so the last marker in the log
+ * names the stage that never returned.
+ *
+ * Each stage is also bounded, so on CI the failure names the stage instead of
+ * the file. The bounds are deliberately generous: this is here to locate a
+ * hang, not to impose new timing requirements on healthy runs. Locally every
+ * stage completes in well under a second.
+ */
+async function stage<T>(label: string, budgetMs: number, run: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  console.log(`      [capture] -> ${label}`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const bounded = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(
+          `capture stage "${label}" did not return within ${budgetMs}ms. ` +
+          `This is the stage that hangs; every earlier stage completed.`)),
+        budgetMs);
+      timer.unref?.();
+    });
+    const out = await Promise.race([run(), bounded]);
+    console.log(`      [capture] OK ${label} (${Date.now() - started}ms)`);
+    return out;
+  } catch (e) {
+    console.log(`      [capture] FAILED ${label} (${Date.now() - started}ms): ${(e as Error).message}`);
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function capture(name: string, html: string, holdMs: number, drive?: (page: never) => Promise<void>) {
   const file = join(workDir, `${name}.html`);
   writeFileSync(file, html);
-  const browser = new CBrowser({ headless: true, viewportWidth: 1280, viewportHeight: 800 });
-  await browser.launch();
+  // ISOLATED dataDir. Without one, CBrowser falls back to the shared
+  // `~/.cbrowser` profile and opens a PERSISTENT context against it.
+  //
+  // That wedges the suite. `launchPersistentContext` blocks indefinitely while
+  // anything else holds that profile's `SingletonLock`, and
+  // `clearStaleSingletonLock` only clears a lock whose pid is dead -- a live
+  // holder is never touched, which is correct. So when this file runs alongside
+  // `recording-engine.test.ts`, which holds its own raw Playwright chromium,
+  // the launch here never returns and every test after it burns the full 60s
+  // timeout.
+  //
+  // CI symptom on 2026-08-04: fifteen "timed out after 60000ms" failures at
+  // exactly 60-second intervals. That reads as fifteen broken tests; it is ONE
+  // hung launch reported fifteen times. Each file passes alone (45 and 12),
+  // which is why running them separately reported everything fine.
+  //
+  // Isolating also stops a test run from touching the developer's real browser
+  // profile, sessions and cookies.
+  const browser = new CBrowser({
+    headless: true,
+    viewportWidth: 1280,
+    viewportHeight: 800,
+    dataDir: join(workDir, "browser-data", name),
+  });
+  await stage(`launch[${name}]`, 60_000, () => browser.launch());
   try {
-    await browser.navigate(`file://${file}`);
-    const page = await browser.getPage();
+    await stage(`navigate[${name}]`, 60_000, () => browser.navigate(`file://${file}`));
+    const page = await stage(`getPage[${name}]`, 15_000, () => browser.getPage());
     const session = new VideoCaptureSession(page, "chromium", workDir);
-    await session.start({ fps: 10, slug: name, outDir: join(workDir, name), format: [] });
-    if (drive) await drive(page as never);
-    await new Promise((r) => setTimeout(r, holdMs));
-    return (await session.stop()).manifest;
+    await stage(`session.start[${name}]`, 60_000, () =>
+      session.start({ fps: 10, slug: name, outDir: join(workDir, name), format: [] }));
+    if (drive) await stage(`drive[${name}]`, 60_000, () => drive(page as never));
+    // Bounded too, though a setTimeout can only overrun if timers themselves
+    // are starved -- which would itself be the finding.
+    await stage(`hold[${name}] ${holdMs}ms`, holdMs + 30_000, () =>
+      new Promise<void>((r) => setTimeout(r, holdMs)));
+    // BOUNDED. This was a raw `session.stop()`, so a stop that never settles
+    // burned this test's entire 180000ms ceiling and reported only "timed out"
+    // -- no state, no frame count, no slug, nothing to act on. On CI that is
+    // exactly what happened, twice in a row with identical timings.
+    //
+    // The suite already contains a test asserting that a wedged stop must fail
+    // fast and loudly (recording-autocapture, "a wedged stop fails fast"), and
+    // this helper was the one caller ignoring it. Reuses the product's own
+    // bound rather than a second copy of the logic living in a test.
+    return (await stage(`stop[${name}]`, 60_000, () =>
+      stopWithinTimeout(session, 45_000))).manifest;
   } finally {
     await browser.close();
   }

@@ -104,6 +104,12 @@ export interface RelevanceContext {
   traits?: Record<string, number>;
   /** Schwartz motivational values, 0-1. */
   values?: Record<string, number>;
+  /**
+   * Sensory, motor and executive-function traits — a separate vector from
+   * `traits`, and previously not passed at all. See persona-context.ts for why
+   * dropping these specifically was the wrong half.
+   */
+  accessibilityTraits?: Record<string, number | boolean>;
 }
 
 export interface RelevanceResult {
@@ -140,7 +146,7 @@ const RELEVANCE_MODEL = "claude-sonnet-5";
  * has no other way to expire them, and the observed symptom was four of five
  * moments returning source "llm" with no reasoning, indefinitely.
  */
-const CACHE_VERSION = "v2";
+const CACHE_VERSION = "v3";
 
 function cacheKey(elements: RelevanceElement[], ctx: RelevanceContext): string {
   const h = createHash("sha256");
@@ -156,6 +162,10 @@ function cacheKey(elements: RelevanceElement[], ctx: RelevanceContext): string {
   h.update(`|${CACHE_VERSION}|${ctx.personaName}|${ctx.goal ?? ""}|${RELEVANCE_MODEL}|`);
   h.update(JSON.stringify(ctx.traits ?? {}));
   h.update(JSON.stringify(ctx.values ?? {}));
+  // Without this line the whole change is invisible: every persona already in
+  // the cache would keep returning the answer computed before the judge could
+  // see these traits, and the fix would look inert rather than wrong.
+  h.update(JSON.stringify(ctx.accessibilityTraits ?? {}));
   if (ctx.screenshot) h.update(ctx.screenshot);
   return h.digest("hex").slice(0, 32);
 }
@@ -198,6 +208,37 @@ function describeTraits(traits?: Record<string, number>): string {
       return `- ${k} ${v.toFixed(2)} — ${def.description}. At this level: ${example}`;
     });
   return notable.length > 0 ? "\n" + notable.join("\n") : "all traits near baseline";
+}
+
+/**
+ * Render accessibility traits with what each value MEANS for reading and attention.
+ *
+ * Deliberately not filtered to "notable" the way describeTraits is. A vision or
+ * motor value of 1.0 is unremarkable in the abstract but load-bearing here: it
+ * tells the judge NOT to attribute a miss to eyesight, which is a conclusion an
+ * LLM reaches readily when it knows a persona is disabled in some other respect.
+ * Absence of impairment is information.
+ */
+function describeAccessibility(a?: Record<string, number | boolean>): string {
+  if (!a || Object.keys(a).length === 0) return "";
+  const band = (v: number) => (v <= 0.35 ? "low" : v >= 0.65 ? "high" : "moderate");
+  const MEANING: Record<string, (v: number) => string> = {
+    attentionSpan: (v) => `holds focus ${band(v)} — at ${v.toFixed(2)} they lose the thread partway through longer copy`,
+    processingSpeed: (v) => `processes ${band(v)} — at ${v.toFixed(2)} dense or unfamiliar text costs noticeably more time`,
+    fatigueSusceptibility: (v) => `tires ${v <= 0.35 ? "quickly" : v >= 0.65 ? "slowly" : "at an average rate"} (${v.toFixed(2)})`,
+    visionLevel: (v) => `vision ${band(v)} (${v.toFixed(2)})`,
+    contrastSensitivity: (v) => `contrast sensitivity ${band(v)} (${v.toFixed(2)})`,
+    motorControl: (v) => `motor control ${band(v)} (${v.toFixed(2)})`,
+    reachability: (v) => `reach ${band(v)} (${v.toFixed(2)})`,
+  };
+  const lines: string[] = [];
+  for (const [k, raw] of Object.entries(a)) {
+    if (typeof raw === "boolean") { lines.push(`- ${k}: ${raw ? "yes" : "no"}`); continue; }
+    if (typeof raw !== "number") continue;
+    const m = MEANING[k];
+    lines.push(m ? `- ${k} ${raw.toFixed(2)} — ${m(raw)}` : `- ${k} ${raw.toFixed(2)}`);
+  }
+  return lines.length > 0 ? "\n" + lines.join("\n") : "";
 }
 
 /**
@@ -316,6 +357,7 @@ export async function judgeRelevance(
     `Persona: ${ctx.personaName}`,
     ctx.personaDescription ? `Description: ${ctx.personaDescription}` : "",
     `Notable traits:${describeTraits(ctx.traits)}`,
+    ctx.accessibilityTraits ? `Sensory / motor / executive:${describeAccessibility(ctx.accessibilityTraits)}` : "",
     ctx.values ? `Motivational values:${describeValues(ctx.values)}` : "",
     ctx.goal ? `Goal on this page: ${ctx.goal}` : "No stated goal — judge by what this persona is drawn to.",
     ctx.viewport ? `Viewport: ${ctx.viewport.width}x${ctx.viewport.height} (fold at y=${ctx.viewport.height})` : "",
@@ -543,6 +585,7 @@ export async function summarizeCapture(
     `Persona: ${ctx.personaName}`,
     ctx.personaDescription ? `Description: ${ctx.personaDescription}` : "",
     `Notable traits:${describeTraits(ctx.traits)}`,
+    ctx.accessibilityTraits ? `Sensory / motor / executive:${describeAccessibility(ctx.accessibilityTraits)}` : "",
     ctx.values ? `Motivational values:${describeValues(ctx.values)}` : "",
     ctx.goal ? `Goal: ${ctx.goal}` : "No stated goal.",
     `Recording: ${ctx.frameCount} frames over ${(ctx.durationMs / 1000).toFixed(1)}s, ${moments.length} judged moments.`,
