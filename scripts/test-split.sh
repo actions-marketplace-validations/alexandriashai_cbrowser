@@ -49,37 +49,27 @@ set -euo pipefail
 #
 # Still bounding a symptom, still not naming a cause. Every file listed here
 # launches real browsers per test. If the real cause is ever found, delete this.
-ISOLATED_FILES=(
-  "tests/cli-evaluate-keyboard.test.ts"
-  "tests/recording-engine.test.ts"
-  "tests/recording-change-tiers.test.ts"
-  # Launches its own chromium. Added 2026-08-05 after it landed in the shared
-  # pass and pushed tests/svg-classname.test.ts -- which also launches one --
-  # into five 5001ms timeouts. Both pass alone in under a second, so the
-  # failure was contention between them, not a defect in either. Same headroom
-  # story as the note above: one more browser was one too many.
-  #
-  # Any new test file calling chromium.launch() belongs in this list.
-  "tests/sticky-overlay-threshold.test.ts"
-  "tests/freeze-animations.test.ts"
-  "tests/alt-attribute-classification.test.ts"
-  # Added 2026-08-11, after CI went red on the FIRST run of this script in the
-  # Tests workflow: recording-autocapture hit exactly 180000.96ms in pass 1.
-  #
-  # That is the same hang test-gate.sh documents, and the two scripts disagreed
-  # about it. The gate QUARANTINES seven files; this list isolated three of
-  # them, so the other four ran in the shared pass -- and one hung, on the
-  # machine where it mattered. It passed locally, because this box is fast
-  # enough to hide it. CI is the machine that decides.
-  #
-  # Isolated rather than skipped: the gate excludes these from its pass, this
-  # script still RUNS them, each in its own process. That keeps the property
-  # that the split covers more than the gate does.
-  "tests/recording-autocapture.test.ts"
-  "tests/recording-journey-capture.test.ts"
-  "tests/recording-mcp-session.test.ts"
-  "tests/recording-pure.test.ts"
-)
+# 2026-09-17: the list moved to scripts/browser-tests.txt, read by BOTH this
+# script and scripts/test-gate.sh. They each kept their own copy until today and
+# had drifted: the gate quarantined 7 files while this script isolated 10, so
+# five browser-launching files ran inside the gate's single shared process --
+# the contention this whole split exists to avoid. The comment below that said
+# "Any new test file calling chromium.launch() belongs in this list" was true
+# and unenforced; tests/ci-runner-config.test.ts now enforces it.
+#
+# The historical notes about WHY each file is isolated are preserved in the
+# comments of browser-tests.txt and in this file's header above.
+BROWSER_LIST="$(dirname "$0")/browser-tests.txt"
+if [ ! -f "$BROWSER_LIST" ]; then
+  echo "test-split: $BROWSER_LIST is missing — refusing to run, because every" >&2
+  echo "            real-browser test would silently join pass 1." >&2
+  exit 1
+fi
+mapfile -t ISOLATED_FILES < <(grep -vE '^[[:space:]]*(#|$)' "$BROWSER_LIST")
+if [ "${#ISOLATED_FILES[@]}" -eq 0 ]; then
+  echo "test-split: $BROWSER_LIST parsed to an empty list — refusing to run." >&2
+  exit 1
+fi
 
 # QUARANTINED ON CI ONLY (2026-08-12, Alexa's call).
 #
