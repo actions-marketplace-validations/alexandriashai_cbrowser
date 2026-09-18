@@ -456,8 +456,25 @@ const makeSessionCleanupTimer = () => setInterval(async () => {
     }
   }
 
-  // Kill orphaned Chrome processes every cycle
-  await killOrphanedChromeProcesses();
+  // Kill orphaned Chrome processes every cycle.
+  //
+  // OFF BY DEFAULT since 2026-09-08. This sweep is host-wide: it runs
+  // `pgrep -f chrome-headless-shell` and SIGKILLs anything older than its age
+  // heuristic that is not in `trackedPids`. `trackedPids` is built from
+  // `(session.browser as any).browser?.process?.()`, and Playwright declares
+  // `process()` only on BrowserServer and ElectronApplication -- never on
+  // Browser -- so the tracked set is ALWAYS empty and the sweep kills every
+  // Chromium on the box over ~120s, including this server's own live sessions,
+  // the sibling server's, and any unrelated process. Measured 2026-09-05:
+  // cbrowser-enterprise killed all 7 pids of a browser owned by a third process.
+  //
+  // The idle-timeout and memory checks above still run every cycle; only the
+  // host-wide kill is gated. Set CBROWSER_ORPHAN_REAPER=on to restore the old
+  // behaviour. The real fix -- launching via launchServer() so pids are known --
+  // replaces this flag.
+  if (process.env.CBROWSER_ORPHAN_REAPER === "on") {
+    await killOrphanedChromeProcesses();
+  }
 }, 30000); // Check every 30 seconds
 
 /**
