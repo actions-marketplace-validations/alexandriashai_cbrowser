@@ -919,6 +919,47 @@ const TIER_RATE_LIMITS: Record<string, { requests: number; burst: number }> = {
   enterprise: { requests: 0,    burst: 0   },  // unlimited (0 = no limit)
 };
 
+/**
+ * OAuth redirect_uri allowlist (added 2026-09-08).
+ *
+ * Before this, /authorize accepted ANY redirect_uri, stored it against the auth
+ * code, and 303'd the browser to it after a successful CMS login -- and /token
+ * returns the account's raw cbk_ key as the access token. So a link to the
+ * genuine sign-in page with an attacker's redirect_uri handed that attacker the
+ * victim's API key (billable credits + full tool access). Reproduced live on
+ * demo/pro/enterprise.cbrowser.ai on 2026-09-05.
+ *
+ * Comma-separated exact matches, overridable per deployment. The journal shows
+ * zero /authorize completions ever, so nothing legitimate is being narrowed --
+ * if a real client is refused, add its exact callback here rather than widening
+ * the check.
+ */
+const OAUTH_ALLOWED_REDIRECTS: string[] = (
+  process.env.OAUTH_ALLOWED_REDIRECTS ||
+  "https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback"
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+/** Exact-match only. No prefix matching: "https://claude.ai.evil.test" must not pass. */
+function isAllowedRedirect(uri: string): boolean {
+  return uri !== "" && OAUTH_ALLOWED_REDIRECTS.includes(uri);
+}
+
+/** Plain 400. Never redirect to an unvalidated URI, not even to report the error. */
+function rejectRedirectUri(res: import("http").ServerResponse, uri: string): void {
+  console.warn(`[OAuth] refused redirect_uri: ${uri.slice(0, 120)}`);
+  res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(
+    `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>CBrowser \u2014 Invalid request</title></head>` +
+      `<body style="font-family:system-ui;background:#0a0a0a;color:#e5e5e5;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0">` +
+      `<div style="max-width:34rem;padding:2rem"><h1 style="font-size:1.25rem">Invalid request</h1>` +
+      `<p style="color:#888;line-height:1.5">This sign-in link carries a <code>redirect_uri</code> this server does not recognise, so it was refused before any credentials were requested. ` +
+      `If you reached this from Claude, reconnect the connector from claude.ai rather than following a link someone sent you.</p></div></body></html>`,
+  );
+}
+
 const RATE_LIMIT_WINDOW_MS = 3600000;       // 1 hour
 const RATE_LIMIT_BURST_WINDOW_MS = 300000;  // 5 minutes
 
@@ -1687,6 +1728,13 @@ export async function startRemoteMcpServer(options?: RemoteMcpServerOptions): Pr
       const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientId);
       const prefillEmail = isEmail ? clientId : "";
 
+      // Refuse an unrecognised callback BEFORE showing a password field, so a
+      // phishing link never reaches the point of collecting credentials.
+      if (!isAllowedRedirect(redirectUri)) {
+        rejectRedirectUri(res, redirectUri);
+        return;
+      }
+
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1758,6 +1806,13 @@ if (urlParams.get('error')) {
         res.writeHead(303, { Location: authUrl.toString() });
         res.end();
       };
+
+      // Re-validate on POST: the form field is attacker-controllable independently
+      // of the GET that rendered it.
+      if (!isAllowedRedirect(redirectUri)) {
+        rejectRedirectUri(res, redirectUri);
+        return;
+      }
 
       if (!email || !password) {
         errorRedirect("Email and password required");
@@ -1860,8 +1915,17 @@ if (urlParams.get('error')) {
           return;
         }
 
-        // Verify PKCE
-        if (stored.codeChallenge && codeVerifier) {
+        // Verify PKCE. REQUIRED since 2026-09-08: this was
+        // `if (stored.codeChallenge && codeVerifier)`, so an empty challenge or
+        // an empty verifier skipped verification entirely and the branch was
+        // decorative for any caller that simply omitted them.
+        if (!stored.codeChallenge || !codeVerifier) {
+          oauthCodes.delete(code);
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_grant", error_description: "PKCE required" }));
+          return;
+        }
+        {
           const { createHash } = await import("crypto");
           const computed = createHash("sha256").update(codeVerifier).digest("base64url");
           if (computed !== stored.codeChallenge) {
