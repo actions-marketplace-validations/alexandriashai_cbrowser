@@ -34,8 +34,56 @@ const workDir = mkdtempSync(join(tmpdir(), "cbrowser-recording-test-"));
 let browser: Browser | null = null;
 const openPages: Page[] = [];
 
+/**
+ * Announce a stage BEFORE awaiting it, then bound it.
+ *
+ * Same instrument as tests/recording-change-tiers.test.ts, moved here because
+ * this is where the hang actually lives. Measured 2026-08-14: running this file
+ * alongside recording-change-tiers produced FIVE failures in THIS file, all at
+ * exactly 60000.94ms — an identical timestamp to two decimal places across
+ * independent tests. That is one blocked resource reported once per waiting
+ * test, not five slow tests. change-tiers' own stages all completed normally,
+ * so the file that was quarantined and investigated for two rounds was the
+ * victim's neighbour.
+ *
+ * Only the two SHARED resources are instrumented: the singleton browser and the
+ * memoised recording. Ten individual newPage call sites would add noise without
+ * discriminating, because a shared-resource stall is precisely what the
+ * identical timestamps indicate.
+ *
+ * Order matters: `bun test` kills at the ceiling, so anything logged after the
+ * fact dies with it. The last `[engine] ->` without a matching `OK` names the
+ * stage that never returned.
+ */
+async function stage<T>(label: string, budgetMs: number, run: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  console.log(`      [engine] -> ${label}`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const bounded = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(
+          `engine stage "${label}" did not return within ${budgetMs}ms. ` +
+          `This is the stage that blocks; every earlier stage completed.`)),
+        budgetMs);
+      timer.unref?.();
+    });
+    const out = await Promise.race([run(), bounded]);
+    console.log(`      [engine] OK ${label} (${Date.now() - started}ms)`);
+    return out;
+  } catch (e) {
+    console.log(`      [engine] FAILED ${label} (${Date.now() - started}ms): ${(e as Error).message}`);
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function getBrowser(): Promise<Browser> {
-  if (!browser) browser = await chromium.launch({ headless: true });
+  // SHARED. Every test in this file awaits this one promise, so if the launch
+  // blocks they all report the same timeout instant — the signature observed.
+  if (!browser) browser = await stage("chromium.launch (singleton)", 45_000,
+    () => chromium.launch({ headless: true }));
   return browser;
 }
 
@@ -67,15 +115,23 @@ function record(
   if (existing) return existing;
 
   const run = (async (): Promise<Recorded> => {
-    const b = await getBrowser();
-    const page = await b.newPage({ viewport });
+    // MEMOISED: this promise is shared by every test using this fixture name,
+    // so a stall here is reported by all of them at the same instant. That is
+    // what distinguishes "one blocked recording" from "many slow tests".
+    const b = await stage(`record:getBrowser[${name}]`, 45_000, () => getBrowser());
+    const page = await stage(`record:newPage[${name}]`, 30_000, () => b.newPage({ viewport }));
     openPages.push(page);
-    await page.goto(`file://${join(FIXTURES, fixture)}`);
-    await page.waitForLoadState("load");
+    await stage(`record:goto[${name}]`, 30_000,
+      () => page.goto(`file://${join(FIXTURES, fixture)}`));
+    await stage(`record:loadState[${name}]`, 30_000, () => page.waitForLoadState("load"));
 
     const outDir = join(workDir, name);
     const session = new VideoCaptureSession(page, "chromium", workDir);
-    await session.start({
+    // Instrumented 2026-08-14 after the previous round narrowed the block to
+    // exactly here: 29 of 29 earlier stages completed, and the last marker was
+    // record:loadState finishing in 0ms, so whatever blocks is in this call or
+    // the wait that follows it.
+    await stage(`record:session.start[${name}]`, 45_000, () => session.start({
       fps: FPS,
       durationMs: DURATION_MS,
       outDir,
@@ -86,12 +142,13 @@ function record(
       // this suite is testing tracking, not selector resolution.
       resolveElement: async (selector: string) => page.locator(selector).first(),
       ...overrides,
-    });
+    }));
 
     // The duration timer auto-stops. Wait past it, then call stop() to collect
     // the result - stop() is idempotent, so this returns the timer's own run.
-    await new Promise((r) => setTimeout(r, DURATION_MS + 800));
-    const result = await session.stop();
+    await stage(`record:durationWait[${name}]`, DURATION_MS + 30_000,
+      () => new Promise<void>((r) => setTimeout(r, DURATION_MS + 800)));
+    const result = await stage(`record:stop[${name}]`, 45_000, () => session.stop());
     return { session, result, outDir };
   })();
 
