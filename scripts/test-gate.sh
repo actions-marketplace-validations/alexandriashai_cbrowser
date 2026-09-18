@@ -55,7 +55,29 @@ cd "$(dirname "$0")/.."
 # This is the conventional split rather than a concession: real-browser tests
 # belong in their own job, not in the gate a release blocks on. A 2-core CI
 # runner cannot give a 60s wall-clock capture the headroom this box does.
-QUARANTINED='tests/recording-autocapture.test.ts|tests/recording-change-tiers.test.ts|tests/recording-engine.test.ts|tests/recording-journey-capture.test.ts|tests/recording-mcp-session.test.ts|tests/recording-pure.test.ts|tests/cli-evaluate-keyboard.test.ts'
+# 2026-09-17: this list is no longer written here. It was a hand-maintained
+# string that had drifted from test-split.sh's ISOLATED_FILES -- the gate
+# quarantined 7 files while the split isolated 10, so five browser-launching
+# files (alt-attribute-classification, freeze-animations, selector-escape,
+# sticky-overlay-threshold, svg-classname) ran inside THIS script's single
+# shared process, which is exactly the contention the header above says the
+# quarantine exists to prevent. Reproduced locally 2026-09-17: two failures at
+# exactly 60000.96ms and 5001.00ms, a hung launch reported at its ceiling.
+#
+# Both scripts now read scripts/browser-tests.txt, and
+# tests/ci-runner-config.test.ts fails if a browser-launching file is missing
+# from it.
+BROWSER_LIST="$(dirname "$0")/browser-tests.txt"
+if [ ! -f "$BROWSER_LIST" ]; then
+  echo "test-gate: $BROWSER_LIST is missing — refusing to run, because without it" >&2
+  echo "           every real-browser test would silently join the shared pass." >&2
+  exit 1
+fi
+QUARANTINED=$(grep -vE '^[[:space:]]*(#|$)' "$BROWSER_LIST" | paste -sd'|' -)
+if [ -z "$QUARANTINED" ]; then
+  echo "test-gate: $BROWSER_LIST parsed to an empty list — refusing to run." >&2
+  exit 1
+fi
 
 FILES=$(find tests src -name '*.test.ts' | grep -vE "$QUARANTINED" | sort | tr '\n' ' ')
 

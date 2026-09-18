@@ -80,14 +80,29 @@ describe("the split runner and the release gate agree about the hanging files", 
   const read = async (rel: string) =>
     await Bun.file(new URL(rel, import.meta.url)).text();
 
+  /**
+   * The single source both scripts read (2026-09-17).
+   *
+   * Each script used to carry its own hand-written copy, and they drifted: the
+   * gate quarantined 7 files while the split isolated 10, so five
+   * browser-launching files ran in the gate's shared process. Parsing one file
+   * means "the two lists agree" is now true by construction rather than by
+   * assertion -- so the tests below shift from comparing two lists to checking
+   * that the one list is complete and that both scripts actually read it.
+   */
+  const browserList = async () =>
+    new Set(
+      (await read("../scripts/browser-tests.txt"))
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l !== "" && !l.startsWith("#")),
+    );
+
   /** Files test-gate.sh excludes from the release gate. */
-  const quarantined = (src: string) =>
-    new Set((src.match(/QUARANTINED='([^']+)'/)?.[1] ?? "").split("|").filter(Boolean));
+  const quarantined = async (_src?: string) => await browserList();
 
   /** Files test-split.sh runs in their own process. */
-  const isolated = (src: string) =>
-    new Set([...(src.match(/ISOLATED_FILES=\(([\s\S]*?)\n\)/)?.[1] ?? "")
-      .matchAll(/"(tests\/[^"]+)"/g)].map((m) => m[1]));
+  const isolated = async (_src?: string) => await browserList();
 
   test("every gate-quarantined file is isolated by the split", async () => {
     // The gate's list IS the curated "does real browser work and hangs in a
@@ -98,24 +113,67 @@ describe("the split runner and the release gate agree about the hanging files", 
     // ran there: recording-autocapture timed out at exactly 180000.96ms in
     // pass 1. It passes on a fast dev box, which is why the disagreement
     // survived a full green local run.
-    const splitSet = isolated(await read("../scripts/test-split.sh"));
-    const missing = [...quarantined(await read("../scripts/test-gate.sh"))]
-      .filter((f) => !splitSet.has(f));
+    const splitSet = await isolated();
+    const missing = [...(await quarantined())].filter((f) => !splitSet.has(f));
     expect(missing).toEqual([]);
-  });
 
-  test("both lists are non-empty — this cannot pass by parsing nothing", async () => {
-    expect(quarantined(await read("../scripts/test-gate.sh")).size).toBeGreaterThan(5);
-    expect(isolated(await read("../scripts/test-split.sh")).size).toBeGreaterThan(9);
-  });
-
-  test("the split still runs MORE than the gate excludes", async () => {
-    // Isolation is not exclusion. Every quarantined file must still appear as
-    // something the split executes, just in its own process.
-    const split = await read("../scripts/test-split.sh");
-    for (const f of quarantined(await read("../scripts/test-gate.sh"))) {
-      expect(split, `${f} must still be run by the split`).toContain(f);
+    // And prove both scripts genuinely consume the shared file, so this cannot
+    // pass because they each stopped having a list at all.
+    for (const script of ["test-split.sh", "test-gate.sh"]) {
+      expect(await read(`../scripts/${script}`), `${script} must read the shared list`)
+        .toContain("browser-tests.txt");
     }
+  });
+
+  test("the list is non-empty — this cannot pass by parsing nothing", async () => {
+    expect((await browserList()).size).toBeGreaterThan(9);
+  });
+
+  test("every file that launches a real browser is in the list", async () => {
+    // The drift guard. scripts/test-split.sh has said since 2026-08-05 that
+    // "any new test file calling chromium.launch() belongs in this list"; that
+    // was a comment, and comments do not fail builds. On 2026-09-17 five files
+    // had accumulated outside the gate's copy of the list and took the release
+    // workflow red.
+    //
+    // Grep is deliberately broad: recording-* files launch through helpers
+    // rather than calling chromium.launch() directly, so a narrow pattern would
+    // report a clean sweep while missing them -- the absent-mechanism failure
+    // this repo keeps finding in its own probes.
+    const listed = await browserList();
+    const glob = new Bun.Glob("**/*.test.ts");
+    const launchers: string[] = [];
+    for (const dir of ["tests", "src"]) {
+      for await (const rel of glob.scan({ cwd: new URL(`../${dir}/`, import.meta.url).pathname })) {
+        const path = `${dir}/${rel}`;
+        // This file carries the launch pattern as a string literal, so it
+        // matches itself. Same self-match trap as a probe that greps for a
+        // phrase living in its own criterion.
+        if (path === "tests/ci-runner-config.test.ts") continue;
+        const body = await Bun.file(new URL(`../${path}`, import.meta.url)).text();
+        if (/chromium\.launch\(|browser\.launch\(|launchPersistentContext\(|new CBrowser\(/.test(body)) {
+          launchers.push(path);
+        }
+      }
+    }
+    expect(launchers.length, "the grep itself must find something").toBeGreaterThan(4);
+    expect(launchers.filter((f) => !listed.has(f))).toEqual([]);
+  });
+
+  test("the split still RUNS the quarantined files, it does not drop them", async () => {
+    // Isolation is not exclusion. The gate excludes these; the split must still
+    // execute each one, just in its own process.
+    //
+    // Until 2026-09-17 this was checked by grepping test-split.sh for each
+    // filename, which worked only while the script inlined the list. Now both
+    // scripts read scripts/browser-tests.txt, so the check is that the split
+    // consumes that file and loops over what it holds -- grepping the script
+    // for filenames it no longer contains would pass vacuously forever.
+    const split = await read("../scripts/test-split.sh");
+    expect(split).toContain("browser-tests.txt");
+    expect(split).toMatch(/mapfile -t ISOLATED_FILES/);
+    expect(split).toMatch(/for iso in "\$\{ISOLATED_FILES\[@\]\}"/);
+    expect((await quarantined()).size).toBeGreaterThan(9);
   });
 });
 
@@ -244,9 +302,9 @@ describe("the CI-only quarantine", () => {
     const src = await split();
     const q = src.slice(src.indexOf("QUARANTINED_ON_CI=("));
     const quarantined = [...q.slice(0, q.indexOf(")")).matchAll(/"(tests\/[^"]+)"/g)].map((m) => m[1]);
-    const iso = src.slice(src.indexOf("ISOLATED_FILES=("));
-    const isolated = iso.slice(0, iso.indexOf("\n)"));
-    for (const f of quarantined) expect(isolated, `${f} must be isolated too`).toContain(f);
+    const listed = (await Bun.file(new URL("../scripts/browser-tests.txt", import.meta.url).pathname).text())
+      .split("\n").map((l) => l.trim()).filter((l) => l !== "" && !l.startsWith("#"));
+    for (const f of quarantined) expect(listed, `${f} must be isolated too`).toContain(f);
   });
 
   test("the reason is recorded in the file, not just in a commit message", async () => {

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [19.1.5](https://github.com/alexandriashai/cbrowser/compare/v19.1.4...v19.1.5) (2026-09-18)
+
+### Fixed
+
+* **ci:** make the release gate green — hermetic config test, one browser list ([30aaa8e](https://github.com/alexandriashai/cbrowser/commit/30aaa8eb76d6ce238916cc4deeb0ddbe4ba4d794))
+* **recording:** enforce the trigger timeout when a page probe never answers ([5fd4d98](https://github.com/alexandriashai/cbrowser/commit/5fd4d98f2bac1eaa705adb8c61590f560fe33b3f))
+* **security:** allowlist OAuth redirect_uri and require PKCE ([bbb2e49](https://github.com/alexandriashai/cbrowser/commit/bbb2e4991dc31dd2917e71488a414dc8d7437026))
+* **sessions:** gate the host-wide Chrome reaper off by default ([31c1b10](https://github.com/alexandriashai/cbrowser/commit/31c1b10d23929ff3cc7bb28b10ae9aae60e28a12))
+
 ## [19.1.4](https://github.com/alexandriashai/cbrowser/compare/v19.1.3...v19.1.4) (2026-08-15)
 
 ### Fixed

@@ -1,0 +1,30 @@
+# Test files that drive a REAL browser.
+#
+# ONE list, read by both scripts/test-split.sh (which isolates them, one process
+# each) and scripts/test-gate.sh (which excludes them from the release gate).
+#
+# Why this file exists: the two scripts kept their own lists and drifted. On
+# 2026-09-17 the gate quarantined 7 files while the split isolated 10, so five
+# browser-launching files ran inside the gate's single shared process -- the
+# exact contention both scripts' comments say they exist to avoid. Running the
+# gate locally reproduced it: two failures at exactly 60000.96ms and 5001.00ms,
+# a hung launch reported at the test's declared ceiling.
+#
+# tests/ci-runner-config.test.ts asserts that every file matching the launch
+# grep appears here, so adding a browser test without listing it fails the suite
+# rather than quietly costing someone a red release.
+#
+# Blank lines and #-comments are ignored.
+
+tests/alt-attribute-classification.test.ts
+tests/cli-evaluate-keyboard.test.ts
+tests/freeze-animations.test.ts
+tests/recording-autocapture.test.ts
+tests/recording-change-tiers.test.ts
+tests/recording-engine.test.ts
+tests/recording-journey-capture.test.ts
+tests/recording-mcp-session.test.ts
+tests/recording-pure.test.ts
+tests/selector-escape.test.ts
+tests/sticky-overlay-threshold.test.ts
+tests/svg-classname.test.ts
